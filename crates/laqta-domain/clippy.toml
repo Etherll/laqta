@@ -1,0 +1,12 @@
+disallowed-types = [
+    "std::fs::File", "std::fs::OpenOptions", "std::fs::ReadDir",
+    "std::net::TcpStream", "std::net::TcpListener", "std::net::UdpSocket",
+    "std::process::Command", "std::thread::Builder", "rayon::ThreadPoolBuilder",
+]
+disallowed-methods = [
+    "std::fs::read", "std::fs::read_to_string", "std::fs::write", "std::fs::create_dir_all",
+    "std::fs::remove_file", "std::fs::rename", "std::fs::metadata", "std::fs::read_dir",
+    "std::thread::spawn", "std::env::var", "std::env::var_os", "std::env::current_dir",
+    "std::time::SystemTime::now", "std::time::Instant::now",
+    "jiff::Zoned::now", "jiff::Timestamp::now", "cosmic_text::FontSystem::new",
+]

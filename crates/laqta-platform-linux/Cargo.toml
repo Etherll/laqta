@@ -1,0 +1,30 @@
+[package]
+name = "laqta-platform-linux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+laqta-domain.workspace = true
+laqta-ports.workspace = true
+png.workspace = true
+futures-lite.workspace = true
+blocking.workspace = true
+arboard.workspace = true
+x11rb.workspace = true
+libwayshot.workspace = true
+ashpd.workspace = true
+ksni.workspace = true
+tracing.workspace = true
+async-io.workspace = true
+
+[dev-dependencies]
+laqta-ports.workspace = true
+laqta-domain.workspace = true
+arboard.workspace = true
+futures-lite.workspace = true

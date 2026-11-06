@@ -1,0 +1,73 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace.dependencies]
+# workspace crates
+laqta-domain = { path = "crates/laqta-domain" }
+laqta-imaging = { path = "crates/laqta-imaging" }
+laqta-ports = { path = "crates/laqta-ports" }
+laqta-app = { path = "crates/laqta-app" }
+laqta-ipc = { path = "crates/laqta-ipc" }
+laqta-ui = { path = "crates/laqta-ui" }
+laqta-platform-linux = { path = "crates/laqta-platform-linux" }
+laqta-platform-windows = { path = "crates/laqta-platform-windows" }
+
+# UI (ADR 002: move together)
+gpui = { package = "gpui-pre", version = "=0.3.11" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+
+# core
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+bitflags = "2"
+jiff = { version = "0.2.39", default-features = false, features = ["std"] }
+png = "0.18.1"
+rayon = "1.12"
+
+# application
+async-broadcast = "0.7.2"
+futures-channel = "0.3.34"
+futures-lite = "2.6.1"
+async-executor = "1.14.1"
+async-io = "2.6.0"
+blocking = "1.7.0"
+interprocess = "2.4.7"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-appender = "0.2.5"
+dirs = "7.0.0"
+
+# platforms
+arboard = { version = "3.7.0", features = ["wayland-data-control"] }
+windows = "0.62.2"
+x11rb = { version = "0.14.0", features = ["shm", "randr", "allow-unsafe-code"] }
+libwayshot = "0.9.0"
+ashpd = { version = "0.14.0", default-features = false, features = ["async-io", "screenshot", "global_shortcuts"] }
+ksni = { version = "0.3.7", default-features = false, features = ["async-io"] }
+
+# tooling
+cargo_metadata = "0.23.1"
+toml = "1.2.1"
+tempfile = "3.27.0"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+# panic stays "unwind" (ADR 020)
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
