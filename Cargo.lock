@@ -4637,6 +4637,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "laqta-import"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "laqta-domain",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "windows 0.62.2",
+ "zip",
+]
+
+[[package]]
 name = "laqta-ipc"
 version = "0.1.0"
 dependencies = [

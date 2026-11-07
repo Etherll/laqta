@@ -26,6 +26,7 @@ laqta-upload = { path = "crates/laqta-upload" }
 laqta-editor = { path = "crates/laqta-editor" }
 laqta-media = { path = "crates/laqta-media" }
 laqta-ml = { path = "crates/laqta-ml" }
+laqta-import = { path = "crates/laqta-import" }
 
 # UI (ADR 002: move together)
 gpui = { package = "gpui-pre", version = "=0.3.11" }
