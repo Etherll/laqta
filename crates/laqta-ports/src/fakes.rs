@@ -753,10 +753,13 @@ impl crate::InputSynth for FakeInputSynth {
     }
 }
 
+/// One fake watch: folder, recursive, callback, and a token whose handle keeps it alive.
+pub type FakeWatch = (PathBuf, bool, crate::WatchCallback, Arc<()>);
+
 /// Keeps each watch's callback; `emit` delivers a file as the adapter would.
 #[derive(Default)]
 pub struct FakeFileWatcher {
-    pub watches: Mutex<Vec<(PathBuf, bool, crate::WatchCallback, Arc<()>)>>,
+    pub watches: Mutex<Vec<FakeWatch>>,
 }
 
 impl std::fmt::Debug for FakeFileWatcher {
