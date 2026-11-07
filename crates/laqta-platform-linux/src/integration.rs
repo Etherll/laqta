@@ -46,12 +46,26 @@ impl Default for LinuxShellIntegration {
 impl LinuxShellIntegration {
     /// The three file manager entries: the application's desktop file, the KDE service menu and the
     /// Nautilus script.
-    fn entries(&self) -> [PathBuf; 3] {
+    fn entries(&self) -> [PathBuf; 4] {
         [
             self.data_home.join("applications").join(DESKTOP_FILE),
             self.data_home.join("kio").join("servicemenus").join(SERVICE_MENU_FILE),
             self.data_home.join("nautilus").join("scripts").join(SCRIPT_NAME),
+            self.data_home.join("mime").join("packages").join(MIME_FILE),
         ]
+    }
+
+    /// Refreshes the MIME and desktop databases so the file types take effect. Best effort: the
+    /// tools are optional and a missing one only delays the change until the next login.
+    fn refresh_databases(&self) {
+        for (tool, dir) in [("update-mime-database", self.data_home.join("mime")), ("update-desktop-database", self.data_home.join("applications"))] {
+            let _ = std::process::Command::new(tool)
+                .arg(&dir)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
     }
 }
 
@@ -61,16 +75,20 @@ impl ShellIntegration for LinuxShellIntegration {
     }
 
     fn install(&self, executable: &Path) -> Result<(), PortError> {
-        let [desktop, service_menu, script] = self.entries();
+        let [desktop, service_menu, script, mime] = self.entries();
         write_file(&desktop, &desktop_file(executable), 0o644)?;
         write_file(&service_menu, &service_menu_file(executable), 0o755)?;
-        write_file(&script, &nautilus_script(executable), 0o755)
+        write_file(&script, &nautilus_script(executable), 0o755)?;
+        write_file(&mime, MIME_XML, 0o644)?;
+        self.refresh_databases();
+        Ok(())
     }
 
     fn uninstall(&self) -> Result<(), PortError> {
         for path in self.entries() {
             remove_if_exists(&path)?;
         }
+        self.refresh_databases();
         Ok(())
     }
 
@@ -85,11 +103,32 @@ impl ShellIntegration for LinuxShellIntegration {
     }
 }
 
-/// The application's desktop file. `Actions=upload` puts the upload action on the entry.
+/// ShareX's file types (custom uploaders, image effects, backups), opened by Laqta to import them.
+const MIME_FILE: &str = "laqta.xml";
+const MIME_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-sharex-custom-uploader">
+    <comment>ShareX custom uploader</comment>
+    <glob pattern="*.sxcu"/>
+  </mime-type>
+  <mime-type type="application/x-sharex-image-effect">
+    <comment>ShareX image effect</comment>
+    <glob pattern="*.sxie"/>
+  </mime-type>
+  <mime-type type="application/x-sharex-backup">
+    <comment>ShareX backup</comment>
+    <glob pattern="*.sxb"/>
+  </mime-type>
+</mime-info>
+"#;
+const MIME_TYPES: &str = "application/x-sharex-custom-uploader;application/x-sharex-image-effect;application/x-sharex-backup;";
+
+/// The application's desktop file. `Actions=upload` puts the upload action on the entry; the MIME
+/// types open ShareX's files in Laqta.
 fn desktop_file(executable: &Path) -> String {
     format!(
-        "[Desktop Entry]\nType=Application\nName=Laqta\nExec={}\nActions=upload;\n\n[Desktop Action upload]\nName=Upload with Laqta\nExec={}\n",
-        exec_value(executable, ""),
+        "[Desktop Entry]\nType=Application\nName=Laqta\nExec={}\nMimeType={MIME_TYPES}\nActions=upload;\n\n[Desktop Action upload]\nName=Upload with Laqta\nExec={}\n",
+        exec_value(executable, " %F"),
         exec_value(executable, " %F"),
     )
 }
@@ -206,6 +245,9 @@ mod tests {
 
         let desktop = fs::read_to_string(dir.join("share/applications/laqta.desktop")).expect("desktop");
         assert!(desktop.contains("Actions=upload;\n"));
+        assert!(desktop.contains("MimeType=application/x-sharex-custom-uploader;"));
+        let mime = fs::read_to_string(dir.join("share/mime/packages/laqta.xml")).expect("mime");
+        assert!(mime.contains("<glob pattern=\"*.sxb\"/>"));
         assert!(desktop.ends_with("[Desktop Action upload]\nName=Upload with Laqta\nExec=\"/opt/laqta/laqta\" %F\n"));
         let menu_path = dir.join("share/kio/servicemenus/laqta-upload.desktop");
         let menu = fs::read_to_string(&menu_path).expect("service menu");

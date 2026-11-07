@@ -60,6 +60,18 @@ fn env_dir(var: &str, rest: &str) -> PathBuf {
 }
 
 /// The verb key for `target`: `*` for files, `Directory` for folders.
+/// ShareX's file types that open in Laqta (imported): (extension, ProgID, description).
+pub(crate) const FILE_TYPES: [(&str, &str, &str); 3] = [
+    (".sxcu", "Laqta.sxcu", "Custom uploader"),
+    (".sxie", "Laqta.sxie", "Image effect"),
+    (".sxb", "Laqta.sxb", "ShareX backup"),
+];
+
+/// `HKCU\Software\Classes\<name>`.
+fn class_key(software: &str, name: &str) -> String {
+    format!(r"{software}\Classes\{name}")
+}
+
 fn verb_key(software: &str, target: &str) -> String {
     format!(r"{software}\Classes\{target}\shell\Laqta")
 }
@@ -280,12 +292,27 @@ impl ShellIntegration for WindowsShellIntegration {
             let command = OpenKey::create(&format!(r"{key}\command"))?;
             command.set_string(None, &format!("\"{}\" \"%1\"", executable.display()))?;
         }
+        for (ext, prog_id, description) in FILE_TYPES {
+            OpenKey::create(&class_key(&self.software, ext))?.set_string(None, prog_id)?;
+            let class = class_key(&self.software, prog_id);
+            OpenKey::create(&class)?.set_string(None, description)?;
+            OpenKey::create(&format!(r"{class}\DefaultIcon"))?.set_string(None, &format!("\"{}\",0", executable.display()))?;
+            OpenKey::create(&format!(r"{class}\shell\open\command"))?.set_string(None, &format!("\"{}\" \"%1\"", executable.display()))?;
+        }
         write_send_to(&self.send_to_dir, executable)
     }
 
     fn uninstall(&self) -> Result<(), PortError> {
         for target in ["*", "Directory"] {
             OpenKey::delete_tree(&verb_key(&self.software, target))?;
+        }
+        for (ext, prog_id, _) in FILE_TYPES {
+            // Leave an extension that another program has taken over.
+            if let Some(key) = OpenKey::open(&class_key(&self.software, ext))? {
+                drop(key);
+                OpenKey::delete_tree(&class_key(&self.software, ext))?;
+            }
+            OpenKey::delete_tree(&class_key(&self.software, prog_id))?;
         }
         remove_send_to(&self.send_to_dir)
     }
@@ -325,6 +352,8 @@ mod tests {
     #[test]
     fn registry_paths_sit_under_the_software_key() {
         assert_eq!(verb_key("Software", "*"), r"Software\Classes\*\shell\Laqta");
+        assert_eq!(class_key("Software", ".sxcu"), r"Software\Classes\.sxcu");
+        assert_eq!(FILE_TYPES.map(|t| t.0), [".sxcu", ".sxie", ".sxb"]);
         assert_eq!(verb_key("Software", "Directory"), r"Software\Classes\Directory\shell\Laqta");
         assert_eq!(host_key("Software", r"Google\Chrome"), r"Software\Google\Chrome\NativeMessagingHosts\com.laqta.nmh");
         assert_eq!(host_key("Software", "Mozilla"), r"Software\Mozilla\NativeMessagingHosts\com.laqta.nmh");

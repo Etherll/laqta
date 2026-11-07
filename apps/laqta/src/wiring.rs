@@ -121,6 +121,10 @@ async fn run_request(
             tracing::info!(%id, "custom uploader imported");
             Some(vec![])
         }),
+        Route::ImportBackup(path) => importer.sharex(&path).map(|summary| {
+            tracing::info!(%summary, "ShareX backup imported");
+            Some(vec![])
+        }),
         Route::ImportEffect(path) => importer.effect(&path).map(|name| {
             tracing::info!(%name, "effect preset imported");
             Some(vec![])

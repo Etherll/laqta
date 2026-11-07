@@ -14,6 +14,8 @@ pub enum Route {
     Upload(UploadSource, Option<WorkflowId>),
     ImportUploader(PathBuf),
     ImportEffect(PathBuf),
+    /// A ShareX `.sxb` backup.
+    ImportBackup(PathBuf),
 }
 
 fn has_ext(path: &Path, ext: &str) -> bool {
@@ -36,6 +38,7 @@ pub fn route(request: Request, settings: &Settings) -> Result<Route, String> {
         }
         Request::Upload(path) if has_ext(&path, "sxcu") => Route::ImportUploader(path),
         Request::Upload(path) if has_ext(&path, "sxie") => Route::ImportEffect(path),
+        Request::Upload(path) if has_ext(&path, "sxb") => Route::ImportBackup(path),
         Request::Upload(path) => {
             let path = std::path::absolute(&path).unwrap_or(path);
             Route::Upload(UploadSource::File(path), None)
@@ -79,6 +82,7 @@ mod tests {
         assert!(route(Request::Workflow("nope".into()), &s).is_err());
         assert!(matches!(route(Request::Upload("/a/b.SXCU".into()), &s), Ok(Route::ImportUploader(_))));
         assert!(matches!(route(Request::Upload("/a/b.sxie".into()), &s), Ok(Route::ImportEffect(_))));
+        assert!(matches!(route(Request::Upload("/a/b.sxb".into()), &s), Ok(Route::ImportBackup(_))));
         assert!(
             matches!(route(Request::Upload("/a/b.png".into()), &s), Ok(Route::Upload(UploadSource::File(p), None)) if p == Path::new("/a/b.png"))
         );
