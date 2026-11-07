@@ -55,6 +55,16 @@ pub fn after_upload_options() -> Vec<(AfterUploadTasks, &'static str)> {
     ]
 }
 
+/// Copied-text templates (upload-info tokens) offered as presets.
+pub const CLIPBOARD_FORMATS: [(&str, &str); 6] = [
+    ("URL", "$url"),
+    ("Short URL", "$shorturl"),
+    ("Markdown", "![$filenamenoext]($url)"),
+    ("HTML", "<a href=\"$url\"><img src=\"$thumbnailurl\" alt=\"$filename\"/></a>"),
+    ("Forum (BBCode)", "[url=$url][img]$thumbnailurl[/img][/url]"),
+    ("Wiki", "[$url $filename]"),
+];
+
 /// The URL sharing services (`laqta-upload` sharer ids).
 pub const SHARERS: [(&str, &str); 10] = [
     ("email", "Email"),

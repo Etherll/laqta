@@ -14,6 +14,7 @@ pub struct TaskRow {
     pub title: String,
     pub detail: String,
     pub path: Option<PathBuf>,
+    pub url: Option<String>,
     pub error: Option<String>,
 }
 
@@ -58,6 +59,7 @@ impl TaskList {
                         title: format!("Task {}", id.0),
                         detail: String::new(),
                         path: None,
+                        url: None,
                         error: None,
                     },
                 );
@@ -88,6 +90,23 @@ impl TaskList {
             TaskEvent::Failed { error, .. } => {
                 row.error = Some(error.to_string());
                 row.detail = format!("Failed: {error}");
+            }
+            TaskEvent::UploadStarted { destination, .. } => row.detail = format!("Uploading to {destination}"),
+            TaskEvent::Progress { sent, total, .. } => {
+                row.detail = match total {
+                    Some(t) if *t > 0 => format!("Uploading {}%", sent * 100 / t),
+                    _ => format!("Uploading {}", crate::presenters::history::format_size(*sent)),
+                }
+            }
+            TaskEvent::UploadRetry { attempt, reason, .. } => row.detail = format!("Retry {attempt}: {reason}"),
+            TaskEvent::Uploaded { url, .. } => {
+                row.detail = url.clone();
+                row.url = Some(url.clone());
+            }
+            TaskEvent::Shortened { url, .. } => row.url = Some(url.clone()),
+            TaskEvent::RecordingStopped { path, .. } => {
+                row.title = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                row.path = Some(path.clone());
             }
             TaskEvent::SaveSkipped { path, .. } => row.detail = format!("Skipped: {} exists", path.display()),
             TaskEvent::StepFailed { step, reason, .. } => row.detail = format!("{step} failed: {reason}"),
@@ -123,6 +142,16 @@ mod tests {
         list.apply(&TaskEvent::Failed { id, error: laqta_ports::AppError::Io("disk full".into()) });
         list.apply(&TaskEvent::StatusChanged { id, status: TaskStatus::Failed });
         assert_eq!(list.rows()[0].detail, "Failed: i/o: disk full");
+    }
+
+    #[test]
+    fn upload_progress() {
+        let mut list = TaskList::default();
+        let id = TaskId(9);
+        list.apply(&TaskEvent::Progress { id, sent: 50, total: Some(200) });
+        assert_eq!(list.rows()[0].detail, "Uploading 25%");
+        list.apply(&TaskEvent::Uploaded { id, url: "https://x/y".into(), thumbnail_url: None, deletion_url: None });
+        assert_eq!(list.rows()[0].url.as_deref(), Some("https://x/y"));
     }
 
     #[test]

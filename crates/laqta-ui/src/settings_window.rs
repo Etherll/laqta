@@ -475,11 +475,25 @@ impl SettingsWindow {
             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("After upload"))
             .child(after)
             .child(widgets::row("Copied text ($url, $shorturl, $deletionurl, …)", Input::new(&self.clipboard_format), cx))
+            .child(self.clipboard_presets(cx))
             .child(widgets::row("Retries on network errors", Input::new(&self.retries), cx))
             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Accounts"))
             .child(accounts)
             .child(add)
             .child(Button::new("import-sxcu").label("Import custom uploader (.sxcu)…").on_click(cx.listener(|this, _, _, cx| this.import_sxcu(cx))))
+    }
+
+    fn clipboard_presets(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let mut row = div().flex().flex_wrap().gap(px(6.)).child(widgets::muted("Presets:", cx));
+        for (i, (label, template)) in present::CLIPBOARD_FORMATS.into_iter().enumerate() {
+            row = row.child(Button::new(SharedString::from(format!("cf-{i}"))).label(label).small().ghost().on_click(cx.listener(
+                move |this, _, window, cx| {
+                    this.clipboard_format.update(cx, |input, cx| input.set_value(template, window, cx));
+                    cx.notify();
+                },
+            )));
+        }
+        row
     }
 
     fn import_sxcu(&mut self, cx: &mut Context<Self>) {
