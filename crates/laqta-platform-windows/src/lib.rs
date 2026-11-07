@@ -23,6 +23,8 @@ mod hdr;
 mod hover;
 #[cfg(any(windows, test))]
 mod keys;
+#[cfg(windows)]
+mod loopback;
 #[cfg(any(windows, test))]
 mod patch;
 #[cfg(any(windows, test))]
@@ -35,6 +37,8 @@ mod shell_thread;
 mod shutter;
 #[cfg(windows)]
 mod sound;
+#[cfg(any(windows, test))]
+mod stream;
 #[cfg(windows)]
 mod transparent;
 #[cfg(any(windows, test))]
@@ -51,14 +55,15 @@ mod imp {
 
     use laqta_domain::region::HoverTarget;
     use laqta_domain::{Bitmap, Frame};
-    use laqta_ports::{BoxFuture, CaptureRequest, Clipboard, HotkeyRegistrar, PortError, ScreenSource, SecretStore, Shell, Tray};
+    use laqta_ports::{BoxFuture, CaptureRequest, Clipboard, HotkeyRegistrar, PortError, ScreenSource, ScreenStream, SecretStore, Shell, Tray};
     use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 
-    use crate::{capture_dxgi, capture_gdi, clipboard, cursor, hover, secrets, shell, shell_thread, transparent};
+    use crate::{capture_dxgi, capture_gdi, clipboard, cursor, hover, secrets, shell, shell_thread, stream, transparent};
 
     /// The Windows adapters, ready to hand to `laqta_app::Ports`.
     pub struct WindowsPorts {
         pub screen: Arc<dyn ScreenSource>,
+        pub stream: Arc<dyn ScreenStream>,
         pub clipboard: Arc<dyn Clipboard>,
         pub shell: Arc<dyn Shell>,
         pub hotkeys: Arc<dyn HotkeyRegistrar>,
@@ -76,6 +81,7 @@ mod imp {
     pub fn ports() -> WindowsPorts {
         WindowsPorts {
             screen: Arc::new(WindowsScreen),
+            stream: Arc::new(stream::WindowsStream),
             clipboard: Arc::new(clipboard::WindowsClipboard),
             shell: Arc::new(shell::WindowsShell),
             hotkeys: Arc::new(shell_thread::WindowsHotkeys),
