@@ -1,0 +1,22 @@
+[package]
+name = "laqta-editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+laqta-domain.workspace = true
+laqta-imaging.workspace = true
+tiny-skia.workspace = true
+cosmic-text.workspace = true
+thiserror.workspace = true
+rayon.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+png.workspace = true

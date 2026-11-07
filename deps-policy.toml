@@ -6,9 +6,10 @@ targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 "laqta-domain"   = []
 "laqta-imaging"  = ["laqta-domain"]
 "laqta-ports"    = ["laqta-domain"]
-"laqta-app"      = ["laqta-ports", "laqta-imaging", "laqta-domain"]   # + laqta-editor from M3
+"laqta-app"      = ["laqta-ports", "laqta-imaging", "laqta-domain", "laqta-editor"]
 "laqta-ipc"      = ["laqta-domain"]
-"laqta-ui"       = ["laqta-app", "laqta-ports", "laqta-domain", "laqta-library", "laqta-imaging"]  # + editor (M3); imaging for thumbnails and the magnifier
+"laqta-editor"   = ["laqta-imaging", "laqta-domain"]
+"laqta-ui"       = ["laqta-app", "laqta-ports", "laqta-domain", "laqta-library", "laqta-imaging", "laqta-editor"]  # imaging: thumbnails and the magnifier (M1 D9)
 "laqta-platform-linux"   = ["laqta-ports", "laqta-domain"]
 "laqta-platform-windows" = ["laqta-ports", "laqta-domain"]
 "laqta-library"  = ["laqta-ports", "laqta-domain"]
@@ -21,6 +22,7 @@ targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 "laqta-domain"  = ["serde", "thiserror", "bitflags", "jiff"]
 "laqta-imaging" = ["png", "rayon", "thiserror", "jpeg-encoder", "zune-jpeg", "image-webp", "gif", "tiff", "fast_image_resize"]
 "laqta-ports"   = ["thiserror", "jiff"]
+"laqta-editor"  = ["tiny-skia", "cosmic-text", "thiserror", "rayon", "serde"]
 
 # Transitive bans for the pure core, laqta-ports and laqta-app.
 [deny]

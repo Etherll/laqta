@@ -23,6 +23,7 @@ laqta-platform-windows = { path = "crates/laqta-platform-windows" }
 laqta-library = { path = "crates/laqta-library" }
 laqta-http = { path = "crates/laqta-http" }
 laqta-upload = { path = "crates/laqta-upload" }
+laqta-editor = { path = "crates/laqta-editor" }
 
 # UI (ADR 002: move together)
 gpui = { package = "gpui-pre", version = "=0.3.11" }
@@ -43,6 +44,8 @@ gif = "0.14.2"
 tiff = "0.11.3"
 fast_image_resize = { version = "6.1.0", default-features = false, features = ["std"] }
 serde_json = "1.0.154"
+tiny-skia = "0.12.0"
+cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash"] }
 image = { version = "0.25", default-features = false }
 smallvec = "1"
 rusqlite = "0.41.1"  # bundled on Linux, vcpkg SQLite on Windows (ADR 026)
