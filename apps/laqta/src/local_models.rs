@@ -77,7 +77,13 @@ impl BackgroundRemover for LocalBackground {
                 Some((_, e)) => e,
                 None => {
                     let rt = prepare(&self.data, &self.options, &self.prompt, &id, "Background removal").await?;
-                    let e = Arc::new(ModelBackground::new(rt, id.clone()));
+                    // A custom model (not in the catalog) runs with the default model's numbers.
+                    let e = if catalog().model(&id).is_some() {
+                        Arc::new(ModelBackground::new(rt, id.clone()))
+                    } else {
+                        let params = ModelBackground::default_params().ok_or_else(|| PortError::Unsupported("no background model in the catalog".into()))?;
+                        Arc::new(ModelBackground::custom(rt, id.clone(), params))
+                    };
                     if let Ok(mut g) = self.ready.lock() {
                         *g = Some((id, e.clone()));
                     }

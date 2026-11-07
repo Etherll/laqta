@@ -22,16 +22,35 @@ use crate::tensor::RgbaImage;
 pub struct ModelBackground {
     runtime: Arc<Runtime>,
     model_id: String,
+    /// Parameters for a custom model (not in the catalog).
+    custom: Option<MattingParams>,
 }
 
 impl ModelBackground {
     /// `model_id` is a catalog id of a background model.
     pub fn new(runtime: Arc<Runtime>, model_id: impl Into<String>) -> Self {
-        ModelBackground { runtime, model_id: model_id.into() }
+        ModelBackground { runtime, model_id: model_id.into(), custom: None }
+    }
+
+    /// A custom `matting-parametric` model at `<models>/<id>.onnx` (ADR 023 custom models). It runs
+    /// with `params`: the catalog default's numbers unless the caller knows better.
+    pub fn custom(runtime: Arc<Runtime>, model_id: impl Into<String>, params: MattingParams) -> Self {
+        ModelBackground { runtime, model_id: model_id.into(), custom: Some(params) }
+    }
+
+    /// The default background model's parameters, the starting point for a custom model.
+    pub fn default_params() -> Option<MattingParams> {
+        catalog().default_for(Task::Background).and_then(|e| e.matting)
     }
 
     /// Checks that the model is an installed background model, and returns its parameters.
     fn prepare(&self) -> Result<MattingParams, MlError> {
+        if let Some(params) = self.custom {
+            if !self.runtime.model_path(&self.model_id).is_file() {
+                return Err(MlError::NotInstalled(self.model_id.clone()));
+            }
+            return Ok(params);
+        }
         let entry = catalog().model(&self.model_id).ok_or_else(|| MlError::UnknownModel(self.model_id.clone()))?;
         if entry.task != Task::Background || Family::parse(&entry.family) != Some(Family::MattingParametric) {
             return Err(MlError::WrongTask { id: self.model_id.clone(), task: Task::Background.as_str() });

@@ -118,7 +118,8 @@ Hosts in the catalog are `.sxcu` files (ADR 004); hosts written in Rust are mark
 | Borderless window, active window borderless / topmost, inspect window | M5 (Windows and X11; Wayland where the compositor allows) | done |
 | Monitor test, network monitor | M5 | done |
 | Background remover: local model families (BiRefNet, BEN2 and others, ADR 023), custom models, and a remove.bg cloud option | M7 | done |
-| Model manager: per-task model choice, downloads with progress, custom ONNX models of a supported family, CPU or GPU execution | M5 (OCR) / M7 (background removal) | done |
+| Model manager: per-task model choice, downloads with progress, custom ONNX models of a supported family, CPU execution | M5 (OCR) / M7 (background removal) | done |
+| GPU execution for local models (DirectML on Windows, CUDA on Linux): GPU ONNX Runtime builds and the `ort` provider features | M7 | pending (owner): needs the GPU runtime packages chosen and verified on the owner's GPUs |
 | Analyze image (OpenAI, Gemini, OpenRouter) | M7 | done |
 
 ## Application

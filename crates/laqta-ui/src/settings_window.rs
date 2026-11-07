@@ -800,7 +800,7 @@ impl SettingsWindow {
     fn models_page(&self, cx: &mut Context<Self>) -> gpui::Div {
         use laqta_domain::settings::ModelProvider;
         let mut providers = div().flex().gap(px(4.));
-        for (p, label) in [(ModelProvider::Auto, "Automatic"), (ModelProvider::Cpu, "CPU"), (ModelProvider::Gpu, "GPU")] {
+        for (p, label) in [(ModelProvider::Auto, "Automatic"), (ModelProvider::Cpu, "CPU"), (ModelProvider::Gpu, "GPU (runs on the CPU in this build)")] {
             providers = providers.child(
                 Button::new(SharedString::from(format!("prov-{p:?}")))
                     .label(label)
@@ -813,7 +813,7 @@ impl SettingsWindow {
             );
         }
         let mut section = widgets::section("Models", cx)
-            .child(widgets::muted("Local models for text recognition and background removal. Files are checked against pinned hashes.", cx))
+            .child(widgets::muted("Local models for text recognition, background removal and inpainting. Files are checked against pinned hashes. This build ships the CPU version of ONNX Runtime, so every model runs on the CPU.", cx))
             .child(widgets::row("Run on", providers, cx));
         for (task, label) in [
             ("ocr-det", "Text detection"),
