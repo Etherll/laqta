@@ -52,6 +52,7 @@ rusqlite = "0.41.1"  # bundled on Linux, vcpkg SQLite on Windows (ADR 026)
 fastrand = "2.5.0"
 swayipc = "4.0.0"
 atspi = "0.30.0"
+oo7 = { version = "0.6.0", default-features = false, features = ["async-std", "native_crypto"] }
 
 # application
 async-broadcast = "0.7.2"

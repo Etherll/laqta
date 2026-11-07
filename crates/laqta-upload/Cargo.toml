@@ -17,7 +17,7 @@ host-google-drive = []
 host-onedrive = []
 host-s3 = ["dep:rusty-s3"]
 host-ftp = ["dep:suppaftp"]
-host-sftp = []
+host-sftp = ["dep:russh", "dep:russh-sftp"]
 host-shared-folder = []
 host-bitly = []
 
@@ -40,6 +40,10 @@ jiff.workspace = true
 futures-lite.workspace = true
 rusty-s3 = { workspace = true, optional = true }
 suppaftp = { workspace = true, optional = true }
+
+[target.'cfg(not(windows))'.dependencies]
+russh = { workspace = true, optional = true }
+russh-sftp = { workspace = true, optional = true }
 
 [dev-dependencies]
 laqta-ports = { workspace = true, features = ["fakes"] }
