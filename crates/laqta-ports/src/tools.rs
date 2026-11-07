@@ -41,6 +41,47 @@ pub trait WindowOps: Send + Sync {
     fn inspect(&self, window: &HoverTarget) -> Result<Vec<(String, String)>, PortError>;
 }
 
+/// Background removal (ADR 023, M7 D6–D8): `laqta-ml` model families or remove.bg (`laqta-cloud`).
+pub trait BackgroundRemover: Send + Sync {
+    /// The image with its background made transparent: same size, straight alpha.
+    fn remove(&self, image: Bitmap) -> BoxFuture<'_, Result<Bitmap, PortError>>;
+}
+
+/// AI image analysis (M7 D7): one OpenAI-compatible client in `laqta-cloud`.
+pub trait ImageAnalyzer: Send + Sync {
+    /// The model's answer to `prompt` about `image`.
+    fn analyze(&self, image: Bitmap, prompt: String) -> BoxFuture<'_, Result<String, PortError>>;
+}
+
+/// Inpainting for the photo editor (M7 D4): the `lama` family in `laqta-ml`.
+pub trait Inpainter: Send + Sync {
+    /// Fills the pixels where `mask` (one byte per pixel, row-major, non-zero = fill) is set.
+    fn inpaint(&self, image: Bitmap, mask: Vec<u8>) -> BoxFuture<'_, Result<Bitmap, PortError>>;
+}
+
+/// One entry in a remote folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteEntry {
+    pub name: String,
+    /// The full remote path (S3: the key).
+    pub path: String,
+    pub is_dir: bool,
+    pub size: Option<u64>,
+    /// As the server reports it (RFC 3339 when known).
+    pub modified: Option<String>,
+}
+
+/// The remote storage browser (M7 D11): S3, FTP/FTPS and SFTP in `laqta-upload`.
+pub trait RemoteStorage: Send + Sync {
+    fn list(&self, dir: String) -> BoxFuture<'_, Result<Vec<RemoteEntry>, PortError>>;
+    fn download(&self, path: String, dest: std::path::PathBuf) -> BoxFuture<'_, Result<(), PortError>>;
+    /// Returns the new remote path.
+    fn upload(&self, src: std::path::PathBuf, dir: String) -> BoxFuture<'_, Result<String, PortError>>;
+    fn rename(&self, from: String, to: String) -> BoxFuture<'_, Result<(), PortError>>;
+    fn delete(&self, path: String) -> BoxFuture<'_, Result<(), PortError>>;
+    fn mkdir(&self, path: String) -> BoxFuture<'_, Result<(), PortError>>;
+}
+
 /// The mouse highlighter (M5 D9): a click-through, always-on-top circle that follows the pointer.
 /// Windows: a layered `WS_EX_TRANSPARENT` window; X11: an override-redirect window with an empty
 /// input shape; Wayland returns `Unsupported` (no global pointer position).

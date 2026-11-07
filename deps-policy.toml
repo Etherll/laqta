@@ -9,7 +9,9 @@ targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 "laqta-app"      = ["laqta-ports", "laqta-imaging", "laqta-domain", "laqta-editor"]
 "laqta-ipc"      = ["laqta-domain"]
 "laqta-editor"   = ["laqta-imaging", "laqta-domain"]
-"laqta-ui"       = ["laqta-app", "laqta-ports", "laqta-domain", "laqta-library", "laqta-imaging", "laqta-editor"]  # imaging: thumbnails and the magnifier (M1 D9)
+"laqta-photo"    = ["laqta-editor", "laqta-imaging", "laqta-domain"]                # ADR 027
+"laqta-cloud"    = ["laqta-ports", "laqta-domain", "laqta-http"]
+"laqta-ui"       = ["laqta-app", "laqta-ports", "laqta-domain", "laqta-library", "laqta-imaging", "laqta-editor", "laqta-photo"]  # imaging: thumbnails and the magnifier (M1 D9)
 "laqta-platform-linux"   = ["laqta-ports", "laqta-domain"]
 "laqta-platform-windows" = ["laqta-ports", "laqta-domain"]
 "laqta-library"  = ["laqta-ports", "laqta-domain"]
@@ -28,10 +30,11 @@ targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 "laqta-imaging" = ["png", "rayon", "thiserror", "jpeg-encoder", "zune-jpeg", "image-webp", "gif", "tiff", "fast_image_resize", "qrcode", "rxing", "kamadak-exif"]
 "laqta-ports"   = ["thiserror", "jiff"]
 "laqta-editor"  = ["tiny-skia", "cosmic-text", "thiserror", "rayon", "serde"]
+"laqta-photo"   = ["tiny-skia", "thiserror", "rayon", "serde"]
 
 # Transitive bans for the pure core, laqta-ports and laqta-app.
 [deny]
-crates = ["laqta-domain", "laqta-imaging", "laqta-editor", "laqta-ports", "laqta-app"]
+crates = ["laqta-domain", "laqta-imaging", "laqta-editor", "laqta-photo", "laqta-ports", "laqta-app"]
 forbid = ["gpui-pre", "gpui-pre-platform", "gpui-component", "tokio", "reqwest", "hyper", "ureq",
           "rusqlite", "libsqlite3-sys", "ort", "ort-sys", "oar-ocr", "pipewire", "libspa",
           "libwayshot", "wayland-client", "wayland-protocols", "wayland-protocols-wlr", "x11rb",

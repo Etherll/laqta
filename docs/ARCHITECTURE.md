@@ -326,7 +326,8 @@ apps/laqta-nmh    ──▶ laqta-ipc
 
 laqta-ui          ──▶ laqta-app (dispatch, application handle), laqta-ports, laqta-domain,
                        laqta-editor (paints its output), laqta-library (reads, domain types only),
-                       laqta-imaging (thumbnails and the overlay magnifier; added in M1, D9)
+                       laqta-imaging (thumbnails and the overlay magnifier; added in M1, D9),
+                       laqta-photo (the photo editor window; M7)
 laqta-platform-*  ──▶ laqta-ports, laqta-domain
 laqta-upload      ──▶ laqta-ports, laqta-domain, laqta-http
 laqta-cloud       ──▶ laqta-ports, laqta-domain, laqta-http
@@ -342,7 +343,7 @@ laqta-http        ──▶ (no workspace crates)
 laqta-app         ──▶ laqta-ports, laqta-editor, laqta-imaging, laqta-domain
 laqta-ports       ──▶ laqta-domain
 laqta-editor      ──▶ laqta-imaging, laqta-domain
-laqta-photo       ──▶ laqta-imaging, laqta-domain   (M7)
+laqta-photo       ──▶ laqta-editor, laqta-imaging, laqta-domain   (M7, ADR 027)
 laqta-imaging     ──▶ laqta-domain
 laqta-domain      ──▶ (no workspace crates)
 ```
@@ -566,6 +567,7 @@ Full records are in [`adr/`](adr/).
 | [024](adr/024-ports-crate-and-core-purity.md) | A `laqta-ports` crate; injected pool, fonts and codecs; neutral port vocabulary; CI allow-lists; `laqta-app` file access confined to `files`; `cosmic-text` on a caret requirement | ports inside `laqta-app`; deny-list only |
 | [025](adr/025-windows-tls-and-sftp.md) | Windows uses SChannel for HTTP TLS and the system OpenSSH `sftp.exe` for SFTP; Linux keeps rustls and `russh` | `cargo-xwin` with the Windows SDK; GNU-only Windows checks |
 | [026](adr/026-windows-sqlite.md) | Linux bundles SQLite; Windows links a static vcpkg SQLite with FTS5 | bundling SQLite on Windows (needs the MSVC C runtime headers on the checking machine) |
+| [027](adr/027-photo-uses-editor.md) | `laqta-photo` depends on `laqta-editor` for fonts, text layout and the brush rasterizer | a copy of those parts in `laqta-photo`; a shared third crate |
 
 ---
 

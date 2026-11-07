@@ -52,3 +52,29 @@ impl laqta_ports::SecretStore for MemorySecrets {
         Ok(())
     }
 }
+
+/// Until the M7 adapters land.
+#[derive(Debug)]
+pub struct M7Pending;
+
+impl laqta_ports::BackgroundRemover for M7Pending {
+    fn remove(&self, _image: laqta_domain::Bitmap) -> laqta_ports::BoxFuture<'_, Result<laqta_domain::Bitmap, laqta_ports::PortError>> {
+        Box::pin(async { Err(laqta_ports::PortError::Unsupported("background removal".into())) })
+    }
+}
+
+impl laqta_ports::ImageAnalyzer for M7Pending {
+    fn analyze(&self, _image: laqta_domain::Bitmap, _prompt: String) -> laqta_ports::BoxFuture<'_, Result<String, laqta_ports::PortError>> {
+        Box::pin(async { Err(laqta_ports::PortError::Unsupported("image analysis".into())) })
+    }
+}
+
+impl laqta_ports::Inpainter for M7Pending {
+    fn inpaint(
+        &self,
+        _image: laqta_domain::Bitmap,
+        _mask: Vec<u8>,
+    ) -> laqta_ports::BoxFuture<'_, Result<laqta_domain::Bitmap, laqta_ports::PortError>> {
+        Box::pin(async { Err(laqta_ports::PortError::Unsupported("inpainting".into())) })
+    }
+}

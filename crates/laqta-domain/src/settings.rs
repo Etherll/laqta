@@ -35,6 +35,45 @@ pub struct Settings {
     pub auto_capture: AutoCaptureOptions,
     /// Local models (ADR 023): the model per task, custom models, CPU or GPU.
     pub models: ModelOptions,
+    /// Cloud services (M7 D7): background removal provider and the image analyzer.
+    pub cloud: CloudOptions,
+}
+
+/// Which background remover runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum BackgroundProvider {
+    /// A local model (`models.background`).
+    #[default]
+    Local,
+    /// remove.bg (API key in the secret store under `cloud:remove.bg`).
+    RemoveBg,
+}
+
+/// An OpenAI-compatible chat endpoint (OpenAI, Gemini's OpenAI API, OpenRouter, Ollama, LM Studio).
+/// The API key is in the secret store under `cloud:analyzer`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct AnalyzerOptions {
+    pub base_url: String,
+    pub model: String,
+    pub prompt: String,
+}
+
+impl Default for AnalyzerOptions {
+    fn default() -> Self {
+        AnalyzerOptions {
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-4.1-mini".into(),
+            prompt: "Describe this screenshot in a few sentences. List any text it contains.".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct CloudOptions {
+    pub background: BackgroundProvider,
+    pub analyzer: AnalyzerOptions,
 }
 
 /// Where local models run.
@@ -161,6 +200,7 @@ impl Settings {
             watch_folders: Vec::new(),
             auto_capture: AutoCaptureOptions::default(),
             models: ModelOptions::default(),
+            cloud: CloudOptions::default(),
         }
     }
 

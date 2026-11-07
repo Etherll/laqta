@@ -42,6 +42,10 @@ pub struct Ports {
     pub input: Arc<dyn laqta_ports::InputSynth>,
     /// The mouse highlighter (M5 D9).
     pub highlighter: Arc<dyn laqta_ports::PointerHighlighter>,
+    /// Background removal, analysis and inpainting (M7).
+    pub background: Arc<dyn laqta_ports::BackgroundRemover>,
+    pub analyzer: Arc<dyn laqta_ports::ImageAnalyzer>,
+    pub inpainter: Arc<dyn laqta_ports::Inpainter>,
     /// Watch folders (M6 D6).
     pub watcher: Arc<dyn laqta_ports::FileWatcher>,
     pub uploaders: Arc<dyn laqta_ports::Uploaders>,

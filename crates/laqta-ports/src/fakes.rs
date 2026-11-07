@@ -833,3 +833,107 @@ impl crate::PointerHighlighter for FakeHighlighter {
         *self.0.lock().unwrap()
     }
 }
+
+/// Makes every pixel whose red channel is below 128 transparent, so tests can see what was removed.
+#[derive(Debug, Default)]
+pub struct FakeBackgroundRemover {
+    pub calls: Mutex<u32>,
+}
+
+impl crate::BackgroundRemover for FakeBackgroundRemover {
+    fn remove(&self, image: Bitmap) -> BoxFuture<'_, Result<Bitmap, PortError>> {
+        *self.calls.lock().unwrap() += 1;
+        Box::pin(async move {
+            let red = if image.format() == laqta_domain::PixelFormat::Rgba8 { 0 } else { 2 };
+            let mut px = image.pixels().to_vec();
+            for p in px.as_chunks_mut::<4>().0 {
+                if p[red] < 128 {
+                    p[3] = 0;
+                }
+            }
+            Bitmap::new(image.width(), image.height(), image.format(), px.into()).map_err(|e| PortError::Failed(e.to_string()))
+        })
+    }
+}
+
+/// Answers with `answer` and records each prompt.
+#[derive(Debug, Default)]
+pub struct FakeAnalyzer {
+    pub answer: Mutex<String>,
+    pub prompts: Mutex<Vec<String>>,
+}
+
+impl crate::ImageAnalyzer for FakeAnalyzer {
+    fn analyze(&self, _image: Bitmap, prompt: String) -> BoxFuture<'_, Result<String, PortError>> {
+        self.prompts.lock().unwrap().push(prompt);
+        let answer = self.answer.lock().unwrap().clone();
+        Box::pin(async move { Ok(answer) })
+    }
+}
+
+/// Returns the image unchanged.
+#[derive(Debug, Default)]
+pub struct FakeInpainter;
+
+impl crate::Inpainter for FakeInpainter {
+    fn inpaint(&self, image: Bitmap, _mask: Vec<u8>) -> BoxFuture<'_, Result<Bitmap, PortError>> {
+        Box::pin(async move { Ok(image) })
+    }
+}
+
+/// An in-memory remote store: paths to contents; folders are implied by `/`.
+#[derive(Debug, Default)]
+pub struct FakeRemoteStorage {
+    pub files: Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
+}
+
+impl crate::RemoteStorage for FakeRemoteStorage {
+    fn list(&self, dir: String) -> BoxFuture<'_, Result<Vec<crate::RemoteEntry>, PortError>> {
+        let prefix = if dir.is_empty() || dir.ends_with('/') { dir } else { format!("{dir}/") };
+        let mut seen = std::collections::BTreeMap::new();
+        for (path, data) in self.files.lock().unwrap().iter() {
+            let Some(rest) = path.strip_prefix(&prefix) else { continue };
+            let (name, is_dir) = match rest.split_once('/') {
+                Some((d, _)) => (d.to_owned(), true),
+                None => (rest.to_owned(), false),
+            };
+            let size = (!is_dir).then_some(data.len() as u64);
+            seen.entry(name.clone()).or_insert(crate::RemoteEntry { path: format!("{prefix}{name}"), name, is_dir, size, modified: None });
+        }
+        Box::pin(async move { Ok(seen.into_values().collect()) })
+    }
+    fn download(&self, path: String, dest: PathBuf) -> BoxFuture<'_, Result<(), PortError>> {
+        let data = self.files.lock().unwrap().get(&path).cloned();
+        Box::pin(async move {
+            let data = data.ok_or_else(|| PortError::Failed(format!("not found: {path}")))?;
+            std::fs::write(dest, data).map_err(|e| PortError::Failed(e.to_string()))
+        })
+    }
+    fn upload(&self, src: PathBuf, dir: String) -> BoxFuture<'_, Result<String, PortError>> {
+        Box::pin(async move {
+            let data = std::fs::read(&src).map_err(|e| PortError::Failed(e.to_string()))?;
+            let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let path = if dir.is_empty() { name } else { format!("{}/{name}", dir.trim_end_matches('/')) };
+            self.files.lock().unwrap().insert(path.clone(), data);
+            Ok(path)
+        })
+    }
+    fn rename(&self, from: String, to: String) -> BoxFuture<'_, Result<(), PortError>> {
+        let mut files = self.files.lock().unwrap();
+        let r = match files.remove(&from) {
+            Some(d) => {
+                files.insert(to, d);
+                Ok(())
+            }
+            None => Err(PortError::Failed(format!("not found: {from}"))),
+        };
+        Box::pin(async move { r })
+    }
+    fn delete(&self, path: String) -> BoxFuture<'_, Result<(), PortError>> {
+        let r = self.files.lock().unwrap().remove(&path).map(|_| ()).ok_or_else(|| PortError::Failed(format!("not found: {path}")));
+        Box::pin(async move { r })
+    }
+    fn mkdir(&self, _path: String) -> BoxFuture<'_, Result<(), PortError>> {
+        Box::pin(async { Ok(()) })
+    }
+}

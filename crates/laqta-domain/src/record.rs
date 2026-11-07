@@ -115,6 +115,63 @@ pub struct RecordingSettings {
     pub ffmpeg_path: String,
     /// Turn the mouse highlighter on while recording (M5 D9).
     pub highlight_mouse: bool,
+    /// The camera overlay (M7 D9).
+    pub camera: CameraOverlay,
+    /// FFmpeg or, on Windows, the native recorder (M7 D10).
+    pub backend: RecorderBackend,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RecorderBackend {
+    #[default]
+    Ffmpeg,
+    /// Windows.Graphics.Capture + Media Foundation (Windows only; elsewhere FFmpeg is used).
+    Native,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CameraShape {
+    #[default]
+    Circle,
+    RoundedRectangle,
+    Rectangle,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    #[default]
+    BottomRight,
+}
+
+/// A camera picture over the recording.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct CameraOverlay {
+    pub enabled: bool,
+    /// The OS device name (`/dev/video0`, a DirectShow name); empty = the first camera.
+    pub device: String,
+    pub shape: CameraShape,
+    pub corner: Corner,
+    /// Width as a percentage of the recording's width.
+    pub size_percent: u8,
+    /// Distance from the edges, in pixels.
+    pub margin: u32,
+}
+
+impl Default for CameraOverlay {
+    fn default() -> Self {
+        CameraOverlay {
+            enabled: false,
+            device: String::new(),
+            shape: CameraShape::Circle,
+            corner: Corner::BottomRight,
+            size_percent: 25,
+            margin: 16,
+        }
+    }
 }
 
 impl Default for RecordingSettings {
@@ -134,6 +191,8 @@ impl Default for RecordingSettings {
             custom_args: String::new(),
             ffmpeg_path: String::new(),
             highlight_mouse: false,
+            camera: CameraOverlay::default(),
+            backend: RecorderBackend::Ffmpeg,
         }
     }
 }
