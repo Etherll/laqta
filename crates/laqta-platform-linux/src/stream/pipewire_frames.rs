@@ -135,7 +135,9 @@ impl FrameSource for PipeWireFrames {
             },
         };
         self.last = Some(pixels.clone());
-        Bitmap::new(self.width, self.height, PixelFormat::Bgra8, pixels).map(Some).map_err(|e| PortError::Failed(format!("screen frame: {e}")))
+        Bitmap::new(self.width, self.height, PixelFormat::Bgra8, pixels)
+            .map(Some)
+            .map_err(|e| PortError::Failed(format!("screen frame: {e}")))
     }
 
     fn stop(&mut self) {

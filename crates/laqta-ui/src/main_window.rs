@@ -2,8 +2,8 @@
 //! and dropped on close (ARCHITECTURE §1.4).
 
 use gpui::{
-    App, AppContext as _, InteractiveElement as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, TitlebarOptions, Window,
-    WindowBounds, WindowOptions, div, img, px, size,
+    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    TitlebarOptions, Window, WindowBounds, WindowOptions, div, img, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::scroll::ScrollableElement as _;
@@ -170,15 +170,15 @@ impl Render for MainWindow {
             .child(header)
             .child(div().px(px(12.)).child(drop_hint))
             .child(
-            div()
-                .flex_1()
-                .flex()
-                .flex_row()
-                .gap(px(12.))
-                .p(px(12.))
-                .overflow_hidden()
-                .child(widgets::section("Tasks", cx).w(px(420.)).child(task_list).overflow_y_scrollbar())
-                .child(widgets::section("Recent captures", cx).flex_1().child(recent).overflow_y_scrollbar()),
-        )
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_row()
+                    .gap(px(12.))
+                    .p(px(12.))
+                    .overflow_hidden()
+                    .child(widgets::section("Tasks", cx).w(px(420.)).child(task_list).overflow_y_scrollbar())
+                    .child(widgets::section("Recent captures", cx).flex_1().child(recent).overflow_y_scrollbar()),
+            )
     }
 }

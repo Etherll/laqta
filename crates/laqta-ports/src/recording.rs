@@ -143,7 +143,8 @@ pub struct TranscodeSpec {
 }
 
 pub trait Media: Send + Sync {
-    fn start(&self, input: RecordingInput, spec: RecordSpec, output: PathBuf) -> BoxFuture<'_, Result<Box<dyn RecordingHandle>, PortError>>;
+    fn start(&self, input: RecordingInput, spec: RecordSpec, output: PathBuf)
+    -> BoxFuture<'_, Result<Box<dyn RecordingHandle>, PortError>>;
     fn transcode(&self, input: &Path, output: &Path, spec: TranscodeSpec) -> BoxFuture<'_, Result<(), PortError>>;
     fn probe(&self, input: &Path) -> BoxFuture<'_, Result<MediaInfo, PortError>>;
 }

@@ -84,12 +84,7 @@ pub fn clip_rect(image: &BgrImage, rect: PhysRect) -> Option<PhysRect> {
     if x1 <= x0 || y1 <= y0 {
         return None;
     }
-    Some(PhysRect {
-        x: x0 as i32,
-        y: y0 as i32,
-        width: (x1 - x0) as u32,
-        height: (y1 - y0) as u32,
-    })
+    Some(PhysRect { x: x0 as i32, y: y0 as i32, width: (x1 - x0) as u32, height: (y1 - y0) as u32 })
 }
 
 /// Resamples `region` of `src` to `dst_width` x `dst_height` and returns it as a flat NCHW buffer

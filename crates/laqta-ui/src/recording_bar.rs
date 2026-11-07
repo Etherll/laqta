@@ -30,7 +30,10 @@ struct Countdown {
 
 /// Physical desktop pixels → this display's logical pixels (scale from the primary display).
 fn logical(r: PhysRect, scale: f32) -> Bounds<gpui::Pixels> {
-    Bounds { origin: point(px(r.x as f32 / scale), px(r.y as f32 / scale)), size: size(px(r.width as f32 / scale), px(r.height as f32 / scale)) }
+    Bounds {
+        origin: point(px(r.x as f32 / scale), px(r.y as f32 / scale)),
+        size: size(px(r.width as f32 / scale), px(r.height as f32 / scale)),
+    }
 }
 
 fn popup(bounds: Bounds<gpui::Pixels>, focus: bool) -> WindowOptions {
@@ -190,11 +193,13 @@ impl Render for Bar {
             .border_color(cx.theme().border)
             .child(div().w(px(10.)).h(px(10.)).rounded(px(5.)).bg(if paused { gpui::rgb(0xeab308) } else { gpui::rgb(0xef4444) }))
             .child(div().w(px(56.)).text_sm().child(time))
-            .child(Button::new("pause").label(if paused { "Resume" } else { "Pause" }).small().on_click(move |_, _, _| {
-                if paused { a1.recording_resume() } else { a1.recording_pause() }
-            }))
+            .child(
+                Button::new("pause")
+                    .label(if paused { "Resume" } else { "Pause" })
+                    .small()
+                    .on_click(move |_, _, _| if paused { a1.recording_resume() } else { a1.recording_pause() }),
+            )
             .child(Button::new("stop").label("Stop").small().primary().on_click(move |_, _, _| a2.recording_stop()))
             .child(Button::new("abort").label("Abort").small().ghost().on_click(move |_, _, _| a3.recording_abort()))
     }
 }
-

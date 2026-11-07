@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt as _, App, AppContext as _, Bounds, Context, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, RenderImage,
-    StatefulInteractiveElement as _, Styled as _, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, img,
-    point, px, size,
+    Animation, AnimationExt as _, App, AppContext as _, Bounds, Context, InteractiveElement as _, IntoElement, MouseButton,
+    ParentElement as _, Render, RenderImage, StatefulInteractiveElement as _, Styled as _, Window, WindowBackgroundAppearance,
+    WindowBounds, WindowKind, WindowOptions, div, img, point, px, size,
 };
 use gpui_component::ActiveTheme as _;
 use laqta_domain::workflow::{ToastClickAction, ToastPlacement};

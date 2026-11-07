@@ -73,7 +73,8 @@ pub async fn build_request(u: &CustomUploader, input: &Input<'_>, env: &Env<'_>)
     request.body = match u.body {
         BodyType::None => Body::Empty,
         BodyType::MultipartFormData => {
-            let mut parts: Vec<Part> = rendered(&ctx, &u.arguments).await?.into_iter().map(|(name, value)| Part::Text { name, value }).collect();
+            let mut parts: Vec<Part> =
+                rendered(&ctx, &u.arguments).await?.into_iter().map(|(name, value)| Part::Text { name, value }).collect();
             if let Some(name) = &u.file_form_name {
                 parts.push(Part::File {
                     name: name.clone(),
@@ -98,7 +99,12 @@ pub async fn build_request(u: &CustomUploader, input: &Input<'_>, env: &Env<'_>)
 
 /// Reads the response into an upload result. A non-2xx status is `Server`, with the evaluated
 /// `ErrorMessage` as its body when there is one. An empty URL template means the trimmed body.
-pub async fn parse_response(u: &CustomUploader, response: &Response, input: &Input<'_>, env: &Env<'_>) -> Result<UploadResult, UploadError> {
+pub async fn parse_response(
+    u: &CustomUploader,
+    response: &Response,
+    input: &Input<'_>,
+    env: &Env<'_>,
+) -> Result<UploadResult, UploadError> {
     let ctx = Ctx { input, env, response: Some(response) };
     let body = response.text();
     if !(200..300).contains(&response.status) {
@@ -140,7 +146,13 @@ async fn rendered(ctx: &Ctx<'_>, pairs: &[(String, String)]) -> Result<Vec<(Stri
 }
 
 /// The body of a `JSON` or `XML` request. A `Content-Type` header is moved into the body.
-async fn text_body(ctx: &Ctx<'_>, u: &CustomUploader, headers: &mut Vec<(String, String)>, default_type: &str, escape: Escape) -> Result<Body, SxcuError> {
+async fn text_body(
+    ctx: &Ctx<'_>,
+    u: &CustomUploader,
+    headers: &mut Vec<(String, String)>,
+    default_type: &str,
+    escape: Escape,
+) -> Result<Body, SxcuError> {
     let data = match &u.data {
         Some(template) => syntax::render(ctx, template, escape).await?,
         None => String::new(),

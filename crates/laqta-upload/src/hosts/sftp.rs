@@ -235,21 +235,12 @@ struct Put {
 #[cfg(not(windows))]
 async fn put_over_ssh(put: Put) -> Result<(), UploadError> {
     let Put { host, port, username, login, directory, name, bytes, progress } = put;
-    let config = Arc::new(russh::client::Config {
-        inactivity_timeout: Some(IO_TIMEOUT),
-        ..russh::client::Config::default()
-    });
+    let config = Arc::new(russh::client::Config { inactivity_timeout: Some(IO_TIMEOUT), ..russh::client::Config::default() });
     let handler = HostKeys { host: host.clone(), port };
-    let mut handle = russh::client::connect(config, (host.clone(), port), handler)
-        .await
-        .map_err(client_error)?;
+    let mut handle = russh::client::connect(config, (host.clone(), port), handler).await.map_err(client_error)?;
 
     let accepted = match login {
-        Login::Key(key) => {
-            handle
-                .authenticate_publickey(username.clone(), russh::keys::PrivateKeyWithHashAlg::new(key, None))
-                .await
-        }
+        Login::Key(key) => handle.authenticate_publickey(username.clone(), russh::keys::PrivateKeyWithHashAlg::new(key, None)).await,
         Login::Password(password) => handle.authenticate_password(username.clone(), password).await,
     };
     match accepted.map_err(ssh_error)? {
@@ -261,9 +252,7 @@ async fn put_over_ssh(put: Put) -> Result<(), UploadError> {
 
     let channel = handle.channel_open_session().await.map_err(ssh_error)?;
     channel.request_subsystem(true, "sftp").await.map_err(ssh_error)?;
-    let sftp = russh_sftp::client::SftpSession::new(channel.into_stream())
-        .await
-        .map_err(sftp_error)?;
+    let sftp = russh_sftp::client::SftpSession::new(channel.into_stream()).await.map_err(sftp_error)?;
 
     let (dir, creates) = layout(&directory);
     for path in &creates {
@@ -275,12 +264,7 @@ async fn put_over_ssh(put: Put) -> Result<(), UploadError> {
     let total = bytes.len() as u64;
     progress(0, Some(total));
     // `write` opens without CREATE, so the file is created (and truncated) first.
-    sftp.create(remote.as_str())
-        .await
-        .map_err(sftp_error)?
-        .close()
-        .await
-        .map_err(io_failure)?;
+    sftp.create(remote.as_str()).await.map_err(sftp_error)?.close().await.map_err(io_failure)?;
     sftp.write(remote.as_str(), &bytes).await.map_err(sftp_error)?;
     progress(total, Some(total));
 
@@ -307,10 +291,9 @@ impl russh::client::Handler for HostKeys {
         };
         match russh::keys::check_known_hosts(&self.host, self.port, key) {
             Ok(true) => Ok(true),
-            Ok(false) => Err(ClientError::HostKey(format!(
-                "{} is not in ~/.ssh/known_hosts; connect once with ssh to record its key",
-                self.host
-            ))),
+            Ok(false) => {
+                Err(ClientError::HostKey(format!("{} is not in ~/.ssh/known_hosts; connect once with ssh to record its key", self.host)))
+            }
             Err(error) => Err(ClientError::HostKey(format!("cannot verify the host key of {}: {error}", self.host))),
         }
     }
@@ -348,9 +331,7 @@ fn sftp_error(error: russh_sftp::client::error::Error) -> UploadError {
     use russh_sftp::client::error::Error;
     use russh_sftp::protocol::StatusCode;
     match error {
-        Error::Status(status) if status.status_code == StatusCode::PermissionDenied => {
-            UploadError::Auth(status.error_message)
-        }
+        Error::Status(status) if status.status_code == StatusCode::PermissionDenied => UploadError::Auth(status.error_message),
         Error::Timeout => UploadError::Network("the SFTP server did not answer in time".to_owned()),
         Error::IO(message) => UploadError::Network(message),
         other => UploadError::BadResponse(other.to_string()),
@@ -367,8 +348,9 @@ fn load_key(path: &Path, passphrase: Option<&str>) -> Result<russh::keys::Privat
 fn into_bytes(data: UploadData) -> Result<Vec<u8>, UploadError> {
     match data {
         UploadData::Bytes(bytes) => Ok(bytes),
-        UploadData::Path(path) => std::fs::read(&path)
-            .map_err(|error| UploadError::Unsupported(format!("cannot read {}: {error}", path.display()))),
+        UploadData::Path(path) => {
+            std::fs::read(&path).map_err(|error| UploadError::Unsupported(format!("cannot read {}: {error}", path.display())))
+        }
     }
 }
 
@@ -411,11 +393,7 @@ fn run_batch(config: &SftpConfig, name: &str, local: &Path) -> Result<(), Upload
     let script = batch_script(&config.directory, local, name)?;
     let args = command_args(config, config.key_path.as_deref())?;
     let output = run_sftp(&args, &script)?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(sftp_failure(&output.stderr))
-    }
+    if output.status.success() { Ok(()) } else { Err(sftp_failure(&output.stderr)) }
 }
 
 /// The system client, from `%SystemRoot%\System32\OpenSSH` when present, else from `PATH`.
@@ -475,15 +453,9 @@ fn sftp_failure(stderr: &[u8]) -> UploadError {
 
 #[cfg(windows)]
 fn write_temporary(bytes: &[u8]) -> Result<PathBuf, UploadError> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_nanos());
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_nanos());
     let path = std::env::temp_dir().join(format!("laqta-sftp-{}-{nanos}.tmp", std::process::id()));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(io_failure)?;
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(io_failure)?;
     file.write_all(bytes).map_err(io_failure)?;
     Ok(path)
 }
@@ -535,16 +507,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn leaf_name(name: &str) -> Result<&str, UploadError> {
-    let plain = !name.is_empty()
-        && name != "."
-        && name != ".."
-        && !name.contains(['/', '\\'])
-        && !name.chars().any(char::is_control);
-    if plain {
-        Ok(name)
-    } else {
-        Err(UploadError::Unsupported(format!("{name:?} is not a plain file name")))
-    }
+    let plain = !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\']) && !name.chars().any(char::is_control);
+    if plain { Ok(name) } else { Err(UploadError::Unsupported(format!("{name:?} is not a plain file name"))) }
 }
 
 /// Characters that stay literal in a URL path segment.

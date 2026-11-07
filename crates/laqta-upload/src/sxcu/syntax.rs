@@ -196,9 +196,7 @@ async fn call(name: &str, args: &[String], ctx: &Ctx<'_>) -> Result<String, Sxcu
                 return Err(SxcuError::Syntax("`{select}` needs at least one option".into()));
             }
             let choice = ctx.env.prompt.choose("Select", args).await.map_err(port_error)?;
-            args.get(choice)
-                .cloned()
-                .ok_or_else(|| SxcuError::Syntax(format!("`{{select}}` answered option {choice} of {}", args.len())))
+            args.get(choice).cloned().ok_or_else(|| SxcuError::Syntax(format!("`{{select}}` answered option {choice} of {}", args.len())))
         }
         "inputbox" => {
             let (title, default) = title_and_rest(args);

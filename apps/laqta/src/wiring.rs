@@ -33,14 +33,32 @@ fn platform() -> Result<Platform, String> {
     let session = Session::detect().ok_or("no display: neither WAYLAND_DISPLAY nor DISPLAY is set")?;
     tracing::info!("session: {session:?}");
     let p = laqta_platform_linux::ports(session);
-    Ok(Platform { screen: p.screen, clipboard: p.clipboard, shell: p.shell, hover: p.hover, hotkeys: p.hotkeys, tray: p.tray, secrets: p.secrets, stream: p.stream })
+    Ok(Platform {
+        screen: p.screen,
+        clipboard: p.clipboard,
+        shell: p.shell,
+        hover: p.hover,
+        hotkeys: p.hotkeys,
+        tray: p.tray,
+        secrets: p.secrets,
+        stream: p.stream,
+    })
 }
 
 #[cfg(windows)]
 fn platform() -> Result<Platform, String> {
     laqta_platform_windows::set_dpi_awareness();
     let p = laqta_platform_windows::ports();
-    Ok(Platform { screen: p.screen, clipboard: p.clipboard, shell: p.shell, hover: p.hover, hotkeys: p.hotkeys, tray: p.tray, secrets: p.secrets, stream: p.stream })
+    Ok(Platform {
+        screen: p.screen,
+        clipboard: p.clipboard,
+        shell: p.shell,
+        hover: p.hover,
+        hotkeys: p.hotkeys,
+        tray: p.tray,
+        secrets: p.secrets,
+        stream: p.stream,
+    })
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -52,10 +70,46 @@ fn pictures_dir() -> std::path::PathBuf {
     dirs::picture_dir().or_else(|| dirs::home_dir().map(|h| h.join("Pictures"))).unwrap_or_else(|| "Pictures".into())
 }
 
-fn data_dir() -> std::path::PathBuf {
+/// `-sandbox` (M6 D8): a fresh temporary folder, removed on exit. `-portable`: `LaqtaData` next to the
+/// binary, as the `portable` marker file does.
+fn data_dir(args: &crate::cli::Args) -> std::path::PathBuf {
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    if args.sandbox {
+        return std::env::temp_dir().join(format!("laqta-sandbox-{}", std::process::id()));
+    }
+    if args.portable
+        && let Some(dir) = &exe_dir
+    {
+        return dir.join("LaqtaData");
+    }
     let default = dirs::data_local_dir().unwrap_or_else(|| ".".into()).join("Laqta");
     laqta_library::data_dir(exe_dir.as_deref(), default)
+}
+
+/// Runs one request and returns the tasks it started; `Ok(None)` means quit.
+async fn run_request(
+    app: &Arc<App>,
+    importer: &crate::imports::Importer,
+    request: laqta_ipc::Request,
+) -> Result<Option<Vec<laqta_ports::TaskId>>, String> {
+    use crate::requests::Route;
+    match crate::requests::route(request, &app.settings())? {
+        Route::Dispatch(action, workflow) => match app.dispatch(action, workflow).await {
+            Ok(Dispatched::Exit) => Ok(None),
+            Ok(Dispatched::Task(id)) => Ok(Some(vec![id])),
+            Ok(_) | Err(laqta_ports::AppError::Cancelled) => Ok(Some(vec![])),
+            Err(e) => Err(e.to_string()),
+        },
+        Route::Upload(source, workflow) => Ok(Some(vec![app.upload_source(source, workflow)])),
+        Route::ImportUploader(path) => importer.uploader(&path).map(|id| {
+            tracing::info!(%id, "custom uploader imported");
+            Some(vec![])
+        }),
+        Route::ImportEffect(path) => importer.effect(&path).map(|name| {
+            tracing::info!(%name, "effect preset imported");
+            Some(vec![])
+        }),
+    }
 }
 
 fn load_settings(store: &SettingsStore) -> Settings {
@@ -89,14 +143,17 @@ fn register_hotkeys(hotkeys: &dyn HotkeyRegistrar, settings: &Settings, on_fire:
 }
 
 pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<(), String> {
-    let startup_actions = args.actions();
+    let mut startup: Vec<laqta_ipc::Request> = Vec::new();
+    startup.extend(args.import_uploaders.iter().cloned().map(laqta_ipc::Request::Upload));
+    startup.extend(args.import_effects.iter().cloned().map(laqta_ipc::Request::Upload));
+    startup.extend(args.requests.iter().cloned());
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let spawner = AppSpawner::start(clock.clone()).map_err(|e| format!("cannot start the app worker: {e}"))?;
     let platform = platform()?;
-    let data = data_dir();
+    let data = data_dir(&args);
     let store = Arc::new(SettingsStore::new(data.clone()));
     let settings = load_settings(&store);
-    let history = if settings.history.enabled {
+    let history = if settings.history.enabled && !args.sandbox {
         match History::open(&data.join("history.db")) {
             Ok(h) => Some(Arc::new(h)),
             Err(e) => {
@@ -123,10 +180,14 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         tools: Arc::new(ui.clone()),
         prompt: Arc::new(ui.clone()),
         editor: Arc::new(ui.clone()),
-        media: Arc::new(crate::media::LazyMedia::new(data.clone(), {
-            let s = settings.defaults.recording.ffmpeg_path.clone();
-            Arc::new(move || s.clone())
-        }, Arc::new(ui.clone()))),
+        media: Arc::new(crate::media::LazyMedia::new(
+            data.clone(),
+            {
+                let s = settings.defaults.recording.ffmpeg_path.clone();
+                Arc::new(move || s.clone())
+            },
+            Arc::new(ui.clone()),
+        )),
         stream: platform.stream.clone(),
         ocr: Arc::new(crate::ocr::LazyOcr::new(data.clone(), Arc::new(ui.clone()))),
         window_ops: Arc::new(stubs::NotYet),
@@ -190,23 +251,56 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         *s = Some(dispatch.clone());
     }
 
-    // IPC: replies after the dispatch returns.
+    // Sandbox mode writes no settings (M6 D8); `-NoHotkeys` registers none.
+    let use_hotkeys = !args.no_hotkeys;
+    let save_settings: crate::imports::SaveSettings = {
+        let app = app.clone();
+        let store = store.clone();
+        let clock = clock.clone();
+        let hotkeys = hotkeys.clone();
+        let dispatch = dispatch.clone();
+        let uploaders = uploaders.clone();
+        let host_deps = host_deps.clone();
+        let sandbox = args.sandbox;
+        Arc::new(move |s: Settings| {
+            if !sandbox {
+                store.save(&s, SETTINGS_VERSION, clock.now()).map_err(|e| e.to_string())?;
+            }
+            crate::uploads::apply_accounts(&uploaders, &s.hosts, &host_deps);
+            app.set_settings(s.clone());
+            if use_hotkeys {
+                register_hotkeys(hotkeys.as_ref(), &s, dispatch.clone());
+            }
+            Ok(())
+        })
+    };
+    let importer = crate::imports::Importer {
+        app: app.clone(),
+        save: save_settings.clone(),
+        uploaders: uploaders.clone(),
+        uploaders_dir: data.join("uploaders"),
+        secrets: platform.secrets.clone(),
+        history: history.clone(),
+    };
+
+    // IPC: secondary instances and the native-messaging host; replies after the request has run.
     if let Some(server) = server {
         let app = app.clone();
         let quit_tx = quit_tx.clone();
-        server.serve(move |action| match futures_lite::future::block_on(app.dispatch(action, None)) {
-            Ok(Dispatched::Exit) => {
+        let importer = importer.clone();
+        server.serve_requests(move |request| match futures_lite::future::block_on(run_request(&app, &importer, request)) {
+            Ok(None) => {
                 let _ = quit_tx.send(());
                 Ok(())
             }
-            Ok(_) => Ok(()),
-            Err(e) => Err(e.to_string()),
+            Ok(Some(_)) => Ok(()),
+            Err(e) => Err(e),
         });
     }
 
     let settings = app.settings();
     let mut menu: TrayMenu = laqta_ui::presenters::tray::tray_menu(&settings);
-    if register_hotkeys(hotkeys.as_ref(), &settings, dispatch.clone()) {
+    if use_hotkeys && register_hotkeys(hotkeys.as_ref(), &settings, dispatch.clone()) {
         menu.tooltip = laqta_ui::presenters::tray::TOOLTIP_NO_HOTKEY.to_string();
     }
     match platform.tray.show(menu, dispatch.clone()) {
@@ -215,8 +309,43 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         Err(e) => tracing::warn!("tray failed: {e}; the CLI and hotkey still work"),
     }
 
-    for action in startup_actions {
-        dispatch(action);
+    // Startup requests run in order. `-autoclose` quits once they and the tasks they started are done.
+    // Without `-silent`, a plain start opens the main window.
+    if startup.is_empty() && !args.silent && !args.autoclose {
+        dispatch(Action::OpenMainWindow);
+    }
+    {
+        let app = app.clone();
+        let importer = importer.clone();
+        let quit_tx = quit_tx.clone();
+        let autoclose = args.autoclose;
+        let mut events = app.events();
+        spawner.spawn(Box::pin(async move {
+            let mut pending: std::collections::HashSet<laqta_ports::TaskId> = Default::default();
+            for request in startup {
+                match run_request(&app, &importer, request).await {
+                    Ok(None) => {
+                        let _ = quit_tx.send(());
+                        return;
+                    }
+                    Ok(Some(ids)) => pending.extend(ids),
+                    Err(e) => tracing::warn!("startup request failed: {e}"),
+                }
+            }
+            if !autoclose {
+                return;
+            }
+            while !pending.is_empty() {
+                match events.recv().await {
+                    Ok(laqta_ports::TaskEvent::StatusChanged { id, status }) if status.is_settled() => {
+                        pending.remove(&id);
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+            let _ = quit_tx.send(());
+        }));
     }
 
     if std::env::var_os("LAQTA_NO_GPUI").is_some_and(|v| v == "1") {
@@ -232,22 +361,6 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                 ui_quit.quit();
             })
             .map_err(|e| e.to_string())?;
-        let save_settings: Arc<dyn Fn(Settings) -> Result<(), String> + Send + Sync> = {
-            let app = app.clone();
-            let store = store.clone();
-            let clock = clock.clone();
-            let hotkeys = hotkeys.clone();
-            let dispatch = dispatch.clone();
-            let uploaders = uploaders.clone();
-            let host_deps = host_deps.clone();
-            Arc::new(move |s: Settings| {
-                store.save(&s, SETTINGS_VERSION, clock.now()).map_err(|e| e.to_string())?;
-                crate::uploads::apply_accounts(&uploaders, &s.hosts, &host_deps);
-                app.set_settings(s.clone());
-                register_hotkeys(hotkeys.as_ref(), &s, dispatch.clone());
-                Ok(())
-            })
-        };
         let services = UiServices {
             app: app.clone(),
             history: history.clone(),
@@ -262,6 +375,10 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             fonts: crate::fonts::fonts(),
             spawner: spawner.clone(),
             codecs: laqta_imaging::Codecs::builtin(),
+            import_sharex: {
+                let importer = importer.clone();
+                Arc::new(move |path: std::path::PathBuf| importer.sharex(&path))
+            },
             add_custom_uploader: {
                 let uploaders = uploaders.clone();
                 let dir = data.join("uploaders");
@@ -271,6 +388,9 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         laqta_ui::run(services, ui_rx);
     }
     tracing::info!("Laqta exiting");
+    if args.sandbox {
+        let _ = std::fs::remove_dir_all(&data);
+    }
     #[cfg(windows)]
     laqta_platform_windows::shutdown(); // removes the tray icon, so Explorer leaves no ghost
     Ok(())

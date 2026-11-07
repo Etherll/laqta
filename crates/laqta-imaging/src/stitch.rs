@@ -115,11 +115,7 @@ impl Stitcher {
         self.image_rows += new_rows as u32;
         self.last = frame;
         self.last_hashes = hashes;
-        if overlap.is_some() {
-            StitchStep::Added { new_rows: new_rows as u32 }
-        } else {
-            StitchStep::NoMatch
-        }
+        if overlap.is_some() { StitchStep::Added { new_rows: new_rows as u32 } } else { StitchStep::NoMatch }
     }
 
     /// The stitched image, Rgba8: the joined rows, then the last frame's bottom ignore rows.

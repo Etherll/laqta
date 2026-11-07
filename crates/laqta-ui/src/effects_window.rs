@@ -93,7 +93,17 @@ impl EffectsWindow {
         .detach();
         let first = presets[0].name.clone();
         let name = cx.new(|cx| InputState::new(window, cx).default_value(first));
-        let mut this = EffectsWindow { presets, selected: 0, selected_effect: None, category: Category::Adjust, params, name, sample, preview: None, message: None };
+        let mut this = EffectsWindow {
+            presets,
+            selected: 0,
+            selected_effect: None,
+            category: Category::Adjust,
+            params,
+            name,
+            sample,
+            preview: None,
+            message: None,
+        };
         this.render_preview(cx);
         this
     }
@@ -183,16 +193,18 @@ impl Render for EffectsWindow {
         // Presets column.
         let mut presets = div().w(px(200.)).flex().flex_col().gap(px(4.)).p(px(10.)).border_r_1().border_color(cx.theme().border);
         for (i, p) in self.presets.iter().enumerate() {
-            presets = presets.child(Button::new(SharedString::from(format!("preset-{i}"))).label(p.name.clone()).ghost().selected(i == self.selected).on_click(
-                cx.listener(move |this, _, window, cx| {
-                    this.selected = i;
-                    this.selected_effect = None;
-                    let n = this.presets[i].name.clone();
-                    this.name.update(cx, |input, cx| input.set_value(n, window, cx));
-                    this.render_preview(cx);
-                    cx.notify();
-                }),
-            ));
+            presets = presets.child(
+                Button::new(SharedString::from(format!("preset-{i}"))).label(p.name.clone()).ghost().selected(i == self.selected).on_click(
+                    cx.listener(move |this, _, window, cx| {
+                        this.selected = i;
+                        this.selected_effect = None;
+                        let n = this.presets[i].name.clone();
+                        this.name.update(cx, |input, cx| input.set_value(n, window, cx));
+                        this.render_preview(cx);
+                        cx.notify();
+                    }),
+                ),
+            );
         }
         presets = presets.child(Button::new("preset-add").label("New preset").small().on_click(cx.listener(|this, _, _, cx| {
             let n = this.presets.len() + 1;
@@ -202,14 +214,15 @@ impl Render for EffectsWindow {
             cx.notify();
         })));
         if self.presets.len() > 1 {
-            presets = presets.child(Button::new("preset-del").label("Delete preset").small().ghost().on_click(cx.listener(|this, _, _, cx| {
-                if this.presets.len() > 1 {
-                    this.presets.remove(this.selected);
-                    this.selected = this.selected.saturating_sub(1);
-                    this.render_preview(cx);
-                }
-                cx.notify();
-            })));
+            presets =
+                presets.child(Button::new("preset-del").label("Delete preset").small().ghost().on_click(cx.listener(|this, _, _, cx| {
+                    if this.presets.len() > 1 {
+                        this.presets.remove(this.selected);
+                        this.selected = this.selected.saturating_sub(1);
+                        this.render_preview(cx);
+                    }
+                    cx.notify();
+                })));
         }
 
         // The selected preset's effects.
@@ -223,54 +236,74 @@ impl Render for EffectsWindow {
                     .flex_row()
                     .items_center()
                     .gap(px(4.))
-                    .child(Checkbox::new(SharedString::from(format!("fx-on-{i}"))).checked(enabled).on_click(cx.listener(move |this, v: &bool, _, cx| {
-                        if let Some(it) = this.preset().effects.get_mut(i) {
-                            it.enabled = *v;
-                        }
-                        this.render_preview(cx);
-                        cx.notify();
-                    })))
-                    .child(Button::new(SharedString::from(format!("fx-{i}"))).label(item.effect.name()).small().ghost().selected(self.selected_effect == Some(i)).on_click(
-                        cx.listener(move |this, _, window, cx| this.select_effect(i, window, cx)),
-                    ))
+                    .child(Checkbox::new(SharedString::from(format!("fx-on-{i}"))).checked(enabled).on_click(cx.listener(
+                        move |this, v: &bool, _, cx| {
+                            if let Some(it) = this.preset().effects.get_mut(i) {
+                                it.enabled = *v;
+                            }
+                            this.render_preview(cx);
+                            cx.notify();
+                        },
+                    )))
+                    .child(
+                        Button::new(SharedString::from(format!("fx-{i}")))
+                            .label(item.effect.name())
+                            .small()
+                            .ghost()
+                            .selected(self.selected_effect == Some(i))
+                            .on_click(cx.listener(move |this, _, window, cx| this.select_effect(i, window, cx))),
+                    )
                     .child(div().flex_1())
-                    .child(Button::new(SharedString::from(format!("fx-up-{i}"))).label("↑").small().ghost().on_click(cx.listener(move |this, _, _, cx| {
-                        if i > 0 {
-                            this.preset().effects.swap(i, i - 1);
-                            this.render_preview(cx);
-                        }
-                        cx.notify();
-                    })))
-                    .child(Button::new(SharedString::from(format!("fx-rm-{i}"))).label("✕").small().ghost().on_click(cx.listener(move |this, _, _, cx| {
-                        if i < this.preset().effects.len() {
-                            this.preset().effects.remove(i);
-                            this.selected_effect = None;
-                            this.render_preview(cx);
-                        }
-                        cx.notify();
-                    }))),
+                    .child(Button::new(SharedString::from(format!("fx-up-{i}"))).label("↑").small().ghost().on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            if i > 0 {
+                                this.preset().effects.swap(i, i - 1);
+                                this.render_preview(cx);
+                            }
+                            cx.notify();
+                        },
+                    )))
+                    .child(Button::new(SharedString::from(format!("fx-rm-{i}"))).label("✕").small().ghost().on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            if i < this.preset().effects.len() {
+                                this.preset().effects.remove(i);
+                                this.selected_effect = None;
+                                this.render_preview(cx);
+                            }
+                            cx.notify();
+                        },
+                    ))),
             );
         }
 
         // Add an effect.
         let mut cats = div().flex().flex_row().gap(px(4.));
-        for (c, label) in [(Category::Adjust, "Adjustments"), (Category::Draw, "Drawings"), (Category::Filter, "Filters"), (Category::Manip, "Manipulations")] {
-            cats = cats.child(Button::new(SharedString::from(format!("cat-{label}"))).label(label).small().selected(self.category == c).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.category = c;
-                    cx.notify();
-                },
-            )));
+        for (c, label) in [
+            (Category::Adjust, "Adjustments"),
+            (Category::Draw, "Drawings"),
+            (Category::Filter, "Filters"),
+            (Category::Manip, "Manipulations"),
+        ] {
+            cats = cats.child(
+                Button::new(SharedString::from(format!("cat-{label}"))).label(label).small().selected(self.category == c).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.category = c;
+                        cx.notify();
+                    }),
+                ),
+            );
         }
         let mut add = div().flex().flex_row().flex_wrap().gap(px(4.));
         for (i, e) in self.defaults().into_iter().enumerate() {
             let name = e.name();
-            add = add.child(Button::new(SharedString::from(format!("add-{i}"))).label(name).small().ghost().on_click(cx.listener(move |this, _, window, cx| {
-                this.preset().effects.push(EffectItem { effect: e.clone(), enabled: true });
-                let n = this.preset().effects.len() - 1;
-                this.select_effect(n, window, cx);
-                this.render_preview(cx);
-            })));
+            add = add.child(Button::new(SharedString::from(format!("add-{i}"))).label(name).small().ghost().on_click(cx.listener(
+                move |this, _, window, cx| {
+                    this.preset().effects.push(EffectItem { effect: e.clone(), enabled: true });
+                    let n = this.preset().effects.len() - 1;
+                    this.select_effect(n, window, cx);
+                    this.render_preview(cx);
+                },
+            )));
         }
 
         let middle = div()
@@ -303,6 +336,8 @@ impl Render for EffectsWindow {
             .child(Button::new("close").label("Close").on_click(|_, w, _| w.remove_window()))
             .child(Button::new("save").label("Save presets").primary().on_click(cx.listener(|this, _, _, cx| this.save(cx))));
 
-        widgets::page(cx).child(div().flex_1().flex().flex_row().overflow_hidden().child(presets).child(middle).child(preview)).child(footer)
+        widgets::page(cx)
+            .child(div().flex_1().flex().flex_row().overflow_hidden().child(presets).child(middle).child(preview))
+            .child(footer)
     }
 }

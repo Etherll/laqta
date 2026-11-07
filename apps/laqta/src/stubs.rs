@@ -31,14 +31,16 @@ pub fn host_info() -> HostInfo {
     HostInfo { user_name: user.clone(), user_login: user, computer_name: computer }
 }
 
-
-
 /// Until the OCR model runtime and the platform window tools are wired (M5).
 #[derive(Debug)]
 pub struct NotYet;
 
 impl laqta_ports::Ocr for NotYet {
-    fn recognize(&self, _image: laqta_domain::Bitmap, _language: String) -> laqta_ports::BoxFuture<'_, Result<laqta_ports::OcrResult, laqta_ports::PortError>> {
+    fn recognize(
+        &self,
+        _image: laqta_domain::Bitmap,
+        _language: String,
+    ) -> laqta_ports::BoxFuture<'_, Result<laqta_ports::OcrResult, laqta_ports::PortError>> {
         Box::pin(async { Err(laqta_ports::PortError::Unsupported("text recognition".into())) })
     }
     fn languages(&self) -> Vec<String> {

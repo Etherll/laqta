@@ -277,7 +277,10 @@ impl ExternalAction {
     pub fn applies_to(&self, path: &std::path::Path) -> bool {
         self.enabled
             && (self.extensions.is_empty()
-                || path.extension().and_then(|e| e.to_str()).is_some_and(|e| self.extensions.iter().any(|x| x.trim_start_matches('.').eq_ignore_ascii_case(e))))
+                || path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| self.extensions.iter().any(|x| x.trim_start_matches('.').eq_ignore_ascii_case(e))))
     }
 }
 
@@ -287,7 +290,12 @@ mod action_tests {
 
     #[test]
     fn argv_substitutes_and_quotes() {
-        let a = ExternalAction { args: r#"-i "%input" -o %output --flag"#.into(), output_extension: "webp".into(), enabled: true, ..Default::default() };
+        let a = ExternalAction {
+            args: r#"-i "%input" -o %output --flag"#.into(),
+            output_extension: "webp".into(),
+            enabled: true,
+            ..Default::default()
+        };
         let (argv, out) = a.argv(std::path::Path::new("/s/a b.png"));
         assert_eq!(argv, vec!["-i", "/s/a b.png", "-o", "/s/a b.webp", "--flag"]);
         assert_eq!(out, Some(std::path::PathBuf::from("/s/a b.webp")));

@@ -38,11 +38,7 @@ impl Canned {
     }
 
     pub fn new(status: u16, body: impl Into<Vec<u8>>) -> Self {
-        Canned {
-            status,
-            headers: Vec::new(),
-            body: body.into(),
-        }
+        Canned { status, headers: Vec::new(), body: body.into() }
     }
 
     pub fn header(mut self, name: &str, value: &str) -> Self {
@@ -61,9 +57,7 @@ impl Server {
     pub fn start(replies: Vec<Canned>) -> Server {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind the test server");
         let addr = listener.local_addr().expect("test server address");
-        listener
-            .set_nonblocking(true)
-            .expect("non-blocking test listener");
+        listener.set_nonblocking(true).expect("non-blocking test listener");
         let thread = std::thread::spawn(move || {
             let mut recorded = Vec::new();
             for reply in replies {
@@ -87,10 +81,7 @@ impl Server {
 }
 
 fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
-    headers
-        .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case(name))
-        .map(|(_, value)| value.as_str())
+    headers.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| value.as_str())
 }
 
 fn accept(listener: &TcpListener) -> TcpStream {
@@ -98,19 +89,12 @@ fn accept(listener: &TcpListener) -> TcpStream {
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
-                stream
-                    .set_nonblocking(false)
-                    .expect("blocking test connection");
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .expect("read timeout");
+                stream.set_nonblocking(false).expect("blocking test connection");
+                stream.set_read_timeout(Some(Duration::from_secs(5))).expect("read timeout");
                 return stream;
             }
             Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                assert!(
-                    Instant::now() < deadline,
-                    "the test server got no connection in 10 s"
-                );
+                assert!(Instant::now() < deadline, "the test server got no connection in 10 s");
                 std::thread::sleep(Duration::from_millis(5));
             }
             Err(err) => panic!("test server accept failed: {err}"),
@@ -139,8 +123,7 @@ fn read_request(stream: &mut TcpStream) -> Recorded {
         }
     }
 
-    let chunked = header(&headers, "transfer-encoding")
-        .is_some_and(|value| value.eq_ignore_ascii_case("chunked"));
+    let chunked = header(&headers, "transfer-encoding").is_some_and(|value| value.eq_ignore_ascii_case("chunked"));
     let body = if chunked {
         read_chunked(&mut reader)
     } else if let Some(length) = header(&headers, "content-length") {
@@ -151,12 +134,7 @@ fn read_request(stream: &mut TcpStream) -> Recorded {
     } else {
         Vec::new()
     };
-    Recorded {
-        method,
-        target,
-        headers,
-        body,
-    }
+    Recorded { method, target, headers, body }
 }
 
 fn read_chunked(reader: &mut impl BufRead) -> Vec<u8> {
@@ -164,12 +142,7 @@ fn read_chunked(reader: &mut impl BufRead) -> Vec<u8> {
     loop {
         let mut size_line = String::new();
         reader.read_line(&mut size_line).expect("chunk size");
-        let digits = size_line
-            .trim()
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .trim();
+        let digits = size_line.trim().split(';').next().unwrap_or_default().trim();
         let size = usize::from_str_radix(digits, 16).expect("hex chunk size");
         if size == 0 {
             loop {

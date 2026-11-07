@@ -50,6 +50,13 @@ pub enum TaskStatus {
     Completed,
 }
 
+impl TaskStatus {
+    /// Stopped, Failed or Completed: the task will send no more events.
+    pub fn is_settled(self) -> bool {
+        matches!(self, TaskStatus::Stopped | TaskStatus::Failed | TaskStatus::Completed)
+    }
+}
+
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum TaskEvent {
@@ -108,24 +115,76 @@ pub enum TaskEvent {
         reason: String,
     },
     /// M2 upload phase.
-    UploadStarted { id: TaskId, destination: String },
-    Progress { id: TaskId, sent: u64, total: Option<u64> },
-    UploadRetry { id: TaskId, attempt: u32, reason: String },
-    Uploaded { id: TaskId, url: String, thumbnail_url: Option<String>, deletion_url: Option<String> },
-    Shortened { id: TaskId, url: String },
-    UrlCopied { id: TaskId, text: String },
-    UrlOpened { id: TaskId, url: String },
-    Shared { id: TaskId, url: String },
+    UploadStarted {
+        id: TaskId,
+        destination: String,
+    },
+    Progress {
+        id: TaskId,
+        sent: u64,
+        total: Option<u64>,
+    },
+    UploadRetry {
+        id: TaskId,
+        attempt: u32,
+        reason: String,
+    },
+    Uploaded {
+        id: TaskId,
+        url: String,
+        thumbnail_url: Option<String>,
+        deletion_url: Option<String>,
+    },
+    Shortened {
+        id: TaskId,
+        url: String,
+    },
+    UrlCopied {
+        id: TaskId,
+        text: String,
+    },
+    UrlOpened {
+        id: TaskId,
+        url: String,
+    },
+    Shared {
+        id: TaskId,
+        url: String,
+    },
     /// Asks the UI to show the after-upload window or a QR code for the URL.
-    ShowUrl { id: TaskId, url: String, qr: bool },
+    ShowUrl {
+        id: TaskId,
+        url: String,
+        qr: bool,
+    },
     /// M4 recording session (the id is the recording's own task id).
-    RecordingCountdown { id: TaskId, seconds_left: u32 },
-    RecordingStarted { id: TaskId, area: laqta_domain::geometry::PhysRect },
-    RecordingPaused { id: TaskId },
-    RecordingResumed { id: TaskId },
-    RecordingTick { id: TaskId, elapsed_secs: u32 },
-    RecordingStopped { id: TaskId, path: PathBuf },
-    RecordingFailed { id: TaskId, error: AppError, partial: Option<PathBuf> },
+    RecordingCountdown {
+        id: TaskId,
+        seconds_left: u32,
+    },
+    RecordingStarted {
+        id: TaskId,
+        area: laqta_domain::geometry::PhysRect,
+    },
+    RecordingPaused {
+        id: TaskId,
+    },
+    RecordingResumed {
+        id: TaskId,
+    },
+    RecordingTick {
+        id: TaskId,
+        elapsed_secs: u32,
+    },
+    RecordingStopped {
+        id: TaskId,
+        path: PathBuf,
+    },
+    RecordingFailed {
+        id: TaskId,
+        error: AppError,
+        partial: Option<PathBuf>,
+    },
 }
 
 impl TaskEvent {

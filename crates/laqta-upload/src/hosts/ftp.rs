@@ -12,9 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Poll, Waker};
 use std::time::Duration;
 
-use laqta_ports::upload::{
-    Destination, ProgressCallback, SecretStore, UploadData, UploadError, UploadRequest, UploadResult,
-};
+use laqta_ports::upload::{Destination, ProgressCallback, SecretStore, UploadData, UploadError, UploadRequest, UploadResult};
 use laqta_ports::{BoxFuture, PortError};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
@@ -150,13 +148,7 @@ const SEGMENT: &AsciiSet = &CONTROLS
     .add(b'}');
 
 /// The blocking part: connect, secure the connection when configured, then transfer.
-fn put(
-    config: &FtpConfig,
-    password: &str,
-    name: &str,
-    data: UploadData,
-    progress: ProgressCallback,
-) -> Result<(), UploadError> {
+fn put(config: &FtpConfig, password: &str, name: &str, data: UploadData, progress: ProgressCallback) -> Result<(), UploadError> {
     match config.tls {
         FtpTls::None => {
             let ftp: FtpStream = open_control(tcp_connect(config)?)?;
@@ -172,8 +164,7 @@ fn put(
         FtpTls::Implicit => {
             let connector = TimedTls(connector()?);
             let port = if config.port == FTP_PORT { FTPS_IMPLICIT_PORT } else { config.port };
-            let ftp = TlsFtp::connect_secure_implicit((config.host.as_str(), port), connector, &config.host)
-                .map_err(ftp_error)?;
+            let ftp = TlsFtp::connect_secure_implicit((config.host.as_str(), port), connector, &config.host).map_err(ftp_error)?;
             transfer_over(ftp, config, password, name, data, progress)
         }
     }
@@ -213,13 +204,7 @@ where
     Ok(())
 }
 
-fn store<T>(
-    ftp: &mut ImplFtpStream<T>,
-    name: &str,
-    source: impl Read,
-    total: u64,
-    progress: ProgressCallback,
-) -> Result<(), UploadError>
+fn store<T>(ftp: &mut ImplFtpStream<T>, name: &str, source: impl Read, total: u64, progress: ProgressCallback) -> Result<(), UploadError>
 where
     T: TlsStream + Send + 'static,
 {
@@ -310,8 +295,7 @@ fn connector() -> Result<suppaftp::RustlsConnector, UploadError> {
 /// The native-tls connector: SChannel, which checks certificates against the Windows trust store.
 #[cfg(windows)]
 fn connector() -> Result<suppaftp::NativeTlsConnector, UploadError> {
-    let connector = native_tls::TlsConnector::new()
-        .map_err(|error| UploadError::Network(format!("TLS setup: {error}")))?;
+    let connector = native_tls::TlsConnector::new().map_err(|error| UploadError::Network(format!("TLS setup: {error}")))?;
     Ok(suppaftp::NativeTlsConnector::from(connector))
 }
 
@@ -334,16 +318,8 @@ where
 }
 
 fn leaf_name(name: &str) -> Result<&str, UploadError> {
-    let plain = !name.is_empty()
-        && name != "."
-        && name != ".."
-        && !name.contains(['/', '\\'])
-        && !name.chars().any(char::is_control);
-    if plain {
-        Ok(name)
-    } else {
-        Err(UploadError::Unsupported(format!("{name:?} is not a plain file name")))
-    }
+    let plain = !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\']) && !name.chars().any(char::is_control);
+    if plain { Ok(name) } else { Err(UploadError::Unsupported(format!("{name:?} is not a plain file name"))) }
 }
 
 fn read_secret(store: &dyn SecretStore, key: &str) -> Result<Option<String>, UploadError> {
@@ -380,11 +356,7 @@ fn ftp_error(error: FtpError) -> UploadError {
 /// A transport or TLS failure. A refused certificate is `Auth`, because the same server refuses it
 /// again on every retry.
 fn network_error(message: String) -> UploadError {
-    if message.to_ascii_lowercase().contains("certificate") {
-        UploadError::Auth(message)
-    } else {
-        UploadError::Network(message)
-    }
+    if message.to_ascii_lowercase().contains("certificate") { UploadError::Auth(message) } else { UploadError::Network(message) }
 }
 
 /// Runs blocking `work` on its own thread and resolves with its result on any executor. A panic

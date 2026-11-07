@@ -43,9 +43,7 @@ impl ModelOcr {
             let wanted = language.to_ascii_lowercase();
             catalog()
                 .models_for(Task::OcrRec)
-                .find(|model| {
-                    model.languages.iter().any(|lang| lang.eq_ignore_ascii_case(&wanted)) && self.runtime.is_installed(model)
-                })
+                .find(|model| model.languages.iter().any(|lang| lang.eq_ignore_ascii_case(&wanted)) && self.runtime.is_installed(model))
                 .map(|model| model.id.clone())
                 .ok_or_else(|| MlError::NoModelForLanguage(language.to_owned()))?
         };
@@ -54,11 +52,7 @@ impl ModelOcr {
 
     fn installed(&self, id: &str) -> Result<String, MlError> {
         let entry = catalog().model(id).ok_or_else(|| MlError::UnknownModel(id.to_owned()))?;
-        if self.runtime.is_installed(entry) {
-            Ok(id.to_owned())
-        } else {
-            Err(MlError::NotInstalled(id.to_owned()))
-        }
+        if self.runtime.is_installed(entry) { Ok(id.to_owned()) } else { Err(MlError::NotInstalled(id.to_owned())) }
     }
 }
 
@@ -139,15 +133,12 @@ fn recognise(runtime: &Runtime, det: &str, rec: &str, bitmap: &Bitmap) -> Result
 /// Text regions in source pixels, from the detector.
 fn detect(runtime: &Runtime, det: &str, image: &BgrImage) -> Result<Vec<PhysRect>, MlError> {
     let (width, height, data) = o1::det_input(image);
-    let input = Array4::from_shape_vec((1, 3, height as usize, width as usize), data)
-        .map_err(|error| MlError::Inference(error.to_string()))?;
+    let input =
+        Array4::from_shape_vec((1, 3, height as usize, width as usize), data).map_err(|error| MlError::Inference(error.to_string()))?;
     let (shape, map) = runtime.with_session(Task::OcrDet, det, |session| run(session, &input))?;
     let (map_height, map_width) = map_dims(&shape, map.len())?;
     let boxes = o1::db_boxes(&map, map_width, map_height);
-    Ok(boxes
-        .into_iter()
-        .map(|boxed| o1::to_source_rect(boxed, map_width, map_height, image.width(), image.height()))
-        .collect())
+    Ok(boxes.into_iter().map(|boxed| o1::to_source_rect(boxed, map_width, map_height, image.width(), image.height())).collect())
 }
 
 fn to_input(width: usize, data: Vec<f32>) -> Result<Array4<f32>, MlError> {
@@ -156,9 +147,7 @@ fn to_input(width: usize, data: Vec<f32>) -> Result<Array4<f32>, MlError> {
 
 /// Runs one input and copies the output out, so the session can be used again.
 fn run(session: &mut Session, input: &Array4<f32>) -> Result<(Vec<usize>, Vec<f32>), MlError> {
-    let outputs = session
-        .run(inputs![TensorRef::from_array_view(input.view()).map_err(ort_error)?])
-        .map_err(ort_error)?;
+    let outputs = session.run(inputs![TensorRef::from_array_view(input.view()).map_err(ort_error)?]).map_err(ort_error)?;
     let output = outputs[0].try_extract_array::<f32>().map_err(ort_error)?;
     Ok((output.shape().to_vec(), output.iter().copied().collect()))
 }

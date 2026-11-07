@@ -200,7 +200,6 @@ pub(crate) fn parse(line: &str) -> Result<Request, String> {
     })
 }
 
-
 /// Longest error message sent. Keeps a reply within the line limit the reader enforces.
 const MAX_MESSAGE_BYTES: usize = 1024;
 

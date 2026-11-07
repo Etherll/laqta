@@ -9,8 +9,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use ort::ep::ExecutionProviderDispatch;
 use ort::environment::Environment;
+use ort::ep::ExecutionProviderDispatch;
 use ort::session::Session;
 
 use crate::catalog::{ModelEntry, Task};
@@ -48,10 +48,7 @@ fn load_environment(lib_path: &Path) -> Result<&'static Environment, MlError> {
     if !lib_path.is_file() {
         return Err(MlError::OrtLibraryMissing(lib_path.to_path_buf()));
     }
-    let environment = ort::init_from(lib_path)
-        .map_err(|error| MlError::Ort(error.to_string()))?
-        .build()
-        .map_err(ort_error)?;
+    let environment = ort::init_from(lib_path).map_err(|error| MlError::Ort(error.to_string()))?.build().map_err(ort_error)?;
     // The lock is held and the cell was empty above, so this cannot lose a race.
     let _ = ENVIRONMENT.set(environment);
     ENVIRONMENT.get().ok_or(MlError::RuntimeNotLoaded)
@@ -94,12 +91,7 @@ impl fmt::Debug for Runtime {
 impl Runtime {
     /// `lib_path` is the ONNX Runtime shared library. It is loaded on first use, not here.
     pub fn new(lib_path: impl Into<PathBuf>, models_dir: impl Into<PathBuf>, provider: ExecutionProvider) -> Self {
-        Runtime {
-            lib_path: lib_path.into(),
-            models_dir: models_dir.into(),
-            provider,
-            sessions: Mutex::new(HashMap::new()),
-        }
+        Runtime { lib_path: lib_path.into(), models_dir: models_dir.into(), provider, sessions: Mutex::new(HashMap::new()) }
     }
 
     pub fn models_dir(&self) -> &Path {
@@ -154,11 +146,7 @@ impl Runtime {
     /// session is still loaded, so the caller knows whether to keep its release timer armed.
     pub fn release_idle(&self, after: Duration) -> bool {
         let mut sessions = self.lock_sessions();
-        let idle = idle_keys(
-            sessions.iter().map(|(task, loaded)| (*task, loaded.last_used)),
-            Instant::now(),
-            after,
-        );
+        let idle = idle_keys(sessions.iter().map(|(task, loaded)| (*task, loaded.last_used)), Instant::now(), after);
         for task in idle {
             sessions.remove(&task);
         }
@@ -172,14 +160,7 @@ impl Runtime {
         if entry.is_pending() {
             return Err(MlError::PendingHash(entry.id.clone()));
         }
-        laqta_http::fetch_verified(
-            &entry.url,
-            &self.model_path(&entry.id),
-            &entry.sha256,
-            progress.clone(),
-            cancel.clone(),
-        )
-        .await?;
+        laqta_http::fetch_verified(&entry.url, &self.model_path(&entry.id), &entry.sha256, progress.clone(), cancel.clone()).await?;
         if entry.task == Task::OcrRec {
             let (Some(url), Some(hash)) = (entry.dict_url.as_deref(), entry.dict_sha256.as_deref()) else {
                 return Err(MlError::Catalog(format!("recogniser `{}` has no dictionary", entry.id)));
@@ -197,11 +178,7 @@ impl Runtime {
 /// The keys of entries whose last use is older than `after`. Pure, so the release rule can be tested
 /// without ONNX Runtime.
 pub(crate) fn idle_keys<K>(entries: impl IntoIterator<Item = (K, Instant)>, now: Instant, after: Duration) -> Vec<K> {
-    entries
-        .into_iter()
-        .filter(|(_, last_used)| now.saturating_duration_since(*last_used) > after)
-        .map(|(key, _)| key)
-        .collect()
+    entries.into_iter().filter(|(_, last_used)| now.saturating_duration_since(*last_used) > after).map(|(key, _)| key).collect()
 }
 
 /// Execution providers to try before the CPU. DirectML (Windows) and CUDA (Linux) are compiled only

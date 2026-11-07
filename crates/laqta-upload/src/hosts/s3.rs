@@ -7,9 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use laqta_http::{Body, HttpError, Method, Request};
-use laqta_ports::upload::{
-    Destination, ProgressCallback, SecretStore, UploadData, UploadError, UploadRequest, UploadResult,
-};
+use laqta_ports::upload::{Destination, ProgressCallback, SecretStore, UploadData, UploadError, UploadRequest, UploadResult};
 use laqta_ports::{BoxFuture, PortError};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
@@ -119,8 +117,8 @@ pub fn object_url(config: &S3Config, key: &str) -> Result<String, UploadError> {
 }
 
 fn bucket(config: &S3Config) -> Result<Bucket, UploadError> {
-    let endpoint = Url::parse(&config.endpoint)
-        .map_err(|error| UploadError::Unsupported(format!("S3 endpoint {:?}: {error}", config.endpoint)))?;
+    let endpoint =
+        Url::parse(&config.endpoint).map_err(|error| UploadError::Unsupported(format!("S3 endpoint {:?}: {error}", config.endpoint)))?;
     let style = if config.use_path_style { UrlStyle::Path } else { UrlStyle::VirtualHost };
     Bucket::new(endpoint, style, config.bucket.clone(), config.region.clone())
         .map_err(|error| UploadError::Unsupported(format!("S3 bucket settings: {error:?}")))
@@ -163,8 +161,9 @@ fn read_secret(store: &dyn SecretStore, key: &str) -> Result<Option<String>, Upl
 fn into_bytes(data: UploadData) -> Result<Vec<u8>, UploadError> {
     match data {
         UploadData::Bytes(bytes) => Ok(bytes),
-        UploadData::Path(path) => std::fs::read(&path)
-            .map_err(|error| UploadError::Unsupported(format!("cannot read {}: {error}", path.display()))),
+        UploadData::Path(path) => {
+            std::fs::read(&path).map_err(|error| UploadError::Unsupported(format!("cannot read {}: {error}", path.display())))
+        }
     }
 }
 

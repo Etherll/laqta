@@ -56,10 +56,19 @@ fn request_methods_come_from_requestmethod_or_requesttype() {
 
 #[test]
 fn destination_types_are_read_in_file_order() {
-    let all = CustomUploader::parse(r#"{"RequestURL": "https://h/", "DestinationType": "ImageUploader, TextUploader, FileUploader, URLShortener, URLSharingService"}"#).unwrap();
+    let all = CustomUploader::parse(
+        r#"{"RequestURL": "https://h/", "DestinationType": "ImageUploader, TextUploader, FileUploader, URLShortener, URLSharingService"}"#,
+    )
+    .unwrap();
     assert_eq!(
         all.destination_types(),
-        vec![DestinationType::Image, DestinationType::Text, DestinationType::File, DestinationType::UrlShortener, DestinationType::UrlSharing]
+        vec![
+            DestinationType::Image,
+            DestinationType::Text,
+            DestinationType::File,
+            DestinationType::UrlShortener,
+            DestinationType::UrlSharing
+        ]
     );
     let some = CustomUploader::parse(r#"{"RequestURL": "https://h/", "DestinationType": "TextUploader, Bogus, TextUploader"}"#).unwrap();
     assert_eq!(some.destination_types(), vec![DestinationType::Text]);
@@ -192,7 +201,8 @@ fn a_sharex_12_file_is_migrated_on_load() {
 
 #[test]
 fn a_legacy_regex_marker_uses_the_regex_list_with_pipes_and_braces() {
-    let file = json!({ "Version": "12.0.1", "RequestURL": "https://h/up", "URL": "$regex:1,1$", "RegexList": [r"(?:id|key)=(\d{2})"] }).to_string();
+    let file = json!({ "Version": "12.0.1", "RequestURL": "https://h/up", "URL": "$regex:1,1$", "RegexList": [r"(?:id|key)=(\d{2})"] })
+        .to_string();
     let result = read(&file, &reply(200, "https://h/final", "key=42")).unwrap();
     assert_eq!(result.url.as_deref(), Some("42"));
 }
@@ -250,7 +260,12 @@ fn an_imgur_style_file_builds_and_reads() {
     assert_eq!(request.headers, vec![("Authorization".to_string(), "Client-ID abc123".to_string())]);
     assert_eq!(
         request.body,
-        Body::Multipart(vec![Part::File { name: "image".into(), file_name: "shot.png".into(), mime: "image/png".into(), data: b"PNG".to_vec() }])
+        Body::Multipart(vec![Part::File {
+            name: "image".into(),
+            file_name: "shot.png".into(),
+            mime: "image/png".into(),
+            data: b"PNG".to_vec()
+        }])
     );
 
     let body = r#"{"data":{"link":"https://i.example.com/q.png","deletehash":"dh1"},"success":true,"status":200}"#;

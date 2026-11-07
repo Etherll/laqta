@@ -4536,6 +4536,7 @@ dependencies = [
  "laqta-editor",
  "laqta-http",
  "laqta-imaging",
+ "laqta-import",
  "laqta-ipc",
  "laqta-library",
  "laqta-media",

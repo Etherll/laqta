@@ -20,9 +20,7 @@ pub fn validate_custom(path: &Path, family: &str) -> Result<(), MlError> {
         .map_err(|error| MlError::Ort(error.to_string()))?
         .with_intra_threads(1)
         .map_err(|error| MlError::Ort(error.to_string()))?;
-    let session = builder
-        .commit_from_file(path)
-        .map_err(|error| MlError::Ort(format!("{}: {error}", path.display())))?;
+    let session = builder.commit_from_file(path).map_err(|error| MlError::Ort(format!("{}: {error}", path.display())))?;
     let inputs: Vec<&ValueType> = session.inputs().iter().map(|outlet| outlet.dtype()).collect();
     let outputs: Vec<&ValueType> = session.outputs().iter().map(|outlet| outlet.dtype()).collect();
     check_signature(family, family.signature(), &inputs, &outputs)

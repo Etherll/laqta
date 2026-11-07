@@ -126,14 +126,7 @@ pub fn db_boxes(prob: &[f32], width: usize, height: usize) -> Vec<MapBox> {
                 continue;
             }
             let root = find(&mut parent, i);
-            let component = components.entry(root).or_insert(Component {
-                min_x: x,
-                min_y: y,
-                max_x: x,
-                max_y: y,
-                sum: 0.0,
-                count: 0,
-            });
+            let component = components.entry(root).or_insert(Component { min_x: x, min_y: y, max_x: x, max_y: y, sum: 0.0, count: 0 });
             component.min_x = component.min_x.min(x);
             component.min_y = component.min_y.min(y);
             component.max_x = component.max_x.max(x);
@@ -143,10 +136,7 @@ pub fn db_boxes(prob: &[f32], width: usize, height: usize) -> Vec<MapBox> {
         }
     }
 
-    let mut boxes: Vec<MapBox> = components
-        .values()
-        .filter_map(|component| component_box(component, width, height))
-        .collect();
+    let mut boxes: Vec<MapBox> = components.values().filter_map(|component| component_box(component, width, height)).collect();
     boxes.sort_by(|a, b| a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0)));
     boxes
 }
@@ -181,12 +171,7 @@ pub fn to_source_rect(boxed: MapBox, map_width: usize, map_height: usize, source
     let y0 = (boxed.y0 * scale_y).floor().clamp(0.0, source_height.saturating_sub(1) as f32);
     let x1 = (boxed.x1 * scale_x).ceil().min(source_width as f32);
     let y1 = (boxed.y1 * scale_y).ceil().min(source_height as f32);
-    PhysRect {
-        x: x0 as i32,
-        y: y0 as i32,
-        width: (x1 - x0).max(1.0) as u32,
-        height: (y1 - y0).max(1.0) as u32,
-    }
+    PhysRect { x: x0 as i32, y: y0 as i32, width: (x1 - x0).max(1.0) as u32, height: (y1 - y0).max(1.0) as u32 }
 }
 
 /// The scaled recogniser width for a crop: the height is scaled to `REC_HEIGHT` and the aspect ratio is

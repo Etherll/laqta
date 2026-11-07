@@ -124,7 +124,12 @@ pub trait Prompt: Send + Sync {
 
     /// The after-capture window: shows the image and lets the user change what happens next.
     /// Returns the chosen after-capture and after-upload flag bits.
-    fn after_capture(&self, image: &laqta_domain::Bitmap, after_capture: u32, after_upload: u32) -> BoxFuture<'_, Result<(u32, u32), PortError>> {
+    fn after_capture(
+        &self,
+        image: &laqta_domain::Bitmap,
+        after_capture: u32,
+        after_upload: u32,
+    ) -> BoxFuture<'_, Result<(u32, u32), PortError>> {
         let _ = image;
         Box::pin(async move { Ok((after_capture, after_upload)) })
     }

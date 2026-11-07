@@ -62,7 +62,11 @@ pub fn extract_library(archive: &Path, entry: &OrtArchive, dir: &Path) -> Result
 
 /// Downloads (verified) and unpacks onnxruntime into `dir`; returns the library path. Already
 /// installed → returns at once.
-pub async fn install_onnxruntime(dir: &Path, progress: Arc<dyn Fn(u64, Option<u64>) + Send + Sync>, cancel: Arc<AtomicBool>) -> Result<PathBuf, MlError> {
+pub async fn install_onnxruntime(
+    dir: &Path,
+    progress: Arc<dyn Fn(u64, Option<u64>) + Send + Sync>,
+    cancel: Arc<AtomicBool>,
+) -> Result<PathBuf, MlError> {
     let entry = ort_for_host().ok_or_else(|| MlError::Io("no pinned onnxruntime for this platform".into()))?;
     let lib = library_path(dir, entry);
     if lib.exists() {

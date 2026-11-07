@@ -100,7 +100,13 @@ impl Drop for PromptWindow {
 
 impl Render for PromptWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut body = div().flex_1().flex().flex_col().gap(px(8.)).p(px(12.)).child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(self.title.clone()));
+        let mut body = div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .p(px(12.))
+            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(self.title.clone()));
         let mut footer = div().flex().flex_row().gap(px(8.)).p(px(12.)).border_t_1().border_color(cx.theme().border).child(div().flex_1());
         match &self.kind {
             PromptKind::Text { .. } => {
@@ -108,7 +114,11 @@ impl Render for PromptWindow {
                     body = body.child(Input::new(i));
                 }
                 footer = footer
-                    .child(Button::new("cancel").label("Cancel").on_click(cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w))))
+                    .child(
+                        Button::new("cancel")
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w))),
+                    )
                     .child(Button::new("ok").label("OK").primary().on_click(cx.listener(|this, _, w, cx| {
                         let v = this.input.as_ref().map(|i| i.read(cx).value().to_string()).unwrap_or_default();
                         this.answer(Ok(Answer::Text(v)), w);
@@ -117,20 +127,30 @@ impl Render for PromptWindow {
             PromptKind::Choose { options } => {
                 let mut list = div().flex().flex_col().gap(px(4.));
                 for (i, o) in options.iter().enumerate() {
-                    list = list.child(Button::new(SharedString::from(format!("opt-{i}"))).label(o.clone()).w_full().on_click(cx.listener(
-                        move |this, _, w, _| this.answer(Ok(Answer::Index(i)), w),
-                    )));
+                    list = list.child(
+                        Button::new(SharedString::from(format!("opt-{i}")))
+                            .label(o.clone())
+                            .w_full()
+                            .on_click(cx.listener(move |this, _, w, _| this.answer(Ok(Answer::Index(i)), w))),
+                    );
                 }
                 body = body.child(div().flex_1().overflow_y_scrollbar().child(list));
-                footer = footer.child(Button::new("cancel").label("Cancel").on_click(cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w))));
+                footer = footer.child(
+                    Button::new("cancel").label("Cancel").on_click(cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w))),
+                );
             }
             PromptKind::Show { text } => {
-                body = body.child(div().flex_1().overflow_y_scrollbar().p(px(6.)).rounded(px(4.)).bg(cx.theme().secondary).child(text.clone()));
-                footer = footer.child(Button::new("ok").label("Close").primary().on_click(cx.listener(|this, _, w, _| this.answer(Ok(Answer::Ok), w))));
+                body = body
+                    .child(div().flex_1().overflow_y_scrollbar().p(px(6.)).rounded(px(4.)).bg(cx.theme().secondary).child(text.clone()));
+                footer = footer.child(
+                    Button::new("ok").label("Close").primary().on_click(cx.listener(|this, _, w, _| this.answer(Ok(Answer::Ok), w))),
+                );
             }
             PromptKind::AfterCapture { image, after_capture, after_upload } => {
                 if let Some(img) = image {
-                    body = body.child(div().h(px(300.)).flex().justify_center().overflow_hidden().child(gpui::img(img.clone()).max_h_full().max_w_full()));
+                    body = body.child(
+                        div().h(px(300.)).flex().justify_center().overflow_hidden().child(gpui::img(img.clone()).max_h_full().max_w_full()),
+                    );
                 }
                 let (ac, au) = (*after_capture, *after_upload);
                 let mut flags = div().flex().flex_wrap().gap(px(6.));
@@ -150,18 +170,23 @@ impl Render for PromptWindow {
                 }
                 let upload_bit = laqta_domain::workflow::AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST.bits();
                 flags = flags.child(
-                    gpui_component::checkbox::Checkbox::new("acw-upload").label("Upload image to host").checked(ac & upload_bit != 0).on_click(
-                        cx.listener(move |this, v: &bool, _, cx| {
+                    gpui_component::checkbox::Checkbox::new("acw-upload")
+                        .label("Upload image to host")
+                        .checked(ac & upload_bit != 0)
+                        .on_click(cx.listener(move |this, v: &bool, _, cx| {
                             if let PromptKind::AfterCapture { after_capture, .. } = &mut this.kind {
                                 if *v { *after_capture |= upload_bit } else { *after_capture &= !upload_bit }
                             }
                             cx.notify();
-                        }),
-                    ),
+                        })),
                 );
                 body = body.child(flags);
                 footer = footer
-                    .child(Button::new("cancel").label("Cancel").on_click(cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w))))
+                    .child(
+                        Button::new("cancel")
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w))),
+                    )
                     .child(Button::new("ok").label("Continue").primary().on_click(cx.listener(move |this, _, w, _| {
                         let r = match &this.kind {
                             PromptKind::AfterCapture { after_capture, after_upload, .. } => (*after_capture, *after_upload),
@@ -176,21 +201,23 @@ impl Render for PromptWindow {
                 for (i, (id, name)) in destinations.iter().enumerate() {
                     let id2 = id.clone();
                     list = list.child(
-                        Button::new(SharedString::from(format!("bu-{i}")))
-                            .label(name.clone())
-                            .w_full()
-                            .selected(id == current)
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                        Button::new(SharedString::from(format!("bu-{i}"))).label(name.clone()).w_full().selected(id == current).on_click(
+                            cx.listener(move |this, _, _, cx| {
                                 if let PromptKind::BeforeUpload { current, .. } = &mut this.kind {
                                     *current = id2.clone();
                                 }
                                 cx.notify();
-                            })),
+                            }),
+                        ),
                     );
                 }
                 body = body.child(div().flex_1().overflow_y_scrollbar().child(list));
                 footer = footer
-                    .child(Button::new("cancel").label("Cancel").on_click(cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w))))
+                    .child(
+                        Button::new("cancel")
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w))),
+                    )
                     .child(Button::new("ok").label("Upload").primary().on_click(cx.listener(|this, _, w, _| {
                         let id = match &this.kind {
                             PromptKind::BeforeUpload { current, .. } => current.clone(),
@@ -203,7 +230,12 @@ impl Render for PromptWindow {
                 body = body.child(widgets::muted(text.clone(), cx));
                 footer = footer
                     .child(Button::new("no").label("No").on_click(cx.listener(|this, _, w, _| this.answer(Ok(Answer::Bool(false)), w))))
-                    .child(Button::new("yes").label("Yes").primary().on_click(cx.listener(|this, _, w, _| this.answer(Ok(Answer::Bool(true)), w))));
+                    .child(
+                        Button::new("yes")
+                            .label("Yes")
+                            .primary()
+                            .on_click(cx.listener(|this, _, w, _| this.answer(Ok(Answer::Bool(true)), w))),
+                    );
             }
         }
         widgets::page(cx).child(body).child(footer)

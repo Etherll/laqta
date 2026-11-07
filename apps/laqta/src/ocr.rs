@@ -37,15 +37,24 @@ impl LazyOcr {
             return Ok(o);
         }
         let dir = self.data.join("models");
-        let det = catalog().default_for(Task::OcrDet).ok_or_else(|| PortError::Unsupported("no OCR detection model in the catalog".into()))?;
-        let rec = catalog().default_for(Task::OcrRec).ok_or_else(|| PortError::Unsupported("no OCR recognition model in the catalog".into()))?;
-        let ort_entry = laqta_ml::install::ort_for_host().ok_or_else(|| PortError::Unsupported("no onnxruntime build for this platform".into()))?;
+        let det =
+            catalog().default_for(Task::OcrDet).ok_or_else(|| PortError::Unsupported("no OCR detection model in the catalog".into()))?;
+        let rec =
+            catalog().default_for(Task::OcrRec).ok_or_else(|| PortError::Unsupported("no OCR recognition model in the catalog".into()))?;
+        let ort_entry =
+            laqta_ml::install::ort_for_host().ok_or_else(|| PortError::Unsupported("no onnxruntime build for this platform".into()))?;
         let lib = laqta_ml::install::library_path(&dir, ort_entry);
         let runtime = Arc::new(Runtime::new(lib.clone(), dir.clone(), ExecutionProvider::Auto));
         let installed = lib.exists() && runtime.is_installed(det) && runtime.is_installed(rec);
         if !installed {
             let mb = (ort_entry.size_bytes + det.size_bytes + rec.size_bytes) / 1_000_000;
-            let ok = self.prompt.confirm("Text recognition", &format!("Text recognition needs ONNX Runtime and the PP-OCRv5 models (about {mb} MB). Download them now?")).await?;
+            let ok = self
+                .prompt
+                .confirm(
+                    "Text recognition",
+                    &format!("Text recognition needs ONNX Runtime and the PP-OCRv5 models (about {mb} MB). Download them now?"),
+                )
+                .await?;
             if !ok {
                 return Err(PortError::Cancelled);
             }

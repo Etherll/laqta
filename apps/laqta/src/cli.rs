@@ -27,6 +27,7 @@ pub struct Args {
 }
 
 impl Args {
+    #[cfg(test)]
     pub fn actions(&self) -> Vec<Action> {
         self.requests.iter().filter_map(|r| if let Request::Action(a) = r { Some(*a) } else { None }).collect()
     }

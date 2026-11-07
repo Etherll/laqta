@@ -59,6 +59,13 @@ pub struct TextSpec {
 
 impl Default for TextSpec {
     fn default() -> Self {
-        TextSpec { text: String::new(), font_family: "sans-serif".into(), size: 18.0, bold: false, italic: false, color: crate::color::Rgba::WHITE }
+        TextSpec {
+            text: String::new(),
+            font_family: "sans-serif".into(),
+            size: 18.0,
+            bold: false,
+            italic: false,
+            color: crate::color::Rgba::WHITE,
+        }
     }
 }

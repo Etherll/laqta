@@ -7,10 +7,10 @@ mod bmp;
 mod codecs;
 mod compose;
 pub mod effects;
-pub mod qr;
-pub mod stitch;
 mod ops;
 pub mod png;
+pub mod qr;
+pub mod stitch;
 pub mod tools;
 
 pub use codecs::{CodecError, CodecExtension, Codecs, EncodeOptions, sniff};

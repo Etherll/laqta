@@ -14,15 +14,12 @@ use std::sync::{Arc, Mutex};
 use futures_lite::future::block_on;
 use http_support::{Canned, Server};
 use laqta_ports::fakes::FakeSecretStore;
-use laqta_ports::upload::{
-    Destination, ProgressCallback, SecretStore, UploadData, UploadError, UploadKind, UploadRequest,
-};
+use laqta_ports::upload::{Destination, ProgressCallback, SecretStore, UploadData, UploadError, UploadKind, UploadRequest};
 
 use laqta_upload::hosts::{ftp, s3, sftp, shared_folder};
 
 fn store(entries: &[(&str, &str)]) -> Arc<dyn SecretStore> {
-    let secrets: HashMap<String, String> =
-        entries.iter().map(|(key, value)| (key.to_string(), value.to_string())).collect();
+    let secrets: HashMap<String, String> = entries.iter().map(|(key, value)| (key.to_string(), value.to_string())).collect();
     Arc::new(FakeSecretStore { secrets: Mutex::new(secrets) })
 }
 
@@ -133,27 +130,18 @@ fn s3_object_urls_for_path_style_virtual_host_and_public_base() {
     let mut config = s3_config("https://s3.eu-west-1.amazonaws.com".to_owned());
     config.region = "eu-west-1".to_owned();
     config.bucket = "my-bucket".to_owned();
-    assert_eq!(
-        s3::object_url(&config, "a b.png").unwrap(),
-        "https://s3.eu-west-1.amazonaws.com/my-bucket/a%20b.png"
-    );
+    assert_eq!(s3::object_url(&config, "a b.png").unwrap(), "https://s3.eu-west-1.amazonaws.com/my-bucket/a%20b.png");
 
     config.use_path_style = false;
     assert_eq!(s3::object_url(&config, "a.png").unwrap(), "https://my-bucket.s3.eu-west-1.amazonaws.com/a.png");
 
     config.public_url_base = Some("https://cdn.example.com/media".to_owned());
-    assert_eq!(
-        s3::object_url(&config, "shots/a b.png").unwrap(),
-        "https://cdn.example.com/media/shots/a%20b.png"
-    );
+    assert_eq!(s3::object_url(&config, "shots/a b.png").unwrap(), "https://cdn.example.com/media/shots/a%20b.png");
 }
 
 #[test]
 fn ftp_file_urls_join_the_base_and_encode_the_name() {
-    assert_eq!(
-        ftp::file_url("https://files.example.com/pub/", "Laqta 1#2.png"),
-        "https://files.example.com/pub/Laqta%201%232.png"
-    );
+    assert_eq!(ftp::file_url("https://files.example.com/pub/", "Laqta 1#2.png"), "https://files.example.com/pub/Laqta%201%232.png");
     assert_eq!(ftp::file_url("https://files.example.com", "a.png"), "https://files.example.com/a.png");
 }
 
@@ -199,10 +187,7 @@ fn ftp_to_a_closed_port_is_a_network_error() {
 
 #[test]
 fn sftp_layout_splits_the_directory_into_the_prefixes_to_create() {
-    assert_eq!(
-        sftp::layout("/uploads/laqta/"),
-        ("/uploads/laqta".to_owned(), vec!["/uploads".to_owned(), "/uploads/laqta".to_owned()])
-    );
+    assert_eq!(sftp::layout("/uploads/laqta/"), ("/uploads/laqta".to_owned(), vec!["/uploads".to_owned(), "/uploads/laqta".to_owned()]));
     assert_eq!(sftp::layout("a/b"), ("a/b".to_owned(), vec!["a".to_owned(), "a/b".to_owned()]));
     assert_eq!(sftp::layout(""), (String::new(), Vec::new()));
     assert_eq!(sftp::layout("/"), ("/".to_owned(), Vec::new()));
@@ -210,8 +195,7 @@ fn sftp_layout_splits_the_directory_into_the_prefixes_to_create() {
 
 #[test]
 fn sftp_batch_script_quotes_every_argument_and_converts_the_local_path() {
-    let script =
-        sftp::batch_script("/uploads/laqta", Path::new(r"C:\Users\me\Temp\Laqta 1.png"), "Laqta 1.png").unwrap();
+    let script = sftp::batch_script("/uploads/laqta", Path::new(r"C:\Users\me\Temp\Laqta 1.png"), "Laqta 1.png").unwrap();
     assert_eq!(
         script,
         "-mkdir \"/uploads\"\n-mkdir \"/uploads/laqta\"\ncd \"/uploads/laqta\"\n\
@@ -239,10 +223,7 @@ fn sftp_command_args_use_batch_mode_the_port_the_key_and_user_at_host() {
         directory: String::new(),
         url_base: "https://files.example.com".to_owned(),
     };
-    assert_eq!(
-        sftp::command_args(&config, None).unwrap(),
-        vec!["-b", "-", "-o", "BatchMode=yes", "-P", "2222", "laqta@example.com"]
-    );
+    assert_eq!(sftp::command_args(&config, None).unwrap(), vec!["-b", "-", "-o", "BatchMode=yes", "-P", "2222", "laqta@example.com"]);
 
     let key = PathBuf::from(r"C:\keys\id_ed25519");
     assert_eq!(
@@ -308,10 +289,7 @@ fn sftp_without_a_key_or_a_password_is_an_auth_error_before_connecting() {
 fn shared_folder_copies_the_bytes_and_returns_a_file_url() {
     let dir = tempfile::tempdir().unwrap();
     let share = dir.path().join("share");
-    let destination = shared_folder::SharedFolder::new(shared_folder::SharedFolderConfig {
-        directory: share.clone(),
-        url_base: None,
-    });
+    let destination = shared_folder::SharedFolder::new(shared_folder::SharedFolderConfig { directory: share.clone(), url_base: None });
 
     let result = block_on(destination.upload(png("Laqta 1.png", b"bytes"), progress())).unwrap();
 
@@ -340,10 +318,7 @@ fn shared_folder_copies_a_file_from_disk() {
     let source = dir.path().join("source.bin");
     std::fs::write(&source, b"copied").unwrap();
     let share = dir.path().join("share");
-    let destination = shared_folder::SharedFolder::new(shared_folder::SharedFolderConfig {
-        directory: share.clone(),
-        url_base: None,
-    });
+    let destination = shared_folder::SharedFolder::new(shared_folder::SharedFolderConfig { directory: share.clone(), url_base: None });
     let request = UploadRequest {
         file_name: "copy.bin".to_owned(),
         kind: UploadKind::File,
@@ -360,10 +335,7 @@ fn shared_folder_copies_a_file_from_disk() {
 fn shared_folder_refuses_a_name_that_leaves_the_folder() {
     let dir = tempfile::tempdir().unwrap();
     let share = dir.path().join("share");
-    let destination = shared_folder::SharedFolder::new(shared_folder::SharedFolderConfig {
-        directory: share.clone(),
-        url_base: None,
-    });
+    let destination = shared_folder::SharedFolder::new(shared_folder::SharedFolderConfig { directory: share.clone(), url_base: None });
 
     let error = block_on(destination.upload(png("../escape.png", b"x"), progress())).unwrap_err();
 

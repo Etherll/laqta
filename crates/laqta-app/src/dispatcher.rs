@@ -201,6 +201,13 @@ impl App {
         paths.into_iter().map(|path| self.task.submit(TaskJob::Upload { source: UploadSource::File(path), settings: ts.clone() })).collect()
     }
 
+    /// Submits one Upload job with the workflow's settings: text, a file, a URL to re-upload or a URL to
+    /// shorten. The CLI, IPC and native-messaging requests use it.
+    pub fn upload_source(self: &Arc<Self>, source: UploadSource, workflow: Option<WorkflowId>) -> TaskId {
+        let ts = self.settings.get().task_settings(workflow);
+        self.task.submit(TaskJob::Upload { source, settings: ts })
+    }
+
     /// The files the user picks. Without a file dialog the user types a path instead. `None` when the user
     /// cancels.
     async fn picked_files(&self, title: &str) -> Result<Option<Vec<PathBuf>>, AppError> {

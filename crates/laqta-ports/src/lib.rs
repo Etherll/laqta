@@ -17,18 +17,18 @@ pub mod fakes;
 pub use desktop::{ActionCallback, Clipboard, ClipboardContent, HotkeyRegistrar, Shell, Tray, TrayItem, TrayMenu};
 pub use error::PortError;
 pub use notify::{HostInfo, Notifier, Rng, Sound, Toast};
-pub use recording::{
-    AudioInput, FrameSource, Media, MediaInfo, OsScreenRef, PcmFormat, PcmSource, RecordingHandle, RecordingInput, ScreenStream, TranscodeSpec,
-    VideoSource,
-};
 pub use overlay::{EditorHost, HoverSource, InputCallback, Overlay, RegionView, ToolHost, ToolWindow};
+pub use recording::{
+    AudioInput, FrameSource, Media, MediaInfo, OsScreenRef, PcmFormat, PcmSource, RecordingHandle, RecordingInput, ScreenStream,
+    TranscodeSpec, VideoSource,
+};
 pub use runtime::{Clock, Spawner};
 pub use screen::{CaptureRequest, ScreenSource};
 pub use task::{AppError, TaskEvent, TaskId, TaskStatus};
 pub use tools::{Autostart, Ocr, OcrLine, OcrResult, ShellIntegration, WindowOps};
 pub use upload::{
-    Destination, ProgressCallback, Prompt, SecretStore, Sharer, Shortener, UploadData, UploadError, UploadKind, UploadRequest, UploadResult,
-    Uploaders,
+    Destination, ProgressCallback, Prompt, SecretStore, Sharer, Shortener, UploadData, UploadError, UploadKind, UploadRequest,
+    UploadResult, Uploaders,
 };
 
 /// A boxed future, so async ports work behind `Arc<dyn Port>`.

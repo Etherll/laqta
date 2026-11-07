@@ -18,10 +18,7 @@ const MAX_HEADER_LINES: usize = 100;
 
 /// Accepts connections until one sends a GET. Answers it with `reply_html` and returns its
 /// request target (path and query). Other methods get a 405 and the listener keeps waiting.
-pub(crate) async fn serve_once(
-    listener: StdListener,
-    reply_html: String,
-) -> Result<String, HttpError> {
+pub(crate) async fn serve_once(listener: StdListener, reply_html: String) -> Result<String, HttpError> {
     let listener = TcpListener::from_std(listener).map_err(io_error)?;
     loop {
         let (mut stream, _) = listener.accept().await.map_err(io_error)?;

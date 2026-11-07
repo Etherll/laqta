@@ -329,18 +329,24 @@ impl SettingsWindow {
                 },
             )))
             .child(widgets::muted(format!("Data folder: {data_dir}"), cx))
-            .child(Checkbox::new("snd-capture").label("Play a sound after capture").checked(self.draft.defaults.general.play_sound_after_capture).on_click(
-                cx.listener(|this, c: &bool, _, cx| {
-                    this.draft.defaults.general.play_sound_after_capture = *c;
-                    cx.notify();
-                }),
-            ))
-            .child(Checkbox::new("snd-task").label("Play a sound when a task finishes or fails").checked(self.draft.defaults.general.play_sound_after_task).on_click(
-                cx.listener(|this, c: &bool, _, cx| {
-                    this.draft.defaults.general.play_sound_after_task = *c;
-                    cx.notify();
-                }),
-            ))
+            .child(
+                Checkbox::new("snd-capture")
+                    .label("Play a sound after capture")
+                    .checked(self.draft.defaults.general.play_sound_after_capture)
+                    .on_click(cx.listener(|this, c: &bool, _, cx| {
+                        this.draft.defaults.general.play_sound_after_capture = *c;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Checkbox::new("snd-task")
+                    .label("Play a sound when a task finishes or fails")
+                    .checked(self.draft.defaults.general.play_sound_after_task)
+                    .on_click(cx.listener(|this, c: &bool, _, cx| {
+                        this.draft.defaults.general.play_sound_after_task = *c;
+                        cx.notify();
+                    })),
+            )
             .child(widgets::row("Custom capture sound (file)", Input::new(&self.sound_capture), cx))
             .child(widgets::row("Custom task sound (file)", Input::new(&self.sound_task), cx))
             .child(widgets::row("Custom error sound (file)", Input::new(&self.sound_error), cx))
@@ -358,6 +364,42 @@ impl SettingsWindow {
             )
             .child(widgets::muted("Bring in the capture history of an existing ShareX install (History.json).", cx))
             .child(Button::new("sharex-history").label("Import ShareX history…").on_click(cx.listener(|this, _, _, cx| this.import_sharex(cx))))
+            .child(widgets::muted(
+                "Bring over an existing ShareX setup: workflows and hotkeys, custom uploaders, accounts, effect presets and history. Pick the ShareX folder (Documents\\ShareX) or a .sxb backup.",
+                cx,
+            ))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .child(Button::new("sharex-folder").label("Import ShareX folder…").on_click(cx.listener(|this, _, _, cx| this.import_sharex_config(true, cx))))
+                    .child(Button::new("sharex-backup").label("Import ShareX backup (.sxb)…").on_click(cx.listener(|this, _, _, cx| this.import_sharex_config(false, cx)))),
+            )
+    }
+
+    fn import_sharex_config(&mut self, folder: bool, cx: &mut Context<Self>) {
+        let services = cx.global::<UiState>().services.clone();
+        let task = cx.background_spawn(async move {
+            let picked = if folder {
+                rfd::AsyncFileDialog::new().set_title("ShareX folder").pick_folder().await
+            } else {
+                rfd::AsyncFileDialog::new().add_filter("ShareX backup", &["sxb"]).pick_file().await
+            };
+            let Some(path) = picked else { return Ok(None) };
+            (services.import_sharex)(path.path().to_path_buf()).map(Some)
+        });
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |this, cx| match r {
+                Ok(Some(summary)) => {
+                    this.draft = cx.global::<UiState>().services.app.settings();
+                    this.report(Ok(summary), cx);
+                }
+                Ok(None) => {}
+                Err(e) => this.report(Err(format!("Import failed: {e}")), cx),
+            });
+        })
+        .detach();
     }
 
     fn rebuild_host_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -385,13 +427,20 @@ impl SettingsWindow {
         let services = cx.global::<UiState>().services.clone();
         let u = &self.draft.defaults.upload;
         let mut kinds = div().flex().gap(px(6.));
-        for (k, label) in [(DestKind::Image, "Images"), (DestKind::Text, "Text"), (DestKind::File, "Files"), (DestKind::Shortener, "URL shortener"), (DestKind::Sharer, "URL sharing")] {
-            kinds = kinds.child(Button::new(SharedString::from(format!("dk-{label}"))).label(label).selected(self.dest_kind == k).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.dest_kind = k;
-                    cx.notify();
-                },
-            )));
+        for (k, label) in [
+            (DestKind::Image, "Images"),
+            (DestKind::Text, "Text"),
+            (DestKind::File, "Files"),
+            (DestKind::Shortener, "URL shortener"),
+            (DestKind::Sharer, "URL sharing"),
+        ] {
+            kinds =
+                kinds.child(Button::new(SharedString::from(format!("dk-{label}"))).label(label).selected(self.dest_kind == k).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.dest_kind = k;
+                        cx.notify();
+                    }),
+                ));
         }
         let current = match self.dest_kind {
             DestKind::Image => u.image_destination.clone(),
@@ -409,8 +458,8 @@ impl SettingsWindow {
         for (id, name) in choices {
             let selected = id == current;
             let kind = self.dest_kind;
-            list = list.child(Button::new(SharedString::from(format!("dest-{id}"))).label(name).small().selected(selected).on_click(cx.listener(
-                move |this, _, _, cx| {
+            list = list.child(Button::new(SharedString::from(format!("dest-{id}"))).label(name).small().selected(selected).on_click(
+                cx.listener(move |this, _, _, cx| {
                     let u = &mut this.draft.defaults.upload;
                     match kind {
                         DestKind::Image => u.image_destination = id.clone(),
@@ -420,30 +469,38 @@ impl SettingsWindow {
                         DestKind::Sharer => u.url_sharer = id.clone(),
                     }
                     cx.notify();
-                },
-            )));
+                }),
+            ));
         }
         let mut after = div().flex().flex_col().gap(px(6.));
         for (flag, label) in present::after_upload_options() {
-            after = after.child(Checkbox::new(SharedString::from(format!("au-{}", flag.bits()))).label(label).checked(self.draft.defaults.after_upload.contains(flag)).on_click(
-                cx.listener(move |this, v: &bool, _, cx| {
-                    this.draft.defaults.after_upload.set(flag, *v);
-                    cx.notify();
-                }),
-            ));
+            after = after.child(
+                Checkbox::new(SharedString::from(format!("au-{}", flag.bits())))
+                    .label(label)
+                    .checked(self.draft.defaults.after_upload.contains(flag))
+                    .on_click(cx.listener(move |this, v: &bool, _, cx| {
+                        this.draft.defaults.after_upload.set(flag, *v);
+                        cx.notify();
+                    })),
+            );
         }
         let mut accounts = div().flex().flex_col().gap(px(8.));
         for (i, (account, inputs)) in self.draft.hosts.iter().zip(&self.hosts).enumerate() {
             let mut card = div().flex().flex_col().gap(px(4.)).p(px(8.)).rounded(px(6.)).bg(cx.theme().secondary).child(
-                div().flex().flex_row().items_center().child(div().flex_1().font_weight(gpui::FontWeight::SEMIBOLD).child(account.kind.label())).child(
-                    Button::new(SharedString::from(format!("host-rm-{i}"))).label("Remove").ghost().small().on_click(cx.listener(move |this, _, window, cx| {
-                        if i < this.draft.hosts.len() {
-                            this.draft.hosts.remove(i);
-                            this.rebuild_host_inputs(window, cx);
-                        }
-                        cx.notify();
-                    })),
-                ),
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(div().flex_1().font_weight(gpui::FontWeight::SEMIBOLD).child(account.kind.label()))
+                    .child(Button::new(SharedString::from(format!("host-rm-{i}"))).label("Remove").ghost().small().on_click(cx.listener(
+                        move |this, _, window, cx| {
+                            if i < this.draft.hosts.len() {
+                                this.draft.hosts.remove(i);
+                                this.rebuild_host_inputs(window, cx);
+                            }
+                            cx.notify();
+                        },
+                    ))),
             );
             for ((key, _secret, input), field) in inputs.iter().zip(account.kind.fields()) {
                 let _ = key;
@@ -453,25 +510,29 @@ impl SettingsWindow {
         }
         let mut add = div().flex().flex_wrap().gap(px(6.)).child(widgets::muted("Add an account:", cx));
         for kind in laqta_domain::hosts::HostKind::ALL {
-            add = add.child(Button::new(SharedString::from(format!("host-add-{}", kind.id()))).label(kind.label()).small().ghost().on_click(cx.listener(
-                move |this, _, window, cx| {
-                    if this.collect(cx).is_ok() {
-                        this.draft.hosts.push(laqta_domain::hosts::HostAccount::new(kind));
-                        this.rebuild_host_inputs(window, cx);
-                    }
-                    cx.notify();
-                },
-            )));
+            add =
+                add.child(Button::new(SharedString::from(format!("host-add-{}", kind.id()))).label(kind.label()).small().ghost().on_click(
+                    cx.listener(move |this, _, window, cx| {
+                        if this.collect(cx).is_ok() {
+                            this.draft.hosts.push(laqta_domain::hosts::HostAccount::new(kind));
+                            this.rebuild_host_inputs(window, cx);
+                        }
+                        cx.notify();
+                    }),
+                ));
         }
         widgets::section("Uploads", cx)
             .child(widgets::row("Choose a destination for", kinds, cx))
             .child(list)
-            .child(Checkbox::new("upload-after-capture").label("Upload after capture").checked(self.draft.defaults.after_capture.contains(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST)).on_click(
-                cx.listener(|this, v: &bool, _, cx| {
-                    this.draft.defaults.after_capture.set(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST, *v);
-                    cx.notify();
-                }),
-            ))
+            .child(
+                Checkbox::new("upload-after-capture")
+                    .label("Upload after capture")
+                    .checked(self.draft.defaults.after_capture.contains(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST))
+                    .on_click(cx.listener(|this, v: &bool, _, cx| {
+                        this.draft.defaults.after_capture.set(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST, *v);
+                        cx.notify();
+                    })),
+            )
             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("After upload"))
             .child(after)
             .child(widgets::row("Copied text ($url, $shorturl, $deletionurl, …)", Input::new(&self.clipboard_format), cx))
@@ -480,7 +541,11 @@ impl SettingsWindow {
             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Accounts"))
             .child(accounts)
             .child(add)
-            .child(Button::new("import-sxcu").label("Import custom uploader (.sxcu)…").on_click(cx.listener(|this, _, _, cx| this.import_sxcu(cx))))
+            .child(
+                Button::new("import-sxcu")
+                    .label("Import custom uploader (.sxcu)…")
+                    .on_click(cx.listener(|this, _, _, cx| this.import_sxcu(cx))),
+            )
     }
 
     fn clipboard_presets(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -527,7 +592,8 @@ impl SettingsWindow {
     fn export_archive(&mut self, cx: &mut Context<Self>) {
         let services = cx.global::<UiState>().services.clone();
         let task = cx.background_spawn(async move {
-            let Some(file) = rfd::AsyncFileDialog::new().set_file_name("Laqta-backup.zip").add_filter("Zip", &["zip"]).save_file().await else {
+            let Some(file) = rfd::AsyncFileDialog::new().set_file_name("Laqta-backup.zip").add_filter("Zip", &["zip"]).save_file().await
+            else {
                 return Ok(None);
             };
             laqta_library::export_archive(&services.data_dir, file.path(), services.history.as_deref())
@@ -578,10 +644,8 @@ impl SettingsWindow {
         cx.spawn(async move |this, cx| {
             let r = task.await;
             let _ = this.update(cx, |this, cx| match r {
-                Ok(Some(rep)) => this.report(
-                    Ok(format!("Imported {} items ({} already there, {} unreadable).", rep.imported, rep.skipped, rep.failed)),
-                    cx,
-                ),
+                Ok(Some(rep)) => this
+                    .report(Ok(format!("Imported {} items ({} already there, {} unreadable).", rep.imported, rep.skipped, rep.failed)), cx),
                 Ok(None) => {}
                 Err(e) => this.report(Err(format!("Import failed: {e}")), cx),
             });
@@ -667,8 +731,16 @@ impl SettingsWindow {
                 |s, v| s.defaults.capture.transparent_window = v,
                 cx,
             ))
-            .child(widgets::row("Right click in the overlay", self.mouse_actions("rc", r.right_click, |s, a| s.defaults.capture.region.right_click = a, cx), cx))
-            .child(widgets::row("Middle click in the overlay", self.mouse_actions("mc", r.middle_click, |s, a| s.defaults.capture.region.middle_click = a, cx), cx))
+            .child(widgets::row(
+                "Right click in the overlay",
+                self.mouse_actions("rc", r.right_click, |s, a| s.defaults.capture.region.right_click = a, cx),
+                cx,
+            ))
+            .child(widgets::row(
+                "Middle click in the overlay",
+                self.mouse_actions("mc", r.middle_click, |s, a| s.defaults.capture.region.middle_click = a, cx),
+                cx,
+            ))
             .child(widgets::row("Custom region (x, y, width, height)", Input::new(&self.custom_region), cx))
             .child(widgets::row("Window title for \"Capture window by title\"", Input::new(&self.window_title), cx))
     }
@@ -690,12 +762,12 @@ impl SettingsWindow {
             (RegionMouseAction::CaptureActiveMonitor, "Capture monitor"),
             (RegionMouseAction::ConfirmSelection, "Confirm"),
         ] {
-            row = row.child(Button::new(SharedString::from(format!("{id}-{a:?}"))).label(label).small().selected(current == a).on_click(cx.listener(
-                move |this, _, _, cx| {
+            row = row.child(Button::new(SharedString::from(format!("{id}-{a:?}"))).label(label).small().selected(current == a).on_click(
+                cx.listener(move |this, _, _, cx| {
                     set(&mut this.draft, a);
                     cx.notify();
-                },
-            )));
+                }),
+            ));
         }
         row
     }

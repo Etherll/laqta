@@ -598,11 +598,20 @@ pub struct FakeScreenStream {
 }
 
 impl crate::ScreenStream for FakeScreenStream {
-    fn open(&self, area: laqta_domain::geometry::PhysRect, _show_cursor: bool, _fps: u32, _audio: &[laqta_domain::record::AudioDevice]) -> BoxFuture<'_, Result<crate::RecordingInput, PortError>> {
+    fn open(
+        &self,
+        area: laqta_domain::geometry::PhysRect,
+        _show_cursor: bool,
+        _fps: u32,
+        _audio: &[laqta_domain::record::AudioDevice],
+    ) -> BoxFuture<'_, Result<crate::RecordingInput, PortError>> {
         self.opened.lock().unwrap().push(area);
         let r = match self.fail.lock().unwrap().clone() {
             Some(e) => Err(e),
-            None => Ok(crate::RecordingInput { video: crate::VideoSource::Frames(Box::new(FakeFrames { size: (area.width, area.height), left: 3 })), audio: Vec::new() }),
+            None => Ok(crate::RecordingInput {
+                video: crate::VideoSource::Frames(Box::new(FakeFrames { size: (area.width, area.height), left: 3 })),
+                audio: Vec::new(),
+            }),
         };
         Box::pin(async move { r })
     }
@@ -650,9 +659,15 @@ impl crate::RecordingHandle for FakeHandle {
 }
 
 impl crate::Media for FakeMedia {
-    fn start(&self, _input: crate::RecordingInput, spec: laqta_domain::record::RecordSpec, output: PathBuf) -> BoxFuture<'_, Result<Box<dyn crate::RecordingHandle>, PortError>> {
+    fn start(
+        &self,
+        _input: crate::RecordingInput,
+        spec: laqta_domain::record::RecordSpec,
+        output: PathBuf,
+    ) -> BoxFuture<'_, Result<Box<dyn crate::RecordingHandle>, PortError>> {
         self.calls.lock().unwrap().push(format!("start {:?} {}x{}", spec.codec, spec.area.width, spec.area.height));
-        let h: Box<dyn crate::RecordingHandle> = Box::new(FakeHandle { calls: self.calls.clone(), output, crashed: *self.crash.lock().unwrap() });
+        let h: Box<dyn crate::RecordingHandle> =
+            Box::new(FakeHandle { calls: self.calls.clone(), output, crashed: *self.crash.lock().unwrap() });
         Box::pin(async move { Ok(h) })
     }
     fn transcode(&self, input: &Path, output: &Path, _spec: crate::TranscodeSpec) -> BoxFuture<'_, Result<(), PortError>> {
@@ -660,7 +675,17 @@ impl crate::Media for FakeMedia {
         Box::pin(async { Ok(()) })
     }
     fn probe(&self, _input: &Path) -> BoxFuture<'_, Result<crate::MediaInfo, PortError>> {
-        Box::pin(async { Ok(crate::MediaInfo { duration_secs: 3.0, width: 640, height: 480, fps: 30.0, video_codec: "h264".into(), audio_codec: None, size_bytes: 1000 }) })
+        Box::pin(async {
+            Ok(crate::MediaInfo {
+                duration_secs: 3.0,
+                width: 640,
+                height: 480,
+                fps: 30.0,
+                video_codec: "h264".into(),
+                audio_codec: None,
+                size_bytes: 1000,
+            })
+        })
     }
 }
 

@@ -162,7 +162,17 @@ impl Raw {
                 texts.push(value.as_str());
             }
         }
-        texts.extend([self.data.as_deref(), self.url.as_deref(), self.thumbnail_url.as_deref(), self.deletion_url.as_deref(), self.error_message.as_deref()].into_iter().flatten());
+        texts.extend(
+            [
+                self.data.as_deref(),
+                self.url.as_deref(),
+                self.thumbnail_url.as_deref(),
+                self.deletion_url.as_deref(),
+                self.error_message.as_deref(),
+            ]
+            .into_iter()
+            .flatten(),
+        );
         texts.into_iter().any(migrate::has_marker)
     }
 
@@ -200,7 +210,8 @@ impl Raw {
         let thumbnail_url = text.opt(thumbnail_url)?;
         let deletion_url = text.opt(deletion_url)?;
         let error_message = text.opt(error_message)?;
-        if response_type.as_deref().is_some_and(|kind| kind.eq_ignore_ascii_case("redirection")) && url.as_deref().is_none_or(str::is_empty) {
+        if response_type.as_deref().is_some_and(|kind| kind.eq_ignore_ascii_case("redirection")) && url.as_deref().is_none_or(str::is_empty)
+        {
             url = Some("{responseurl}".to_string());
         }
 

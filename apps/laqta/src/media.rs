@@ -37,7 +37,10 @@ impl LazyMedia {
             None => {
                 let ok = self
                     .prompt
-                    .confirm("FFmpeg is needed", "Recording and video tools use FFmpeg. Download the pinned FFmpeg 9.0.2 build now (about 190 MB)?")
+                    .confirm(
+                        "FFmpeg is needed",
+                        "Recording and video tools use FFmpeg. Download the pinned FFmpeg 9.0.2 build now (about 190 MB)?",
+                    )
                     .await?;
                 if !ok {
                     return Err(PortError::Cancelled);
@@ -54,7 +57,12 @@ impl LazyMedia {
 }
 
 impl Media for LazyMedia {
-    fn start(&self, input: RecordingInput, spec: RecordSpec, output: PathBuf) -> BoxFuture<'_, Result<Box<dyn RecordingHandle>, PortError>> {
+    fn start(
+        &self,
+        input: RecordingInput,
+        spec: RecordSpec,
+        output: PathBuf,
+    ) -> BoxFuture<'_, Result<Box<dyn RecordingHandle>, PortError>> {
         Box::pin(async move {
             let m = self.get().await?;
             m.start(input, spec, output).await

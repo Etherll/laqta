@@ -57,7 +57,17 @@ impl HistoryWindow {
             }
         })
         .detach();
-        let mut this = HistoryWindow { search, tags, editing_tags: None, grid: images_only, stats: String::new(), images_only, page: 0, rows: Vec::new(), error: None };
+        let mut this = HistoryWindow {
+            search,
+            tags,
+            editing_tags: None,
+            grid: images_only,
+            stats: String::new(),
+            images_only,
+            page: 0,
+            rows: Vec::new(),
+            error: None,
+        };
         this.reload(cx);
         this
     }
@@ -177,9 +187,11 @@ impl Render for HistoryWindow {
                 card = card.child(div().text_xs().truncate().child(r.title.clone())).child(widgets::muted(r.when.clone(), cx));
                 if let Some(path) = r.path.clone() {
                     let s1 = shell.clone();
-                    card = card.child(Button::new(SharedString::from(format!("g-open-{}", r.id))).label("Open").ghost().on_click(move |_, _, _| {
-                        let _ = s1.open_path(&path);
-                    }));
+                    card = card.child(Button::new(SharedString::from(format!("g-open-{}", r.id))).label("Open").ghost().on_click(
+                        move |_, _, _| {
+                            let _ = s1.open_path(&path);
+                        },
+                    ));
                 }
                 grid = grid.child(card);
             }
@@ -204,9 +216,12 @@ impl Render for HistoryWindow {
                     .child(widgets::muted(format!("{}{tags}", meta.join(" · ")), cx)),
             );
             let current = r.tags.clone();
-            line = line.child(Button::new(SharedString::from(format!("tags-{id}"))).label("Tags").ghost().on_click(cx.listener(
-                move |this, _, window, cx| this.edit_tags(id, &current, window, cx),
-            )));
+            line = line.child(
+                Button::new(SharedString::from(format!("tags-{id}")))
+                    .label("Tags")
+                    .ghost()
+                    .on_click(cx.listener(move |this, _, window, cx| this.edit_tags(id, &current, window, cx))),
+            );
             if let Some(path) = r.path.clone() {
                 let (s1, s2) = (shell.clone(), shell.clone());
                 let (p1, p2, p3) = (path.clone(), path.clone(), path.clone());

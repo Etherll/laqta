@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use laqta_domain::record::AudioDevice;
 use laqta_ports::{PcmFormat, PcmSource, PortError};
-use wasapi::{AudioCaptureClient, AudioClient, DeviceEnumerator, Direction, Handle, SampleType, StreamMode, WaveFormat, WasapiError};
+use wasapi::{AudioCaptureClient, AudioClient, DeviceEnumerator, Direction, Handle, SampleType, StreamMode, WasapiError, WaveFormat};
 
 /// The id and name of the system sound entry in the device list.
 const LOOPBACK_ID: &str = "loopback";
@@ -41,9 +41,8 @@ const EVENT_BUFFER_HNS: i64 = 2_000_000;
 pub(crate) fn list_devices() -> Result<Vec<AudioDevice>, PortError> {
     let _com = Mta::enter();
     let enumerator = DeviceEnumerator::new().map_err(|e| PortError::Failed(format!("audio devices: {e}")))?;
-    let collection = enumerator
-        .get_device_collection(Direction::Capture)
-        .map_err(|e| PortError::Failed(format!("capture devices: {e}")))?;
+    let collection =
+        enumerator.get_device_collection(Direction::Capture).map_err(|e| PortError::Failed(format!("capture devices: {e}")))?;
     let count = collection.get_nbr_devices().map_err(|e| PortError::Failed(format!("capture devices: {e}")))?;
     let mut devices = Vec::new();
     for index in 0..count {

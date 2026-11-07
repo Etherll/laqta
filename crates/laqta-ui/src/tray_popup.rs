@@ -55,7 +55,8 @@ impl Render for TrayPopup {
             let _ = cx.global_mut::<UiState>().tray_popup.take();
         }
         let dispatch = cx.global::<UiState>().services.dispatch.clone();
-        let mut col = div().size_full().flex().flex_col().gap(px(2.)).p(px(8.)).bg(cx.theme().background).border_1().border_color(cx.theme().border);
+        let mut col =
+            div().size_full().flex().flex_col().gap(px(2.)).p(px(8.)).bg(cx.theme().background).border_1().border_color(cx.theme().border);
         for (i, item) in self.menu.items.iter().enumerate() {
             let d = dispatch.clone();
             let action = item.action;

@@ -60,7 +60,16 @@ struct ActionsToolbar;
 impl Render for ActionsToolbar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dispatch = cx.global::<UiState>().services.dispatch.clone();
-        let mut bar = div().size_full().flex().flex_row().items_center().gap(px(4.)).p(px(8.)).bg(cx.theme().background).border_1().border_color(cx.theme().border);
+        let mut bar = div()
+            .size_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.))
+            .p(px(8.))
+            .bg(cx.theme().background)
+            .border_1()
+            .border_color(cx.theme().border);
         for (i, action) in DEFAULT_ACTIONS.into_iter().enumerate() {
             let d = dispatch.clone();
             bar = bar.child(

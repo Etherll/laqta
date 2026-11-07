@@ -75,7 +75,11 @@ impl Notifier for UiHandle {
 }
 
 impl UiHandle {
-    fn ask(&self, title: &str, kind: crate::prompt_window::PromptKind) -> futures_channel::oneshot::Receiver<Result<crate::prompt_window::Answer, PortError>> {
+    fn ask(
+        &self,
+        title: &str,
+        kind: crate::prompt_window::PromptKind,
+    ) -> futures_channel::oneshot::Receiver<Result<crate::prompt_window::Answer, PortError>> {
         let (tx, rx) = futures_channel::oneshot::channel();
         if let Err(e) = self.tx.unbounded_send(UiCommand::Prompt { title: title.to_string(), kind, reply: tx })
             && let UiCommand::Prompt { reply, .. } = e.into_inner()
@@ -153,10 +157,16 @@ impl laqta_ports::Prompt for UiHandle {
             }
         })
     }
-    fn after_capture(&self, image: &laqta_domain::Bitmap, after_capture: u32, after_upload: u32) -> laqta_ports::BoxFuture<'_, Result<(u32, u32), PortError>> {
+    fn after_capture(
+        &self,
+        image: &laqta_domain::Bitmap,
+        after_capture: u32,
+        after_upload: u32,
+    ) -> laqta_ports::BoxFuture<'_, Result<(u32, u32), PortError>> {
         use crate::prompt_window::{Answer, PromptKind};
         // GPUI scales the full image; `thumbnail` would need the compute pool.
-        let rx = self.ask("After capture", PromptKind::AfterCapture { image: crate::toast::render_image(image), after_capture, after_upload });
+        let rx =
+            self.ask("After capture", PromptKind::AfterCapture { image: crate::toast::render_image(image), after_capture, after_upload });
         Box::pin(async move {
             match rx.await {
                 Ok(Ok(Answer::Flags(a, b))) => Ok((a, b)),
@@ -165,11 +175,20 @@ impl laqta_ports::Prompt for UiHandle {
             }
         })
     }
-    fn before_upload(&self, file_name: &str, destinations: &[(String, String)], current: &str) -> laqta_ports::BoxFuture<'_, Result<String, PortError>> {
+    fn before_upload(
+        &self,
+        file_name: &str,
+        destinations: &[(String, String)],
+        current: &str,
+    ) -> laqta_ports::BoxFuture<'_, Result<String, PortError>> {
         use crate::prompt_window::{Answer, PromptKind};
         let rx = self.ask(
             "Before upload",
-            PromptKind::BeforeUpload { file_name: file_name.to_string(), destinations: destinations.to_vec(), current: current.to_string() },
+            PromptKind::BeforeUpload {
+                file_name: file_name.to_string(),
+                destinations: destinations.to_vec(),
+                current: current.to_string(),
+            },
         );
         Box::pin(async move {
             match rx.await {
@@ -229,6 +248,9 @@ pub struct UiServices {
     pub secrets: Arc<dyn laqta_ports::SecretStore>,
     /// Adds a custom uploader (`.sxcu` JSON): saves it and registers it; returns its id.
     pub add_custom_uploader: Arc<dyn Fn(String) -> Result<String, String> + Send + Sync>,
+    /// Imports a ShareX folder or `.sxb` backup (settings, workflows, uploaders, secrets, history) and
+    /// applies it; returns a summary.
+    pub import_sharex: Arc<dyn Fn(PathBuf) -> Result<String, String> + Send + Sync>,
     /// The font handle shared with the Editor engine (ADR 024).
     pub fonts: laqta_editor::Fonts,
     /// The compute pool and blocking pool (`run_compute` for editor operations that need it).

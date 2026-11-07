@@ -35,9 +35,7 @@ pub(crate) async fn fetch(
     progress: Progress,
     cancel: Arc<AtomicBool>,
 ) -> Result<(), HttpError> {
-    let rx = dispatch(move |client| async move {
-        download(&client, &url, &dest, &expected, &progress, &cancel).await
-    })?;
+    let rx = dispatch(move |client| async move { download(&client, &url, &dest, &expected, &progress, &cancel).await })?;
     finish(rx).await
 }
 
@@ -50,18 +48,12 @@ async fn download(
     cancel: &AtomicBool,
 ) -> Result<(), HttpError> {
     let part = part_path(dest);
-    if let Some(parent) = dest
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
+    if let Some(parent) = dest.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         tokio::fs::create_dir_all(parent).await.map_err(io_error)?;
     }
     let result = match transfer(client, url, &part, progress, cancel).await {
         Ok(actual) if actual == expected => tokio::fs::rename(&part, dest).await.map_err(io_error),
-        Ok(actual) => Err(HttpError::Checksum {
-            expected: expected.to_owned(),
-            actual,
-        }),
+        Ok(actual) => Err(HttpError::Checksum { expected: expected.to_owned(), actual }),
         Err(err) => Err(err),
     };
     if result.is_err() {
@@ -71,19 +63,8 @@ async fn download(
 }
 
 /// Streams the body into `part` and returns its SHA-256 as lowercase hex.
-async fn transfer(
-    client: &Client,
-    url: &str,
-    part: &Path,
-    progress: &Progress,
-    cancel: &AtomicBool,
-) -> Result<String, HttpError> {
-    let mut response = client
-        .get(url)
-        .timeout(DOWNLOAD_TIMEOUT)
-        .send()
-        .await
-        .map_err(map_error)?;
+async fn transfer(client: &Client, url: &str, part: &Path, progress: &Progress, cancel: &AtomicBool) -> Result<String, HttpError> {
+    let mut response = client.get(url).timeout(DOWNLOAD_TIMEOUT).send().await.map_err(map_error)?;
     let status = response.status();
     if !status.is_success() {
         return Err(HttpError::Network(format!("HTTP {status} for {url}")));

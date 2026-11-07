@@ -76,7 +76,12 @@ pub fn native_hosts(accounts: &[HostAccount], deps: &HostDeps) -> NativeHosts {
             HostKind::Dropbox => {
                 use crate::hosts::dropbox as d;
                 let o = oauth(deps, d::oauth_config(), a.get("app_key"), None, d::SECRET_KEY);
-                out.destinations.push(Arc::new(d::Dropbox::new(o, d::DROPBOX_API.into(), d::DROPBOX_CONTENT.into(), a.flag("direct_link"))));
+                out.destinations.push(Arc::new(d::Dropbox::new(
+                    o,
+                    d::DROPBOX_API.into(),
+                    d::DROPBOX_CONTENT.into(),
+                    a.flag("direct_link"),
+                )));
             }
             #[cfg(feature = "host-google-drive")]
             HostKind::GoogleDrive => {

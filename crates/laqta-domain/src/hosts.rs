@@ -77,7 +77,10 @@ impl HostKind {
     pub fn fields(self) -> &'static [HostField] {
         match self {
             HostKind::Imgur => &[f!("client_id", "Client ID (from your Imgur app)", false, "")],
-            HostKind::Dropbox => &[f!("app_key", "App key (from your Dropbox app)", false, ""), f!("direct_link", "Direct links (true/false)", false, "false")],
+            HostKind::Dropbox => &[
+                f!("app_key", "App key (from your Dropbox app)", false, ""),
+                f!("direct_link", "Direct links (true/false)", false, "false"),
+            ],
             HostKind::GoogleDrive => &[
                 f!("client_id", "OAuth client ID", false, ""),
                 f!("client_secret", "OAuth client secret", true, ""),
@@ -129,7 +132,10 @@ pub struct HostAccount {
 
 impl HostAccount {
     pub fn new(kind: HostKind) -> Self {
-        HostAccount { kind, values: kind.fields().iter().filter(|f| !f.secret).map(|f| (f.key.to_string(), f.default.to_string())).collect() }
+        HostAccount {
+            kind,
+            values: kind.fields().iter().filter(|f| !f.secret).map(|f| (f.key.to_string(), f.default.to_string())).collect(),
+        }
     }
 
     /// The value of a non-secret field, or its default.

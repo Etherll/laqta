@@ -55,7 +55,9 @@ mod imp {
 
     use laqta_domain::region::HoverTarget;
     use laqta_domain::{Bitmap, Frame};
-    use laqta_ports::{BoxFuture, CaptureRequest, Clipboard, HotkeyRegistrar, PortError, ScreenSource, ScreenStream, SecretStore, Shell, Tray};
+    use laqta_ports::{
+        BoxFuture, CaptureRequest, Clipboard, HotkeyRegistrar, PortError, ScreenSource, ScreenStream, SecretStore, Shell, Tray,
+    };
     use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 
     use crate::{capture_dxgi, capture_gdi, clipboard, cursor, hover, secrets, shell, shell_thread, stream, transparent};

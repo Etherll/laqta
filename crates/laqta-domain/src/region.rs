@@ -66,10 +66,24 @@ pub struct KeyMods {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RegionInput {
-    PointerMove { x: i32, y: i32 },
-    PointerDown { x: i32, y: i32, button: Button },
-    PointerUp { x: i32, y: i32, button: Button },
-    Key { key: RegionKey, mods: KeyMods },
+    PointerMove {
+        x: i32,
+        y: i32,
+    },
+    PointerDown {
+        x: i32,
+        y: i32,
+        button: Button,
+    },
+    PointerUp {
+        x: i32,
+        y: i32,
+        button: Button,
+    },
+    Key {
+        key: RegionKey,
+        mods: KeyMods,
+    },
     TargetsLoaded(Vec<HoverTarget>),
     /// A button on the overlay toolbar.
     Command(RegionCommand),

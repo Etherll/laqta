@@ -99,11 +99,7 @@ fn open_input(area: PhysRect, audio: &[AudioDevice]) -> Result<RecordingInput, P
     let screen = screen_for_area(&enumerate_outputs()?, area)?;
     let mut inputs = Vec::with_capacity(audio.len());
     for device in audio {
-        inputs.push(if device.loopback {
-            AudioInput::Pcm(Box::new(WasapiLoopback::start()?))
-        } else {
-            AudioInput::Device(device.clone())
-        });
+        inputs.push(if device.loopback { AudioInput::Pcm(Box::new(WasapiLoopback::start()?)) } else { AudioInput::Device(device.clone()) });
     }
     Ok(RecordingInput { video: VideoSource::Target(OsScreenRef::new(screen)), audio: inputs })
 }
@@ -117,7 +113,13 @@ pub(crate) struct WindowsStream;
 impl ScreenStream for WindowsStream {
     // `show_cursor` and `fps` are not part of the output reference. `laqta-media` reads them from
     // the record spec.
-    fn open(&self, area: PhysRect, _show_cursor: bool, _fps: u32, audio: &[AudioDevice]) -> BoxFuture<'_, Result<RecordingInput, PortError>> {
+    fn open(
+        &self,
+        area: PhysRect,
+        _show_cursor: bool,
+        _fps: u32,
+        audio: &[AudioDevice],
+    ) -> BoxFuture<'_, Result<RecordingInput, PortError>> {
         let audio = audio.to_vec();
         Box::pin(blocking::unblock(move || open_input(area, &audio)))
     }
@@ -145,7 +147,16 @@ mod tests {
     fn area_on_the_first_display() {
         assert_eq!(
             screen_for_area(&desktop(), rect(100, 200, 800, 600)).ok(),
-            Some(OsScreen::Windows { adapter_index: 0, output_index: 0, offset_x: 100, offset_y: 200, width: 800, height: 600, desktop_x: 100, desktop_y: 200 })
+            Some(OsScreen::Windows {
+                adapter_index: 0,
+                output_index: 0,
+                offset_x: 100,
+                offset_y: 200,
+                width: 800,
+                height: 600,
+                desktop_x: 100,
+                desktop_y: 200
+            })
         );
     }
 
@@ -153,7 +164,16 @@ mod tests {
     fn second_output_of_the_same_adapter_gets_its_own_offsets() {
         assert_eq!(
             screen_for_area(&desktop(), rect(2000, -100, 640, 480)).ok(),
-            Some(OsScreen::Windows { adapter_index: 0, output_index: 1, offset_x: 80, offset_y: 100, width: 640, height: 480, desktop_x: 2000, desktop_y: -100 })
+            Some(OsScreen::Windows {
+                adapter_index: 0,
+                output_index: 1,
+                offset_x: 80,
+                offset_y: 100,
+                width: 640,
+                height: 480,
+                desktop_x: 2000,
+                desktop_y: -100
+            })
         );
     }
 
@@ -161,7 +181,16 @@ mod tests {
     fn display_on_another_adapter_with_negative_coordinates() {
         assert_eq!(
             screen_for_area(&desktop(), rect(-2000, 10, 1000, 500)).ok(),
-            Some(OsScreen::Windows { adapter_index: 1, output_index: 0, offset_x: 560, offset_y: 10, width: 1000, height: 500, desktop_x: -2000, desktop_y: 10 })
+            Some(OsScreen::Windows {
+                adapter_index: 1,
+                output_index: 0,
+                offset_x: 560,
+                offset_y: 10,
+                width: 1000,
+                height: 500,
+                desktop_x: -2000,
+                desktop_y: 10
+            })
         );
     }
 
@@ -169,7 +198,16 @@ mod tests {
     fn area_crossing_an_edge_is_clipped_to_its_display() {
         assert_eq!(
             screen_for_area(&desktop(), rect(1800, 100, 400, 300)).ok(),
-            Some(OsScreen::Windows { adapter_index: 0, output_index: 0, offset_x: 1800, offset_y: 100, width: 120, height: 300, desktop_x: 1800, desktop_y: 100 })
+            Some(OsScreen::Windows {
+                adapter_index: 0,
+                output_index: 0,
+                offset_x: 1800,
+                offset_y: 100,
+                width: 120,
+                height: 300,
+                desktop_x: 1800,
+                desktop_y: 100
+            })
         );
     }
 
@@ -177,7 +215,16 @@ mod tests {
     fn sides_round_down_to_even() {
         assert_eq!(
             screen_for_area(&desktop(), rect(0, 0, 801, 601)).ok(),
-            Some(OsScreen::Windows { adapter_index: 0, output_index: 0, offset_x: 0, offset_y: 0, width: 800, height: 600, desktop_x: 0, desktop_y: 0 })
+            Some(OsScreen::Windows {
+                adapter_index: 0,
+                output_index: 0,
+                offset_x: 0,
+                offset_y: 0,
+                width: 800,
+                height: 600,
+                desktop_x: 0,
+                desktop_y: 0
+            })
         );
     }
 
@@ -186,7 +233,16 @@ mod tests {
         // x = 1920 is outside the first display (its right edge is exclusive) and inside the second.
         assert_eq!(
             screen_for_area(&desktop(), rect(1920, 0, 100, 100)).ok(),
-            Some(OsScreen::Windows { adapter_index: 0, output_index: 1, offset_x: 0, offset_y: 200, width: 100, height: 100, desktop_x: 1920, desktop_y: 0 })
+            Some(OsScreen::Windows {
+                adapter_index: 0,
+                output_index: 1,
+                offset_x: 0,
+                offset_y: 200,
+                width: 100,
+                height: 100,
+                desktop_x: 1920,
+                desktop_y: 0
+            })
         );
     }
 

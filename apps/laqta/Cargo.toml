@@ -23,6 +23,7 @@ laqta-app.workspace = true
 laqta-imaging.workspace = true
 laqta-ipc.workspace = true
 laqta-ui.workspace = true
+laqta-import.workspace = true
 laqta-library.workspace = true
 laqta-upload.workspace = true
 laqta-media.workspace = true

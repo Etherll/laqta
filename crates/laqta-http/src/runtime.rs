@@ -72,10 +72,7 @@ pub(crate) fn submit(job: Job) -> Result<(), HttpError> {
     let Some(live) = handle.as_ref() else {
         return Err(stopped());
     };
-    let envelope = Envelope {
-        job,
-        in_flight: InFlight::begin(&live.shared),
-    };
+    let envelope = Envelope { job, in_flight: InFlight::begin(&live.shared) };
     if live.jobs.send(envelope).is_ok() {
         return Ok(());
     }
@@ -106,9 +103,7 @@ pub(crate) async fn finish<T>(rx: oneshot::Receiver<Result<T, HttpError>>) -> Re
 
 /// Whether the runtime thread is running.
 pub(crate) fn alive() -> bool {
-    locked(&HANDLE)
-        .as_ref()
-        .is_some_and(|live| !live.jobs.is_closed())
+    locked(&HANDLE).as_ref().is_some_and(|live| !live.jobs.is_closed())
 }
 
 pub(crate) fn set_release_after(after: Duration) {
@@ -134,15 +129,9 @@ async fn deliver<O: Send>(future: impl Future<Output = O> + Send, mut tx: onesho
 }
 
 fn start() -> Result<Handle, HttpError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| HttpError::Io(err.to_string()))?;
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|err| HttpError::Io(err.to_string()))?;
     let (jobs, queue) = tokio::sync::mpsc::unbounded_channel();
-    let shared = Arc::new(Shared {
-        in_flight: AtomicUsize::new(0),
-        idle_since: Mutex::new(Instant::now()),
-    });
+    let shared = Arc::new(Shared { in_flight: AtomicUsize::new(0), idle_since: Mutex::new(Instant::now()) });
     let thread_shared = Arc::clone(&shared);
     std::thread::Builder::new()
         .name("laqta-http".to_owned())
@@ -194,13 +183,8 @@ fn idle_wait(shared: &Shared) -> Duration {
 fn release_if_idle(shared: &Arc<Shared>) -> bool {
     let mut handle = locked(&HANDLE);
     let release = *locked(&RELEASE_AFTER);
-    let idle = shared.in_flight.load(Ordering::SeqCst) == 0
-        && locked(&shared.idle_since).elapsed() >= release;
-    if idle
-        && handle
-            .as_ref()
-            .is_some_and(|live| Arc::ptr_eq(&live.shared, shared))
-    {
+    let idle = shared.in_flight.load(Ordering::SeqCst) == 0 && locked(&shared.idle_since).elapsed() >= release;
+    if idle && handle.as_ref().is_some_and(|live| Arc::ptr_eq(&live.shared, shared)) {
         *handle = None;
     }
     idle

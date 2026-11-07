@@ -13,11 +13,7 @@ use crate::{Body, HttpError, Method, Part, Progress, Request, Response};
 /// Size of each chunk handed to the transport when a body reports progress.
 const CHUNK: usize = 64 * 1024;
 
-pub(crate) async fn execute(
-    client: &Client,
-    request: Request,
-    progress: Option<Progress>,
-) -> Result<Response, HttpError> {
+pub(crate) async fn execute(client: &Client, request: Request, progress: Option<Progress>) -> Result<Response, HttpError> {
     let url = checked_url(&request.url, &request.query)?;
     let mut builder = client.request(reqwest_method(request.method), url.as_str());
     if request.timeout_secs > 0 {
@@ -26,10 +22,7 @@ pub(crate) async fn execute(
 
     // The body's content type replaces any Content-Type the caller set, so the request never
     // carries two of them.
-    let body_sets_type = matches!(
-        request.body,
-        Body::Bytes { .. } | Body::Form(_) | Body::Multipart(_)
-    );
+    let body_sets_type = matches!(request.body, Body::Bytes { .. } | Body::Form(_) | Body::Multipart(_));
     for (name, value) in &request.headers {
         if body_sets_type && name.eq_ignore_ascii_case("content-type") {
             continue;
@@ -47,9 +40,7 @@ pub(crate) async fn execute(
             match &progress {
                 Some(report) if !data.is_empty() => {
                     let total = data.len() as u64;
-                    builder
-                        .header("content-length", total.to_string())
-                        .body(streamed(data, Arc::clone(report)))
+                    builder.header("content-length", total.to_string()).body(streamed(data, Arc::clone(report)))
                 }
                 Some(_) => {
                     completion = Some(0);
@@ -58,9 +49,7 @@ pub(crate) async fn execute(
                 None => builder.body(data),
             }
         }
-        Body::Form(pairs) => builder
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(encode_form(&pairs)),
+        Body::Form(pairs) => builder.header("content-type", "application/x-www-form-urlencoded").body(encode_form(&pairs)),
         Body::Multipart(parts) => {
             let (form, total) = multipart_form(parts)?;
             if let Some(report) = &progress {
@@ -81,20 +70,10 @@ pub(crate) async fn execute(
     let headers = response
         .headers()
         .iter()
-        .map(|(name, value)| {
-            (
-                name.as_str().to_owned(),
-                String::from_utf8_lossy(value.as_bytes()).into_owned(),
-            )
-        })
+        .map(|(name, value)| (name.as_str().to_owned(), String::from_utf8_lossy(value.as_bytes()).into_owned()))
         .collect();
     let body = response.bytes().await.map_err(map_error)?.to_vec();
-    Ok(Response {
-        status,
-        url,
-        headers,
-        body,
-    })
+    Ok(Response { status, url, headers, body })
 }
 
 /// Maps a `reqwest` error: a timeout, an invalid request, or anything else as a network failure.
@@ -121,12 +100,9 @@ fn describe(err: &reqwest::Error) -> String {
 }
 
 fn checked_url(raw: &str, query: &[(String, String)]) -> Result<url::Url, HttpError> {
-    let mut url =
-        url::Url::parse(raw).map_err(|err| HttpError::Invalid(format!("{raw}: {err}")))?;
+    let mut url = url::Url::parse(raw).map_err(|err| HttpError::Invalid(format!("{raw}: {err}")))?;
     if !matches!(url.scheme(), "http" | "https") {
-        return Err(HttpError::Invalid(format!(
-            "{raw}: only http and https are supported"
-        )));
+        return Err(HttpError::Invalid(format!("{raw}: only http and https are supported")));
     }
     if !query.is_empty() {
         url.query_pairs_mut().extend_pairs(query);
@@ -145,9 +121,7 @@ fn reqwest_method(method: Method) -> reqwest::Method {
 }
 
 fn encode_form(pairs: &[(String, String)]) -> String {
-    url::form_urlencoded::Serializer::new(String::new())
-        .extend_pairs(pairs)
-        .finish()
+    url::form_urlencoded::Serializer::new(String::new()).extend_pairs(pairs).finish()
 }
 
 fn multipart_form(parts: Vec<Part>) -> Result<(Form, u64), HttpError> {
@@ -159,12 +133,7 @@ fn multipart_form(parts: Vec<Part>) -> Result<(Form, u64), HttpError> {
                 total += value.len() as u64;
                 form = form.text(name, value);
             }
-            Part::File {
-                name,
-                file_name,
-                mime,
-                data,
-            } => {
+            Part::File { name, file_name, mime, data } => {
                 total += data.len() as u64;
                 let part = FormPart::bytes(data)
                     .file_name(file_name)
@@ -181,17 +150,14 @@ fn multipart_form(parts: Vec<Part>) -> Result<(Form, u64), HttpError> {
 /// an exact `Content-Length` alongside it, so the server never sees chunked encoding.
 fn streamed(data: Vec<u8>, report: Progress) -> reqwest::Body {
     let total = data.len() as u64;
-    let chunks = futures_lite::stream::unfold(
-        (data, 0usize, report),
-        move |(data, offset, report)| async move {
-            if offset >= data.len() {
-                return None;
-            }
-            let end = (offset + CHUNK).min(data.len());
-            let chunk = data[offset..end].to_vec();
-            report(end as u64, Some(total));
-            Some((Ok::<Vec<u8>, Infallible>(chunk), (data, end, report)))
-        },
-    );
+    let chunks = futures_lite::stream::unfold((data, 0usize, report), move |(data, offset, report)| async move {
+        if offset >= data.len() {
+            return None;
+        }
+        let end = (offset + CHUNK).min(data.len());
+        let chunk = data[offset..end].to_vec();
+        report(end as u64, Some(total));
+        Some((Ok::<Vec<u8>, Infallible>(chunk), (data, end, report)))
+    });
     reqwest::Body::wrap_stream(chunks)
 }

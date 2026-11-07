@@ -185,11 +185,7 @@ fn is_file_safe_id(id: &str) -> bool {
 }
 
 fn check_url(url: &str) -> Result<(), String> {
-    if url.starts_with("https://") {
-        Ok(())
-    } else {
-        Err(format!("the URL must be HTTPS, got `{url}`"))
-    }
+    if url.starts_with("https://") { Ok(()) } else { Err(format!("the URL must be HTTPS, got `{url}`")) }
 }
 
 fn check_hash(hash: &str) -> Result<(), String> {
@@ -274,7 +270,11 @@ mod tests {
 
     #[test]
     fn a_plain_http_url_is_rejected() {
-        let text = CATALOG_TOML.replacen("url = \"https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx", "url = \"http://example.test/x", 1);
+        let text = CATALOG_TOML.replacen(
+            "url = \"https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx",
+            "url = \"http://example.test/x",
+            1,
+        );
         assert!(matches!(Catalog::parse(&text), Err(MlError::Catalog(_))));
     }
 

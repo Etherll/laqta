@@ -6,8 +6,8 @@ use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use laqta_ports::upload::{Destination, ProgressCallback, UploadData, UploadError, UploadRequest, UploadResult};
 use laqta_ports::BoxFuture;
+use laqta_ports::upload::{Destination, ProgressCallback, UploadData, UploadError, UploadRequest, UploadResult};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -47,11 +47,7 @@ impl Destination for SharedFolder {
     }
 }
 
-async fn transfer(
-    config: SharedFolderConfig,
-    request: UploadRequest,
-    progress: ProgressCallback,
-) -> Result<UploadResult, UploadError> {
+async fn transfer(config: SharedFolderConfig, request: UploadRequest, progress: ProgressCallback) -> Result<UploadResult, UploadError> {
     let name = leaf_name(&request.file_name)?;
     std::fs::create_dir_all(&config.directory).map_err(io_error)?;
     let target = config.directory.join(name);
@@ -82,16 +78,8 @@ async fn transfer(
 }
 
 fn leaf_name(name: &str) -> Result<&str, UploadError> {
-    let plain = !name.is_empty()
-        && name != "."
-        && name != ".."
-        && !name.contains(['/', '\\'])
-        && !name.chars().any(char::is_control);
-    if plain {
-        Ok(name)
-    } else {
-        Err(UploadError::Unsupported(format!("{name:?} is not a plain file name")))
-    }
+    let plain = !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\']) && !name.chars().any(char::is_control);
+    if plain { Ok(name) } else { Err(UploadError::Unsupported(format!("{name:?} is not a plain file name"))) }
 }
 
 /// Characters that stay literal in a URL path segment.

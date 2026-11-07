@@ -43,7 +43,10 @@ pub enum Part {
 pub enum Body {
     #[default]
     Empty,
-    Bytes { data: Vec<u8>, content_type: String },
+    Bytes {
+        data: Vec<u8>,
+        content_type: String,
+    },
     Form(Vec<(String, String)>),
     Multipart(Vec<Part>),
 }
@@ -110,17 +113,12 @@ pub async fn send(request: Request) -> Result<Response, HttpError> {
 ///
 /// A multipart body reports its start and its completion only: reqwest does not expose the encoded
 /// length, so the total is the size of the parts' data.
-pub async fn send_with_progress(
-    request: Request,
-    progress: Arc<dyn Fn(u64, Option<u64>) + Send + Sync>,
-) -> Result<Response, HttpError> {
+pub async fn send_with_progress(request: Request, progress: Arc<dyn Fn(u64, Option<u64>) + Send + Sync>) -> Result<Response, HttpError> {
     send_request(request, Some(progress)).await
 }
 
 async fn send_request(request: Request, progress: Option<Progress>) -> Result<Response, HttpError> {
-    let rx = runtime::dispatch(move |client| async move {
-        client::execute(&client, request, progress).await
-    })?;
+    let rx = runtime::dispatch(move |client| async move { client::execute(&client, request, progress).await })?;
     runtime::finish(rx).await
 }
 
@@ -137,18 +135,9 @@ pub async fn fetch_verified(
     cancel: Arc<AtomicBool>,
 ) -> Result<(), HttpError> {
     if !fetch::is_sha256_hex(sha256_hex) {
-        return Err(HttpError::Invalid(format!(
-            "sha256 must be 64 hex digits, got {sha256_hex:?}"
-        )));
+        return Err(HttpError::Invalid(format!("sha256 must be 64 hex digits, got {sha256_hex:?}")));
     }
-    fetch::fetch(
-        url.to_owned(),
-        dest.to_owned(),
-        sha256_hex.to_ascii_lowercase(),
-        progress,
-        cancel,
-    )
-    .await
+    fetch::fetch(url.to_owned(), dest.to_owned(), sha256_hex.to_ascii_lowercase(), progress, cancel).await
 }
 
 /// Runs a future on the HTTP runtime and returns its output to the caller's executor. It is used by
@@ -170,15 +159,9 @@ where
 /// returns (port, future resolving to the request path+query). Dropping the future stops the
 /// listener.
 pub async fn loopback_once(reply_html: String) -> Result<(u16, Redirect), HttpError> {
-    let listener =
-        std::net::TcpListener::bind("127.0.0.1:0").map_err(|err| HttpError::Io(err.to_string()))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|err| HttpError::Io(err.to_string()))?;
-    let port = listener
-        .local_addr()
-        .map_err(|err| HttpError::Io(err.to_string()))?
-        .port();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|err| HttpError::Io(err.to_string()))?;
+    listener.set_nonblocking(true).map_err(|err| HttpError::Io(err.to_string()))?;
+    let port = listener.local_addr().map_err(|err| HttpError::Io(err.to_string()))?.port();
     let rx = runtime::dispatch(move |_client| loopback::serve_once(listener, reply_html))?;
     Ok((port, Box::pin(runtime::finish(rx))))
 }

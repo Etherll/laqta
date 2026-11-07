@@ -30,7 +30,11 @@ impl Rgba {
     }
 
     pub fn to_hex(self) -> String {
-        if self.a == 255 { format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b) } else { format!("#{:02x}{:02x}{:02x}{:02x}", self.r, self.g, self.b, self.a) }
+        if self.a == 255 {
+            format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b)
+        } else {
+            format!("#{:02x}{:02x}{:02x}{:02x}", self.r, self.g, self.b, self.a)
+        }
     }
 }
 

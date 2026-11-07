@@ -38,7 +38,8 @@ fn frame(x: i32, colour: u8) -> Frame {
 }
 
 fn window() -> HoverTarget {
-    HoverTarget { handle: 0,
+    HoverTarget {
+        handle: 0,
         rect: PhysRect { x: 9, y: 1, width: 4, height: 3 },
         title: "Notes - Editor".into(),
         process: "editor".into(),
