@@ -21,8 +21,8 @@ pub enum EffectError {
 /// What the kernels can't do themselves: load images named by path, and render text (fonts are
 /// injected, ADR 024).
 pub struct EffectContext<'a> {
-    pub asset: &'a dyn Fn(&str) -> Option<Bitmap>,
-    pub text: &'a dyn Fn(&TextSpec) -> Option<Bitmap>,
+    pub asset: &'a (dyn Fn(&str) -> Option<Bitmap> + Sync),
+    pub text: &'a (dyn Fn(&TextSpec) -> Option<Bitmap> + Sync),
 }
 
 impl std::fmt::Debug for EffectContext<'_> {
