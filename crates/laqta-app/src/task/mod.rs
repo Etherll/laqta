@@ -74,6 +74,8 @@ pub enum TaskJob {
 #[derive(Clone)]
 struct Context {
     ports: Arc<Ports>,
+    /// The current settings, read by the steps that use presets and actions (they are not in the job's settings).
+    settings: Arc<SettingsCell>,
     reporter: Reporter,
     /// The save slots: choosing a name and writing happen one at a time.
     saves: Arc<Queue>,
@@ -153,6 +155,7 @@ impl Task {
         let jobs = Arc::clone(&self.jobs);
         let cx = Context {
             ports: Arc::clone(&self.ports),
+            settings: Arc::clone(&self.settings),
             reporter: self.reporter.clone(),
             saves: Arc::clone(&self.save_slots),
             counter: Arc::clone(&self.counter),
@@ -182,7 +185,7 @@ impl Task {
 
 /// Runs `work` on the compute pool and returns its result. A panic comes back as `AppError::Panic`,
 /// because the pool may drop the work instead of reporting it (ADR 020).
-async fn compute<T: Send + 'static>(
+pub(crate) async fn compute<T: Send + 'static>(
     spawner: &dyn Spawner,
     work: impl FnOnce() -> Result<T, AppError> + Send + 'static,
 ) -> Result<T, AppError> {

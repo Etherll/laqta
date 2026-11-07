@@ -11,15 +11,17 @@ use std::sync::Arc;
 use async_broadcast::Receiver;
 use futures_lite::future::{block_on, poll_once, yield_now};
 use laqta_app::{App, Dispatched, Ports};
-use laqta_domain::workflow::{AfterCaptureTasks, AfterUploadTasks, FileExistsAction};
+use laqta_domain::effects::{Adjust, Effect, EffectItem, Preset};
+use laqta_domain::workflow::{AfterCaptureTasks, AfterUploadTasks, ExternalAction, FileExistsAction};
 use laqta_domain::{Action, Bitmap, Frame, ImageFormat, Monitor, MonitorId, PhysRect, PixelFormat, Settings};
 use laqta_ports::fakes::{
-    ClipboardBehaviour, CountingRng, FakeClipboard, FakeDestination, FakeHoverSource, FakeNotifier, FakeOverlay, FakePrompt, FakeScreen,
-    FakeShell, FakeShortener, FakeUploaders, InlineSpawner, ManualClock,
+    ClipboardBehaviour, CountingRng, FakeClipboard, FakeDestination, FakeEditorHost, FakeHoverSource, FakeNotifier, FakeOverlay,
+    FakePrompt, FakeScreen, FakeShell, FakeShortener, FakeUploaders, InlineSpawner, ManualClock,
 };
 use laqta_ports::{
-    AppError, BoxFuture, ClipboardContent, Clock, Spawner, TaskEvent, TaskId, UploadData, UploadError, UploadKind, UploadResult,
+    AppError, BoxFuture, ClipboardContent, Clock, PortError, Spawner, TaskEvent, TaskId, UploadData, UploadError, UploadKind, UploadResult,
 };
+use std::path::PathBuf;
 use tempfile::TempDir;
 
 /// Runs the test body inside a 2-thread compute pool, because compose and encode check that they
@@ -54,6 +56,7 @@ struct Rig {
     notifier: Arc<FakeNotifier>,
     uploaders: Arc<FakeUploaders>,
     prompt: Arc<FakePrompt>,
+    editor: Arc<FakeEditorHost>,
     clock: Arc<ManualClock>,
 }
 
@@ -63,6 +66,7 @@ fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Set
     let notifier = Arc::new(FakeNotifier::default());
     let uploaders = Arc::new(FakeUploaders::default());
     let prompt = Arc::new(FakePrompt::default());
+    let editor = Arc::new(FakeEditorHost::default());
     let clock = Arc::new(ManualClock::new(jiff::civil::date(2026, 11, 7).at(14, 3, 22, 0)));
     let ports = Ports {
         screen: Arc::new(FakeScreen::new(two_frames())),
@@ -73,7 +77,7 @@ fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Set
         overlay: Arc::new(FakeOverlay::default()),
         tools: Arc::new(laqta_ports::fakes::FakeToolHost::default()),
         prompt: prompt.clone(),
-        editor: Arc::new(laqta_ports::fakes::FakeEditorHost::default()),
+        editor: editor.clone(),
         media: Arc::new(laqta_ports::fakes::FakeMedia::default()),
         stream: Arc::new(laqta_ports::fakes::FakeScreenStream::default()),
         uploaders: uploaders.clone(),
@@ -83,7 +87,7 @@ fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Set
         host: laqta_ports::HostInfo::default(),
         codecs: laqta_imaging::Codecs::builtin(),
     };
-    Rig { app: App::new(ports, settings), clipboard, shell, notifier, uploaders, prompt, clock }
+    Rig { app: App::new(ports, settings), clipboard, shell, notifier, uploaders, prompt, editor, clock }
 }
 
 /// M0 settings with the screenshots folder in `dir`.
@@ -777,7 +781,345 @@ fn shorten_url_job() {
         let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::ShortenUrl);
 
         assert_eq!(trace, include_str!("golden/shorten_url_job.trace"));
-        // The default clipboard format is `$url`, the URL that was given, not the shortened one.
-        assert_eq!(*rig.clipboard.texts.lock().unwrap(), vec!["https://example.com/long".to_owned()]);
+        // A shortening job copies the URL it shortened to, so the default clipboard format `$url` is the short one.
+        assert_eq!(*rig.clipboard.texts.lock().unwrap(), vec!["https://example.com/long/s".to_owned()]);
+    });
+}
+
+/// Settings that save into `dir`, with `flags` as the default after-capture flags.
+fn with_flags(dir: &Path, flags: AfterCaptureTasks) -> Settings {
+    let mut settings = settings_in(dir);
+    settings.defaults.after_capture = flags;
+    settings
+}
+
+/// An image of one colour.
+fn solid(width: u32, height: u32, px: [u8; 4]) -> Bitmap {
+    let pixels: Vec<u8> = std::iter::repeat_n(px, (width * height) as usize).flatten().collect();
+    Bitmap::new(width, height, PixelFormat::Rgba8, pixels.into()).unwrap()
+}
+
+#[test]
+fn quick_menu_save() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let flags = AfterCaptureTasks::SHOW_QUICK_TASK_MENU | AfterCaptureTasks::COPY_IMAGE_TO_CLIPBOARD;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), with_flags(tmp.path(), flags));
+        rig.prompt.choices.lock().unwrap().push_back(1);
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/quick_menu_save.trace"));
+        assert!(saved_png(tmp.path()).is_file());
+        assert!(rig.clipboard.images.lock().unwrap().is_empty(), "the choice replaced the job's flags, so nothing is copied");
+        let chooses = rig.prompt.chooses.lock().unwrap();
+        assert_eq!(chooses.len(), 1);
+        assert_eq!(chooses[0].0, "What to do with this capture?");
+        assert_eq!(chooses[0].1, ["Save and copy", "Save", "Copy", "Upload", "Save and upload", "Annotate", "Cancel"]);
+    });
+}
+
+#[test]
+fn quick_menu_cancel() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let flags = AfterCaptureTasks::SHOW_QUICK_TASK_MENU | AfterCaptureTasks::SAVE_IMAGE_TO_FILE;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), with_flags(tmp.path(), flags));
+        rig.prompt.choices.lock().unwrap().push_back(6);
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/quick_menu_cancel.trace"));
+        assert!(!saved_png(tmp.path()).exists(), "a cancelled job saves nothing");
+    });
+}
+
+#[test]
+fn after_capture_window_changes_flags() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let flags = AfterCaptureTasks::SHOW_AFTER_CAPTURE_WINDOW | AfterCaptureTasks::SAVE_IMAGE_TO_FILE;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), with_flags(tmp.path(), flags));
+        rig.prompt.windows.lock().unwrap().push_back(Ok((AfterCaptureTasks::COPY_IMAGE_TO_CLIPBOARD.bits(), 0)));
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/after_capture_window_changes_flags.trace"));
+        assert!(!saved_png(tmp.path()).exists(), "the window dropped the save flag");
+        assert_eq!(rig.clipboard.images.lock().unwrap().len(), 1);
+        let calls = rig.prompt.window_calls.lock().unwrap();
+        assert_eq!(*calls, vec![(8, 4, flags.bits(), AfterUploadTasks::COPY_URL_TO_CLIPBOARD.bits())], "the window saw the composed image");
+    });
+}
+
+#[test]
+fn after_capture_window_cancel_stops_the_job() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let flags = AfterCaptureTasks::SHOW_AFTER_CAPTURE_WINDOW | AfterCaptureTasks::SAVE_IMAGE_TO_FILE;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), with_flags(tmp.path(), flags));
+        rig.prompt.windows.lock().unwrap().push_back(Err(PortError::Cancelled));
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/after_capture_window_cancel.trace"));
+        assert!(!saved_png(tmp.path()).exists());
+    });
+}
+
+#[test]
+fn annotate() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let flags = AfterCaptureTasks::ANNOTATE_IMAGE | AfterCaptureTasks::SAVE_IMAGE_TO_FILE;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), with_flags(tmp.path(), flags));
+        *rig.editor.result.lock().unwrap() = Some(Ok(solid(6, 2, [1, 2, 3, 255])));
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/annotate.trace"));
+        assert_eq!(*rig.editor.calls.lock().unwrap(), 1);
+        assert_eq!(decoded_size(&saved_png(tmp.path())), (6, 2), "the saved image is the edited one");
+    });
+}
+
+#[test]
+fn annotate_cancelled_keeps_original() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let flags = AfterCaptureTasks::ANNOTATE_IMAGE | AfterCaptureTasks::SAVE_IMAGE_TO_FILE;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), with_flags(tmp.path(), flags));
+        *rig.editor.result.lock().unwrap() = Some(Err(PortError::Cancelled));
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/annotate_cancelled_keeps_original.trace"));
+        assert_eq!(decoded_size(&saved_png(tmp.path())), (8, 4), "a closed editor keeps the capture");
+    });
+}
+
+#[test]
+fn effects_preset() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let flags = AfterCaptureTasks::ADD_IMAGE_EFFECTS | AfterCaptureTasks::COPY_IMAGE_TO_CLIPBOARD;
+        let mut settings = with_flags(tmp.path(), flags);
+        settings.effect_presets =
+            vec![Preset { name: "invert".into(), effects: vec![EffectItem { effect: Effect::Adjust(Adjust::Inverse), enabled: true }] }];
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), settings);
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/effects_preset.trace"));
+        // The first frame's pixel is BGRA (10, 20, 30); its RGBA is (30, 20, 10), and inverted that is (225, 235, 245).
+        let copied = rig.clipboard.images.lock().unwrap();
+        assert_eq!(&copied[0].pixels()[..4], &[225, 235, 245, 255]);
+    });
+}
+
+#[test]
+fn effects_missing_preset_is_a_step_failure() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let mut settings = with_flags(tmp.path(), AfterCaptureTasks::ADD_IMAGE_EFFECTS | AfterCaptureTasks::SAVE_IMAGE_TO_FILE);
+        settings.defaults.effect_preset = "missing".into();
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), settings);
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/effects_missing_preset.trace"));
+        assert!(saved_png(tmp.path()).is_file(), "the job goes on with the image as it was");
+    });
+}
+
+#[test]
+fn beautify() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let mut settings = with_flags(tmp.path(), AfterCaptureTasks::BEAUTIFY_IMAGE | AfterCaptureTasks::SAVE_IMAGE_TO_FILE);
+        settings.defaults.beautify.padding = 10;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), settings);
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/beautify.trace"));
+        assert_eq!(decoded_size(&saved_png(tmp.path())), (8 + 2 * 10, 4 + 2 * 10), "the padding is added on every side");
+    });
+}
+
+#[test]
+fn save_with_dialog() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let rig =
+            build(ClipboardBehaviour::Succeed, spawner.clone(), with_flags(tmp.path(), AfterCaptureTasks::SAVE_IMAGE_TO_FILE_WITH_DIALOG));
+        let picked = tmp.path().join("picked").join("pick.png");
+        rig.prompt.save_paths.lock().unwrap().push_back(Ok(picked.clone()));
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/save_with_dialog.trace"));
+        assert_eq!(*rig.prompt.suggested.lock().unwrap(), vec![tmp.path().join("Laqta_2026-11-07_14-03-22.png")]);
+        assert_eq!(decoded_size(&picked), (8, 4));
+        assert!(!saved_png(tmp.path()).exists(), "only the chosen file is written");
+    });
+}
+
+#[test]
+fn perform_action() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let mut settings = with_flags(tmp.path(), AfterCaptureTasks::PERFORM_ACTIONS | AfterCaptureTasks::SAVE_IMAGE_TO_FILE);
+        settings.actions = vec![ExternalAction {
+            name: "shrink".into(),
+            program: PathBuf::from("/opt/shrink"),
+            args: r#"-q "%input" --flag"#.into(),
+            output_extension: String::new(),
+            extensions: vec!["png".into()],
+            enabled: true,
+            hidden: true,
+        }];
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), settings);
+        rig.shell.exit_codes.lock().unwrap().push_back(1);
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/perform_action.trace"));
+        let runs = rig.shell.runs.lock().unwrap();
+        let input = saved_png(tmp.path()).display().to_string();
+        assert_eq!(*runs, vec![(PathBuf::from("/opt/shrink"), vec!["-q".to_owned(), input, "--flag".to_owned()], true)]);
+    });
+}
+
+#[test]
+fn perform_action_output_replaces_the_file() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let flags =
+            AfterCaptureTasks::PERFORM_ACTIONS | AfterCaptureTasks::SAVE_IMAGE_TO_FILE | AfterCaptureTasks::COPY_FILE_PATH_TO_CLIPBOARD;
+        let mut settings = with_flags(tmp.path(), flags);
+        settings.actions = vec![ExternalAction {
+            name: "convert".into(),
+            program: PathBuf::from("/opt/convert"),
+            args: "%input %output".into(),
+            output_extension: "webp".into(),
+            enabled: true,
+            ..ExternalAction::default()
+        }];
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), settings);
+        // The program is faked, so its output file is written here, where the action would have written it.
+        let output = saved_png(tmp.path()).with_extension("webp");
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        std::fs::write(&output, b"webp").unwrap();
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/perform_action_output.trace"));
+        assert_eq!(*rig.clipboard.texts.lock().unwrap(), vec![output.display().to_string()], "later steps use the output file");
+    });
+}
+
+#[test]
+fn before_upload_choice() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let mut settings = upload_settings(tmp.path());
+        settings.defaults.after_capture |= AfterCaptureTasks::SHOW_BEFORE_UPLOAD_WINDOW;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), settings);
+        let imgur = destination(&rig, "imgur", Vec::new());
+        let other = destination(&rig, "sxcu:other", vec![Ok(uploaded("https://other.example/7"))]);
+        rig.prompt.destinations.lock().unwrap().push_back(Ok("sxcu:other".to_owned()));
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/before_upload_choice.trace"));
+        assert!(imgur.requests.lock().unwrap().is_empty(), "the window moved the upload to the other destination");
+        assert_eq!(other.requests.lock().unwrap().len(), 1);
+        let calls = rig.prompt.destination_calls.lock().unwrap();
+        assert_eq!(calls[0].0, "Laqta_2026-11-07_14-03-22.png");
+        assert_eq!(calls[0].2, "imgur", "the window starts on the current destination");
+        assert_eq!(calls[0].1.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["imgur", "sxcu:other"]);
+    });
+}
+
+#[test]
+fn before_upload_cancel_skips_the_upload() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let mut settings = upload_settings(tmp.path());
+        settings.defaults.after_capture |= AfterCaptureTasks::SHOW_BEFORE_UPLOAD_WINDOW;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), settings);
+        let imgur = destination(&rig, "imgur", Vec::new());
+        rig.prompt.destinations.lock().unwrap().push_back(Err(PortError::Cancelled));
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/before_upload_cancel.trace"));
+        assert!(imgur.requests.lock().unwrap().is_empty());
+        assert!(saved_png(tmp.path()).is_file(), "the saved file stays");
+    });
+}
+
+#[test]
+fn perform_action_output_is_uploaded_as_its_kind() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let mut settings = upload_settings(tmp.path());
+        settings.defaults.after_capture |= AfterCaptureTasks::PERFORM_ACTIONS;
+        settings.actions = vec![ExternalAction {
+            name: "to-text".into(),
+            program: PathBuf::from("/opt/to-text"),
+            args: "%input %output".into(),
+            output_extension: "txt".into(),
+            enabled: true,
+            ..ExternalAction::default()
+        }];
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), settings);
+        let imgur = destination(&rig, "imgur", Vec::new());
+        let paste = destination(&rig, "sxcu:paste-ee", vec![Ok(uploaded("https://paste.example/9"))]);
+        // The program is faked, so its text output is written here, where the action would have written it.
+        let output = saved_png(tmp.path()).with_extension("txt");
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        std::fs::write(&output, b"text").unwrap();
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/perform_action_output_is_uploaded_as_its_kind.trace"));
+        assert!(imgur.requests.lock().unwrap().is_empty(), "a text output is not sent to the image destination");
+        let requests = paste.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].kind, UploadKind::Text);
+        assert_eq!(requests[0].file_name, "Laqta_2026-11-07_14-03-22.txt");
+        assert_eq!(requests[0].data, UploadData::Path(output));
     });
 }

@@ -105,6 +105,10 @@ pub struct FakeShell {
     pub opened: Mutex<Vec<PathBuf>>,
     pub revealed: Mutex<Vec<PathBuf>>,
     pub urls: Mutex<Vec<String>>,
+    /// Every `run` call: the program, its arguments and the hidden flag.
+    pub runs: Mutex<Vec<(PathBuf, Vec<String>, bool)>>,
+    /// Exit codes for the next `run` calls, in order. An empty queue exits with 0.
+    pub exit_codes: Mutex<std::collections::VecDeque<i32>>,
 }
 
 impl Shell for FakeShell {
@@ -119,6 +123,11 @@ impl Shell for FakeShell {
     fn open_url(&self, url: &str) -> Result<(), PortError> {
         self.urls.lock().unwrap().push(url.to_string());
         Ok(())
+    }
+    fn run(&self, program: &Path, args: &[String], hidden: bool) -> BoxFuture<'_, Result<i32, PortError>> {
+        self.runs.lock().unwrap().push((program.to_path_buf(), args.to_vec(), hidden));
+        let code = self.exit_codes.lock().unwrap().pop_front().unwrap_or(0);
+        Box::pin(async move { Ok(code) })
     }
 }
 
@@ -376,20 +385,45 @@ impl crate::ToolHost for FakeToolHost {
 }
 
 /// Answers prompts from a script: each `ask_text` pops the next text answer, each `choose` the next index.
+/// Each file, window and destination prompt pops its own queue; an empty queue does what the trait default does
+/// (`pick_files` and `save_path` are unsupported, the after-capture window passes its flags through, and the
+/// before-upload window keeps the current destination).
 #[derive(Debug, Default)]
 pub struct FakePrompt {
     pub texts: Mutex<std::collections::VecDeque<String>>,
     pub choices: Mutex<std::collections::VecDeque<usize>>,
     pub confirms: Mutex<std::collections::VecDeque<bool>>,
     pub shown: Mutex<Vec<(String, String)>>,
+    /// The title and option labels of every `choose` call.
+    pub chooses: Mutex<Vec<(String, Vec<String>)>>,
+    /// Answers for `pick_files`: the files, or an error such as `Cancelled`.
+    pub files: Mutex<std::collections::VecDeque<Result<Vec<std::path::PathBuf>, PortError>>>,
+    /// Answers for `pick_folder`: the folder, or an error such as `Cancelled`.
+    pub folders: Mutex<std::collections::VecDeque<Result<std::path::PathBuf, PortError>>>,
+    /// Answers for `save_path`.
+    pub save_paths: Mutex<std::collections::VecDeque<Result<std::path::PathBuf, PortError>>>,
+    /// The suggested path of every `save_path` call.
+    pub suggested: Mutex<Vec<std::path::PathBuf>>,
+    /// Answers for `after_capture`.
+    pub windows: Mutex<std::collections::VecDeque<Result<(u32, u32), PortError>>>,
+    /// Every `after_capture` call: image width, image height, after-capture bits and after-upload bits.
+    pub window_calls: Mutex<Vec<(u32, u32, u32, u32)>>,
+    /// Answers for `before_upload`: the destination id, or an error.
+    pub destinations: Mutex<std::collections::VecDeque<Result<String, PortError>>>,
+    /// Every `before_upload` call.
+    pub destination_calls: Mutex<Vec<BeforeUploadCall>>,
 }
+
+/// One `before_upload` call: the file name, the destinations as (id, name), and the current destination id.
+pub type BeforeUploadCall = (String, Vec<(String, String)>, String);
 
 impl crate::Prompt for FakePrompt {
     fn ask_text(&self, _title: &str, default: &str) -> BoxFuture<'_, Result<String, PortError>> {
         let v = self.texts.lock().unwrap().pop_front().unwrap_or_else(|| default.to_string());
         Box::pin(async move { Ok(v) })
     }
-    fn choose(&self, _title: &str, _options: &[String]) -> BoxFuture<'_, Result<usize, PortError>> {
+    fn choose(&self, title: &str, options: &[String]) -> BoxFuture<'_, Result<usize, PortError>> {
+        self.chooses.lock().unwrap().push((title.to_string(), options.to_vec()));
         let v = self.choices.lock().unwrap().pop_front().unwrap_or(0);
         Box::pin(async move { Ok(v) })
     }
@@ -400,6 +434,29 @@ impl crate::Prompt for FakePrompt {
     fn confirm(&self, _title: &str, _text: &str) -> BoxFuture<'_, Result<bool, PortError>> {
         let v = self.confirms.lock().unwrap().pop_front().unwrap_or(true);
         Box::pin(async move { Ok(v) })
+    }
+    fn pick_files(&self, _title: &str) -> BoxFuture<'_, Result<Vec<std::path::PathBuf>, PortError>> {
+        let next = self.files.lock().unwrap().pop_front();
+        Box::pin(async move { next.unwrap_or_else(|| Err(PortError::Unsupported("file picker".into()))) })
+    }
+    fn pick_folder(&self, _title: &str) -> BoxFuture<'_, Result<std::path::PathBuf, PortError>> {
+        let next = self.folders.lock().unwrap().pop_front();
+        Box::pin(async move { next.unwrap_or_else(|| Err(PortError::Unsupported("folder picker".into()))) })
+    }
+    fn after_capture(&self, image: &Bitmap, after_capture: u32, after_upload: u32) -> BoxFuture<'_, Result<(u32, u32), PortError>> {
+        self.window_calls.lock().unwrap().push((image.width(), image.height(), after_capture, after_upload));
+        let next = self.windows.lock().unwrap().pop_front().unwrap_or(Ok((after_capture, after_upload)));
+        Box::pin(async move { next })
+    }
+    fn before_upload(&self, file_name: &str, destinations: &[(String, String)], current: &str) -> BoxFuture<'_, Result<String, PortError>> {
+        self.destination_calls.lock().unwrap().push((file_name.to_string(), destinations.to_vec(), current.to_string()));
+        let next = self.destinations.lock().unwrap().pop_front().unwrap_or_else(|| Ok(current.to_string()));
+        Box::pin(async move { next })
+    }
+    fn save_path(&self, suggested: &std::path::Path) -> BoxFuture<'_, Result<std::path::PathBuf, PortError>> {
+        self.suggested.lock().unwrap().push(suggested.to_path_buf());
+        let next = self.save_paths.lock().unwrap().pop_front().unwrap_or_else(|| Err(PortError::Unsupported("save dialog".into())));
+        Box::pin(async move { next })
     }
 }
 

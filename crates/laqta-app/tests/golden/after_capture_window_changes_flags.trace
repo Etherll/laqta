@@ -1,0 +1,6 @@
+status InQueue
+status Preparing
+status Working
+copied
+notified
+status Completed

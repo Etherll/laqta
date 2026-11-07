@@ -41,6 +41,8 @@ pub(super) struct Sent {
     pub(super) path: Option<PathBuf>,
     pub(super) name: String,
     pub(super) thumbnail: Option<PathBuf>,
+    /// The job only shortens a URL, so the shortened URL is what `$url` means in the clipboard text.
+    pub(super) shorten_only: bool,
 }
 
 /// Runs an Upload job. Its statuses follow a capture's: `Preparing`, `Working`, then the last step.
@@ -81,7 +83,7 @@ impl Job {
                     data: UploadData::Path(path.clone()),
                     mime: mime_for_name(&name).to_owned(),
                 };
-                self.send_job(kind, request, size, Sent { path: Some(path), name, thumbnail: None }).await
+                self.send_job(kind, request, size, Sent { path: Some(path), name, ..Sent::default() }).await
             }
             UploadSource::Url(url) => {
                 let (bytes, name, mime) = match self.cx.ports.uploaders.download(&url).await {
@@ -98,7 +100,8 @@ impl Job {
                 // Nothing is uploaded: the given URL is the one the after-upload steps work on.
                 let result = UploadResult { url: Some(url), ..UploadResult::default() };
                 let flags = self.settings.after_upload | AfterUploadTasks::USE_URL_SHORTENER;
-                self.after_upload(&result, &Sent::default(), flags).await?;
+                let sent = Sent { shorten_only: true, ..Sent::default() };
+                self.after_upload(&result, &sent, flags).await?;
                 self.complete();
                 Ok(())
             }
@@ -229,8 +232,10 @@ impl Job {
         }
         if flags.contains(AfterUploadTasks::COPY_URL_TO_CLIPBOARD) {
             self.checkpoint()?;
+            // A shortening job copies the URL it shortened to, so `$url` is the short one there.
+            let copied = if sent.shorten_only { url.as_str() } else { direct.as_str() };
             let info = UploadInfo {
-                url: &direct,
+                url: copied,
                 short_url: short.as_deref().unwrap_or_default(),
                 thumbnail_url: result.thumbnail_url.as_deref().unwrap_or_default(),
                 deletion_url: result.deletion_url.as_deref().unwrap_or_default(),

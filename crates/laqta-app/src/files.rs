@@ -63,6 +63,27 @@ pub(crate) async fn size(spawner: &dyn Spawner, path: PathBuf) -> io::Result<u64
     blocking(spawner, move || std::fs::metadata(&path).map(|metadata| metadata.len())).await
 }
 
+/// The bytes of the file at `path`.
+pub(crate) async fn read(spawner: &dyn Spawner, path: PathBuf) -> io::Result<Vec<u8>> {
+    blocking(spawner, move || std::fs::read(&path)).await
+}
+
+/// The files directly inside `dir`, sorted by path. Folders are skipped, and so is anything inside them.
+pub(crate) async fn list_dir(spawner: &dyn Spawner, dir: PathBuf) -> io::Result<Vec<PathBuf>> {
+    blocking(spawner, move || {
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.is_file() {
+                files.push(path);
+            }
+        }
+        files.sort();
+        Ok(files)
+    })
+    .await
+}
+
 fn part_path(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(".part");
@@ -147,6 +168,20 @@ mod tests {
 
         let err = block_on(first_free(&spawner, vec![taken])).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+    }
+
+    #[test]
+    fn list_dir_takes_the_files_directly_inside_sorted() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("b.txt"), b"b").unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"a").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub").join("deep.txt"), b"d").unwrap();
+        let spawner = InlineSpawner::default();
+
+        let listed = block_on(list_dir(&spawner, dir.path().to_path_buf())).unwrap();
+        assert_eq!(listed, vec![dir.path().join("a.txt"), dir.path().join("b.txt")]);
+        assert_eq!(block_on(read(&spawner, dir.path().join("a.txt"))).unwrap(), b"a".to_vec());
     }
 
     #[test]

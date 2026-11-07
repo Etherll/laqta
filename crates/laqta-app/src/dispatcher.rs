@@ -3,11 +3,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_broadcast::{InactiveReceiver, Receiver};
-use laqta_domain::Frame;
 use laqta_domain::geometry::PhysRect;
 use laqta_domain::region::HoverTarget;
 use laqta_domain::workflow::{AfterCaptureTasks, TaskSettings};
 use laqta_domain::{Action, Settings, WorkflowId};
+use laqta_domain::{Bitmap, Frame};
 use laqta_ports::{
     AppError, BoxFuture, CaptureRequest, Clipboard, ClipboardContent, Clock, HostInfo, HoverSource, Notifier, Overlay, PortError, Rng,
     ScreenSource, Shell, Spawner, TaskEvent, TaskId, ToolHost, ToolWindow,
@@ -15,6 +15,7 @@ use laqta_ports::{
 
 use crate::files;
 use crate::region;
+use crate::task::compute;
 use crate::task::{CaptureImage, CaptureInfo};
 use crate::task::{Task, TaskJob, UploadSource};
 
@@ -191,6 +192,57 @@ impl App {
         Dispatched::Task(self.task.submit(TaskJob::Upload { source, settings }))
     }
 
+    /// Submits one File upload job per path, in order, with the workflow's settings, and returns their ids. The
+    /// file and folder routes, drag-and-drop and the CLI all use it.
+    pub fn upload_files(self: &Arc<Self>, paths: Vec<PathBuf>, workflow: Option<WorkflowId>) -> Vec<TaskId> {
+        let ts = self.settings.get().task_settings(workflow);
+        paths.into_iter().map(|path| self.task.submit(TaskJob::Upload { source: UploadSource::File(path), settings: ts.clone() })).collect()
+    }
+
+    /// The files the user picks. Without a file dialog the user types a path instead. `None` when the user
+    /// cancels.
+    async fn picked_files(&self, title: &str) -> Result<Option<Vec<PathBuf>>, AppError> {
+        match self.ports.prompt.pick_files(title).await {
+            Ok(paths) => Ok(Some(paths)),
+            Err(PortError::Unsupported(_)) => {
+                let answer = self.ports.prompt.ask_text(title, "").await.map_err(AppError::from)?;
+                let path = answer.trim();
+                if path.is_empty() {
+                    return Err(AppError::Unsupported("no file given".into()));
+                }
+                Ok(Some(vec![PathBuf::from(path)]))
+            }
+            Err(PortError::Cancelled) => Ok(None),
+            Err(error) => Err(AppError::from(error)),
+        }
+    }
+
+    /// The folder the user picks. `None` when the user cancels.
+    async fn picked_folder(&self) -> Result<Option<PathBuf>, AppError> {
+        match self.ports.prompt.pick_folder(Action::FolderUpload.label()).await {
+            Ok(folder) => Ok(Some(folder)),
+            Err(PortError::Cancelled) => Ok(None),
+            Err(error) => Err(AppError::from(error)),
+        }
+    }
+
+    /// The image beautifier: one picked image is decoded and beautified on the compute pool, then submitted as a
+    /// capture that is saved and copied. The beautifier's flags are the job's; the workflow's capture flags are not used.
+    async fn beautify_file(&self, mut ts: TaskSettings) -> Result<Dispatched, AppError> {
+        let Some(paths) = self.picked_files(Action::ImageBeautifier.label()).await? else { return Ok(Dispatched::Done) };
+        let Some(path) = paths.into_iter().next() else { return Ok(Dispatched::Done) };
+        let bytes = files::read(self.ports.spawner.as_ref(), path).await.map_err(|error| AppError::Io(error.to_string()))?;
+        let codecs = self.ports.codecs.clone();
+        let beautify = ts.beautify.clone();
+        let work = move || -> Result<Bitmap, AppError> {
+            let decoded = codecs.decode(&bytes).map_err(|error| AppError::Io(error.to_string()))?;
+            Ok(laqta_imaging::beautify::beautify(&decoded, &beautify))
+        };
+        let image = compute(self.ports.spawner.as_ref(), work).await?;
+        ts.after_capture = AfterCaptureTasks::SAVE_IMAGE_TO_FILE | AfterCaptureTasks::COPY_IMAGE_TO_CLIPBOARD;
+        Ok(self.submit(CaptureImage::Image(image), ts, None))
+    }
+
     /// "Upload from clipboard": an image becomes a capture with the upload flag, each file is one upload, a URL
     /// is downloaded and uploaded, and other text is uploaded as text. An empty clipboard is an error.
     fn clipboard_upload(&self, mut ts: TaskSettings) -> Result<Dispatched, AppError> {
@@ -339,13 +391,21 @@ impl App {
                 Ok(self.upload(UploadSource::ShortenUrl(url), ts))
             }
             Action::FileUpload => {
-                let answer = self.ports.prompt.ask_text(Action::FileUpload.label(), "").await.map_err(AppError::from)?;
-                let path = answer.trim();
-                if path.is_empty() {
-                    return Err(AppError::Unsupported("no file given".into()));
-                }
-                Ok(self.upload(UploadSource::File(PathBuf::from(path)), ts))
+                let Some(paths) = self.picked_files(Action::FileUpload.label()).await? else { return Ok(Dispatched::Done) };
+                Ok(first_task(self.upload_files(paths, workflow)))
             }
+            Action::FolderUpload => {
+                let Some(folder) = self.picked_folder().await? else { return Ok(Dispatched::Done) };
+                let paths = files::list_dir(self.ports.spawner.as_ref(), folder).await.map_err(|error| AppError::Io(error.to_string()))?;
+                if paths.is_empty() {
+                    return Err(AppError::Unsupported("the folder has no files".into()));
+                }
+                Ok(first_task(self.upload_files(paths, workflow)))
+            }
+            Action::DragDropUpload => self.open(ToolWindow::Main),
+            Action::ImageEditor => self.open(ToolWindow::Editor(None)),
+            Action::ImageEffects => self.open(ToolWindow::Effects(None)),
+            Action::ImageBeautifier => self.beautify_file(ts).await,
             Action::StopUploads => {
                 self.task.stop_all();
                 Ok(Dispatched::Done)
@@ -354,6 +414,11 @@ impl App {
             other => Err(AppError::Unsupported(format!("{} is not available yet", other.label()))),
         }
     }
+}
+
+/// The dispatched result for a batch of jobs: the first job's id, or nothing to wait for when the batch is empty.
+fn first_task(ids: Vec<TaskId>) -> Dispatched {
+    ids.first().map_or(Dispatched::Done, |id| Dispatched::Task(*id))
 }
 
 /// The trimmed text when it is an http or https URL with no spaces in it.

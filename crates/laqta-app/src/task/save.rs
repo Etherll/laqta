@@ -72,6 +72,15 @@ pub(super) async fn thumbnail(cx: &Context, saved: &SavedFile, suffix: &str, enc
     Ok(path)
 }
 
+/// Writes `bytes` to the path the user chose in the save dialog. It takes the save slot and counts as a file
+/// written, like any other save.
+pub(super) async fn chosen(cx: &Context, path: PathBuf, bytes: Vec<u8>) -> Result<(), AppError> {
+    let _slot = Arc::clone(&cx.saves).acquire().await;
+    files::save_atomic(cx.ports.spawner.as_ref(), path, bytes).await.map_err(io_error)?;
+    cx.counter.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+}
+
 /// The candidate paths for the image, in order. The name and subfolder patterns are expanded here, reading
 /// the clock, the counter and the random source once. Nothing awaits in here, so the random source never
 /// lives across an await point.
