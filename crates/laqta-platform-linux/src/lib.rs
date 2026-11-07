@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use laqta_ports::{Clipboard, HotkeyRegistrar, HoverSource, ScreenSource, Shell, Tray};
 
+mod atspi_elements;
 mod clipboard;
 pub mod session;
 mod shell;
@@ -41,6 +42,6 @@ pub fn ports(session: Session) -> LinuxPorts {
         shell: Arc::new(shell::XdgShell),
         hotkeys,
         tray: Arc::new(tray::SniTray::default()),
-        hover,
+        hover: Arc::new(atspi_elements::WithElements::new(hover)),
     }
 }
