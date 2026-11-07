@@ -58,6 +58,11 @@ pub(crate) async fn remove(spawner: &dyn Spawner, path: PathBuf) -> io::Result<(
     blocking(spawner, move || std::fs::remove_file(&path)).await
 }
 
+/// The size of the file at `path`, in bytes.
+pub(crate) async fn size(spawner: &dyn Spawner, path: PathBuf) -> io::Result<u64> {
+    blocking(spawner, move || std::fs::metadata(&path).map(|metadata| metadata.len())).await
+}
+
 fn part_path(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(".part");

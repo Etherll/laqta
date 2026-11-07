@@ -76,18 +76,37 @@ pub(super) async fn thumbnail(cx: &Context, saved: &SavedFile, suffix: &str, enc
 /// the clock, the counter and the random source once. Nothing awaits in here, so the random source never
 /// lives across an await point.
 fn image_candidates(cx: &Context, settings: &TaskSettings, info: &CaptureInfo, dir: &Path, size: (u32, u32), ext: &str) -> Vec<PathBuf> {
+    with_name_context(cx, info, Some(size), |ctx| {
+        let stem = naming::file_name(pattern(settings, info), ctx);
+        let folder = subfolder(&naming::expand(&settings.naming.subfolder, ctx));
+        naming::candidates(dir, &folder, &stem, ext).collect()
+    })
+}
+
+/// A file name, with `ext`, for a file that has no path on disk (an upload of bytes that were not saved).
+pub(super) fn generated_name(cx: &Context, settings: &TaskSettings, info: &CaptureInfo, size: Option<(u32, u32)>, ext: &str) -> String {
+    with_name_context(cx, info, size, |ctx| format!("{}.{ext}", naming::file_name(pattern(settings, info), ctx)))
+}
+
+/// The name pattern for a job: the window pattern when the capture has a window title.
+fn pattern<'a>(settings: &'a TaskSettings, info: &CaptureInfo) -> &'a str {
+    if info.window_title.is_empty() { &settings.naming.pattern } else { &settings.naming.window_pattern }
+}
+
+/// Runs `work` with this job's name context: the clock, the counter, the window, the machine and the random
+/// source. Nothing awaits inside, so the random source never lives across an await point.
+fn with_name_context<T>(cx: &Context, info: &CaptureInfo, size: Option<(u32, u32)>, work: impl FnOnce(&mut NameContext<'_>) -> T) -> T {
     let ports = cx.ports.as_ref();
     let now = ports.clock.now();
     let unix_seconds = now.to_zoned(TimeZone::UTC).map_or(0, |zoned| zoned.timestamp().as_second());
-    let pattern = if info.window_title.is_empty() { &settings.naming.pattern } else { &settings.naming.window_pattern };
     let mut rng = || ports.rng.next_u64();
     let mut ctx = NameContext {
         now,
         unix_seconds,
         window_title: &info.window_title,
         process_name: &info.process_name,
-        width: Some(size.0),
-        height: Some(size.1),
+        width: size.map(|size| size.0),
+        height: size.map(|size| size.1),
         counter: cx.counter.load(Ordering::SeqCst),
         user_name: &ports.host.user_name,
         user_login: &ports.host.user_login,
@@ -95,9 +114,7 @@ fn image_candidates(cx: &Context, settings: &TaskSettings, info: &CaptureInfo, d
         random_file_lines: &[],
         rng: &mut rng,
     };
-    let stem = naming::file_name(pattern, &mut ctx);
-    let folder = subfolder(&naming::expand(&settings.naming.subfolder, &mut ctx));
-    naming::candidates(dir, &folder, &stem, ext).collect()
+    work(&mut ctx)
 }
 
 /// The expanded subfolder as relative path segments, each cleaned the way a file name is. Empty, `.` and

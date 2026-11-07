@@ -13,7 +13,7 @@ use super::CaptureImage;
 const PREVIEW_PIXELS: u32 = 256;
 
 /// An encoded image: its bytes and the format they are in.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct Encoded {
     pub(super) bytes: Vec<u8>,
     pub(super) format: ImageFormat,

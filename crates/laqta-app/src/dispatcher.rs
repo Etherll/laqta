@@ -1,21 +1,22 @@
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_broadcast::{InactiveReceiver, Receiver};
 use laqta_domain::Frame;
 use laqta_domain::geometry::PhysRect;
 use laqta_domain::region::HoverTarget;
-use laqta_domain::workflow::TaskSettings;
+use laqta_domain::workflow::{AfterCaptureTasks, TaskSettings};
 use laqta_domain::{Action, Settings, WorkflowId};
 use laqta_ports::{
-    AppError, BoxFuture, CaptureRequest, Clipboard, Clock, HostInfo, HoverSource, Notifier, Overlay, PortError, Rng, ScreenSource, Shell,
-    Spawner, TaskEvent, TaskId, ToolHost, ToolWindow,
+    AppError, BoxFuture, CaptureRequest, Clipboard, ClipboardContent, Clock, HostInfo, HoverSource, Notifier, Overlay, PortError, Rng,
+    ScreenSource, Shell, Spawner, TaskEvent, TaskId, ToolHost, ToolWindow,
 };
 
 use crate::files;
 use crate::region;
 use crate::task::{CaptureImage, CaptureInfo};
-use crate::task::{Task, TaskJob};
+use crate::task::{Task, TaskJob, UploadSource};
 
 /// Events kept for a slow listener. When the buffer is full the oldest event is dropped.
 const EVENT_CAPACITY: usize = 256;
@@ -182,6 +183,38 @@ impl App {
         Ok(Dispatched::Done)
     }
 
+    /// Submits an Upload job.
+    fn upload(&self, source: UploadSource, settings: TaskSettings) -> Dispatched {
+        Dispatched::Task(self.task.submit(TaskJob::Upload { source, settings }))
+    }
+
+    /// "Upload from clipboard": an image becomes a capture with the upload flag, each file is one upload, a URL
+    /// is downloaded and uploaded, and other text is uploaded as text. An empty clipboard is an error.
+    fn clipboard_upload(&self, mut ts: TaskSettings) -> Result<Dispatched, AppError> {
+        match self.ports.clipboard.get().map_err(AppError::from)? {
+            Some(ClipboardContent::Image(image)) => {
+                ts.after_capture.insert(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST);
+                Ok(self.submit(CaptureImage::Image(image), ts, None))
+            }
+            Some(ClipboardContent::Files(paths)) if !paths.is_empty() => {
+                let ids: Vec<TaskId> = paths
+                    .into_iter()
+                    .map(|path| self.task.submit(TaskJob::Upload { source: UploadSource::File(path), settings: ts.clone() }))
+                    .collect();
+                Ok(ids.first().map_or(Dispatched::Done, |id| Dispatched::Task(*id)))
+            }
+            Some(ClipboardContent::Text(text)) if !text.is_empty() => {
+                let url = as_url(&text).map(str::to_owned);
+                let source = match url {
+                    Some(url) => UploadSource::Url(url),
+                    None => UploadSource::Text(text),
+                };
+                Ok(self.upload(source, ts))
+            }
+            _ => Err(AppError::Unsupported("clipboard is empty".into())),
+        }
+    }
+
     async fn route(self: Arc<Self>, action: Action, workflow: Option<WorkflowId>) -> Result<Dispatched, AppError> {
         let settings = self.settings.get();
         let ts = settings.task_settings(workflow);
@@ -272,6 +305,44 @@ impl App {
                 self.settings.set(next);
                 Ok(Dispatched::HotkeysToggled(off))
             }
+            Action::UploadText => {
+                let text = match self.ports.clipboard.get().ok().flatten() {
+                    Some(ClipboardContent::Text(text)) => text,
+                    _ => self.ports.prompt.ask_text("Upload text", "").await.map_err(AppError::from)?,
+                };
+                if text.is_empty() {
+                    return Err(AppError::Unsupported("nothing to upload".into()));
+                }
+                Ok(self.upload(UploadSource::Text(text), ts))
+            }
+            Action::ClipboardUpload | Action::ClipboardUploadWithContentViewer => self.clipboard_upload(ts),
+            Action::UploadUrl => {
+                let answer = self.ports.prompt.ask_text("URL to upload", "").await.map_err(AppError::from)?;
+                let url = as_url(&answer).ok_or_else(not_a_url)?.to_owned();
+                Ok(self.upload(UploadSource::Url(url), ts))
+            }
+            Action::ShortenUrl => {
+                let clipboard = match self.ports.clipboard.get().ok().flatten() {
+                    Some(ClipboardContent::Text(text)) => as_url(&text).map(str::to_owned),
+                    _ => None,
+                };
+                let url = match clipboard {
+                    Some(url) => url,
+                    None => {
+                        let answer = self.ports.prompt.ask_text(Action::ShortenUrl.label(), "").await.map_err(AppError::from)?;
+                        as_url(&answer).ok_or_else(not_a_url)?.to_owned()
+                    }
+                };
+                Ok(self.upload(UploadSource::ShortenUrl(url), ts))
+            }
+            Action::FileUpload => {
+                let answer = self.ports.prompt.ask_text(Action::FileUpload.label(), "").await.map_err(AppError::from)?;
+                let path = answer.trim();
+                if path.is_empty() {
+                    return Err(AppError::Unsupported("no file given".into()));
+                }
+                Ok(self.upload(UploadSource::File(PathBuf::from(path)), ts))
+            }
             Action::StopUploads => {
                 self.task.stop_all();
                 Ok(Dispatched::Done)
@@ -280,4 +351,16 @@ impl App {
             other => Err(AppError::Unsupported(format!("{} is not available yet", other.label()))),
         }
     }
+}
+
+/// The trimmed text when it is an http or https URL with no spaces in it.
+fn as_url(text: &str) -> Option<&str> {
+    let url = text.trim();
+    let lower = url.to_ascii_lowercase();
+    let is_web = lower.starts_with("http://") || lower.starts_with("https://");
+    (is_web && !url.contains(char::is_whitespace)).then_some(url)
+}
+
+fn not_a_url() -> AppError {
+    AppError::Unsupported("not a URL".into())
 }
