@@ -36,7 +36,7 @@ deny = [
     { name = "openssl", wrappers = ["native-tls"] },
     { name = "openssl-sys", wrappers = ["openssl", "native-tls"] },
     # Tokio only through laqta-http (ADR 007): the wrappers are laqta-http and the HTTP/SSH stack it alone brings in.
-    { name = "tokio", wrappers = ["laqta-http", "reqwest", "hyper", "hyper-util", "hyper-rustls", "h2", "tokio-rustls", "tokio-util", "tower", "russh", "russh-sftp"] },
+    { name = "tokio", wrappers = ["laqta-http", "reqwest", "hyper", "hyper-util", "hyper-rustls", "h2", "tokio-rustls", "tokio-native-tls", "hyper-tls", "tokio-util", "tower", "russh", "russh-sftp"] },
 ]
 
 [sources]
