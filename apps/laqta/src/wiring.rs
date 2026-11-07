@@ -223,7 +223,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         highlighter: platform.highlighter.clone(),
         background: Arc::new(crate::cloud::Background::new(
             cloud_options.clone(),
-            Arc::new(stubs::M7Pending),
+            Arc::new(crate::local_models::LocalBackground::new(data.clone(), model_options.clone(), Arc::new(ui.clone()))),
             platform.secrets.clone(),
             spawner.clone(),
             laqta_imaging::Codecs::builtin(),
@@ -233,7 +233,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             secrets: platform.secrets.clone(),
             spawner: spawner.clone(),
         }),
-        inpainter: Arc::new(stubs::M7Pending),
+        inpainter: Arc::new(crate::local_models::LocalInpainter::new(data.clone(), model_options.clone(), Arc::new(ui.clone()))),
         watcher: Arc::new(laqta_library::NotifyWatcher::default()),
         uploaders: uploaders.clone(),
         hover: platform.hover,

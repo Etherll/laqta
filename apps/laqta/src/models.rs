@@ -60,7 +60,7 @@ impl ModelService for Models {
     fn rows(&self) -> Vec<ModelRow> {
         let options = self.options();
         let rt = runtime(&self.data, &options);
-        let mut rows: Vec<ModelRow> = [Task::OcrDet, Task::OcrRec, Task::Background]
+        let mut rows: Vec<ModelRow> = [Task::OcrDet, Task::OcrRec, Task::Background, Task::Inpaint]
             .into_iter()
             .flat_map(|t| catalog().models_for(t))
             .map(|e| ModelRow {

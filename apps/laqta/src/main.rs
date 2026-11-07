@@ -6,6 +6,7 @@ mod cli;
 mod cloud;
 mod fonts;
 mod imports;
+mod local_models;
 mod logging;
 mod media;
 mod models;

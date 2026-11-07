@@ -815,7 +815,12 @@ impl SettingsWindow {
         let mut section = widgets::section("Models", cx)
             .child(widgets::muted("Local models for text recognition and background removal. Files are checked against pinned hashes.", cx))
             .child(widgets::row("Run on", providers, cx));
-        for (task, label) in [("ocr-det", "Text detection"), ("ocr-rec", "Text recognition"), ("background", "Background removal")] {
+        for (task, label) in [
+            ("ocr-det", "Text detection"),
+            ("ocr-rec", "Text recognition"),
+            ("background", "Background removal"),
+            ("inpaint", "Inpainting (photo editor)"),
+        ] {
             let rows: Vec<_> = self.model_rows.iter().filter(|r| r.task == task).cloned().collect();
             section = section.child(div().pt(px(8.)).font_weight(gpui::FontWeight::SEMIBOLD).child(label));
             if rows.is_empty() {
@@ -824,7 +829,8 @@ impl SettingsWindow {
             let chosen = match task {
                 "ocr-det" => self.draft.models.ocr_det.clone(),
                 "ocr-rec" => self.draft.models.ocr_rec.clone(),
-                _ => self.draft.models.background.clone(),
+                "background" => self.draft.models.background.clone(),
+                _ => None,
             };
             for (i, row) in rows.into_iter().enumerate() {
                 let id = row.id.clone();
@@ -846,7 +852,9 @@ impl SettingsWindow {
                                     let slot = match task.as_str() {
                                         "ocr-det" => &mut this.draft.models.ocr_det,
                                         "ocr-rec" => &mut this.draft.models.ocr_rec,
-                                        _ => &mut this.draft.models.background,
+                                        "background" => &mut this.draft.models.background,
+                                        // One inpainting model: nothing to choose.
+                                        _ => return,
                                     };
                                     *slot = Some(id.clone());
                                     cx.notify();
