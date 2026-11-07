@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -68,6 +69,10 @@ ksni = { version = "0.3.7", default-features = false, features = ["async-io"] }
 cargo_metadata = "0.23.1"
 toml = "1.2.1"
 tempfile = "3.27.0"
+
+[patch.crates-io]
+# blocking 1.7.0 never retires its last idle thread (2 wakeups/s forever; risk R6). One-line fix.
+blocking = { path = "vendor/blocking" }
 
 [profile.release]
 lto = "fat"

@@ -135,7 +135,7 @@ pub fn run(server: laqta_ipc::Server, startup_actions: Vec<Action>) -> Result<()
 fn run_gpui(quit_rx: mpsc::Receiver<()>) {
     gpui_platform::application().run(move |cx: &mut gpui::App| {
         cx.spawn(async move |cx: &mut gpui::AsyncApp| {
-            let _ = blocking::unblock(move || quit_rx.recv()).await;
+            let _ = crate::blocking_pool::unblock(move || quit_rx.recv()).await;
             cx.update(|cx| cx.quit());
         })
         .detach();

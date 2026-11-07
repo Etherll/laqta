@@ -113,7 +113,7 @@ impl Spawner for AppSpawner {
     }
 
     fn run_blocking(&self, work: Box<dyn FnOnce() + Send>) -> BoxFuture<'static, ()> {
-        Box::pin(blocking::unblock(work))
+        crate::blocking_pool::unblock(work)
     }
 
     fn run_compute(&self, work: Box<dyn FnOnce() + Send>) -> BoxFuture<'static, ()> {
@@ -124,7 +124,7 @@ impl Spawner for AppSpawner {
         let compute = self.compute.clone();
         Box::pin(async move {
             match pool {
-                Ok(pool) => blocking::unblock(move || pool.install(work)).await,
+                Ok(pool) => crate::blocking_pool::unblock(move || pool.install(work)).await,
                 Err(e) => tracing::error!("compute pool unavailable: {e}"),
             }
             compute.uses.fetch_add(1, Ordering::SeqCst);

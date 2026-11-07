@@ -30,6 +30,7 @@ async-executor.workspace = true
 async-io.workspace = true
 blocking.workspace = true
 futures-lite.workspace = true
+futures-channel.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
