@@ -155,6 +155,11 @@ where
     rx.await.expect("laqta-http task ended without a result")
 }
 
+/// Waits `duration` on the HTTP runtime's timer (polling APIs such as MediaFire's upload status).
+pub async fn sleep(duration: Duration) {
+    run(async move { tokio::time::sleep(duration).await }).await;
+}
+
 /// Listens on 127.0.0.1:0 for one HTTP GET (the OAuth redirect), replies with `reply_html`, and
 /// returns (port, future resolving to the request path+query). Dropping the future stops the
 /// listener.

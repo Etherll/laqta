@@ -4,9 +4,9 @@
 //! `extra_info`, and the reply's `download_url` is the link. The API key is read from `SecretStore`
 //! under `laqta/sendspace/api_key`.
 //!
-//! Sign-in (a user name) is refused as `Unsupported`: SendSpace's `auth.login` takes an MD5 token
-//! (`md5(token + md5(password))`), and the workspace has no MD5 crate. Clear the user name to upload
-//! anonymously.
+//! With a user name, Laqta signs in first: `auth.createToken`, then `auth.login` with
+//! `tokened_password = md5(token + md5(password))` (lowercase hex), then `upload.getInfo` with the
+//! `session_key`; the password is read from `SecretStore` under `laqta/sendspace/password`.
 
 use std::fmt;
 use std::sync::Arc;
@@ -20,6 +20,7 @@ use crate::hosts::{call, data_bytes, port_error, upload_call};
 
 /// Where the API key lives in `SecretStore`.
 pub const API_KEY_KEY: &str = "laqta/sendspace/api_key";
+pub const PASSWORD_KEY: &str = "laqta/sendspace/password";
 /// The production REST endpoint.
 pub const SENDSPACE_API: &str = "http://api.sendspace.com/rest/";
 
@@ -74,9 +75,6 @@ async fn transfer(
     request: UploadRequest,
     progress: ProgressCallback,
 ) -> Result<UploadResult, UploadError> {
-    if !config.username.is_empty() {
-        return Err(UploadError::Unsupported("SendSpace sign-in is not built; clear the user name to upload anonymously".to_owned()));
-    }
     let api_key = secrets
         .get(API_KEY_KEY)
         .map_err(port_error)?
@@ -84,13 +82,27 @@ async fn transfer(
         .ok_or_else(|| UploadError::Auth(format!("no secret is stored under {API_KEY_KEY}")))?;
 
     let mut info = Request::new(Method::Get, config.api_base.clone());
-    info.query = vec![
-        ("method".to_owned(), "anonymous.uploadGetInfo".to_owned()),
-        ("speed_limit".to_owned(), "0".to_owned()),
-        ("api_key".to_owned(), api_key),
-        ("api_version".to_owned(), API_VERSION.to_owned()),
-        ("app_version".to_owned(), APP_VERSION.to_owned()),
-    ];
+    info.query = if config.username.is_empty() {
+        vec![
+            ("method".to_owned(), "anonymous.uploadGetInfo".to_owned()),
+            ("speed_limit".to_owned(), "0".to_owned()),
+            ("api_key".to_owned(), api_key),
+            ("api_version".to_owned(), API_VERSION.to_owned()),
+            ("app_version".to_owned(), APP_VERSION.to_owned()),
+        ]
+    } else {
+        let password = secrets
+            .get(PASSWORD_KEY)
+            .map_err(port_error)?
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| UploadError::Auth(format!("no secret is stored under {PASSWORD_KEY}")))?;
+        let session_key = sign_in(&config, &api_key, &password).await?;
+        vec![
+            ("method".to_owned(), "upload.getInfo".to_owned()),
+            ("session_key".to_owned(), session_key),
+            ("speed_limit".to_owned(), "0".to_owned()),
+        ]
+    };
     let info_text = call(info, None).await?.text();
     let (upload_url, fields) = {
         let doc = parse(&info_text)?;
@@ -125,6 +137,39 @@ async fn transfer(
     let url = child_text(&doc, "download_url")
         .ok_or_else(|| UploadError::BadResponse("SendSpace: the upload reply has no download_url".to_owned()))?;
     Ok(UploadResult { url: Some(url), response: reply_text, ..UploadResult::default() })
+}
+
+/// `md5(token + md5(password))`, both lowercase hex, as `auth.login` wants it.
+pub fn tokened_password(token: &str, password: &str) -> String {
+    use md5::{Digest, Md5};
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let inner = hex(&Md5::digest(password.as_bytes()));
+    hex(&Md5::digest(format!("{token}{inner}").as_bytes()))
+}
+
+/// `auth.createToken` then `auth.login`; returns the session key.
+async fn sign_in(config: &SendSpaceConfig, api_key: &str, password: &str) -> Result<String, UploadError> {
+    let form =
+        |args: Vec<(&str, String)>| Body::Multipart(args.into_iter().map(|(k, v)| Part::Text { name: k.to_owned(), value: v }).collect());
+    let mut create = Request::new(Method::Post, config.api_base.clone());
+    create.body = form(vec![
+        ("method", "auth.createToken".to_owned()),
+        ("api_key", api_key.to_owned()),
+        ("api_version", API_VERSION.to_owned()),
+        ("app_version", APP_VERSION.to_owned()),
+        ("response_format", "xml".to_owned()),
+    ]);
+    let text = call(create, None).await?.text();
+    let token = child_text(&parse(&text)?, "token").ok_or_else(|| UploadError::BadResponse("SendSpace: no token".to_owned()))?;
+    let mut login = Request::new(Method::Post, config.api_base.clone());
+    login.body = form(vec![
+        ("method", "auth.login".to_owned()),
+        ("token", token.clone()),
+        ("user_name", config.username.clone()),
+        ("tokened_password", tokened_password(&token, password)),
+    ]);
+    let text = call(login, None).await?.text();
+    child_text(&parse(&text)?, "session_key").ok_or_else(|| UploadError::Auth("SendSpace: the sign-in was refused".to_owned()))
 }
 
 /// The XML document, or the error of a `status="fail"` reply (`<error code=… text=…/>`).

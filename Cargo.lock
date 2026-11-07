@@ -4971,6 +4971,7 @@ dependencies = [
  "laqta-http",
  "laqta-ports",
  "lettre",
+ "md-5 0.11.0",
  "native-tls",
  "pbkdf2 0.13.0",
  "percent-encoding",

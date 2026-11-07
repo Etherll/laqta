@@ -207,7 +207,14 @@ pub fn native_hosts(accounts: &[HostAccount], deps: &HostDeps) -> NativeHosts {
             }
             HostKind::MediaFire => {
                 use crate::hosts::mediafire;
-                out.destinations.push(Arc::new(mediafire::MediaFire));
+                let cfg = mediafire::MediaFireConfig {
+                    api_base: mediafire::API_BASE.into(),
+                    app_id: a.get("app_id").into(),
+                    email: a.get("email").into(),
+                    folder: a.get("folder").into(),
+                    poll_interval: std::time::Duration::from_secs(1),
+                };
+                out.destinations.push(Arc::new(mediafire::MediaFire::new(cfg, deps.secrets.clone())));
             }
             HostKind::Smtp => {
                 use crate::hosts::smtp;

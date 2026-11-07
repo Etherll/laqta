@@ -396,15 +396,31 @@ fn sendspace_an_error_reply_is_a_bad_response() {
 }
 
 #[test]
-fn sendspace_sign_in_is_refused_before_any_request() {
-    let server = Server::start(Vec::new());
-    let config = sendspace::SendSpaceConfig { api_base: server.url("/rest/"), username: "alice".to_owned() };
-    let destination = sendspace::SendSpace::new(config, store(&[(sendspace::API_KEY_KEY, "KEY")]));
+fn sendspace_signs_in_then_gets_the_upload_info() {
+    let upload_server = Server::start(vec![Canned::ok(
+        r#"<?xml version="1.0"?><response><status>ok</status><download_url>https://www.sendspace.com/file/u1</download_url></response>"#,
+    )]);
+    let info = format!(
+        r#"<result method="upload.getInfo" status="ok"><upload url="{}" max_file_size="1" upload_identifier="i" extra_info="e"/></result>"#,
+        upload_server.url("/up")
+    );
+    let api = Server::start(vec![
+        Canned::ok(r#"<result method="auth.createToken" status="ok"><token>TOK</token></result>"#),
+        Canned::ok(r#"<result method="auth.login" status="ok"><session_key>SESS</session_key><user_name>alice</user_name></result>"#),
+        Canned::ok(info),
+    ]);
+    let config = sendspace::SendSpaceConfig { api_base: api.url("/rest/"), username: "alice".to_owned() };
+    let destination = sendspace::SendSpace::new(config, store(&[(sendspace::API_KEY_KEY, "KEY"), (sendspace::PASSWORD_KEY, "pw")]));
 
-    let error = block_on(destination.upload(file_request("a.bin", "application/octet-stream", b"D"), progress())).unwrap_err();
+    let result = block_on(destination.upload(file_request("a.bin", "application/octet-stream", b"D"), progress())).unwrap();
 
-    assert!(matches!(error, UploadError::Unsupported(_)), "{error:?}");
-    assert!(server.finish().is_empty());
+    let requests = api.finish();
+    let login = text_of(&requests[1].body);
+    assert!(login.contains("auth.login") && login.contains(&sendspace::tokened_password("TOK", "pw")), "{login}");
+    assert!(query(&requests[2].target).contains(&pair("session_key", "SESS")));
+    upload_server.finish();
+    assert_eq!(result.url.as_deref(), Some("https://www.sendspace.com/file/u1"));
+    assert_eq!(sendspace::tokened_password("t", "").len(), 32);
 }
 
 // ---- MediaFire ----
@@ -418,13 +434,45 @@ fn mediafire_signature_is_the_sha1_of_the_concatenated_inputs() {
 }
 
 #[test]
-fn mediafire_refuses_uploads_before_sending_anything() {
-    let destination = mediafire::MediaFire;
+fn mediafire_signs_in_uploads_and_polls_for_the_quickkey() {
+    let api = Server::start(vec![
+        Canned::ok(r#"{"response":{"result":"Success","session_token":"ST","secret_key":298,"time":"123.4","new_key":"no"}}"#),
+        Canned::ok(r#"{"response":{"result":"Success","doupload":{"result":"0","key":"UK"},"new_key":"yes"}}"#),
+        Canned::ok(r#"{"response":{"result":"Success","doupload":{"status":"17"}}}"#),
+        Canned::ok(r#"{"response":{"result":"Success","doupload":{"status":"99","quickkey":"qk1"}}}"#),
+    ]);
+    let config = mediafire::MediaFireConfig {
+        api_base: api.url("/api/"),
+        app_id: "APP".into(),
+        email: "me@example.com".into(),
+        folder: String::new(),
+        poll_interval: std::time::Duration::from_millis(1),
+    };
+    let destination = mediafire::MediaFire::new(config, store(&[(mediafire::API_KEY_KEY, "AK"), (mediafire::PASSWORD_KEY, "pw")]));
 
-    let error = block_on(destination.upload(file_request("a.bin", "application/octet-stream", b"D"), progress())).unwrap_err();
+    let result = block_on(destination.upload(file_request("a.bin", "application/octet-stream", b"DATA"), progress())).unwrap();
 
-    assert_eq!(destination.id(), "mediafire");
-    assert!(matches!(error, UploadError::Unsupported(ref message) if message.contains("MD5")), "{error:?}");
+    let requests = api.finish();
+    assert!(requests[0].target.ends_with("user/get_session_token.php"));
+    let login = text_of(&requests[0].body);
+    assert!(login.contains(&mediafire::signature("me@example.com", "pw", "APP", "AK")), "{login}");
+    let up = query(&requests[1].target);
+    let unsigned: Vec<(String, String)> = up.iter().filter(|(k, _)| k != "signature").cloned().collect();
+    let sig = up.iter().find(|(k, _)| k == "signature").map(|(_, v)| v.clone()).unwrap();
+    assert_eq!(sig, mediafire::call_signature(298, "123.4", "upload/simple.php", &unsigned));
+    assert!(text_of(&requests[1].body).contains("name=\"Filedata\""));
+    // The upload reply said new_key = yes, so the polls are signed with the next key.
+    let poll = text_of(&requests[2].body);
+    assert!(
+        poll.contains(&mediafire::call_signature(
+            mediafire::next_key(298),
+            "123.4",
+            "upload/poll_upload.php",
+            &[pair("session_token", "ST"), pair("key", "UK"), pair("filename", "a.bin"), pair("response_format", "json"),]
+        )),
+        "{poll}"
+    );
+    assert_eq!(result.url.as_deref(), Some("https://www.mediafire.com/file/qk1"));
 }
 
 // ---- SMTP ----
