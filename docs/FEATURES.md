@@ -43,17 +43,17 @@ Areas the survey did not cover in depth need a second pass:
 | Feature | Milestone | Status |
 | - | - | - |
 | 23 after-capture tasks (listed below) | M1–M7: each flag ships with the feature it needs (M1 local steps, M2 upload and windows, M3 editor and effects, M5 OCR, QR and pin, M7 AI and photo editor) | planned |
-| 6 after-upload tasks (listed below) | M2 | planned |
+| 6 after-upload tasks (listed below) | M2 | done |
 | Per-workflow overrides of every settings section | M1 | done |
-| Destinations per type (image, text, file, shortener, sharing; FTP and custom-uploader index) | M2 | planned |
-| Task queue, status machine, progress, stop, stop all | M1–M2 | planned |
-| Quick task menu, actions toolbar, after-capture window, before-upload window | M2 | planned |
-| Actions (run external program with arguments) | M2 | planned |
+| Destinations per type (image, text, file, shortener, sharing; FTP and custom-uploader index) | M2 | done |
+| Task queue, status machine, progress, stop, stop all | M1–M2 | done |
+| Quick task menu, actions toolbar, after-capture window, before-upload window | M2 | done |
+| Actions (run external program with arguments) | M2 | done |
 | Image format options (PNG / JPEG / GIF / WebP / BMP, quality, auto JPEG by size, file-exists action, thumbnail) | M1 | done |
 | Toast options (duration, fade, placement, size, click actions), per-event sounds | M1 | done |
-| Name patterns (37 tokens) and upload-info templates (13 tokens; HTML, forum, wiki, Markdown), listed below | M1 / M2 | planned |
+| Name patterns (37 tokens) and upload-info templates (13 tokens; HTML, forum, wiki, Markdown), listed below | M1 / M2 | done |
 | Watch folders | M6 | planned |
-| Clipboard, drag-and-drop, text, URL (download then reupload), folder upload | M2 | planned |
+| Clipboard, drag-and-drop, text, URL (download then reupload), folder upload | M2 | done |
 
 **After-capture tasks (23):** ShowQuickTaskMenu, ShowAfterCaptureWindow, BeautifyImage, AddImageEffects, AnnotateImage, OpenInPhotoEditor, CopyImageToClipboard, PinToScreen, SendImageToPrinter, SaveImageToFile, SaveImageToFileWithDialog, SaveThumbnailImageToFile, PerformActions, CopyFileToClipboard, CopyFilePathToClipboard, CopyFolderPathToClipboard, ShowInExplorer, AnalyzeImage, ScanQRCode, DoOCR, ShowBeforeUploadWindow, UploadImageToHost, DeleteFile.
 
@@ -80,12 +80,12 @@ Hosts in the catalog are `.sxcu` files (ADR 004); hosts written in Rust are mark
 
 | Service | Approach | Milestone | Status |
 | - | - | - | - |
-| **M2 native:** Imgur, Dropbox, Google Drive, OneDrive, Amazon S3 and S3-compatible, FTP, FTPS, SFTP, shared folder, Bitly | native | M2 | planned |
-| **M2 catalog, image and text:** Chevereto, vgy.me, ImageBin, Img1, Pastebin, Paste.ee, Hastebin, OneTimeSecret, Pastie, uPaste, Slexy, Paste2 | `.sxcu` | M2 | planned |
-| **M2 catalog, file:** Pomf clones, Uguu, transfer.sh, FileBin, Plik, Lambda, s-ul, img.fish, Puush, Immich, Seafile, Streamable | `.sxcu` | M2 | planned |
-| **M2 catalog, shorteners:** YOURLS, Polr, Kutt, Zero Width, is.gd, v.gd, TinyURL, TURL, 2.gp, qr.net, vurl, nlcm | `.sxcu` | M2 | planned |
-| **M2 URL sharing:** Email, Pushbullet, Facebook, Reddit, Pinterest, Tumblr, LinkedIn, VK, Google Lens, Bing Visual Search | URL templates (email via the user's mail client until SMTP lands in M7) | M2 | planned |
-| Custom uploaders: `.sxcu` with all body types and all 13 syntax functions, old `$…$` syntax migration | `laqta-upload` | M2 | planned |
+| **M2 native:** Imgur, Dropbox, Google Drive, OneDrive, Amazon S3 and S3-compatible, FTP, FTPS, SFTP, shared folder, Bitly | native | M2 | done |
+| **M2 catalog, image and text:** Chevereto, vgy.me, ImageBin, Img1, Pastebin, Paste.ee, Hastebin, OneTimeSecret, Pastie, uPaste, Slexy, Paste2 | `.sxcu` | M2 | done |
+| **M2 catalog, file:** Pomf clones, Uguu, transfer.sh, FileBin, Plik, Lambda, s-ul, img.fish, Puush, Immich, Seafile, Streamable | `.sxcu` | M2 | done |
+| **M2 catalog, shorteners:** YOURLS, Polr, Kutt, Zero Width, is.gd, v.gd, TinyURL, TURL, 2.gp, qr.net, vurl, nlcm | `.sxcu` | M2 | done |
+| **M2 URL sharing:** Email, Pushbullet, Facebook, Reddit, Pinterest, Tumblr, LinkedIn, VK, Google Lens, Bing Visual Search | URL templates (email via the user's mail client until SMTP lands in M7) | M2 | done |
+| Custom uploaders: `.sxcu` with all body types and all 13 syntax functions, old `$…$` syntax migration | `laqta-upload` | M2 | done |
 | **M7 native:** Flickr (OAuth1), Box, YouTube, Google Cloud Storage, Azure Blob, Backblaze B2, MEGA (deferred: kept only if a maintained option exists when the M7 plan is written), GitHub Gist, PrivateBin (client-side crypto), SMTP email, Pushbullet (file), Nextcloud / ownCloud, SendSpace, MediaFire | native | M7 | planned |
 | Remote storage browser: S3, FTP, SFTP (list, upload, download, rename, delete) | native | M7 | planned |
 | Dropped: Copy, Drop.io, FileSonic, Photobucket, ImageShack, Hostr, StumbleUpon, Delicious, Firebase Dynamic Links, Immio | services shut down; re-checked when M7 starts | — | dropped |
