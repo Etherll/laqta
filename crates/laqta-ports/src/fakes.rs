@@ -11,23 +11,25 @@ use laqta_domain::{Action, Bitmap, Frame, KeyChord};
 use laqta_domain::region::{HoverTarget, RegionInput};
 
 use crate::{
-    ActionCallback, BoxFuture, Clipboard, Clock, HotkeyRegistrar, HoverSource, InputCallback, Notifier, Overlay, PortError, RegionView,
-    Rng, ScreenSource, Shell, Spawner, Toast, Tray, TrayMenu,
+    ActionCallback, BoxFuture, CaptureRequest, Clipboard, Clock, HotkeyRegistrar, HoverSource, InputCallback, Notifier, Overlay, PortError,
+    RegionView, Rng, ScreenSource, Shell, Spawner, Toast, Tray, TrayMenu,
 };
 
-/// Returns the configured frames (or error) on every call.
+/// Returns the configured frames (or error) on every call. `capture_window` returns `window_image`
+/// when it is set, and is unsupported otherwise.
 #[derive(Debug)]
 pub struct FakeScreen {
     pub result: Mutex<Result<Vec<Frame>, PortError>>,
     pub calls: Mutex<u32>,
+    pub window_image: Mutex<Option<Bitmap>>,
 }
 
 impl FakeScreen {
     pub fn new(frames: Vec<Frame>) -> Self {
-        FakeScreen { result: Mutex::new(Ok(frames)), calls: Mutex::new(0) }
+        FakeScreen { result: Mutex::new(Ok(frames)), calls: Mutex::new(0), window_image: Mutex::new(None) }
     }
     pub fn failing(error: PortError) -> Self {
-        FakeScreen { result: Mutex::new(Err(error)), calls: Mutex::new(0) }
+        FakeScreen { result: Mutex::new(Err(error)), calls: Mutex::new(0), window_image: Mutex::new(None) }
     }
 }
 
@@ -36,6 +38,11 @@ impl ScreenSource for FakeScreen {
         *self.calls.lock().unwrap() += 1;
         let r = self.result.lock().unwrap().clone();
         Box::pin(async move { r })
+    }
+
+    fn capture_window(&self, _target: &HoverTarget, _request: CaptureRequest) -> BoxFuture<'_, Result<Bitmap, PortError>> {
+        let image = self.window_image.lock().unwrap().clone();
+        Box::pin(async move { image.ok_or_else(|| PortError::Unsupported("transparent window capture".into())) })
     }
 }
 

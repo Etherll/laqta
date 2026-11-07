@@ -3,6 +3,7 @@
 //! Rects are half-open: a rect covers `x..right()` and `y..bottom()`. Pointer positions are
 //! clamped to the last pixel inside `bounds`.
 
+use crate::capture::RegionMouseAction;
 use crate::geometry::PhysRect;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -31,6 +32,10 @@ pub struct RegionConfig {
     pub min_size: u32,
     pub magnifier_pixels: u32,
     pub info_text: String,
+    /// What a right press does while idle.
+    pub right_click: RegionMouseAction,
+    /// What a middle press does while idle.
+    pub middle_click: RegionMouseAction,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,7 +87,14 @@ pub enum Handle {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RegionOutcome {
-    Confirmed { rects: Vec<PhysRect>, target: Option<HoverTarget> },
+    Confirmed {
+        rects: Vec<PhysRect>,
+        target: Option<HoverTarget>,
+    },
+    /// Capture the whole desktop.
+    Fullscreen,
+    /// Capture the monitor under the cursor.
+    ActiveMonitor,
     Cancelled,
 }
 
@@ -341,8 +353,12 @@ impl RegionState {
         self.set_cursor(at);
         match button {
             Button::Left if matches!(self.phase, Phase::Idle) => self.start_gesture(),
-            Button::Right => self.right_click(),
-            Button::Left | Button::Middle => {}
+            Button::Left => {}
+            Button::Right | Button::Middle if matches!(self.phase, Phase::Idle) => {
+                let action = if button == Button::Right { self.config.right_click } else { self.config.middle_click };
+                self.apply_mouse_action(action);
+            }
+            Button::Right | Button::Middle => self.cancel_gesture(),
         }
     }
 
@@ -409,18 +425,37 @@ impl RegionState {
         }
     }
 
-    fn right_click(&mut self) {
+    /// A right or middle press during a draw, move or resize drops the gesture. A move or resize
+    /// goes back to where it started.
+    fn cancel_gesture(&mut self) {
         match self.phase {
             Phase::Drawing { .. } => self.enter_idle(),
             Phase::Moving { original, .. } | Phase::Resizing { original, .. } => {
                 self.set_active(original);
                 self.enter_idle();
             }
-            Phase::Idle => match self.regions.iter().rposition(|r| contains(*r, self.cursor)) {
+            Phase::Idle | Phase::Finished(_) => {}
+        }
+    }
+
+    /// The configured action for a right or middle press while idle.
+    fn apply_mouse_action(&mut self, action: RegionMouseAction) {
+        let under_cursor = self.regions.iter().rposition(|r| contains(*r, self.cursor));
+        match action {
+            RegionMouseAction::None => {}
+            RegionMouseAction::CancelCapture => self.finish(RegionOutcome::Cancelled),
+            RegionMouseAction::RemoveShapeOrCancel => match under_cursor {
                 Some(i) if self.config.multi_region => self.remove_region(i),
                 _ => self.finish(RegionOutcome::Cancelled),
             },
-            Phase::Finished(_) => {}
+            RegionMouseAction::RemoveShape => {
+                if let Some(i) = under_cursor {
+                    self.remove_region(i);
+                }
+            }
+            RegionMouseAction::CaptureFullscreen => self.finish(RegionOutcome::Fullscreen),
+            RegionMouseAction::CaptureActiveMonitor => self.finish(RegionOutcome::ActiveMonitor),
+            RegionMouseAction::ConfirmSelection => self.confirm(),
         }
     }
 
@@ -598,11 +633,17 @@ mod tests {
             min_size: 5,
             magnifier_pixels: 5,
             info_text: String::new(),
+            right_click: RegionMouseAction::RemoveShapeOrCancel,
+            middle_click: RegionMouseAction::CancelCapture,
         }
     }
 
     fn multi() -> RegionConfig {
         RegionConfig { multi_region: true, ..config() }
+    }
+
+    fn with_clicks(right_click: RegionMouseAction, middle_click: RegionMouseAction, multi_region: bool) -> RegionConfig {
+        RegionConfig { multi_region, right_click, middle_click, ..config() }
     }
 
     fn rect(x: i32, y: i32, width: u32, height: u32) -> PhysRect {
@@ -627,6 +668,10 @@ mod tests {
 
     fn right_press(x: i32, y: i32) -> RegionInput {
         RegionInput::PointerDown { x, y, button: Button::Right }
+    }
+
+    fn middle_press(x: i32, y: i32) -> RegionInput {
+        RegionInput::PointerDown { x, y, button: Button::Middle }
     }
 
     fn tap(key: RegionKey) -> RegionInput {
@@ -928,5 +973,140 @@ mod tests {
         assert_eq!(clamp_rect(rect(-10, -10, 20, 20), BOUNDS), rect(0, 0, 20, 20));
         assert_eq!(clamp_rect(rect(990, 790, 50, 50), BOUNDS), rect(950, 750, 50, 50));
         assert_eq!(clamp_rect(rect(10, 10, 5000, 5), BOUNDS), rect(0, 10, 1000, 5));
+    }
+
+    #[test]
+    fn shipped_defaults_cancel_on_middle_and_remove_on_right() {
+        let mut state = RegionState::new(multi());
+        drag(&mut state, (10, 10), (60, 60));
+        state.handle(right_press(30, 30));
+        assert!(state.regions().is_empty());
+        assert_eq!(state.outcome(), None);
+
+        drag(&mut state, (10, 10), (60, 60));
+        state.handle(middle_press(30, 30));
+        assert_eq!(state.outcome(), Some(&RegionOutcome::Cancelled));
+    }
+
+    #[test]
+    fn none_does_nothing_on_either_button() {
+        let mut state = RegionState::new(with_clicks(RegionMouseAction::None, RegionMouseAction::None, true));
+        drag(&mut state, (10, 10), (60, 60));
+        state.handle(right_press(30, 30));
+        state.handle(middle_press(30, 30));
+        assert_eq!(state.phase(), &Phase::Idle);
+        assert_eq!(state.outcome(), None);
+        assert_eq!(state.regions(), &[rect(10, 10, 51, 51)]);
+    }
+
+    #[test]
+    fn cancel_capture_cancels_on_either_button() {
+        let mut state = RegionState::new(with_clicks(RegionMouseAction::CancelCapture, RegionMouseAction::None, true));
+        drag(&mut state, (10, 10), (60, 60));
+        state.handle(right_press(30, 30));
+        assert_eq!(state.outcome(), Some(&RegionOutcome::Cancelled));
+
+        let mut state = RegionState::new(with_clicks(RegionMouseAction::None, RegionMouseAction::CancelCapture, false));
+        state.handle(middle_press(5, 5));
+        assert_eq!(state.outcome(), Some(&RegionOutcome::Cancelled));
+    }
+
+    #[test]
+    fn remove_shape_removes_the_region_under_the_cursor_and_keeps_going() {
+        let mut state = RegionState::new(with_clicks(RegionMouseAction::RemoveShape, RegionMouseAction::RemoveShape, true));
+        drag(&mut state, (10, 10), (60, 60));
+        drag(&mut state, (100, 100), (150, 150));
+        state.handle(right_press(30, 30));
+        assert_eq!(state.regions(), &[rect(100, 100, 51, 51)]);
+        assert_eq!(state.phase(), &Phase::Idle);
+        assert_eq!(state.outcome(), None);
+
+        state.handle(middle_press(500, 500));
+        assert_eq!(state.regions(), &[rect(100, 100, 51, 51)]);
+        assert_eq!(state.outcome(), None);
+    }
+
+    #[test]
+    fn remove_shape_or_cancel_removes_first_then_cancels_on_empty_ground() {
+        let mut state = RegionState::new(with_clicks(RegionMouseAction::None, RegionMouseAction::RemoveShapeOrCancel, true));
+        drag(&mut state, (10, 10), (60, 60));
+        state.handle(middle_press(30, 30));
+        assert!(state.regions().is_empty());
+        assert_eq!(state.outcome(), None);
+
+        state.handle(middle_press(30, 30));
+        assert_eq!(state.outcome(), Some(&RegionOutcome::Cancelled));
+    }
+
+    #[test]
+    fn capture_fullscreen_and_active_monitor_finish_with_their_outcomes() {
+        let mut state = RegionState::new(with_clicks(RegionMouseAction::CaptureFullscreen, RegionMouseAction::None, false));
+        state.handle(right_press(5, 5));
+        assert_eq!(state.outcome(), Some(&RegionOutcome::Fullscreen));
+
+        let mut state = RegionState::new(with_clicks(RegionMouseAction::None, RegionMouseAction::CaptureActiveMonitor, false));
+        state.handle(middle_press(5, 5));
+        assert_eq!(state.outcome(), Some(&RegionOutcome::ActiveMonitor));
+    }
+
+    #[test]
+    fn confirm_selection_confirms_like_enter() {
+        let mut state = RegionState::new(with_clicks(RegionMouseAction::ConfirmSelection, RegionMouseAction::None, true));
+        drag(&mut state, (10, 10), (60, 60));
+        drag(&mut state, (100, 100), (150, 150));
+        state.handle(right_press(30, 30));
+        assert_eq!(
+            state.outcome(),
+            Some(&RegionOutcome::Confirmed { rects: vec![rect(10, 10, 51, 51), rect(100, 100, 51, 51)], target: None })
+        );
+
+        let win = window("Editor", rect(300, 200, 400, 300));
+        let mut state = RegionState::new(with_clicks(RegionMouseAction::None, RegionMouseAction::ConfirmSelection, false));
+        state.handle(RegionInput::TargetsLoaded(vec![win.clone()]));
+        state.handle(move_to(400, 300));
+        state.handle(middle_press(400, 300));
+        assert_eq!(state.outcome(), Some(&RegionOutcome::Confirmed { rects: vec![win.rect], target: Some(win) }));
+    }
+
+    #[test]
+    fn confirm_selection_with_nothing_to_confirm_stays_idle() {
+        let mut state = RegionState::new(with_clicks(RegionMouseAction::None, RegionMouseAction::ConfirmSelection, false));
+        state.handle(middle_press(5, 5));
+        assert_eq!(state.phase(), &Phase::Idle);
+        assert_eq!(state.outcome(), None);
+    }
+
+    #[test]
+    fn a_right_press_during_a_drag_cancels_the_drag_whatever_the_action() {
+        let mut state = RegionState::new(with_clicks(RegionMouseAction::CaptureFullscreen, RegionMouseAction::None, false));
+        state.handle(press(100, 100));
+        state.handle(move_to(150, 150));
+        state.handle(right_press(150, 150));
+        assert_eq!(state.phase(), &Phase::Idle);
+        assert_eq!(state.outcome(), None);
+    }
+
+    #[test]
+    fn a_middle_press_during_a_drag_cancels_the_drag() {
+        let mut state = RegionState::new(multi());
+        state.handle(press(100, 100));
+        state.handle(move_to(150, 150));
+        state.handle(middle_press(150, 150));
+        assert_eq!(state.phase(), &Phase::Idle);
+        assert!(state.regions().is_empty());
+        assert_eq!(state.outcome(), None);
+    }
+
+    #[test]
+    fn a_middle_press_during_a_move_restores_the_region() {
+        let mut state = RegionState::new(multi());
+        drag(&mut state, (100, 100), (199, 199));
+        state.handle(press(150, 150));
+        state.handle(move_to(300, 300));
+        assert_eq!(state.active_region(), Some(rect(250, 250, 100, 100)));
+        state.handle(middle_press(300, 300));
+        assert_eq!(state.phase(), &Phase::Idle);
+        assert_eq!(state.active_region(), Some(rect(100, 100, 100, 100)));
+        assert_eq!(state.outcome(), None);
     }
 }

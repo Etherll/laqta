@@ -21,6 +21,7 @@ struct H {
     overlay: Arc<FakeOverlay>,
     tools: Arc<FakeToolHost>,
     spawner: Arc<InlineSpawner>,
+    screen: Arc<FakeScreen>,
 }
 
 fn frame(x: i32, colour: u8) -> Frame {
@@ -51,8 +52,9 @@ fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
     let spawner = Arc::new(InlineSpawner::default());
     let hover = FakeHoverSource::new(vec![window()]);
     *hover.active.lock().unwrap() = Some(window());
+    let screen = Arc::new(FakeScreen::new(vec![frame(0, 10), frame(8, 200)]));
     let ports = Ports {
-        screen: Arc::new(FakeScreen::new(vec![frame(0, 10), frame(8, 200)])),
+        screen: screen.clone(),
         clipboard: Arc::new(FakeClipboard::new(ClipboardBehaviour::Succeed)),
         shell: Arc::new(FakeShell::default()),
         clock: Arc::new(ManualClock::new(jiff::civil::date(2026, 11, 7).at(14, 3, 22, 0))),
@@ -69,7 +71,12 @@ fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
     settings.screenshots_dir = dir.to_path_buf();
     settings.defaults.capture.region.min_size = 2;
     edit(&mut settings);
-    H { app: App::new(ports, settings), overlay, tools, spawner }
+    H { app: App::new(ports, settings), overlay, tools, spawner, screen }
+}
+
+/// A window bitmap that is not the 4x3 crop, so a test can tell which one was saved.
+fn window_bitmap(width: u32, height: u32) -> Bitmap {
+    Bitmap::new(width, height, PixelFormat::Rgba8, vec![0u8; (width * height * 4) as usize].into()).unwrap()
 }
 
 /// Runs `f` inside a compute pool (imaging asserts it) and drives spawned jobs to the end.
@@ -110,6 +117,47 @@ fn active_window_crops_to_the_window() {
     // window name pattern uses the process name
     let name = std::fs::read_dir(tmp.path().join("2026-11")).unwrap().next().unwrap().unwrap().file_name();
     assert!(name.to_string_lossy().starts_with("editor_"), "{name:?}");
+}
+
+#[test]
+fn transparent_active_window_saves_the_window_bitmap() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path(), |s| s.defaults.capture.transparent_window = true);
+    *h.screen.window_image.lock().unwrap() = Some(window_bitmap(6, 5));
+    run(&h, h.app.dispatch(Action::ActiveWindow, None)).unwrap();
+    assert_eq!(saved_size(tmp.path()), (6, 5));
+    // The target's process name still names the file, so the target info reached the task.
+    let name = std::fs::read_dir(tmp.path().join("2026-11")).unwrap().next().unwrap().unwrap().file_name();
+    assert!(name.to_string_lossy().starts_with("editor_"), "{name:?}");
+}
+
+#[test]
+fn transparent_active_window_falls_back_to_the_crop_when_unsupported() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path(), |s| s.defaults.capture.transparent_window = true);
+    run(&h, h.app.dispatch(Action::ActiveWindow, None)).unwrap();
+    assert_eq!(saved_size(tmp.path()), (4, 3));
+}
+
+#[test]
+fn window_bitmap_is_ignored_when_transparent_is_off() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path(), |_| {});
+    *h.screen.window_image.lock().unwrap() = Some(window_bitmap(6, 5));
+    run(&h, h.app.dispatch(Action::ActiveWindow, None)).unwrap();
+    assert_eq!(saved_size(tmp.path()), (4, 3));
+}
+
+#[test]
+fn transparent_custom_window_saves_the_window_bitmap() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path(), |s| {
+        s.defaults.capture.custom_window_title = "notes".into();
+        s.defaults.capture.transparent_window = true;
+    });
+    *h.screen.window_image.lock().unwrap() = Some(window_bitmap(6, 5));
+    run(&h, h.app.dispatch(Action::CustomWindow, None)).unwrap();
+    assert_eq!(saved_size(tmp.path()), (6, 5));
 }
 
 #[test]
