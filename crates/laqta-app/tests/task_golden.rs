@@ -64,6 +64,8 @@ fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Set
         spawner,
         overlay: Arc::new(FakeOverlay::default()),
         tools: Arc::new(laqta_ports::fakes::FakeToolHost::default()),
+        prompt: Arc::new(laqta_ports::fakes::FakePrompt::default()),
+        uploaders: Arc::new(laqta_ports::fakes::FakeUploaders::default()),
         hover: Arc::new(FakeHoverSource::new(Vec::new())),
         notifier: notifier.clone(),
         rng: Arc::new(CountingRng::default()),

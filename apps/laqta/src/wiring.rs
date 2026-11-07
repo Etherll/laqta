@@ -114,6 +114,8 @@ pub fn run(server: laqta_ipc::Server, startup_actions: Vec<Action>) -> Result<()
         spawner: spawner.clone(),
         overlay: Arc::new(ui.clone()),
         tools: Arc::new(ui.clone()),
+        prompt: Arc::new(ui.clone()),
+        uploaders: Arc::new(stubs::NoUploaders),
         hover: platform.hover,
         notifier: Arc::new(crate::notifier::AppNotifier { ui: ui.clone() }),
         rng: stubs::system_rng(),

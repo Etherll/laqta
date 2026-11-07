@@ -8,6 +8,7 @@ pub mod presenters;
 mod history_window;
 mod main_window;
 mod overlay;
+mod prompt_window;
 mod runtime;
 mod settings_window;
 mod theme;

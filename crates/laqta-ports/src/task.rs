@@ -107,6 +107,17 @@ pub enum TaskEvent {
         step: &'static str,
         reason: String,
     },
+    /// M2 upload phase.
+    UploadStarted { id: TaskId, destination: String },
+    Progress { id: TaskId, sent: u64, total: Option<u64> },
+    UploadRetry { id: TaskId, attempt: u32, reason: String },
+    Uploaded { id: TaskId, url: String, thumbnail_url: Option<String>, deletion_url: Option<String> },
+    Shortened { id: TaskId, url: String },
+    UrlCopied { id: TaskId, text: String },
+    UrlOpened { id: TaskId, url: String },
+    Shared { id: TaskId, url: String },
+    /// Asks the UI to show the after-upload window or a QR code for the URL.
+    ShowUrl { id: TaskId, url: String, qr: bool },
 }
 
 impl TaskEvent {
@@ -124,7 +135,16 @@ impl TaskEvent {
             | TaskEvent::Notified { id }
             | TaskEvent::Deleted { id, .. }
             | TaskEvent::SaveSkipped { id, .. }
-            | TaskEvent::StepFailed { id, .. } => *id,
+            | TaskEvent::StepFailed { id, .. }
+            | TaskEvent::UploadStarted { id, .. }
+            | TaskEvent::Progress { id, .. }
+            | TaskEvent::UploadRetry { id, .. }
+            | TaskEvent::Uploaded { id, .. }
+            | TaskEvent::Shortened { id, .. }
+            | TaskEvent::UrlCopied { id, .. }
+            | TaskEvent::UrlOpened { id, .. }
+            | TaskEvent::Shared { id, .. }
+            | TaskEvent::ShowUrl { id, .. } => *id,
         }
     }
 }

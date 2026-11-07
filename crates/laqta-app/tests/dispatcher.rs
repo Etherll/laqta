@@ -31,6 +31,8 @@ fn harness(screenshots_dir: &Path, screen: FakeScreen) -> Harness {
         spawner: spawner.clone(),
         overlay: Arc::new(laqta_ports::fakes::FakeOverlay::default()),
         tools: Arc::new(laqta_ports::fakes::FakeToolHost::default()),
+        prompt: Arc::new(laqta_ports::fakes::FakePrompt::default()),
+        uploaders: Arc::new(laqta_ports::fakes::FakeUploaders::default()),
         hover: Arc::new(laqta_ports::fakes::FakeHoverSource::new(Vec::new())),
         notifier: Arc::new(laqta_ports::fakes::FakeNotifier::default()),
         rng: Arc::new(laqta_ports::fakes::CountingRng::default()),

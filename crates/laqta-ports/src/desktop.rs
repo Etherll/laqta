@@ -16,6 +16,10 @@ pub trait Clipboard: Send + Sync {
         let _ = paths;
         Err(PortError::Unsupported("clipboard files".into()))
     }
+    /// What is on the clipboard now, for "upload from clipboard". `Ok(None)` when it's empty.
+    fn get(&self) -> Result<Option<ClipboardContent>, PortError> {
+        Err(PortError::Unsupported("reading the clipboard".into()))
+    }
 }
 
 pub trait Shell: Send + Sync {
@@ -31,6 +35,14 @@ pub trait Shell: Send + Sync {
         let _ = url;
         Err(PortError::Unsupported("open url".into()))
     }
+}
+
+/// Clipboard contents, in the order Laqta prefers them.
+#[derive(Clone, Debug)]
+pub enum ClipboardContent {
+    Image(Bitmap),
+    Files(Vec<std::path::PathBuf>),
+    Text(String),
 }
 
 pub type ActionCallback = Arc<dyn Fn(Action) + Send + Sync>;

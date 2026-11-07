@@ -12,7 +12,7 @@ pub mod upload;
 #[cfg(feature = "fakes")]
 pub mod fakes;
 
-pub use desktop::{ActionCallback, Clipboard, HotkeyRegistrar, Shell, Tray, TrayItem, TrayMenu};
+pub use desktop::{ActionCallback, Clipboard, ClipboardContent, HotkeyRegistrar, Shell, Tray, TrayItem, TrayMenu};
 pub use error::PortError;
 pub use notify::{HostInfo, Notifier, Rng, Sound, Toast};
 pub use overlay::{HoverSource, InputCallback, Overlay, RegionView, ToolHost, ToolWindow};
@@ -21,6 +21,7 @@ pub use screen::{CaptureRequest, ScreenSource};
 pub use task::{AppError, TaskEvent, TaskId, TaskStatus};
 pub use upload::{
     Destination, ProgressCallback, Prompt, SecretStore, Sharer, Shortener, UploadData, UploadError, UploadKind, UploadRequest, UploadResult,
+    Uploaders,
 };
 
 /// A boxed future, so async ports work behind `Arc<dyn Port>`.

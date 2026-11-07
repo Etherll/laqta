@@ -119,3 +119,18 @@ pub trait SecretStore: Send + Sync {
     fn set(&self, key: &str, secret: &str) -> Result<(), PortError>;
     fn delete(&self, key: &str) -> Result<(), PortError>;
 }
+
+/// A downloaded file: bytes, file name, mime type.
+pub type Downloaded = (Vec<u8>, String, String);
+
+/// The upload registry as the application sees it: look up hosts by id, and download a URL for
+/// "upload from URL" (ADR 014: `laqta-upload` implements it).
+pub trait Uploaders: Send + Sync {
+    fn destination(&self, id: &str) -> Option<std::sync::Arc<dyn Destination>>;
+    fn shortener(&self, id: &str) -> Option<std::sync::Arc<dyn Shortener>>;
+    fn sharer(&self, id: &str) -> Option<std::sync::Arc<dyn Sharer>>;
+    /// (id, display name) of every destination, for settings.
+    fn destination_list(&self) -> Vec<(String, String)>;
+    /// Downloads a URL: (bytes, file name, mime).
+    fn download(&self, url: &str) -> BoxFuture<'_, Result<Downloaded, UploadError>>;
+}

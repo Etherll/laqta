@@ -56,6 +56,7 @@ pub enum ClipboardBehaviour {
 
 #[derive(Debug)]
 pub struct FakeClipboard {
+    pub contents: Mutex<Option<crate::ClipboardContent>>,
     pub behaviour: Mutex<ClipboardBehaviour>,
     pub images: Mutex<Vec<Bitmap>>,
     pub texts: Mutex<Vec<String>>,
@@ -65,6 +66,7 @@ pub struct FakeClipboard {
 impl FakeClipboard {
     pub fn new(behaviour: ClipboardBehaviour) -> Self {
         FakeClipboard {
+            contents: Mutex::new(None),
             behaviour: Mutex::new(behaviour),
             images: Mutex::new(Vec::new()),
             texts: Mutex::new(Vec::new()),
@@ -92,6 +94,9 @@ impl Clipboard for FakeClipboard {
     fn set_files(&self, paths: &[PathBuf]) -> Result<(), PortError> {
         self.files.lock().unwrap().push(paths.to_vec());
         Ok(())
+    }
+    fn get(&self) -> Result<Option<crate::ClipboardContent>, PortError> {
+        Ok(self.contents.lock().unwrap().clone())
     }
 }
 
@@ -465,5 +470,38 @@ impl crate::Shortener for FakeShortener {
     fn shorten(&self, url: &str) -> BoxFuture<'_, Result<String, crate::UploadError>> {
         let s = format!("{url}/s");
         Box::pin(async move { Ok(s) })
+    }
+}
+
+/// Holds fake destinations and shorteners by id; downloads return a fixed payload.
+#[derive(Default)]
+pub struct FakeUploaders {
+    pub destinations: Mutex<Vec<Arc<dyn crate::Destination>>>,
+    pub shorteners: Mutex<Vec<Arc<dyn crate::Shortener>>>,
+    pub download: Mutex<Option<crate::upload::Downloaded>>,
+}
+
+impl std::fmt::Debug for FakeUploaders {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakeUploaders").finish_non_exhaustive()
+    }
+}
+
+impl crate::Uploaders for FakeUploaders {
+    fn destination(&self, id: &str) -> Option<Arc<dyn crate::Destination>> {
+        self.destinations.lock().unwrap().iter().find(|d| d.id() == id).cloned()
+    }
+    fn shortener(&self, id: &str) -> Option<Arc<dyn crate::Shortener>> {
+        self.shorteners.lock().unwrap().iter().find(|d| d.id() == id).cloned()
+    }
+    fn sharer(&self, _id: &str) -> Option<Arc<dyn crate::Sharer>> {
+        None
+    }
+    fn destination_list(&self) -> Vec<(String, String)> {
+        self.destinations.lock().unwrap().iter().map(|d| (d.id().to_string(), d.name().to_string())).collect()
+    }
+    fn download(&self, url: &str) -> BoxFuture<'_, Result<crate::upload::Downloaded, crate::UploadError>> {
+        let r = self.download.lock().unwrap().clone().ok_or_else(|| crate::UploadError::Network(format!("no fake download for {url}")));
+        Box::pin(async move { r })
     }
 }

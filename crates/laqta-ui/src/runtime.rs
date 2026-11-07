@@ -25,6 +25,7 @@ pub(crate) enum UiCommand {
     CloseOverlay,
     Toast(Toast),
     Open(ToolWindow),
+    Prompt { title: String, kind: crate::prompt_window::PromptKind, reply: crate::prompt_window::Reply },
     Quit,
 }
 
@@ -69,6 +70,65 @@ impl Overlay for UiHandle {
 impl Notifier for UiHandle {
     fn toast(&self, toast: Toast) -> Result<(), PortError> {
         self.send(UiCommand::Toast(toast))
+    }
+}
+
+impl UiHandle {
+    fn ask(&self, title: &str, kind: crate::prompt_window::PromptKind) -> futures_channel::oneshot::Receiver<Result<crate::prompt_window::Answer, PortError>> {
+        let (tx, rx) = futures_channel::oneshot::channel();
+        if let Err(e) = self.tx.unbounded_send(UiCommand::Prompt { title: title.to_string(), kind, reply: tx })
+            && let UiCommand::Prompt { reply, .. } = e.into_inner()
+        {
+            let _ = reply.send(Err(PortError::Unsupported("the UI is not running".into())));
+        }
+        rx
+    }
+}
+
+impl laqta_ports::Prompt for UiHandle {
+    fn ask_text(&self, title: &str, default: &str) -> laqta_ports::BoxFuture<'_, Result<String, PortError>> {
+        use crate::prompt_window::{Answer, PromptKind};
+        let rx = self.ask(title, PromptKind::Text { default: default.to_string() });
+        Box::pin(async move {
+            match rx.await {
+                Ok(Ok(Answer::Text(t))) => Ok(t),
+                Ok(Err(e)) => Err(e),
+                _ => Err(PortError::Cancelled),
+            }
+        })
+    }
+    fn choose(&self, title: &str, options: &[String]) -> laqta_ports::BoxFuture<'_, Result<usize, PortError>> {
+        use crate::prompt_window::{Answer, PromptKind};
+        let rx = self.ask(title, PromptKind::Choose { options: options.to_vec() });
+        Box::pin(async move {
+            match rx.await {
+                Ok(Ok(Answer::Index(i))) => Ok(i),
+                Ok(Err(e)) => Err(e),
+                _ => Err(PortError::Cancelled),
+            }
+        })
+    }
+    fn show_text(&self, title: &str, text: &str) -> laqta_ports::BoxFuture<'_, Result<(), PortError>> {
+        use crate::prompt_window::PromptKind;
+        let rx = self.ask(title, PromptKind::Show { text: text.to_string() });
+        Box::pin(async move {
+            match rx.await {
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(PortError::Cancelled),
+            }
+        })
+    }
+    fn confirm(&self, title: &str, text: &str) -> laqta_ports::BoxFuture<'_, Result<bool, PortError>> {
+        use crate::prompt_window::{Answer, PromptKind};
+        let rx = self.ask(title, PromptKind::Confirm { text: text.to_string() });
+        Box::pin(async move {
+            match rx.await {
+                Ok(Ok(Answer::Bool(b))) => Ok(b),
+                Ok(Err(e)) => Err(e),
+                _ => Err(PortError::Cancelled),
+            }
+        })
     }
 }
 
@@ -170,6 +230,7 @@ fn handle(cmd: UiCommand, cx: &mut App) {
         UiCommand::Open(ToolWindow::History) => history_window::open(false, cx),
         UiCommand::Open(ToolWindow::ImageHistory) => history_window::open(true, cx),
         UiCommand::Open(ToolWindow::TrayMenu) => tray_popup::toggle(cx),
+        UiCommand::Prompt { title, kind, reply } => crate::prompt_window::open(title, kind, reply, cx),
         UiCommand::Open(other) => tracing::warn!(?other, "no window for this tool yet"),
         UiCommand::Quit => {
             overlay::close(cx);

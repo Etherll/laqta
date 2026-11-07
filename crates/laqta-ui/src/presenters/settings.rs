@@ -61,6 +61,7 @@ fn section_label(name: &str) -> &'static str {
     match name {
         "after_capture" => "After capture",
         "after_upload" => "After upload",
+        "upload" => "Destinations",
         "general" => "General",
         "image" => "Image",
         "capture" => "Capture",

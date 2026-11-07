@@ -29,6 +29,8 @@ pub struct Ports {
     pub spawner: Arc<dyn Spawner>,
     pub overlay: Arc<dyn Overlay>,
     pub tools: Arc<dyn ToolHost>,
+    pub prompt: Arc<dyn laqta_ports::Prompt>,
+    pub uploaders: Arc<dyn laqta_ports::Uploaders>,
     pub hover: Arc<dyn HoverSource>,
     pub notifier: Arc<dyn Notifier>,
     pub rng: Arc<dyn Rng>,

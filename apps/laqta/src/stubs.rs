@@ -30,3 +30,26 @@ pub fn host_info() -> HostInfo {
     };
     HostInfo { user_name: user.clone(), user_login: user, computer_name: computer }
 }
+
+/// No destinations until the upload registry is wired (M2).
+#[derive(Debug)]
+pub struct NoUploaders;
+
+impl laqta_ports::Uploaders for NoUploaders {
+    fn destination(&self, _id: &str) -> Option<Arc<dyn laqta_ports::Destination>> {
+        None
+    }
+    fn shortener(&self, _id: &str) -> Option<Arc<dyn laqta_ports::Shortener>> {
+        None
+    }
+    fn sharer(&self, _id: &str) -> Option<Arc<dyn laqta_ports::Sharer>> {
+        None
+    }
+    fn destination_list(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    fn download(&self, url: &str) -> laqta_ports::BoxFuture<'_, Result<laqta_ports::upload::Downloaded, laqta_ports::UploadError>> {
+        let e = laqta_ports::UploadError::Unsupported(format!("download {url}"));
+        Box::pin(async move { Err(e) })
+    }
+}

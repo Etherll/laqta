@@ -67,6 +67,8 @@ fn test_ports(overlay: Arc<FakeOverlay>, hover: Arc<dyn HoverSource>) -> Ports {
         spawner: Arc::new(InlineSpawner::default()),
         overlay,
         tools: Arc::new(laqta_ports::fakes::FakeToolHost::default()),
+        prompt: Arc::new(laqta_ports::fakes::FakePrompt::default()),
+        uploaders: Arc::new(laqta_ports::fakes::FakeUploaders::default()),
         hover,
         notifier: Arc::new(FakeNotifier::default()),
         rng: Arc::new(CountingRng::default()),

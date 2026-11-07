@@ -188,6 +188,7 @@ impl Default for NamingSettings {
 #[serde(default)]
 pub struct TaskSettings {
     pub after_capture: AfterCaptureTasks,
+    pub upload: UploadSettings,
     pub after_upload: AfterUploadTasks,
     pub general: GeneralSettings,
     pub image: ImageSettings,
@@ -202,6 +203,7 @@ impl Default for TaskSettings {
         TaskSettings {
             after_capture: AfterCaptureTasks::SAVE_IMAGE_TO_FILE | AfterCaptureTasks::COPY_IMAGE_TO_CLIPBOARD,
             after_upload: AfterUploadTasks::COPY_URL_TO_CLIPBOARD,
+            upload: UploadSettings::default(),
             general: GeneralSettings::default(),
             image: ImageSettings::default(),
             capture: CaptureOptions::default(),
@@ -211,10 +213,44 @@ impl Default for TaskSettings {
     }
 }
 
+/// Where uploads go and how results are reported (ShareX's destinations and upload settings).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct UploadSettings {
+    /// Destination ids from the upload registry, e.g. `imgur`, `sxcu:uguu`, `custom:My host`.
+    pub image_destination: String,
+    pub text_destination: String,
+    pub file_destination: String,
+    pub url_shortener: String,
+    pub url_sharer: String,
+    /// What "copy URL" puts on the clipboard (upload-info tokens such as `$url`, `$shorturl`).
+    pub clipboard_format: String,
+    /// Retries after the first attempt for network errors, HTTP 5xx and 429 (risk R7).
+    pub retries: u32,
+    /// Ask before uploading files larger than this (bytes); 0 = never.
+    pub large_file_warning_bytes: u64,
+}
+
+impl Default for UploadSettings {
+    fn default() -> Self {
+        UploadSettings {
+            image_destination: "imgur".into(),
+            text_destination: "sxcu:paste_ee".into(),
+            file_destination: "sxcu:uguu".into(),
+            url_shortener: "sxcu:is_gd".into(),
+            url_sharer: "reddit".into(),
+            clipboard_format: "$url".into(),
+            retries: 2,
+            large_file_warning_bytes: 0,
+        }
+    }
+}
+
 /// Per-workflow overrides. A `None` section keeps the default (ADR 008).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TaskSettingsPatch {
     pub after_capture: Option<AfterCaptureTasks>,
+    pub upload: Option<UploadSettings>,
     pub after_upload: Option<AfterUploadTasks>,
     pub general: Option<GeneralSettings>,
     pub image: Option<ImageSettings>,
@@ -229,6 +265,7 @@ impl TaskSettings {
         TaskSettings {
             after_capture: patch.after_capture.unwrap_or(defaults.after_capture),
             after_upload: patch.after_upload.unwrap_or(defaults.after_upload),
+            upload: patch.upload.clone().unwrap_or_else(|| defaults.upload.clone()),
             general: patch.general.clone().unwrap_or_else(|| defaults.general.clone()),
             image: patch.image.clone().unwrap_or_else(|| defaults.image.clone()),
             capture: patch.capture.clone().unwrap_or_else(|| defaults.capture.clone()),
@@ -248,6 +285,7 @@ impl TaskSettingsPatch {
         let flags = [
             (self.after_capture.is_some(), "after_capture"),
             (self.after_upload.is_some(), "after_upload"),
+            (self.upload.is_some(), "upload"),
             (self.general.is_some(), "general"),
             (self.image.is_some(), "image"),
             (self.capture.is_some(), "capture"),
