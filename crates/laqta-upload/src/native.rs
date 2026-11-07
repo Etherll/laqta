@@ -169,6 +169,64 @@ pub fn native_hosts(accounts: &[HostAccount], deps: &HostDeps) -> NativeHosts {
                 out.destinations.push(Arc::new(sf::SharedFolder::new(cfg)));
             }
             // ---- HO-a ----
+            HostKind::Gist => {
+                use crate::hosts::gist as g;
+                let config = g::GistConfig { api_base: g::GITHUB_API.into(), public: a.flag("public") };
+                out.destinations.push(Arc::new(g::Gist::new(config, deps.secrets.clone())));
+            }
+            HostKind::PrivateBin => {
+                use crate::hosts::privatebin as p;
+                let config = p::PrivateBinConfig {
+                    server: a.get("url").into(),
+                    expire: a.get("expire").into(),
+                    burn_after_reading: a.flag("burn_after_reading"),
+                };
+                out.destinations.push(Arc::new(p::PrivateBin::new(config, deps.secrets.clone(), deps.csprng.clone())));
+            }
+            HostKind::Pushbullet => {
+                use crate::hosts::pushbullet as pb;
+                let device = Some(a.get("device_iden").trim().to_owned()).filter(|device| !device.is_empty());
+                let config = pb::PushbulletConfig { api_base: pb::PUSHBULLET_API.into(), device_iden: device };
+                out.destinations.push(Arc::new(pb::Pushbullet::new(config, deps.secrets.clone())));
+            }
+            HostKind::Nextcloud => {
+                use crate::hosts::nextcloud as nc;
+                let config = nc::NextcloudConfig {
+                    server: a.get("url").into(),
+                    username: a.get("username").into(),
+                    directory: a.get("directory").into(),
+                    share: a.flag("share"),
+                    direct_link: a.flag("direct_link"),
+                };
+                out.destinations.push(Arc::new(nc::Nextcloud::new(config, deps.secrets.clone())));
+            }
+            HostKind::SendSpace => {
+                use crate::hosts::sendspace as ss;
+                let config = ss::SendSpaceConfig { api_base: ss::SENDSPACE_API.into(), username: a.get("username").into() };
+                out.destinations.push(Arc::new(ss::SendSpace::new(config, deps.secrets.clone())));
+            }
+            HostKind::MediaFire => {
+                use crate::hosts::mediafire;
+                out.destinations.push(Arc::new(mediafire::MediaFire));
+            }
+            HostKind::Smtp => {
+                use crate::hosts::smtp;
+                let tls = match a.get("tls").trim() {
+                    "tls" => smtp::SmtpTls::Tls,
+                    "none" => smtp::SmtpTls::None,
+                    _ => smtp::SmtpTls::StartTls,
+                };
+                let config = smtp::SmtpConfig {
+                    host: a.get("host").into(),
+                    port: port(a, 587),
+                    tls,
+                    username: a.get("username").into(),
+                    from: a.get("from").into(),
+                    to: a.get("to").into(),
+                    subject: a.get("subject").into(),
+                };
+                out.destinations.push(Arc::new(smtp::Smtp::new(config, deps.secrets.clone())));
+            }
             // ---- end HO-a ----
             // ---- HO-b ----
             // ---- end HO-b ----
