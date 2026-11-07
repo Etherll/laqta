@@ -251,6 +251,9 @@ pub struct UiServices {
     /// Imports a ShareX folder or `.sxb` backup (settings, workflows, uploaders, secrets, history) and
     /// applies it; returns a summary.
     pub import_sharex: Arc<dyn Fn(PathBuf) -> Result<String, String> + Send + Sync>,
+    /// Reads and writes ShareX `.sxie` effect packages (`laqta-import`).
+    pub sxie_read: Arc<dyn Fn(&[u8]) -> Result<laqta_domain::effects::Preset, String> + Send + Sync>,
+    pub sxie_write: Arc<dyn Fn(&laqta_domain::effects::Preset) -> Result<Vec<u8>, String> + Send + Sync>,
     /// Run at login (M6 D10).
     pub autostart: Arc<dyn laqta_ports::Autostart>,
     /// "Upload with Laqta" in file managers, Send To, and the browser native-messaging host (M6 D11).

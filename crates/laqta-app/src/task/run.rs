@@ -215,7 +215,8 @@ impl Job {
     async fn effects(&self, image: Bitmap) -> Bitmap {
         let preset = {
             let settings = self.cx.settings.get();
-            pick_preset(&settings.effect_presets, &self.settings.effect_preset).cloned()
+            let roll = self.cx.ports.rng.next_u64();
+            pick_preset(&settings.effect_presets, &self.settings.effect_preset, roll).cloned()
         };
         let Some(preset) = preset else {
             let name = &self.settings.effect_preset;
@@ -614,9 +615,16 @@ fn quick_menu_flags(choice: usize) -> Option<AfterCaptureTasks> {
     })
 }
 
-/// The preset named `name`, or the first preset when `name` is empty.
-fn pick_preset<'a>(presets: &'a [Preset], name: &str) -> Option<&'a Preset> {
-    if name.is_empty() { presets.first() } else { presets.iter().find(|preset| preset.name == name) }
+/// The name that picks a random preset each time (ShareX's "use random image effect").
+pub const RANDOM_PRESET: &str = "*";
+
+/// The preset named `name`, the first preset when `name` is empty, or one picked by `roll` for `*`.
+fn pick_preset<'a>(presets: &'a [Preset], name: &str, roll: u64) -> Option<&'a Preset> {
+    match name {
+        "" => presets.first(),
+        RANDOM_PRESET if !presets.is_empty() => presets.get((roll % presets.len() as u64) as usize),
+        _ => presets.iter().find(|preset| preset.name == name),
+    }
 }
 
 /// Whether a step works on the composed image: the after-capture window, annotation, effects or the beautifier.
@@ -646,4 +654,19 @@ fn needs_file(flags: AfterCaptureTasks) -> bool {
 /// A screen recording's output, by extension (FFmpeg's containers and GIF).
 fn is_recording(path: &std::path::Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| ["mp4", "webm", "mkv", "mov", "avi", "gif"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+#[cfg(test)]
+mod preset_tests {
+    use super::*;
+
+    #[test]
+    fn random_preset_uses_the_roll() {
+        let presets: Vec<Preset> = ["a", "b", "c"].iter().map(|n| Preset { name: (*n).into(), effects: vec![] }).collect();
+        assert_eq!(pick_preset(&presets, "", 7).map(|p| p.name.as_str()), Some("a"));
+        assert_eq!(pick_preset(&presets, "b", 7).map(|p| p.name.as_str()), Some("b"));
+        assert_eq!(pick_preset(&presets, RANDOM_PRESET, 4).map(|p| p.name.as_str()), Some("b"));
+        assert_eq!(pick_preset(&presets, RANDOM_PRESET, 5).map(|p| p.name.as_str()), Some("c"));
+        assert!(pick_preset(&[], RANDOM_PRESET, 1).is_none());
+    }
 }

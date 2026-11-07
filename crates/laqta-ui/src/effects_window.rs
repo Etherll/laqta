@@ -44,6 +44,8 @@ enum Category {
 }
 
 struct EffectsWindow {
+    /// `TaskSettings.effect_preset`: which preset the after-capture step applies (`*` = random).
+    after_capture: String,
     presets: Vec<Preset>,
     selected: usize,
     selected_effect: Option<usize>,
@@ -103,6 +105,7 @@ impl EffectsWindow {
             sample,
             preview: None,
             message: None,
+            after_capture: services.app.settings().defaults.effect_preset,
         };
         this.render_preview(cx);
         this
@@ -171,11 +174,63 @@ impl EffectsWindow {
         let services = cx.global::<UiState>().services.clone();
         let mut settings = services.app.settings();
         settings.effect_presets = self.presets.clone();
+        settings.defaults.effect_preset = self.after_capture.clone();
         self.message = Some(match (services.save_settings)(settings) {
             Ok(()) => "Presets saved.".into(),
             Err(e) => format!("Couldn't save: {e}"),
         });
         cx.notify();
+    }
+
+    fn import_sxie(&mut self, cx: &mut Context<Self>) {
+        let read = cx.global::<UiState>().services.sxie_read.clone();
+        let task = cx.background_spawn(async move {
+            let Some(file) = rfd::AsyncFileDialog::new().add_filter("ShareX effect", &["sxie"]).pick_file().await else { return Ok(None) };
+            let bytes = std::fs::read(file.path()).map_err(|e| e.to_string())?;
+            read(&bytes).map(Some)
+        });
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |this, cx| {
+                match r {
+                    Ok(Some(preset)) => {
+                        this.message = Some(format!("Imported \"{}\". Save presets to keep it.", preset.name));
+                        this.presets.retain(|p| p.name != preset.name);
+                        this.presets.push(preset);
+                        this.selected = this.presets.len() - 1;
+                        this.selected_effect = None;
+                        this.render_preview(cx);
+                    }
+                    Ok(None) => {}
+                    Err(e) => this.message = Some(format!("Import failed: {e}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn export_sxie(&mut self, cx: &mut Context<Self>) {
+        let Some(preset) = self.presets.get(self.selected).cloned() else { return };
+        let write = cx.global::<UiState>().services.sxie_write.clone();
+        let task = cx.background_spawn(async move {
+            let bytes = write(&preset)?;
+            let Some(file) = rfd::AsyncFileDialog::new().set_file_name(format!("{}.sxie", preset.name)).save_file().await else { return Ok(None) };
+            std::fs::write(file.path(), bytes).map_err(|e| e.to_string())?;
+            Ok::<_, String>(Some(file.path().display().to_string()))
+        });
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |this, cx| {
+                match r {
+                    Ok(Some(path)) => this.message = Some(format!("Exported to {path}.")),
+                    Ok(None) => {}
+                    Err(e) => this.message = Some(format!("Export failed: {e}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn defaults(&self) -> Vec<Effect> {
@@ -224,6 +279,24 @@ impl Render for EffectsWindow {
                     cx.notify();
                 })));
         }
+
+        presets = presets
+            .child(div().h(px(8.)))
+            .child(Button::new("sxie-import").label("Import .sxie…").small().ghost().on_click(cx.listener(|this, _, _, cx| this.import_sxie(cx))))
+            .child(Button::new("sxie-export").label("Export .sxie…").small().ghost().on_click(cx.listener(|this, _, _, cx| this.export_sxie(cx))))
+            .child(div().h(px(8.)))
+            .child(widgets::muted("After capture, apply:", cx));
+        let this_name = self.presets.get(self.selected).map(|p| p.name.clone()).unwrap_or_default();
+        let uses_this = self.after_capture == this_name || (self.after_capture.is_empty() && self.selected == 0);
+        presets = presets
+            .child(Button::new("ac-this").label("This preset").small().selected(uses_this).on_click(cx.listener(move |this, _, _, cx| {
+                this.after_capture = this_name.clone();
+                cx.notify();
+            })))
+            .child(Button::new("ac-random").label("A random preset").small().selected(self.after_capture == "*").on_click(cx.listener(|this, _, _, cx| {
+                this.after_capture = "*".into();
+                cx.notify();
+            })));
 
         // The selected preset's effects.
         let effects = self.presets.get(self.selected).map(|p| p.effects.clone()).unwrap_or_default();

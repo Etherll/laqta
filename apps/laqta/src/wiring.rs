@@ -400,6 +400,8 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                 let importer = importer.clone();
                 Arc::new(move |path: std::path::PathBuf| importer.sharex(&path))
             },
+            sxie_read: Arc::new(|bytes: &[u8]| laqta_import::parse_sxie(bytes).map_err(|e| e.to_string())),
+            sxie_write: Arc::new(|preset: &laqta_domain::effects::Preset| laqta_import::write_sxie(preset).map_err(|e| e.to_string())),
             autostart: platform.autostart.clone(),
             integration: platform.integration.clone(),
             add_custom_uploader: {
