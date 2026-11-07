@@ -65,8 +65,14 @@ pub enum FileExistsAction {
 pub struct GeneralSettings {
     pub play_sound_after_capture: bool,
     pub play_sound_after_upload: bool,
+    /// Sound when a task finishes, and an error sound when it fails.
+    pub play_sound_after_task: bool,
     pub show_toast: bool,
     pub toast: ToastOptions,
+    /// Custom sound files overriding the built-in sounds.
+    pub custom_capture_sound: Option<std::path::PathBuf>,
+    pub custom_task_sound: Option<std::path::PathBuf>,
+    pub custom_error_sound: Option<std::path::PathBuf>,
 }
 
 impl Default for GeneralSettings {
@@ -74,8 +80,12 @@ impl Default for GeneralSettings {
         GeneralSettings {
             play_sound_after_capture: false,
             play_sound_after_upload: false,
+            play_sound_after_task: false,
             show_toast: true,
             toast: ToastOptions::default(),
+            custom_capture_sound: None,
+            custom_task_sound: None,
+            custom_error_sound: None,
         }
     }
 }

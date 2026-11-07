@@ -97,7 +97,7 @@ impl Scan {
             width: u32::from(geometry.width),
             height: u32::from(geometry.height),
         };
-        Ok(Some(HoverTarget {
+        Ok(Some(HoverTarget { handle: 0,
             rect: expand(client, extents),
             title: self.title(win)?,
             process: self.process(win)?,

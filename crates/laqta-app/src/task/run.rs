@@ -56,6 +56,10 @@ impl Job {
             preview: self.settings.general.show_toast,
         };
         let Prepared { image, encoded, thumbnail, preview } = self.prepare(input, plan).await?;
+        let general = &self.settings.general;
+        if general.play_sound_after_capture {
+            let _ = self.cx.ports.notifier.sound(laqta_ports::Sound::Capture, general.custom_capture_sound.as_deref());
+        }
         let size = (image.width(), image.height());
 
         let saved_file = match encoded {
@@ -84,6 +88,9 @@ impl Job {
         }
         if flags.contains(AfterCaptureTasks::DELETE_FILE) {
             self.delete(saved).await?;
+        }
+        if general.play_sound_after_task {
+            let _ = self.cx.ports.notifier.sound(laqta_ports::Sound::TaskCompleted, general.custom_task_sound.as_deref());
         }
         self.cx.reporter.status(self.id, TaskStatus::Completed);
         Ok(())
@@ -203,6 +210,10 @@ impl Job {
 
     /// Reports a failure that ends the job.
     fn fail(&self, error: AppError) -> Halt {
+        let general = &self.settings.general;
+        if general.play_sound_after_task {
+            let _ = self.cx.ports.notifier.sound(laqta_ports::Sound::Error, general.custom_error_sound.as_deref());
+        }
         self.cx.reporter.fail(self.id, error);
         Halt
     }

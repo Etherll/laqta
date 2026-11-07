@@ -80,7 +80,7 @@ fn describe(hwnd: HWND) -> Option<HoverTarget> {
     if title.is_empty() && class.is_empty() {
         return None;
     }
-    Some(HoverTarget { rect, title, process: process_name(pid), kind: TargetKind::Window })
+    Some(HoverTarget { handle: 0, rect, title, process: process_name(pid), kind: TargetKind::Window })
 }
 
 /// True when DWM reports the window as cloaked. A failed query counts as not cloaked.

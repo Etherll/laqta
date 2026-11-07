@@ -15,6 +15,9 @@ pub enum TargetKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct HoverTarget {
     pub rect: PhysRect,
+    /// The platform's window id (HWND, X11 window, sway con id); 0 if none. Only the platform adapter
+    /// that produced it reads it (ADR 016's sealed-reference rule).
+    pub handle: u64,
     pub title: String,
     pub process: String,
     pub kind: TargetKind,
@@ -607,7 +610,7 @@ mod tests {
     }
 
     fn window(title: &str, area: PhysRect) -> HoverTarget {
-        HoverTarget { rect: area, title: title.to_owned(), process: "app.exe".to_owned(), kind: TargetKind::Window }
+        HoverTarget { handle: 0, rect: area, title: title.to_owned(), process: "app.exe".to_owned(), kind: TargetKind::Window }
     }
 
     fn move_to(x: i32, y: i32) -> RegionInput {

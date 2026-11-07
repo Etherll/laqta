@@ -14,7 +14,7 @@ pub mod fakes;
 
 pub use desktop::{ActionCallback, Clipboard, HotkeyRegistrar, Shell, Tray, TrayItem, TrayMenu};
 pub use error::PortError;
-pub use notify::{HostInfo, Notifier, Rng, Toast};
+pub use notify::{HostInfo, Notifier, Rng, Sound, Toast};
 pub use overlay::{HoverSource, InputCallback, Overlay, RegionView, ToolHost, ToolWindow};
 pub use runtime::{Clock, Spawner};
 pub use screen::{CaptureRequest, ScreenSource};

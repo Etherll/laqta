@@ -105,7 +105,7 @@ fn press(overlay: &FakeOverlay, key: RegionKey) {
 }
 
 fn window_target(rect: PhysRect, title: &str) -> HoverTarget {
-    HoverTarget { rect, title: title.to_owned(), process: "notes.exe".to_owned(), kind: TargetKind::Window }
+    HoverTarget { handle: 0, rect, title: title.to_owned(), process: "notes.exe".to_owned(), kind: TargetKind::Window }
 }
 
 /// A hover source that records how many overlay views existed when the targets were asked for.

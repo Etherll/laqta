@@ -17,8 +17,22 @@ pub struct Toast {
     pub options: ToastOptions,
 }
 
+/// Sounds Laqta plays after events (ShareX's per-event sounds).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sound {
+    Capture,
+    TaskCompleted,
+    ActionCompleted,
+    Error,
+}
+
 pub trait Notifier: Send + Sync {
     fn toast(&self, toast: Toast) -> Result<(), PortError>;
+    /// Plays a sound; `custom` is a user-chosen file that overrides the built-in one.
+    fn sound(&self, sound: Sound, custom: Option<&std::path::Path>) -> Result<(), PortError> {
+        let _ = (sound, custom);
+        Ok(())
+    }
 }
 
 pub trait Rng: Send + Sync {

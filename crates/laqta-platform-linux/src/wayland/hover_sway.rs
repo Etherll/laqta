@@ -68,7 +68,7 @@ fn sway_active() -> Result<Option<HoverTarget>, PortError> {
 }
 
 fn hover_target((rect, title, process): View, s_max: f32) -> HoverTarget {
-    HoverTarget { rect: to_physical(rect, s_max), title, process, kind: TargetKind::Window }
+    HoverTarget { handle: 0, rect: to_physical(rect, s_max), title, process, kind: TargetKind::Window }
 }
 
 /// Every visible window, front to back. Per workspace the floating windows come first (sway lists

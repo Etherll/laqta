@@ -322,11 +322,16 @@ impl HoverSource for FakeHoverSource {
 #[derive(Debug, Default)]
 pub struct FakeNotifier {
     pub toasts: Mutex<Vec<Toast>>,
+    pub sounds: Mutex<Vec<crate::Sound>>,
 }
 
 impl Notifier for FakeNotifier {
     fn toast(&self, toast: Toast) -> Result<(), PortError> {
         self.toasts.lock().unwrap().push(toast);
+        Ok(())
+    }
+    fn sound(&self, sound: crate::Sound, _custom: Option<&std::path::Path>) -> Result<(), PortError> {
+        self.sounds.lock().unwrap().push(sound);
         Ok(())
     }
 }

@@ -1,4 +1,5 @@
-use laqta_domain::Frame;
+use laqta_domain::region::HoverTarget;
+use laqta_domain::{Bitmap, Frame};
 
 use crate::{BoxFuture, PortError};
 
@@ -17,5 +18,13 @@ pub trait ScreenSource: Send + Sync {
     fn capture(&self, request: CaptureRequest) -> BoxFuture<'_, Result<Vec<Frame>, PortError>> {
         let _ = request;
         self.capture_all()
+    }
+
+    /// Captures one window by itself, keeping its transparency (rounded corners, shadows) where
+    /// the platform composites windows with alpha (Windows DWM, X11 with a compositor). The result is
+    /// straight-alpha and sized to `target.rect`.
+    fn capture_window(&self, target: &HoverTarget, request: CaptureRequest) -> BoxFuture<'_, Result<Bitmap, PortError>> {
+        let _ = (target, request);
+        Box::pin(async { Err(PortError::Unsupported("transparent window capture".into())) })
     }
 }
