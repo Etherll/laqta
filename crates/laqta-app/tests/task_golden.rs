@@ -80,6 +80,8 @@ fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Set
         editor: editor.clone(),
         media: Arc::new(laqta_ports::fakes::FakeMedia::default()),
         stream: Arc::new(laqta_ports::fakes::FakeScreenStream::default()),
+        ocr: Arc::new(laqta_ports::fakes::FakeOcr::default()),
+        window_ops: Arc::new(laqta_ports::fakes::FakeWindowOps::default()),
         uploaders: uploaders.clone(),
         hover: Arc::new(FakeHoverSource::new(Vec::new())),
         notifier: notifier.clone(),

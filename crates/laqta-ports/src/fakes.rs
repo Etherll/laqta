@@ -694,3 +694,23 @@ impl crate::Ocr for FakeOcr {
         vec!["en".into()]
     }
 }
+
+/// Records window operations.
+#[derive(Debug, Default)]
+pub struct FakeWindowOps {
+    pub calls: Mutex<Vec<String>>,
+}
+
+impl crate::WindowOps for FakeWindowOps {
+    fn set_borderless(&self, window: &HoverTarget, borderless: bool) -> Result<(), PortError> {
+        self.calls.lock().unwrap().push(format!("borderless {} {borderless}", window.title));
+        Ok(())
+    }
+    fn set_topmost(&self, window: &HoverTarget, topmost: bool) -> Result<(), PortError> {
+        self.calls.lock().unwrap().push(format!("topmost {} {topmost}", window.title));
+        Ok(())
+    }
+    fn inspect(&self, window: &HoverTarget) -> Result<Vec<(String, String)>, PortError> {
+        Ok(vec![("Title".into(), window.title.clone())])
+    }
+}

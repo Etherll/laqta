@@ -71,6 +71,8 @@ fn test_ports(overlay: Arc<FakeOverlay>, hover: Arc<dyn HoverSource>) -> Ports {
         editor: Arc::new(laqta_ports::fakes::FakeEditorHost::default()),
         media: Arc::new(laqta_ports::fakes::FakeMedia::default()),
         stream: Arc::new(laqta_ports::fakes::FakeScreenStream::default()),
+        ocr: Arc::new(laqta_ports::fakes::FakeOcr::default()),
+        window_ops: Arc::new(laqta_ports::fakes::FakeWindowOps::default()),
         uploaders: Arc::new(laqta_ports::fakes::FakeUploaders::default()),
         hover,
         notifier: Arc::new(FakeNotifier::default()),

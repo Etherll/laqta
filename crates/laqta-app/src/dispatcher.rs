@@ -35,6 +35,8 @@ pub struct Ports {
     pub editor: Arc<dyn laqta_ports::EditorHost>,
     pub media: Arc<dyn laqta_ports::Media>,
     pub stream: Arc<dyn laqta_ports::ScreenStream>,
+    pub ocr: Arc<dyn laqta_ports::Ocr>,
+    pub window_ops: Arc<dyn laqta_ports::WindowOps>,
     pub uploaders: Arc<dyn laqta_ports::Uploaders>,
     pub hover: Arc<dyn HoverSource>,
     pub notifier: Arc<dyn Notifier>,

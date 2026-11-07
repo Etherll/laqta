@@ -32,3 +32,28 @@ pub fn host_info() -> HostInfo {
 }
 
 
+
+/// Until the OCR model runtime and the platform window tools are wired (M5).
+#[derive(Debug)]
+pub struct NotYet;
+
+impl laqta_ports::Ocr for NotYet {
+    fn recognize(&self, _image: laqta_domain::Bitmap, _language: String) -> laqta_ports::BoxFuture<'_, Result<laqta_ports::OcrResult, laqta_ports::PortError>> {
+        Box::pin(async { Err(laqta_ports::PortError::Unsupported("text recognition".into())) })
+    }
+    fn languages(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+impl laqta_ports::WindowOps for NotYet {
+    fn set_borderless(&self, _w: &laqta_domain::region::HoverTarget, _b: bool) -> Result<(), laqta_ports::PortError> {
+        Err(laqta_ports::PortError::Unsupported("window tools".into()))
+    }
+    fn set_topmost(&self, _w: &laqta_domain::region::HoverTarget, _t: bool) -> Result<(), laqta_ports::PortError> {
+        Err(laqta_ports::PortError::Unsupported("window tools".into()))
+    }
+    fn inspect(&self, _w: &laqta_domain::region::HoverTarget) -> Result<Vec<(String, String)>, laqta_ports::PortError> {
+        Err(laqta_ports::PortError::Unsupported("window tools".into()))
+    }
+}

@@ -65,6 +65,8 @@ fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
         editor: Arc::new(laqta_ports::fakes::FakeEditorHost::default()),
         media: Arc::new(laqta_ports::fakes::FakeMedia::default()),
         stream: Arc::new(laqta_ports::fakes::FakeScreenStream::default()),
+        ocr: Arc::new(laqta_ports::fakes::FakeOcr::default()),
+        window_ops: Arc::new(laqta_ports::fakes::FakeWindowOps::default()),
         uploaders: Arc::new(laqta_ports::fakes::FakeUploaders::default()),
         hover: Arc::new(hover),
         notifier: Arc::new(FakeNotifier::default()),
