@@ -7,6 +7,7 @@ pub mod overlay;
 pub mod runtime;
 pub mod screen;
 pub mod task;
+pub mod upload;
 
 #[cfg(feature = "fakes")]
 pub mod fakes;
@@ -18,6 +19,9 @@ pub use overlay::{HoverSource, InputCallback, Overlay, RegionView, ToolHost, Too
 pub use runtime::{Clock, Spawner};
 pub use screen::{CaptureRequest, ScreenSource};
 pub use task::{AppError, TaskEvent, TaskId, TaskStatus};
+pub use upload::{
+    Destination, ProgressCallback, Prompt, SecretStore, Sharer, Shortener, UploadData, UploadError, UploadKind, UploadRequest, UploadResult,
+};
 
 /// A boxed future, so async ports work behind `Arc<dyn Port>`.
 pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;

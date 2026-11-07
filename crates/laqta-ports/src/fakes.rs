@@ -352,3 +352,97 @@ impl crate::ToolHost for FakeToolHost {
         Ok(())
     }
 }
+
+/// Answers prompts from a script: each `ask_text` pops the next text answer, each `choose` the next index.
+#[derive(Debug, Default)]
+pub struct FakePrompt {
+    pub texts: Mutex<std::collections::VecDeque<String>>,
+    pub choices: Mutex<std::collections::VecDeque<usize>>,
+    pub confirms: Mutex<std::collections::VecDeque<bool>>,
+    pub shown: Mutex<Vec<(String, String)>>,
+}
+
+impl crate::Prompt for FakePrompt {
+    fn ask_text(&self, _title: &str, default: &str) -> BoxFuture<'_, Result<String, PortError>> {
+        let v = self.texts.lock().unwrap().pop_front().unwrap_or_else(|| default.to_string());
+        Box::pin(async move { Ok(v) })
+    }
+    fn choose(&self, _title: &str, _options: &[String]) -> BoxFuture<'_, Result<usize, PortError>> {
+        let v = self.choices.lock().unwrap().pop_front().unwrap_or(0);
+        Box::pin(async move { Ok(v) })
+    }
+    fn show_text(&self, title: &str, text: &str) -> BoxFuture<'_, Result<(), PortError>> {
+        self.shown.lock().unwrap().push((title.to_string(), text.to_string()));
+        Box::pin(async { Ok(()) })
+    }
+    fn confirm(&self, _title: &str, _text: &str) -> BoxFuture<'_, Result<bool, PortError>> {
+        let v = self.confirms.lock().unwrap().pop_front().unwrap_or(true);
+        Box::pin(async move { Ok(v) })
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct FakeSecretStore {
+    pub secrets: Mutex<std::collections::HashMap<String, String>>,
+}
+
+impl crate::SecretStore for FakeSecretStore {
+    fn get(&self, key: &str) -> Result<Option<String>, PortError> {
+        Ok(self.secrets.lock().unwrap().get(key).cloned())
+    }
+    fn set(&self, key: &str, secret: &str) -> Result<(), PortError> {
+        self.secrets.lock().unwrap().insert(key.to_string(), secret.to_string());
+        Ok(())
+    }
+    fn delete(&self, key: &str) -> Result<(), PortError> {
+        self.secrets.lock().unwrap().remove(key);
+        Ok(())
+    }
+}
+
+/// A destination that returns a scripted sequence of results and records requests.
+pub struct FakeDestination {
+    pub id: String,
+    pub results: Mutex<std::collections::VecDeque<Result<crate::UploadResult, crate::UploadError>>>,
+    pub requests: Mutex<Vec<crate::UploadRequest>>,
+}
+
+impl std::fmt::Debug for FakeDestination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakeDestination").field("id", &self.id).finish_non_exhaustive()
+    }
+}
+
+impl FakeDestination {
+    pub fn new(id: &str, results: Vec<Result<crate::UploadResult, crate::UploadError>>) -> Self {
+        FakeDestination { id: id.to_string(), results: Mutex::new(results.into()), requests: Mutex::new(Vec::new()) }
+    }
+}
+
+impl crate::Destination for FakeDestination {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn name(&self) -> &str {
+        &self.id
+    }
+    fn upload(&self, request: crate::UploadRequest, _progress: crate::ProgressCallback) -> BoxFuture<'_, Result<crate::UploadResult, crate::UploadError>> {
+        self.requests.lock().unwrap().push(request);
+        let r = self.results.lock().unwrap().pop_front().unwrap_or_else(|| Err(crate::UploadError::Network("no scripted result".into())));
+        Box::pin(async move { r })
+    }
+}
+
+/// Appends "/s" to the URL.
+#[derive(Debug, Default)]
+pub struct FakeShortener;
+
+impl crate::Shortener for FakeShortener {
+    fn id(&self) -> &str {
+        "fake"
+    }
+    fn shorten(&self, url: &str) -> BoxFuture<'_, Result<String, crate::UploadError>> {
+        let s = format!("{url}/s");
+        Box::pin(async move { Ok(s) })
+    }
+}
