@@ -46,6 +46,17 @@ impl Shell for XdgShell {
         if ok { Ok(()) } else { self.open_path(path.parent().unwrap_or(path)) }
     }
 
+    /// CUPS `lp` to the default printer.
+    fn print(&self, path: &Path) -> Result<(), PortError> {
+        let out = Command::new("lp")
+            .arg("--")
+            .arg(path)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| PortError::Unsupported(format!("lp (CUPS) is not available: {e}")))?;
+        if out.status.success() { Ok(()) } else { Err(PortError::Failed(String::from_utf8_lossy(&out.stderr).trim().to_owned())) }
+    }
+
     fn open_path(&self, path: &Path) -> Result<(), PortError> {
         let mut child = Command::new("xdg-open")
             .arg(path)

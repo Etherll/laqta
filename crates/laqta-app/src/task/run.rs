@@ -117,6 +117,12 @@ impl Job {
         if flags.contains(AfterCaptureTasks::COPY_FILE_PATH_TO_CLIPBOARD) {
             self.copy_path(saved)?;
         }
+        if flags.contains(AfterCaptureTasks::COPY_FOLDER_PATH_TO_CLIPBOARD) {
+            self.copy_folder(saved)?;
+        }
+        if flags.contains(AfterCaptureTasks::SEND_IMAGE_TO_PRINTER) {
+            self.print(saved)?;
+        }
         if flags.contains(AfterCaptureTasks::SHOW_IN_EXPLORER) {
             self.reveal(saved)?;
         }
@@ -525,6 +531,31 @@ impl Job {
         match self.cx.ports.clipboard.set_text(&saved.path.display().to_string()) {
             Ok(()) => self.emit(TaskEvent::PathCopied { id: self.id, path: saved.path.clone() }),
             Err(error) => self.step_failed("copy_path", error),
+        }
+        Ok(())
+    }
+
+    /// `COPY_FOLDER_PATH_TO_CLIPBOARD`: the saved file's folder.
+    fn copy_folder(&self, saved: Option<&SavedFile>) -> Step {
+        let Some(dir) = saved.and_then(|s| s.path.parent()) else { return Ok(()) };
+        self.checkpoint()?;
+        match self.cx.ports.clipboard.set_text(&dir.display().to_string()) {
+            Ok(()) => self.emit(TaskEvent::PathCopied { id: self.id, path: dir.to_path_buf() }),
+            Err(error) => self.step_failed("copy_folder_path", error),
+        }
+        Ok(())
+    }
+
+    /// `SEND_IMAGE_TO_PRINTER`: the saved file goes to the default printer.
+    fn print(&self, saved: Option<&SavedFile>) -> Step {
+        let Some(saved) = saved else {
+            self.step_failed("print", "the image was not saved to a file");
+            return Ok(());
+        };
+        self.checkpoint()?;
+        match self.cx.ports.shell.print(&saved.path) {
+            Ok(()) => self.emit(TaskEvent::Printed { id: self.id, path: saved.path.clone() }),
+            Err(error) => self.step_failed("print", error),
         }
         Ok(())
     }

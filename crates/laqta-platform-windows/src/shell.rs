@@ -22,6 +22,15 @@ impl Shell for WindowsShell {
         self.open_path(Path::new(url))
     }
 
+    /// The file type's `print` verb (the Photos app or the registered image printer).
+    fn print(&self, path: &Path) -> Result<(), PortError> {
+        let file = HSTRING::from(path.as_os_str());
+        // SAFETY: all strings outlive the call.
+        let result = unsafe { ShellExecuteW(None, w!("print"), &file, PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL) };
+        let code = result.0 as isize;
+        if code > 32 { Ok(()) } else { Err(PortError::Failed(format!("could not print {} (code {code})", path.display()))) }
+    }
+
     /// `explorer.exe /select,<path>` opens the folder with the file selected.
     fn reveal(&self, path: &Path) -> Result<(), PortError> {
         std::process::Command::new("explorer.exe")

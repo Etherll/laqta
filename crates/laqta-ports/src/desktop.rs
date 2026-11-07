@@ -35,6 +35,11 @@ pub trait Shell: Send + Sync {
         let _ = url;
         Err(PortError::Unsupported("open url".into()))
     }
+    /// Sends a file to the default printer (`SEND_IMAGE_TO_PRINTER`).
+    fn print(&self, path: &Path) -> Result<(), PortError> {
+        let _ = path;
+        Err(PortError::Unsupported("printing".into()))
+    }
     /// Runs a program with an argument list (never through a shell) and returns its exit code.
     fn run(&self, program: &Path, args: &[String], hidden: bool) -> crate::BoxFuture<'_, Result<i32, PortError>> {
         let _ = (program, args, hidden);

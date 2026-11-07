@@ -105,6 +105,7 @@ pub struct FakeShell {
     pub opened: Mutex<Vec<PathBuf>>,
     pub revealed: Mutex<Vec<PathBuf>>,
     pub urls: Mutex<Vec<String>>,
+    pub printed: Mutex<Vec<PathBuf>>,
     /// Every `run` call: the program, its arguments and the hidden flag.
     pub runs: Mutex<Vec<(PathBuf, Vec<String>, bool)>>,
     /// Exit codes for the next `run` calls, in order. An empty queue exits with 0.
@@ -122,6 +123,10 @@ impl Shell for FakeShell {
     }
     fn open_url(&self, url: &str) -> Result<(), PortError> {
         self.urls.lock().unwrap().push(url.to_string());
+        Ok(())
+    }
+    fn print(&self, path: &Path) -> Result<(), PortError> {
+        self.printed.lock().unwrap().push(path.to_path_buf());
         Ok(())
     }
     fn run(&self, program: &Path, args: &[String], hidden: bool) -> BoxFuture<'_, Result<i32, PortError>> {

@@ -157,6 +157,7 @@ fn describe(event: &TaskEvent, dir: &Path) -> (u64, String) {
         TaskEvent::Deleted { id, path } => (id.0, format!("deleted {}", relative(dir, path))),
         TaskEvent::StepFailed { id, step, .. } => (id.0, format!("step_failed {step}")),
         TaskEvent::Pinned { id } => (id.0, "pinned".to_owned()),
+        TaskEvent::Printed { id, path } => (id.0, format!("printed {}", relative(dir, path))),
         TaskEvent::TextFound { id, step, text } => (id.0, format!("text_found {step} {text:?}")),
         TaskEvent::Failed { id, error } => (id.0, format!("failed {}", error_kind(error))),
         TaskEvent::UploadStarted { id, destination } => (id.0, format!("upload_started {destination}")),
@@ -1180,5 +1181,26 @@ fn pin_qr_ocr() {
         assert_eq!(rig.tools.pins.lock().unwrap().as_slice(), &[(8, 4)]);
         assert_eq!(rig.tools.texts.lock().unwrap().as_slice(), &[("Recognised text (copied)".to_owned(), "hello".to_owned())]);
         assert_eq!(rig.clipboard.texts.lock().unwrap().last().map(String::as_str), Some("hello"));
+    });
+}
+
+/// `COPY_FOLDER_PATH_TO_CLIPBOARD` and `SEND_IMAGE_TO_PRINTER` work on the saved file.
+#[test]
+fn folder_path_and_print() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let flags = AfterCaptureTasks::SAVE_IMAGE_TO_FILE
+            | AfterCaptureTasks::COPY_FOLDER_PATH_TO_CLIPBOARD
+            | AfterCaptureTasks::SEND_IMAGE_TO_PRINTER;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), with_flags(tmp.path(), flags));
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/folder_path_and_print.trace"));
+        assert_eq!(rig.shell.printed.lock().unwrap().as_slice(), &[saved_png(tmp.path())]);
+        let folder = saved_png(tmp.path()).parent().unwrap().display().to_string();
+        assert_eq!(rig.clipboard.texts.lock().unwrap().last(), Some(&folder));
     });
 }

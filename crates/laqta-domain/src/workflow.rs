@@ -35,6 +35,7 @@ bitflags::bitflags! {
         const DELETE_FILE = 1 << 20;
         const ANALYZE_IMAGE = 1 << 21;
         const REMOVE_BACKGROUND = 1 << 22;
+        const COPY_FOLDER_PATH_TO_CLIPBOARD = 1 << 23;
     }
 }
 
@@ -438,9 +439,10 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn after_capture_has_23_flags() {
-        assert_eq!(AfterCaptureTasks::all().bits().count_ones(), 23);
-        assert_eq!(AfterCaptureTasks::all().bits(), (1 << 23) - 1);
+    /// ShareX's 23 after-capture tasks plus Laqta's Remove background.
+    fn after_capture_has_24_flags() {
+        assert_eq!(AfterCaptureTasks::all().bits().count_ones(), 24);
+        assert_eq!(AfterCaptureTasks::all().bits(), (1 << 24) - 1);
     }
 
     #[test]

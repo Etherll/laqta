@@ -108,6 +108,11 @@ pub enum TaskEvent {
         id: TaskId,
         path: PathBuf,
     },
+    /// `SEND_IMAGE_TO_PRINTER`: the saved file was sent to the printer.
+    Printed {
+        id: TaskId,
+        path: PathBuf,
+    },
     /// `PIN_TO_SCREEN`: the capture is pinned.
     Pinned {
         id: TaskId,
@@ -214,6 +219,7 @@ impl TaskEvent {
             | TaskEvent::SaveSkipped { id, .. }
             | TaskEvent::StepFailed { id, .. }
             | TaskEvent::Pinned { id }
+            | TaskEvent::Printed { id, .. }
             | TaskEvent::TextFound { id, .. }
             | TaskEvent::UploadStarted { id, .. }
             | TaskEvent::Progress { id, .. }

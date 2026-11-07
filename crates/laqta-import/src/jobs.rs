@@ -40,6 +40,7 @@ const AFTER_CAPTURE: &[(&str, AfterCaptureTasks)] = &[
     ("PerformActions", AfterCaptureTasks::PERFORM_ACTIONS),
     ("CopyFileToClipboard", AfterCaptureTasks::COPY_FILE_TO_CLIPBOARD),
     ("CopyFilePathToClipboard", AfterCaptureTasks::COPY_FILE_PATH_TO_CLIPBOARD),
+    ("CopyFolderPathToClipboard", AfterCaptureTasks::COPY_FOLDER_PATH_TO_CLIPBOARD),
     ("ShowInExplorer", AfterCaptureTasks::SHOW_IN_EXPLORER),
     ("ScanQRCode", AfterCaptureTasks::SCAN_QR_CODE),
     ("DoOCR", AfterCaptureTasks::DO_OCR),
