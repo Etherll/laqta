@@ -58,6 +58,8 @@ struct Rig {
     prompt: Arc<FakePrompt>,
     editor: Arc<FakeEditorHost>,
     clock: Arc<ManualClock>,
+    tools: Arc<laqta_ports::fakes::FakeToolHost>,
+    ocr: Arc<laqta_ports::fakes::FakeOcr>,
 }
 
 fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Settings) -> Rig {
@@ -68,6 +70,8 @@ fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Set
     let prompt = Arc::new(FakePrompt::default());
     let editor = Arc::new(FakeEditorHost::default());
     let clock = Arc::new(ManualClock::new(jiff::civil::date(2026, 11, 7).at(14, 3, 22, 0)));
+    let tools = Arc::new(laqta_ports::fakes::FakeToolHost::default());
+    let ocr = Arc::new(laqta_ports::fakes::FakeOcr::default());
     let ports = Ports {
         screen: Arc::new(FakeScreen::new(two_frames())),
         clipboard: clipboard.clone(),
@@ -75,12 +79,12 @@ fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Set
         clock: clock.clone(),
         spawner,
         overlay: Arc::new(FakeOverlay::default()),
-        tools: Arc::new(laqta_ports::fakes::FakeToolHost::default()),
+        tools: tools.clone(),
         prompt: prompt.clone(),
         editor: editor.clone(),
         media: Arc::new(laqta_ports::fakes::FakeMedia::default()),
         stream: Arc::new(laqta_ports::fakes::FakeScreenStream::default()),
-        ocr: Arc::new(laqta_ports::fakes::FakeOcr::default()),
+        ocr: ocr.clone(),
         window_ops: Arc::new(laqta_ports::fakes::FakeWindowOps::default()),
         input: Arc::new(laqta_ports::fakes::FakeInputSynth::default()),
         watcher: Arc::new(laqta_ports::fakes::FakeFileWatcher::default()),
@@ -91,7 +95,7 @@ fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Set
         host: laqta_ports::HostInfo::default(),
         codecs: laqta_imaging::Codecs::builtin(),
     };
-    Rig { app: App::new(ports, settings), clipboard, shell, notifier, uploaders, prompt, editor, clock }
+    Rig { app: App::new(ports, settings), clipboard, shell, notifier, uploaders, prompt, editor, clock, tools, ocr }
 }
 
 /// M0 settings with the screenshots folder in `dir`.
@@ -151,6 +155,8 @@ fn describe(event: &TaskEvent, dir: &Path) -> (u64, String) {
         TaskEvent::Notified { id } => (id.0, "notified".to_owned()),
         TaskEvent::Deleted { id, path } => (id.0, format!("deleted {}", relative(dir, path))),
         TaskEvent::StepFailed { id, step, .. } => (id.0, format!("step_failed {step}")),
+        TaskEvent::Pinned { id } => (id.0, "pinned".to_owned()),
+        TaskEvent::TextFound { id, step, text } => (id.0, format!("text_found {step} {text:?}")),
         TaskEvent::Failed { id, error } => (id.0, format!("failed {}", error_kind(error))),
         TaskEvent::UploadStarted { id, destination } => (id.0, format!("upload_started {destination}")),
         TaskEvent::Progress { id, sent, total } => (id.0, format!("progress {sent} {total:?}")),
@@ -1148,5 +1154,30 @@ fn saved_recording() {
         let toasts = rig.notifier.toasts.lock().unwrap();
         assert!(toasts.iter().all(|t| t.title == "Recording saved"), "{:?}", toasts.iter().map(|t| &t.title).collect::<Vec<_>>());
         assert!(file.exists());
+    });
+}
+
+/// `PIN_TO_SCREEN`, `SCAN_QR_CODE` and `DO_OCR` (M5): the capture is pinned, scanned (no code in the test
+/// frames) and read; the OCR text is shown and copied.
+#[test]
+fn pin_qr_ocr() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let flags = AfterCaptureTasks::PIN_TO_SCREEN | AfterCaptureTasks::SCAN_QR_CODE | AfterCaptureTasks::DO_OCR;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), with_flags(tmp.path(), flags));
+        rig.ocr.result.lock().unwrap().lines.push(laqta_ports::OcrLine {
+            rect: PhysRect { x: 0, y: 0, width: 8, height: 4 },
+            text: "hello".into(),
+            confidence: 0.9,
+        });
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/pin_qr_ocr.trace"));
+        assert_eq!(rig.tools.pins.lock().unwrap().as_slice(), &[(8, 4)]);
+        assert_eq!(rig.tools.texts.lock().unwrap().as_slice(), &[("Recognised text (copied)".to_owned(), "hello".to_owned())]);
+        assert_eq!(rig.clipboard.texts.lock().unwrap().last().map(String::as_str), Some("hello"));
     });
 }

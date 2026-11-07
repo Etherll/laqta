@@ -1,0 +1,8 @@
+status InQueue
+status Preparing
+status Working
+pinned
+text_found scan_qr ""
+text_found ocr "hello"
+notified
+status Completed

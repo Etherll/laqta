@@ -120,6 +120,15 @@ impl Job {
         if flags.contains(AfterCaptureTasks::SHOW_IN_EXPLORER) {
             self.reveal(saved)?;
         }
+        if flags.contains(AfterCaptureTasks::PIN_TO_SCREEN) {
+            self.pin(&image)?;
+        }
+        if flags.contains(AfterCaptureTasks::SCAN_QR_CODE) {
+            self.scan_qr(&image).await?;
+        }
+        if flags.contains(AfterCaptureTasks::DO_OCR) {
+            self.ocr(&image).await?;
+        }
 
         // The upload phase. A failure or a stop keeps the saved file: nothing is deleted on that path.
         let url = match for_upload {
@@ -516,6 +525,48 @@ impl Job {
         match self.cx.ports.clipboard.set_text(&saved.path.display().to_string()) {
             Ok(()) => self.emit(TaskEvent::PathCopied { id: self.id, path: saved.path.clone() }),
             Err(error) => self.step_failed("copy_path", error),
+        }
+        Ok(())
+    }
+
+    /// `PIN_TO_SCREEN`: the capture in an always-on-top window.
+    fn pin(&self, image: &Bitmap) -> Step {
+        self.checkpoint()?;
+        match self.cx.ports.tools.pin(image.clone()) {
+            Ok(()) => self.emit(TaskEvent::Pinned { id: self.id }),
+            Err(error) => self.step_failed("pin", error),
+        }
+        Ok(())
+    }
+
+    /// Shows a text result and copies it (QR codes, OCR).
+    fn found(&self, step: &'static str, title: &str, text: String) {
+        if !text.is_empty() {
+            let _ = self.cx.ports.clipboard.set_text(&text);
+            if let Err(error) = self.cx.ports.tools.show_text(title, &text) {
+                self.step_failed(step, error);
+            }
+        }
+        self.emit(TaskEvent::TextFound { id: self.id, step, text });
+    }
+
+    /// `SCAN_QR_CODE`: every QR code or barcode in the capture, on the compute pool.
+    async fn scan_qr(&self, image: &Bitmap) -> Step {
+        self.checkpoint()?;
+        let image = image.clone();
+        match compute(self.cx.ports.spawner.as_ref(), move || Ok(laqta_imaging::qr::qr_decode(&image))).await {
+            Ok(codes) => self.found("scan_qr", "QR code (copied)", codes.join("\n")),
+            Err(error) => self.step_failed("scan_qr", error),
+        }
+        Ok(())
+    }
+
+    /// `DO_OCR`: the capture's text through the OCR port (ADR 023).
+    async fn ocr(&self, image: &Bitmap) -> Step {
+        self.checkpoint()?;
+        match self.cx.ports.ocr.recognize(image.clone(), String::new()).await {
+            Ok(result) => self.found("ocr", "Recognised text (copied)", result.text()),
+            Err(error) => self.step_failed("ocr", error),
         }
         Ok(())
     }
