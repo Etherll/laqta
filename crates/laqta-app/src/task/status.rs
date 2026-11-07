@@ -1,7 +1,8 @@
 //! Admission and status. `Queue` decides when a job leaves `InQueue`. `Reporter` sends the status
 //! changes and results as `TaskEvent`s.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use async_broadcast::Sender;
@@ -65,6 +66,71 @@ impl Drop for Permit {
             }
         }
         state.running -= 1;
+    }
+}
+
+/// Jobs that have not finished, with their stop flags. A job leaves the map when it finishes, or when a
+/// stop request finds it still queued.
+#[derive(Default)]
+pub(super) struct Jobs {
+    entries: Mutex<HashMap<TaskId, Entry>>,
+}
+
+struct Entry {
+    running: bool,
+    stop: Arc<AtomicBool>,
+}
+
+/// What a stop request found.
+pub(super) enum Stop {
+    Unknown,
+    /// Still waiting for a capture slot. It is removed, so it never runs.
+    Queued,
+    /// Running. Its flag is set, and it stops at its next checkpoint.
+    Running,
+}
+
+impl Jobs {
+    fn lock(&self) -> MutexGuard<'_, HashMap<TaskId, Entry>> {
+        self.entries.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(super) fn add(&self, id: TaskId) {
+        self.lock().insert(id, Entry { running: false, stop: Arc::new(AtomicBool::new(false)) });
+    }
+
+    pub(super) fn contains(&self, id: TaskId) -> bool {
+        self.lock().contains_key(&id)
+    }
+
+    /// Marks the job running and returns its stop flag. `None` if it was stopped while queued.
+    pub(super) fn start(&self, id: TaskId) -> Option<Arc<AtomicBool>> {
+        let mut entries = self.lock();
+        let entry = entries.get_mut(&id)?;
+        entry.running = true;
+        Some(Arc::clone(&entry.stop))
+    }
+
+    pub(super) fn finish(&self, id: TaskId) {
+        self.lock().remove(&id);
+    }
+
+    pub(super) fn request_stop(&self, id: TaskId) -> Stop {
+        let mut entries = self.lock();
+        let Some(entry) = entries.get(&id) else { return Stop::Unknown };
+        if entry.running {
+            entry.stop.store(true, Ordering::SeqCst);
+            return Stop::Running;
+        }
+        entries.remove(&id);
+        Stop::Queued
+    }
+
+    /// Every unfinished job, lowest id first.
+    pub(super) fn ids(&self) -> Vec<TaskId> {
+        let mut ids: Vec<TaskId> = self.lock().keys().copied().collect();
+        ids.sort_by_key(|id| id.0);
+        ids
     }
 }
 

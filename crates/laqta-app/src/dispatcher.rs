@@ -110,7 +110,12 @@ impl App {
         match action {
             Action::PrintScreen => {
                 let frames = self.ports.screen.capture_all().await.map_err(AppError::from)?;
-                Ok(Dispatched::Task(self.task.submit(TaskJob::Capture { frames })))
+                let job = TaskJob::Capture {
+                    image: crate::task::CaptureImage::Frames(frames),
+                    settings: self.settings.get().task_settings(None),
+                    info: crate::task::CaptureInfo::default(),
+                };
+                Ok(Dispatched::Task(self.task.submit(job)))
             }
             Action::OpenScreenshotsFolder => {
                 let dir = self.settings.get().screenshots_dir.clone();

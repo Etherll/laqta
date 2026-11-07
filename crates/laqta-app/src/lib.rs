@@ -9,3 +9,4 @@ mod task;
 
 pub use dispatcher::{App, Dispatched, Ports};
 pub use task::TaskJob;
+pub use task::{CaptureImage, CaptureInfo};
