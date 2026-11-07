@@ -120,6 +120,7 @@ struct EditorWindow {
     message: Option<String>,
     zoom: f32,
     emoji_open: bool,
+    customising: bool,
 }
 
 /// Runs `f` on the compute pool and waits for it (editor operations take milliseconds).
@@ -152,6 +153,7 @@ impl EditorWindow {
             message: None,
             zoom: 1.0,
             emoji_open: false,
+            customising: false,
         };
         this.refresh();
         this
@@ -438,9 +440,31 @@ impl Render for EditorWindow {
         let (cw, ch) = (self.chrome.canvas.0 as f32 * z, self.chrome.canvas.1 as f32 * z);
         let chrome = self.chrome.clone();
 
-        // Tools.
+        // Tools (the user can hide some; the gear toggles customisation).
+        let hidden = cx.global::<UiState>().services.app.settings().editor_hidden_tools;
+        let customising = self.customising;
         let mut tools = div().flex().flex_row().flex_wrap().gap(px(2.));
         for (i, t) in Tool::ALL.into_iter().enumerate() {
+            let is_hidden = hidden.iter().any(|h| h == t.name());
+            if customising {
+                tools = tools.child(Button::new(SharedString::from(format!("vis-{i}"))).label(tool_label(t)).small().selected(!is_hidden).on_click(cx.listener(
+                    move |_, _, _, cx| {
+                        let services = cx.global::<UiState>().services.clone();
+                        let mut s = services.app.settings();
+                        if is_hidden {
+                            s.editor_hidden_tools.retain(|h| h != t.name());
+                        } else {
+                            s.editor_hidden_tools.push(t.name().to_string());
+                        }
+                        let _ = (services.save_settings)(s);
+                        cx.notify();
+                    },
+                )));
+                continue;
+            }
+            if is_hidden {
+                continue;
+            }
             tools = tools.child(Button::new(SharedString::from(format!("tool-{i}"))).label(tool_label(t)).small().selected(chrome.tool == t).on_click(cx.listener(
                 move |this, _, window, cx| match t {
                     Tool::Image => this.pick_image(window, cx),
@@ -511,6 +535,10 @@ impl Render for EditorWindow {
             .child(Button::new("autocrop").label("Auto crop").small().ghost().on_click(cx.listener(|this, _, w, cx| this.command(Command::AutoCrop, w, cx))))
             .child(self.effects_menu(cx))
             .child(div().flex_1())
+            .child(Button::new("customise").label(if self.customising { "Done" } else { "Customise" }).small().ghost().on_click(cx.listener(|this, _, _, cx| {
+                this.customising = !this.customising;
+                cx.notify();
+            })))
             .child(Button::new("zoom-").label("−").small().ghost().on_click(cx.listener(|this, _, _, cx| {
                 this.zoom = (this.zoom / 1.25).max(0.1);
                 cx.notify();
