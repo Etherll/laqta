@@ -1,6 +1,7 @@
 //! FTP through `suppaftp`'s blocking client, run on a short-lived thread so the upload future
-//! never blocks an executor. Only plain FTP: suppaftp is built without a TLS feature here, so
-//! FTPS returns `Unsupported`. The password is read from `SecretStore` under `laqta/ftp/password`.
+//! never blocks an executor. Plain FTP, explicit FTPS (`AUTH TLS`) and implicit FTPS. TLS is rustls
+//! with the platform verifier on Linux and native-tls (SChannel) on Windows (ADR 025). The password
+//! is read from `SecretStore` under `laqta/ftp/password`.
 
 use std::fmt;
 use std::fs::File;
@@ -18,13 +19,17 @@ use laqta_ports::{BoxFuture, PortError};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use suppaftp::types::FileType;
-use suppaftp::{FtpError, FtpStream, Mode};
+use suppaftp::{FtpError, FtpResult, FtpStream, ImplFtpStream, Mode, TlsConnector, TlsStream};
 
 /// Where the password lives in `SecretStore`.
 pub const PASSWORD_KEY: &str = "laqta/ftp/password";
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const IO_TIMEOUT: Duration = Duration::from_secs(60);
+
+const FTP_PORT: u16 = 21;
+/// The port of implicit FTPS. A config still on the plain FTP port uses it instead.
+const FTPS_IMPLICIT_PORT: u16 = 990;
 
 /// FTP reply codes that matter to the upload.
 const SERVICE_NOT_AVAILABLE: u32 = 421;
@@ -33,14 +38,21 @@ const NEED_ACCOUNT: u32 = 532;
 const INSUFFICIENT_STORAGE: u32 = 452;
 const EXCEEDED_STORAGE: u32 = 552;
 
+/// The FTPS stream of this target. Explicit mode upgrades the control channel and implicit mode
+/// starts with TLS, so both end up with this type.
+#[cfg(not(windows))]
+type TlsFtp = suppaftp::RustlsFtpStream;
+#[cfg(windows)]
+type TlsFtp = suppaftp::NativeTlsFtpStream;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FtpTls {
     #[default]
     None,
-    /// FTPS, starting in clear text and upgraded with `AUTH TLS`. Not built in: `Unsupported`.
+    /// FTPS, starting in clear text and upgraded with `AUTH TLS`.
     Explicit,
-    /// FTPS over an implicit TLS port. Not built in: `Unsupported`.
+    /// FTPS over an implicit TLS port (990 when the config still has the plain FTP port 21).
     Implicit,
 }
 
@@ -104,9 +116,6 @@ async fn transfer(
     request: UploadRequest,
     progress: ProgressCallback,
 ) -> Result<UploadResult, UploadError> {
-    if config.tls != FtpTls::None {
-        return Err(UploadError::Unsupported("FTPS is not built into this app; use plain FTP or SFTP".to_owned()));
-    }
     let name = leaf_name(&request.file_name)?.to_owned();
     let password = read_secret(secrets.as_ref(), PASSWORD_KEY)?.unwrap_or_default();
 
@@ -140,7 +149,7 @@ const SEGMENT: &AsciiSet = &CONTROLS
     .add(b'|')
     .add(b'}');
 
-/// The blocking part: connect, log in, enter the directory, store the file, quit.
+/// The blocking part: connect, secure the connection when configured, then transfer.
 fn put(
     config: &FtpConfig,
     password: &str,
@@ -148,7 +157,41 @@ fn put(
     data: UploadData,
     progress: ProgressCallback,
 ) -> Result<(), UploadError> {
-    let mut ftp = connect(config)?;
+    match config.tls {
+        FtpTls::None => {
+            let ftp: FtpStream = open_control(tcp_connect(config)?)?;
+            transfer_over(ftp, config, password, name, data, progress)
+        }
+        FtpTls::Explicit => {
+            // Built before the connection, so a broken TLS setup fails without touching the server.
+            let connector = connector()?;
+            let ftp: TlsFtp = open_control(tcp_connect(config)?)?;
+            let ftp = ftp.into_secure(connector, &config.host).map_err(ftp_error)?;
+            transfer_over(ftp, config, password, name, data, progress)
+        }
+        FtpTls::Implicit => {
+            let connector = TimedTls(connector()?);
+            let port = if config.port == FTP_PORT { FTPS_IMPLICIT_PORT } else { config.port };
+            let ftp = TlsFtp::connect_secure_implicit((config.host.as_str(), port), connector, &config.host)
+                .map_err(ftp_error)?;
+            transfer_over(ftp, config, password, name, data, progress)
+        }
+    }
+}
+
+/// Logs in, enters the directory and stores the file over an open control connection. Plain and
+/// TLS connections share this.
+fn transfer_over<T>(
+    mut ftp: ImplFtpStream<T>,
+    config: &FtpConfig,
+    password: &str,
+    name: &str,
+    data: UploadData,
+    progress: ProgressCallback,
+) -> Result<(), UploadError>
+where
+    T: TlsStream + Send + 'static,
+{
     ftp.login(config.username.as_str(), password).map_err(ftp_error)?;
     ftp.set_mode(if config.passive { Mode::Passive } else { Mode::Active });
     enter_directory(&mut ftp, &config.directory)?;
@@ -170,13 +213,16 @@ fn put(
     Ok(())
 }
 
-fn store(
-    ftp: &mut FtpStream,
+fn store<T>(
+    ftp: &mut ImplFtpStream<T>,
     name: &str,
     source: impl Read,
     total: u64,
     progress: ProgressCallback,
-) -> Result<(), UploadError> {
+) -> Result<(), UploadError>
+where
+    T: TlsStream + Send + 'static,
+{
     let mut reader = Counting { inner: source, sent: 0, total, progress };
     ftp.put_file(name, &mut reader).map(|_| ()).map_err(ftp_error)
 }
@@ -198,14 +244,15 @@ impl<R: Read> Read for Counting<R> {
     }
 }
 
-fn connect(config: &FtpConfig) -> Result<FtpStream, UploadError> {
+/// Opens the TCP connection, trying each resolved address within the connect timeout.
+fn tcp_connect(config: &FtpConfig) -> Result<TcpStream, UploadError> {
     let addresses = (config.host.as_str(), config.port)
         .to_socket_addrs()
         .map_err(|error| UploadError::Network(format!("cannot resolve {}: {error}", config.host)))?;
     let mut last_error = None;
     for address in addresses {
         match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
-            Ok(stream) => return open_control(stream),
+            Ok(stream) => return Ok(stream),
             Err(error) => last_error = Some(error),
         }
     }
@@ -214,17 +261,66 @@ fn connect(config: &FtpConfig) -> Result<FtpStream, UploadError> {
 }
 
 /// Sets timeouts before the greeting is read, so a silent server cannot hold the thread.
-fn open_control(stream: TcpStream) -> Result<FtpStream, UploadError> {
-    stream
-        .set_read_timeout(Some(IO_TIMEOUT))
-        .and_then(|()| stream.set_write_timeout(Some(IO_TIMEOUT)))
-        .map_err(|error| UploadError::Network(error.to_string()))?;
-    FtpStream::connect_with_stream(stream).map_err(ftp_error)
+fn open_control<T>(stream: TcpStream) -> Result<ImplFtpStream<T>, UploadError>
+where
+    T: TlsStream + Send + 'static,
+{
+    set_io_timeouts(&stream).map_err(|error| UploadError::Network(error.to_string()))?;
+    ImplFtpStream::connect_with_stream(stream).map_err(ftp_error)
+}
+
+fn set_io_timeouts(stream: &TcpStream) -> io::Result<()> {
+    stream.set_read_timeout(Some(IO_TIMEOUT))?;
+    stream.set_write_timeout(Some(IO_TIMEOUT))
+}
+
+/// Puts the IO timeouts on the socket before the handshake. `connect_secure_implicit` opens the
+/// socket and runs the handshake itself, so the timeouts have to be set here.
+#[derive(Debug)]
+struct TimedTls<C>(C);
+
+impl<C> TlsConnector for TimedTls<C>
+where
+    C: TlsConnector + Send + Sync + 'static,
+{
+    type Stream = C::Stream;
+
+    fn connect(&self, domain: &str, stream: TcpStream) -> FtpResult<Self::Stream> {
+        set_io_timeouts(&stream).map_err(FtpError::ConnectionError)?;
+        self.0.connect(domain, stream)
+    }
+}
+
+/// The rustls connector: the platform verifier on the explicit AWS-LC provider, so the
+/// certificate check uses the OS trust store and no other provider is picked up by accident.
+#[cfg(not(windows))]
+fn connector() -> Result<suppaftp::RustlsConnector, UploadError> {
+    use rustls::ClientConfig;
+    use rustls::crypto::aws_lc_rs::default_provider;
+    use rustls_platform_verifier::BuilderVerifierExt;
+
+    let config = ClientConfig::builder_with_provider(Arc::new(default_provider()))
+        .with_safe_default_protocol_versions()
+        .and_then(|builder| builder.with_platform_verifier())
+        .map(|builder| builder.with_no_client_auth())
+        .map_err(|error| UploadError::Network(format!("TLS setup: {error}")))?;
+    Ok(suppaftp::RustlsConnector::from(Arc::new(config)))
+}
+
+/// The native-tls connector: SChannel, which checks certificates against the Windows trust store.
+#[cfg(windows)]
+fn connector() -> Result<suppaftp::NativeTlsConnector, UploadError> {
+    let connector = native_tls::TlsConnector::new()
+        .map_err(|error| UploadError::Network(format!("TLS setup: {error}")))?;
+    Ok(suppaftp::NativeTlsConnector::from(connector))
 }
 
 /// `mkdir -p`: enters each segment, creating it when `CWD` fails. A failed `MKD` is ignored (the
 /// directory may exist already), so the `CWD` after it reports the real error.
-fn enter_directory(ftp: &mut FtpStream, directory: &str) -> Result<(), UploadError> {
+fn enter_directory<T>(ftp: &mut ImplFtpStream<T>, directory: &str) -> Result<(), UploadError>
+where
+    T: TlsStream + Send + 'static,
+{
     if directory.starts_with('/') {
         ftp.cwd("/").map_err(ftp_error)?;
     }
@@ -265,7 +361,8 @@ fn unreadable(path: &std::path::Path, error: &io::Error) -> UploadError {
 
 fn ftp_error(error: FtpError) -> UploadError {
     match error {
-        FtpError::ConnectionError(error) => UploadError::Network(error.to_string()),
+        FtpError::ConnectionError(error) => network_error(error.to_string()),
+        FtpError::SecureError(message) => network_error(format!("TLS: {message}")),
         FtpError::UnexpectedResponse(response) => {
             let code = response.status.code();
             let message = format!("FTP {code}: {}", String::from_utf8_lossy(&response.body).trim());
@@ -277,6 +374,16 @@ fn ftp_error(error: FtpError) -> UploadError {
             }
         }
         other => UploadError::BadResponse(other.to_string()),
+    }
+}
+
+/// A transport or TLS failure. A refused certificate is `Auth`, because the same server refuses it
+/// again on every retry.
+fn network_error(message: String) -> UploadError {
+    if message.to_ascii_lowercase().contains("certificate") {
+        UploadError::Auth(message)
+    } else {
+        UploadError::Network(message)
     }
 }
 
@@ -321,4 +428,23 @@ struct Slot<R> {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_certificate_is_auth_and_other_tls_failures_are_network() {
+        let refused = network_error("TLS: invalid peer certificate: UnknownIssuer".to_owned());
+        assert!(matches!(refused, UploadError::Auth(_)), "{refused:?}");
+
+        let failed = network_error("TLS: received fatal alert: HandshakeFailure".to_owned());
+        assert!(matches!(failed, UploadError::Network(_)), "{failed:?}");
+    }
+
+    #[test]
+    fn the_tls_connector_builds_on_this_target() {
+        assert!(connector().is_ok());
+    }
 }
