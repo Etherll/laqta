@@ -15,11 +15,11 @@ Areas the survey did not cover in depth need a second pass:
 
 | Feature | Milestone | Status |
 | - | - | - |
-| Fullscreen, monitor, active monitor | M0–M1 | planned |
-| Window, active window, custom window | M1 | planned |
-| Region, custom region, last region | M1 | planned |
+| Fullscreen, monitor, active monitor | M0–M1 | done |
+| Window, active window, custom window | M1 | done |
+| Region, custom region, last region | M1 | done |
 | Capture delay, cursor, transparent window (DWM), HDR | M1 | planned |
-| Overlay: window and UI-element detection, multi-region, dim, magnifier, crosshairs, info text, toolbar, mouse-button actions, keyboard nudge | M1 | planned |
+| Overlay: window and UI-element detection, multi-region, dim, magnifier, crosshairs, info text, toolbar, mouse-button actions, keyboard nudge | M1 | done |
 | Scrolling capture (wheel, arrow, page down, scroll message; stitching) | M6 | planned |
 | Auto capture (start / stop / interval) | M6 | planned |
 | Text capture (OCR) | M5 | planned |
@@ -44,13 +44,13 @@ Areas the survey did not cover in depth need a second pass:
 | - | - | - |
 | 23 after-capture tasks (listed below) | M1–M7: each flag ships with the feature it needs (M1 local steps, M2 upload and windows, M3 editor and effects, M5 OCR, QR and pin, M7 AI and photo editor) | planned |
 | 6 after-upload tasks (listed below) | M2 | planned |
-| Per-workflow overrides of every settings section | M1 | planned |
+| Per-workflow overrides of every settings section | M1 | done |
 | Destinations per type (image, text, file, shortener, sharing; FTP and custom-uploader index) | M2 | planned |
 | Task queue, status machine, progress, stop, stop all | M1–M2 | planned |
 | Quick task menu, actions toolbar, after-capture window, before-upload window | M2 | planned |
 | Actions (run external program with arguments) | M2 | planned |
-| Image format options (PNG / JPEG / GIF / WebP / BMP, quality, auto JPEG by size, file-exists action, thumbnail) | M1 | planned |
-| Toast options (duration, fade, placement, size, click actions), per-event sounds | M1 | planned |
+| Image format options (PNG / JPEG / GIF / WebP / BMP, quality, auto JPEG by size, file-exists action, thumbnail) | M1 | done |
+| Toast options (duration, fade, placement, size, click actions), per-event sounds | M1 | done |
 | Name patterns (37 tokens) and upload-info templates (13 tokens; HTML, forum, wiki, Markdown), listed below | M1 / M2 | planned |
 | Watch folders | M6 | planned |
 | Clipboard, drag-and-drop, text, URL (download then reupload), folder upload | M2 | planned |
@@ -78,17 +78,17 @@ These tokens are compatible with ShareX's name patterns.
 
 Hosts in the catalog are `.sxcu` files (ADR 004); hosts written in Rust are marked *native*.
 
-| Service | Approach | Milestone |
-| - | - | - |
-| **M2 native:** Imgur, Dropbox, Google Drive, OneDrive, Amazon S3 and S3-compatible, FTP, FTPS, SFTP, shared folder, Bitly | native | M2 |
-| **M2 catalog, image and text:** Chevereto, vgy.me, ImageBin, Img1, Pastebin, Paste.ee, Hastebin, OneTimeSecret, Pastie, uPaste, Slexy, Paste2 | `.sxcu` | M2 |
-| **M2 catalog, file:** Pomf clones, Uguu, transfer.sh, FileBin, Plik, Lambda, s-ul, img.fish, Puush, Immich, Seafile, Streamable | `.sxcu` | M2 |
-| **M2 catalog, shorteners:** YOURLS, Polr, Kutt, Zero Width, is.gd, v.gd, TinyURL, TURL, 2.gp, qr.net, vurl, nlcm | `.sxcu` | M2 |
-| **M2 URL sharing:** Email, Pushbullet, Facebook, Reddit, Pinterest, Tumblr, LinkedIn, VK, Google Lens, Bing Visual Search | URL templates (email via the user's mail client until SMTP lands in M7) | M2 |
-| Custom uploaders: `.sxcu` with all body types and all 13 syntax functions, old `$…$` syntax migration | `laqta-upload` | M2 |
-| **M7 native:** Flickr (OAuth1), Box, YouTube, Google Cloud Storage, Azure Blob, Backblaze B2, MEGA (deferred: kept only if a maintained option exists when the M7 plan is written), GitHub Gist, PrivateBin (client-side crypto), SMTP email, Pushbullet (file), Nextcloud / ownCloud, SendSpace, MediaFire | native | M7 |
-| Remote storage browser: S3, FTP, SFTP (list, upload, download, rename, delete) | native | M7 |
-| Dropped: Copy, Drop.io, FileSonic, Photobucket, ImageShack, Hostr, StumbleUpon, Delicious, Firebase Dynamic Links, Immio | services shut down; re-checked when M7 starts | — |
+| Service | Approach | Milestone | Status |
+| - | - | - | - |
+| **M2 native:** Imgur, Dropbox, Google Drive, OneDrive, Amazon S3 and S3-compatible, FTP, FTPS, SFTP, shared folder, Bitly | native | M2 | planned |
+| **M2 catalog, image and text:** Chevereto, vgy.me, ImageBin, Img1, Pastebin, Paste.ee, Hastebin, OneTimeSecret, Pastie, uPaste, Slexy, Paste2 | `.sxcu` | M2 | planned |
+| **M2 catalog, file:** Pomf clones, Uguu, transfer.sh, FileBin, Plik, Lambda, s-ul, img.fish, Puush, Immich, Seafile, Streamable | `.sxcu` | M2 | planned |
+| **M2 catalog, shorteners:** YOURLS, Polr, Kutt, Zero Width, is.gd, v.gd, TinyURL, TURL, 2.gp, qr.net, vurl, nlcm | `.sxcu` | M2 | planned |
+| **M2 URL sharing:** Email, Pushbullet, Facebook, Reddit, Pinterest, Tumblr, LinkedIn, VK, Google Lens, Bing Visual Search | URL templates (email via the user's mail client until SMTP lands in M7) | M2 | planned |
+| Custom uploaders: `.sxcu` with all body types and all 13 syntax functions, old `$…$` syntax migration | `laqta-upload` | M2 | planned |
+| **M7 native:** Flickr (OAuth1), Box, YouTube, Google Cloud Storage, Azure Blob, Backblaze B2, MEGA (deferred: kept only if a maintained option exists when the M7 plan is written), GitHub Gist, PrivateBin (client-side crypto), SMTP email, Pushbullet (file), Nextcloud / ownCloud, SendSpace, MediaFire | native | M7 | planned |
+| Remote storage browser: S3, FTP, SFTP (list, upload, download, rename, delete) | native | M7 | planned |
+| Dropped: Copy, Drop.io, FileSonic, Photobucket, ImageShack, Hostr, StumbleUpon, Delicious, Firebase Dynamic Links, Immio | services shut down; re-checked when M7 starts | — | dropped |
 
 ## Editor and effects
 
@@ -105,36 +105,36 @@ Hosts in the catalog are `.sxcu` files (ADR 004); hosts written in Rust are mark
 
 ## Tools
 
-| Tool | Milestone |
-| - | - |
-| Color picker, screen color picker, ruler | M5 |
-| Pin to screen (from screen, clipboard, file; close all) | M5 |
-| Image viewer, image comparer, icon converter | M5 |
-| Image combiner, splitter, resizer, converter, watermark, thumbnailer | M5 |
-| Video converter, trimmer, thumbnailer; animated GIF maker and trimmer | M5 |
-| OCR, QR generate, QR decode from screen, QR scan region | M5 |
-| Hash checker, directory indexer (HTML, JSON, text, XML), clipboard viewer | M5 |
-| Metadata viewer and stripper (EXIF, ISO BMFF, Matroska, ASF, RIFF) | M5 |
-| Borderless window, active window borderless / topmost, inspect window | M5 (Windows and X11; Wayland where the compositor allows) |
-| Monitor test, network monitor | M5 |
-| Background remover: local model families (BiRefNet, BEN2 and others, ADR 023), custom models, and a remove.bg cloud option | M7 |
-| Model manager: per-task model choice, downloads with progress, custom ONNX models of a supported family, CPU or GPU execution | M5 (OCR) / M7 (background removal) |
-| Analyze image (OpenAI, Gemini, OpenRouter) | M7 |
+| Tool | Milestone | Status |
+| - | - | - |
+| Color picker, screen color picker, ruler | M5 | planned |
+| Pin to screen (from screen, clipboard, file; close all) | M5 | planned |
+| Image viewer, image comparer, icon converter | M5 | planned |
+| Image combiner, splitter, resizer, converter, watermark, thumbnailer | M5 | planned |
+| Video converter, trimmer, thumbnailer; animated GIF maker and trimmer | M5 | planned |
+| OCR, QR generate, QR decode from screen, QR scan region | M5 | planned |
+| Hash checker, directory indexer (HTML, JSON, text, XML), clipboard viewer | M5 | planned |
+| Metadata viewer and stripper (EXIF, ISO BMFF, Matroska, ASF, RIFF) | M5 | planned |
+| Borderless window, active window borderless / topmost, inspect window | M5 (Windows and X11; Wayland where the compositor allows) | planned |
+| Monitor test, network monitor | M5 | planned |
+| Background remover: local model families (BiRefNet, BEN2 and others, ADR 023), custom models, and a remove.bg cloud option | M7 | planned |
+| Model manager: per-task model choice, downloads with progress, custom ONNX models of a supported family, CPU or GPU execution | M5 (OCR) / M7 (background removal) | planned |
+| Analyze image (OpenAI, Gemini, OpenRouter) | M7 | planned |
 
 ## Application
 
-| Feature | Milestone |
-| - | - |
-| About 80 hotkey actions, defaults on PrintScreen combos, disable hotkeys | M1 |
-| Tray icon and menu, main window, toggle tray menu | M0–M1 |
-| History (list, image grid, stats, tags), legacy History.json migration | M1 |
-| Settings files, rotating and weekly backups, export / import archive, portable mode | M1 |
-| Sandbox mode | M6 |
-| Import from an existing ShareX install | M6 |
-| CLI (`task`, `workflow`, custom uploader, image effect, native-message input; `-silent`, `-portable`, `-multi`, `-NoHotkeys`) | M6 |
-| Single instance and argument forwarding | M0 |
-| Browser extension native messaging (Chrome, Firefox) | M6 |
-| Run at startup, shell context menu, Send To, file-type registration | M6 |
-| About 30 languages | M6 |
-| Auto-update | M6 |
-| Steam build | dropped unless requested |
+| Feature | Milestone | Status |
+| - | - | - |
+| About 80 hotkey actions, defaults on PrintScreen combos, disable hotkeys | M1 | planned |
+| Tray icon and menu, main window, toggle tray menu | M0–M1 | done |
+| History (list, image grid, stats, tags), legacy History.json migration | M1 | done |
+| Settings files, rotating and weekly backups, export / import archive, portable mode | M1 | done |
+| Sandbox mode | M6 | planned |
+| Import from an existing ShareX install | M6 | planned |
+| CLI (`task`, `workflow`, custom uploader, image effect, native-message input; `-silent`, `-portable`, `-multi`, `-NoHotkeys`) | M6 | planned |
+| Single instance and argument forwarding | M0 | done |
+| Browser extension native messaging (Chrome, Firefox) | M6 | planned |
+| Run at startup, shell context menu, Send To, file-type registration | M6 | planned |
+| About 30 languages | M6 | planned |
+| Auto-update | M6 | planned |
+| Steam build | dropped unless requested | dropped |

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext as _, Bounds, Context, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, RenderImage,
+    Animation, AnimationExt as _, App, AppContext as _, Bounds, Context, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, RenderImage,
     StatefulInteractiveElement as _, Styled as _, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, img,
     point, px, size,
 };
@@ -54,17 +54,28 @@ pub(crate) fn show(toast: Toast, cx: &mut App) {
         is_resizable: false,
         is_minimizable: false,
         display_id: Some(display.id()),
-        window_background: WindowBackgroundAppearance::Opaque,
+        window_background: WindowBackgroundAppearance::Transparent,
         app_id: Some("laqta-toast".into()),
         ..Default::default()
     };
     let duration = Duration::from_millis(toast.options.duration_ms.max(500) as u64);
+    let fade = Duration::from_millis(toast.options.fade_ms.min(5000) as u64);
     let result = cx.open_window(options, move |window, cx| {
-        let view = cx.new(|_| ToastView { image: toast.image.as_ref().and_then(render_image), toast });
-        // Close after the configured duration.
+        let view = cx.new(|_| ToastView { image: toast.image.as_ref().and_then(render_image), toast, fading: false });
+        // Stay for `duration`, fade out over `fade`, then close.
+        let v = view.clone();
         window
             .spawn(cx, async move |cx| {
                 cx.background_executor().timer(duration).await;
+                if !fade.is_zero() {
+                    let _ = cx.update(|_, cx| {
+                        v.update(cx, |t, cx| {
+                            t.fading = true;
+                            cx.notify();
+                        })
+                    });
+                    cx.background_executor().timer(fade).await;
+                }
                 let _ = cx.update(|window, _| window.remove_window());
             })
             .detach();
@@ -106,6 +117,7 @@ fn toast_kind(_toast: &Toast) -> WindowKind {
 struct ToastView {
     toast: Toast,
     image: Option<Arc<RenderImage>>,
+    fading: bool,
 }
 
 impl ToastView {
@@ -156,8 +168,15 @@ impl Render for ToastView {
             .child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).child(self.toast.title.clone()))
             .child(div().text_xs().text_color(cx.theme().muted_foreground).truncate().child(self.toast.body.clone()));
         let (l, r, m) = (o.left_click, o.right_click, o.middle_click);
-        body.on_click(cx.listener(move |this, _, window, cx| this.click(l, window, cx)))
+        let body = body
+            .on_click(cx.listener(move |this, _, window, cx| this.click(l, window, cx)))
             .on_mouse_down(MouseButton::Right, cx.listener(move |this, _, window, cx| this.click(r, window, cx)))
-            .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.click(m, window, cx)))
+            .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, window, cx| this.click(m, window, cx)));
+        if self.fading {
+            body.with_animation("fade", Animation::new(Duration::from_millis(o.fade_ms.max(1) as u64)), |el, delta| el.opacity(1.0 - delta))
+                .into_any_element()
+        } else {
+            body.into_any_element()
+        }
     }
 }
