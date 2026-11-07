@@ -4,7 +4,7 @@
 
 mod protocol;
 
-pub use protocol::{action_name, parse_action};
+pub use protocol::{Request, action_name, parse_action};
 
 use interprocess::local_socket::{GenericFilePath, ListenerOptions, prelude::*};
 use laqta_domain::Action;
@@ -77,10 +77,18 @@ impl Server {
     /// Answers requests on a thread named `laqta-ipc`, one connection at a time. `on_action` runs
     /// once per request and returns the reply: `Ok` or an error message.
     pub fn serve(self, on_action: impl Fn(Action) -> Result<(), String> + Send + 'static) {
+        self.serve_requests(move |r| match r {
+            Request::Action(a) => on_action(a),
+            _ => Err("this instance only accepts actions".to_owned()),
+        });
+    }
+
+    /// Like `serve`, for every request kind.
+    pub fn serve_requests(self, on_request: impl Fn(Request) -> Result<(), String> + Send + 'static) {
         let spawned = std::thread::Builder::new().name("laqta-ipc".to_owned()).spawn(move || {
             for connection in self.listener {
                 match connection {
-                    Ok(stream) => serve_connection(stream, &on_action),
+                    Ok(stream) => serve_connection(stream, &on_request),
                     Err(error) => {
                         tracing::warn!(%error, "ipc accept failed");
                         std::thread::sleep(ACCEPT_RETRY_DELAY);
@@ -95,7 +103,7 @@ impl Server {
 }
 
 /// Answers requests on one connection until the client hangs up.
-fn serve_connection(stream: LocalSocketStream, on_action: &impl Fn(Action) -> Result<(), String>) {
+fn serve_connection(stream: LocalSocketStream, on_action: &impl Fn(Request) -> Result<(), String>) {
     let mut reader = BufReader::new(stream);
     loop {
         let line = match protocol::read_line(&mut reader) {
@@ -120,12 +128,12 @@ fn serve_connection(stream: LocalSocketStream, on_action: &impl Fn(Action) -> Re
 }
 
 /// Runs one request. A panic in `on_action` is contained, as in the dispatcher (ADR 020).
-fn handle_request(line: &str, on_action: &impl Fn(Action) -> Result<(), String>) -> Result<(), String> {
-    let action = protocol::parse_request(line)?;
-    match panic::catch_unwind(AssertUnwindSafe(|| on_action(action))) {
+fn handle_request(line: &str, on_action: &impl Fn(Request) -> Result<(), String>) -> Result<(), String> {
+    let request = protocol::parse(line)?;
+    match panic::catch_unwind(AssertUnwindSafe(|| on_action(request.clone()))) {
         Ok(result) => result,
         Err(_) => {
-            tracing::error!(?action, "ipc action handler panicked");
+            tracing::error!(?request, "ipc request handler panicked");
             Err("internal error".to_owned())
         }
     }
@@ -142,7 +150,12 @@ impl Client {
     /// Sends one action and waits for its reply. `Err` carries the primary's error message, or
     /// the text of an I/O error.
     pub fn send(&mut self, action: Action) -> Result<(), String> {
-        let request = protocol::encode_request(action);
+        self.send_request(&Request::Action(action))
+    }
+
+    /// Sends any request and waits for its reply.
+    pub fn send_request(&mut self, request: &Request) -> Result<(), String> {
+        let request = protocol::encode(request);
         self.reader.get_mut().write_all(request.as_bytes()).map_err(|error| error.to_string())?;
         match protocol::read_line(&mut self.reader).map_err(|error| error.to_string())? {
             Some(line) => protocol::parse_reply(&line),

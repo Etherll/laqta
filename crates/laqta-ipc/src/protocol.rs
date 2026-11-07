@@ -122,15 +122,84 @@ pub(crate) fn read_line(reader: &mut impl BufRead) -> io::Result<Option<String>>
     Ok(Some(line.trim_end_matches(['\r', '\n']).to_owned()))
 }
 
+/// One request from a secondary instance or the native-messaging host.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Request {
+    Action(Action),
+    /// Upload a file (bare paths on the command line, Send To, shell menus).
+    Upload(std::path::PathBuf),
+    /// Run a workflow by name (`-workflow`).
+    Workflow(String),
+    UploadText(String),
+    /// Download a URL and upload it again.
+    UploadUrl(String),
+    ShortenUrl(String),
+}
+
+/// Escapes a payload so it stays on one line: `\` → `\\`, line breaks → `\n` / `\r`.
+fn escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 pub(crate) fn encode_request(action: Action) -> String {
     format!("{REQUEST_PREFIX}{}\n", action_name(action))
 }
 
-/// Parses a request line (without its line break). The error text is the reply's message.
-pub(crate) fn parse_request(line: &str) -> Result<Action, String> {
-    let name = line.strip_prefix(REQUEST_PREFIX).filter(|name| !name.is_empty()).ok_or_else(|| "malformed request".to_owned())?;
-    parse_action(name).ok_or_else(|| format!("unknown action {name}"))
+pub(crate) fn encode(request: &Request) -> String {
+    match request {
+        Request::Action(a) => encode_request(*a),
+        Request::Upload(p) => format!("upload {}\n", escape(&p.to_string_lossy())),
+        Request::Workflow(n) => format!("workflow {}\n", escape(n)),
+        Request::UploadText(t) => format!("text {}\n", escape(t)),
+        Request::UploadUrl(u) => format!("url {}\n", escape(u)),
+        Request::ShortenUrl(u) => format!("shorten {}\n", escape(u)),
+    }
 }
+
+pub(crate) fn parse(line: &str) -> Result<Request, String> {
+    let (verb, rest) = line.split_once(' ').ok_or_else(|| "malformed request".to_owned())?;
+    if rest.is_empty() {
+        return Err("malformed request".to_owned());
+    }
+    let payload = unescape(rest);
+    Ok(match verb {
+        "action" => Request::Action(parse_action(rest).ok_or_else(|| format!("unknown action {rest}"))?),
+        "upload" => Request::Upload(payload.into()),
+        "workflow" => Request::Workflow(payload),
+        "text" => Request::UploadText(payload),
+        "url" => Request::UploadUrl(payload),
+        "shorten" => Request::ShortenUrl(payload),
+        _ => return Err("malformed request".to_owned()),
+    })
+}
+
 
 /// Longest error message sent. Keeps a reply within the line limit the reader enforces.
 const MAX_MESSAGE_BYTES: usize = 1024;
@@ -160,5 +229,29 @@ pub(crate) fn parse_reply(line: &str) -> Result<(), String> {
         Err(message.to_owned())
     } else {
         Err(format!("malformed reply: {line}"))
+    }
+}
+
+#[cfg(test)]
+mod request_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn requests_round_trip() {
+        for r in [
+            Request::Action(Action::PrintScreen),
+            Request::Upload("/tmp/a b\\c.png".into()),
+            Request::Workflow("Region to Imgur".into()),
+            Request::UploadText("line 1\nline 2\\".into()),
+            Request::UploadUrl("https://x/y".into()),
+            Request::ShortenUrl("https://x/z".into()),
+        ] {
+            let line = encode(&r);
+            assert_eq!(line.matches('\n').count(), 1, "{line:?}");
+            assert_eq!(parse(line.trim_end_matches('\n')).unwrap(), r);
+        }
+        assert!(parse("bogus x").is_err());
+        assert!(parse("upload ").is_err());
     }
 }
