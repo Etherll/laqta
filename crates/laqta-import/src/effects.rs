@@ -479,6 +479,13 @@ pub(crate) fn write(effect: &Effect) -> Option<(&'static str, Object)> {
             | Filter::ZoomBlur { .. }
             | Filter::Median { .. }
             | Filter::OilPaint { .. } => return None,
+            // New M7 filters have no ImageEffectsLib class: add `Filter::Name { .. } => return None,` arms.
+            // ---- X2 ----
+            // ---- end X2 ----
+            // ---- X3 ----
+            // ---- end X3 ----
+            // ---- X4 ----
+            // ---- end X4 ----
         },
         Effect::Manip(manip) => match manip {
             Manip::AutoCrop { color, tolerance, margin } => {

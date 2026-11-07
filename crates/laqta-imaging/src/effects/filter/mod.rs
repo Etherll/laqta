@@ -14,6 +14,12 @@ mod edge;
 mod rank;
 mod shift;
 mod tone;
+// ---- X2 ----
+// ---- end X2 ----
+// ---- X3 ----
+// ---- end X3 ----
+// ---- X4 ----
+// ---- end X4 ----
 
 use laqta_domain::effects::Filter;
 use laqta_domain::{Bitmap, PixelFormat};
@@ -70,6 +76,12 @@ pub(super) fn apply(image: &Bitmap, effect: &Filter, _cx: &EffectContext<'_>) ->
         Filter::ZoomBlur { amount, center_x, center_y } => blur::zoom(&src, amount, center_x, center_y),
         Filter::Median { radius } => rank::median(&src, radius.min(MAX_WINDOW_RADIUS)),
         Filter::OilPaint { radius, levels } => rank::oil_paint(&src, radius.min(MAX_WINDOW_RADIUS), levels),
+        // ---- X2 ----
+        // ---- end X2 ----
+        // ---- X3 ----
+        // ---- end X3 ----
+        // ---- X4 ----
+        // ---- end X4 ----
     };
     Ok(out.into_bitmap())
 }

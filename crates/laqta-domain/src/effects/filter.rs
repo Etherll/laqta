@@ -160,6 +160,12 @@ pub enum Filter {
         radius: u32,
         levels: u8,
     },
+    // ---- X2 ----
+    // ---- end X2 ----
+    // ---- X3 ----
+    // ---- end X3 ----
+    // ---- X4 ----
+    // ---- end X4 ----
 }
 
 impl Filter {
@@ -192,6 +198,12 @@ impl Filter {
             Filter::ZoomBlur { .. } => "Zoom blur",
             Filter::Median { .. } => "Median",
             Filter::OilPaint { .. } => "Oil paint",
+            // ---- X2 ----
+            // ---- end X2 ----
+            // ---- X3 ----
+            // ---- end X3 ----
+            // ---- X4 ----
+            // ---- end X4 ----
         }
     }
 
@@ -225,6 +237,12 @@ impl Filter {
             Filter::ZoomBlur { amount: 0.3, center_x: 0.5, center_y: 0.5 },
             Filter::Median { radius: 2 },
             Filter::OilPaint { radius: 3, levels: 16 },
+            // ---- X2 ----
+            // ---- end X2 ----
+            // ---- X3 ----
+            // ---- end X3 ----
+            // ---- X4 ----
+            // ---- end X4 ----
         ]
     }
 }
