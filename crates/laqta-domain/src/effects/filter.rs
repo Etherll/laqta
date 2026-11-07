@@ -646,6 +646,90 @@ pub enum Filter {
     },
     // ---- end X3 ----
     // ---- X4 ----
+    /// Perlin gradient noise on a `scale` px lattice, mixed toward grey by `strength` (0..=1).
+    PerlinNoise { scale: u32, strength: f32, seed: u64 },
+    /// Sorts each run of pixels at least `threshold` (0..=1 luma) bright by luma, along rows or columns.
+    PixelSorting { threshold: f32, vertical: bool },
+    /// Arcs of `color` where a sine plasma field `scale` px across crosses zero, mixed in at `strength`.
+    PlasmaEnergyArcs { scale: u32, strength: f32, color: Rgba, seed: u64 },
+    /// The image rebuilt from one seeded dot per `cell` px square, on white.
+    Pointillism { cell: u32, seed: u64 },
+    /// The image on a `color` paper mount, `border` px on three sides and `bottom` px more underneath.
+    PolaroidFrame { border: u32, bottom: u32, color: Rgba },
+    /// The image in `tiles` x `tiles` panels, each a duotone in its own ink, with white gutters.
+    PopArtGrid { tiles: u32 },
+    /// A hue that turns `bands` times around the centre, mixed in at `strength` (0..=1).
+    RadialRainbow { strength: f32, bands: u32 },
+    /// A `width` px frame whose hue turns once around the image.
+    RainbowBorder { width: u32 },
+    /// The image blurred by `blur_radius` px, with `drops` water drops up to `size` px across that bend the image.
+    RainyWindow { drops: u32, size: u32, blur_radius: u32, seed: u64 },
+    /// A dusk gradient map (violet, magenta, orange, pale yellow) mixed in at `strength`, with dark scan bars.
+    RetroSunset { strength: f32 },
+    /// One `ink` on `paper`, with `grain` (0..=1) of random dropout and the ink plate one px off the paper.
+    RisoPrint { ink: Rgba, paper: Rgba, grain: f32, seed: u64 },
+    /// A `width` px frame of twisted rope, strands alternating between `color` and `accent`.
+    RopeBorder { width: u32, color: Rgba, accent: Rgba },
+    /// Rust-brown patches `scale` px across, where the image dulls by `amount` (0..=1).
+    RustCorrosion { amount: f32, scale: u32, seed: u64 },
+    /// Every `spacing`-th row darkened by `strength` (0..=1).
+    Scanline { spacing: u32, strength: f32 },
+    /// Warped fractal wisps of grey smoke `scale` px across, screened over the image at `opacity` (0..=1).
+    SmokeOverlay { opacity: f32, scale: u32, seed: u64 },
+    /// Haze that thickens toward the top by `fog` (0..=1), with `flakes` white snowflakes falling across.
+    SnowfallDepthFog { flakes: u32, fog: f32, seed: u64 },
+    /// The gradient strength of the luma, drawn as light on black and scaled by `gain`.
+    SobelEdge { gain: f32 },
+    /// Each pixel scatters to a seeded spot up to `radius` px away, mixed in by `strength` (0..=1).
+    SoftDiffusion { radius: u32, strength: f32, seed: u64 },
+    /// Rotational blur about a centre (fractions of the image size), averaged over an arc of `angle` degrees.
+    SpinBlur { angle: f32, center_x: f32, center_y: f32 },
+    /// Voronoi panes in their average colour, with `lead` px lines along the cell borders.
+    StainedGlass { cell: u32, lead: u32, seed: u64 },
+    /// A `width` px frame of glass panes, `pane` px square, with `lead` lines between them.
+    StainedGlassBorder { width: u32, pane: u32, lead: Rgba, seed: u64 },
+    /// A `width` px frame of `background` night sky with `star` pinpricks scattered over it.
+    StarfieldBorder { width: u32, background: Rgba, star: Rgba, seed: u64 },
+    /// Glints in four directions from pixels brighter than `threshold`, up to `length` px long, tinted `color`.
+    StarFilter { threshold: f32, length: u32, strength: f32, color: Rgba },
+    /// Diagonal stripes `period` px apart, tinted `color` at `opacity` (0..=1).
+    StripeOverlay { period: u32, opacity: f32, color: Rgba },
+    /// Edge-preserving blur: neighbours whose luma is within `threshold` (0..=255) of the pixel are averaged over `radius` px.
+    SurfaceBlur { radius: u32, threshold: u8 },
+    /// Luma through a heat palette (violet, red, yellow, white), mixed in at `strength` (0..=1).
+    ThermalVision { strength: f32 },
+    /// Blur that grows away from a sharp band `band` (0..=1 of the height) around `focus` (0..=1 down the image).
+    TiltShift { focus: f32, band: f32, radius: u32 },
+    /// Square cells `size` px across, each split along its diagonal and filled with each half's average.
+    TrianglePixelate { size: u32 },
+    /// `amount` (0..=1) of the pixels turn to random grey snow.
+    TVStatic { amount: f32, seed: u64 },
+    /// Adds back `amount` times the difference from a `radius` px box blur, where it is at least `threshold`.
+    UnsharpMask { radius: u32, amount: f32, threshold: u8 },
+    /// Rows jitter sideways by up to `jitter` px, red and blue smear `bleed` px apart, and the bottom band fills with `noise`.
+    VhsTapeDamage { jitter: u32, bleed: u32, noise: f32, seed: u64 },
+    /// Fades toward a warm sepia by `fade` (0..=1), with `scratches` light vertical scratches and dust specks.
+    VintagePrintDamage { fade: f32, scratches: u32, seed: u64 },
+    /// Irregular cells about `cell` px across, each the colour under its feature point.
+    VoronoiMosaic { cell: u32, seed: u64 },
+    /// A `width` px frame of `color` wash, heavier in patches, with a darker pigment line on the inner edge.
+    WatercolorBorder { width: u32, color: Rgba, seed: u64 },
+    /// Kuwahara filter: each pixel takes the mean of the most even of four `radius` px quadrants.
+    WatercolorKuwahara { radius: u32 },
+    /// Blue-grey monochrome with high contrast, faint mottling and corners darkened by `vignette` (0..=1).
+    WetPlateCollodion { vignette: f32, seed: u64 },
+    /// A window with rounded corners `radius` px across and a soft `shadow` px wide. The canvas grows by `shadow`.
+    Windows11 { radius: u32, shadow: u32 },
+    /// `streaks` pale horizontal streaks, up to `length` px long, blown across the image at `strength` (0..=1).
+    WindStreaks { streaks: u32, length: u32, strength: f32, seed: u64 },
+    /// Diagonal gouges `line` px wide, inked where the image is dark: `ink` on `paper`.
+    WoodcutPrint { line: u32, ink: Rgba, paper: Rgba },
+    /// A `width` px frame of planks in `color`, with wandering grain and a bevel.
+    WoodenFrame { width: u32, color: Rgba, seed: u64 },
+    /// The image as an X-ray plate tinted `tint`, with a bright beam across it at `position` (0..=1 down the image).
+    XRayScan { position: f32, tint: Rgba },
+    /// A `width` px frame in `color` whose inner edge runs in triangular zigzags, the rest in `accent`.
+    ZigZagBorder { width: u32, color: Rgba, accent: Rgba },
     // ---- end X4 ----
 }
 
@@ -767,6 +851,48 @@ impl Filter {
             Filter::PencilSketch { .. } => "Pencil sketch",
             // ---- end X3 ----
             // ---- X4 ----
+            Filter::PerlinNoise { .. } => "Perlin noise",
+            Filter::PixelSorting { .. } => "Pixel sorting",
+            Filter::PlasmaEnergyArcs { .. } => "Plasma energy arcs",
+            Filter::Pointillism { .. } => "Pointillism",
+            Filter::PolaroidFrame { .. } => "Polaroid frame",
+            Filter::PopArtGrid { .. } => "Pop art grid",
+            Filter::RadialRainbow { .. } => "Radial rainbow",
+            Filter::RainbowBorder { .. } => "Rainbow border",
+            Filter::RainyWindow { .. } => "Rainy window",
+            Filter::RetroSunset { .. } => "Retro sunset",
+            Filter::RisoPrint { .. } => "Riso print",
+            Filter::RopeBorder { .. } => "Rope border",
+            Filter::RustCorrosion { .. } => "Rust corrosion",
+            Filter::Scanline { .. } => "Scanline",
+            Filter::SmokeOverlay { .. } => "Smoke overlay",
+            Filter::SnowfallDepthFog { .. } => "Snowfall depth fog",
+            Filter::SobelEdge { .. } => "Sobel edge",
+            Filter::SoftDiffusion { .. } => "Soft diffusion",
+            Filter::SpinBlur { .. } => "Spin blur",
+            Filter::StainedGlass { .. } => "Stained glass",
+            Filter::StainedGlassBorder { .. } => "Stained glass border",
+            Filter::StarfieldBorder { .. } => "Starfield border",
+            Filter::StarFilter { .. } => "Star filter",
+            Filter::StripeOverlay { .. } => "Stripe overlay",
+            Filter::SurfaceBlur { .. } => "Surface blur",
+            Filter::ThermalVision { .. } => "Thermal vision",
+            Filter::TiltShift { .. } => "Tilt shift",
+            Filter::TrianglePixelate { .. } => "Triangle pixelate",
+            Filter::TVStatic { .. } => "TV static",
+            Filter::UnsharpMask { .. } => "Unsharp mask",
+            Filter::VhsTapeDamage { .. } => "VHS tape damage",
+            Filter::VintagePrintDamage { .. } => "Vintage print damage",
+            Filter::VoronoiMosaic { .. } => "Voronoi mosaic",
+            Filter::WatercolorBorder { .. } => "Watercolor border",
+            Filter::WatercolorKuwahara { .. } => "Watercolor Kuwahara",
+            Filter::WetPlateCollodion { .. } => "Wet plate collodion",
+            Filter::Windows11 { .. } => "Windows 11",
+            Filter::WindStreaks { .. } => "Wind streaks",
+            Filter::WoodcutPrint { .. } => "Woodcut print",
+            Filter::WoodenFrame { .. } => "Wooden frame",
+            Filter::XRayScan { .. } => "X-ray scan",
+            Filter::ZigZagBorder { .. } => "Zigzag border",
             // ---- end X4 ----
         }
     }
@@ -889,6 +1015,48 @@ impl Filter {
             Filter::PencilSketch { strength: 1.0, radius: 6 },
             // ---- end X3 ----
             // ---- X4 ----
+            Filter::PerlinNoise { scale: 6, strength: 0.4, seed: 1 },
+            Filter::PixelSorting { threshold: 0.35, vertical: false },
+            Filter::PlasmaEnergyArcs { scale: 6, strength: 0.8, color: Rgba::rgb(120, 220, 255), seed: 1 },
+            Filter::Pointillism { cell: 6, seed: 1 },
+            Filter::PolaroidFrame { border: 10, bottom: 30, color: Rgba::rgb(244, 240, 228) },
+            Filter::PopArtGrid { tiles: 2 },
+            Filter::RadialRainbow { strength: 0.4, bands: 3 },
+            Filter::RainbowBorder { width: 16 },
+            Filter::RainyWindow { drops: 24, size: 8, blur_radius: 3, seed: 1 },
+            Filter::RetroSunset { strength: 0.6 },
+            Filter::RisoPrint { ink: Rgba::rgb(230, 60, 120), paper: Rgba::rgb(245, 240, 230), grain: 0.5, seed: 1 },
+            Filter::RopeBorder { width: 16, color: Rgba::rgb(190, 150, 90), accent: Rgba::rgb(120, 85, 45) },
+            Filter::RustCorrosion { amount: 0.7, scale: 24, seed: 1 },
+            Filter::Scanline { spacing: 3, strength: 0.4 },
+            Filter::SmokeOverlay { opacity: 0.6, scale: 32, seed: 1 },
+            Filter::SnowfallDepthFog { flakes: 120, fog: 0.5, seed: 1 },
+            Filter::SobelEdge { gain: 1.5 },
+            Filter::SoftDiffusion { radius: 4, strength: 0.6, seed: 1 },
+            Filter::SpinBlur { angle: 20.0, center_x: 0.5, center_y: 0.5 },
+            Filter::StainedGlass { cell: 12, lead: 2, seed: 1 },
+            Filter::StainedGlassBorder { width: 16, pane: 10, lead: Rgba::rgb(30, 25, 25), seed: 1 },
+            Filter::StarfieldBorder { width: 20, background: Rgba::rgb(12, 16, 48), star: Rgba::rgb(255, 250, 220), seed: 1 },
+            Filter::StarFilter { threshold: 0.8, length: 16, strength: 0.6, color: Rgba::rgb(255, 230, 170) },
+            Filter::StripeOverlay { period: 8, opacity: 0.35, color: Rgba::WHITE },
+            Filter::SurfaceBlur { radius: 3, threshold: 40 },
+            Filter::ThermalVision { strength: 1.0 },
+            Filter::TiltShift { focus: 0.5, band: 0.2, radius: 4 },
+            Filter::TrianglePixelate { size: 10 },
+            Filter::TVStatic { amount: 0.3, seed: 1 },
+            Filter::UnsharpMask { radius: 2, amount: 1.5, threshold: 0 },
+            Filter::VhsTapeDamage { jitter: 6, bleed: 2, noise: 0.5, seed: 1 },
+            Filter::VintagePrintDamage { fade: 0.6, scratches: 6, seed: 1 },
+            Filter::VoronoiMosaic { cell: 8, seed: 1 },
+            Filter::WatercolorBorder { width: 14, color: Rgba::rgb(70, 130, 190), seed: 1 },
+            Filter::WatercolorKuwahara { radius: 3 },
+            Filter::WetPlateCollodion { vignette: 0.6, seed: 1 },
+            Filter::Windows11 { radius: 8, shadow: 8 },
+            Filter::WindStreaks { streaks: 16, length: 16, strength: 0.7, seed: 1 },
+            Filter::WoodcutPrint { line: 3, ink: Rgba::BLACK, paper: Rgba::rgb(245, 238, 222) },
+            Filter::WoodenFrame { width: 14, color: Rgba::rgb(139, 90, 43), seed: 1 },
+            Filter::XRayScan { position: 0.5, tint: Rgba::rgb(120, 255, 200) },
+            Filter::ZigZagBorder { width: 10, color: Rgba::rgb(200, 40, 60), accent: Rgba::WHITE },
             // ---- end X4 ----
         ]
     }

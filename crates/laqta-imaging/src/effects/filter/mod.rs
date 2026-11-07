@@ -21,6 +21,7 @@ mod x2;
 mod x3;
 // ---- end X3 ----
 // ---- X4 ----
+mod x4;
 // ---- end X4 ----
 
 use laqta_domain::effects::Filter;
@@ -168,6 +169,48 @@ pub(super) fn apply(image: &Bitmap, effect: &Filter, _cx: &EffectContext<'_>) ->
         Filter::PencilSketch { strength, radius } => x3::pencil_sketch(&src, strength, radius),
         // ---- end X3 ----
         // ---- X4 ----
+        Filter::PerlinNoise { scale, strength, seed } => x4::perlin_noise(&src, scale, strength, seed),
+        Filter::PixelSorting { threshold, vertical } => x4::pixel_sorting(&src, threshold, vertical),
+        Filter::PlasmaEnergyArcs { scale, strength, color, seed } => x4::plasma_energy_arcs(&src, scale, strength, color, seed),
+        Filter::Pointillism { cell, seed } => x4::pointillism(&src, cell, seed),
+        Filter::PolaroidFrame { border, bottom, color } => x4::polaroid_frame(&src, border, bottom, color)?,
+        Filter::PopArtGrid { tiles } => x4::pop_art_grid(&src, tiles),
+        Filter::RadialRainbow { strength, bands } => x4::radial_rainbow(&src, strength, bands),
+        Filter::RainbowBorder { width } => x4::rainbow_border(&src, width)?,
+        Filter::RainyWindow { drops, size, blur_radius, seed } => x4::rainy_window(&src, drops, size, blur_radius, seed),
+        Filter::RetroSunset { strength } => x4::retro_sunset(&src, strength),
+        Filter::RisoPrint { ink, paper, grain, seed } => x4::riso_print(&src, ink, paper, grain, seed),
+        Filter::RopeBorder { width, color, accent } => x4::rope_border(&src, width, color, accent)?,
+        Filter::RustCorrosion { amount, scale, seed } => x4::rust_corrosion(&src, amount, scale, seed),
+        Filter::Scanline { spacing, strength } => x4::scanline(&src, spacing, strength),
+        Filter::SmokeOverlay { opacity, scale, seed } => x4::smoke_overlay(&src, opacity, scale, seed),
+        Filter::SnowfallDepthFog { flakes, fog, seed } => x4::snowfall_depth_fog(&src, flakes, fog, seed),
+        Filter::SobelEdge { gain } => x4::sobel_edge(&src, gain),
+        Filter::SoftDiffusion { radius, strength, seed } => x4::soft_diffusion(&src, radius, strength, seed),
+        Filter::SpinBlur { angle, center_x, center_y } => x4::spin_blur(&src, angle, center_x, center_y),
+        Filter::StainedGlass { cell, lead, seed } => x4::stained_glass(&src, cell, lead, seed),
+        Filter::StainedGlassBorder { width, pane, lead, seed } => x4::stained_glass_border(&src, width, pane, lead, seed)?,
+        Filter::StarfieldBorder { width, background, star, seed } => x4::starfield_border(&src, width, background, star, seed)?,
+        Filter::StarFilter { threshold, length, strength, color } => x4::star_filter(&src, threshold, length, strength, color),
+        Filter::StripeOverlay { period, opacity, color } => x4::stripe_overlay(&src, period, opacity, color),
+        Filter::SurfaceBlur { radius, threshold } => x4::surface_blur(&src, radius, threshold),
+        Filter::ThermalVision { strength } => x4::thermal_vision(&src, strength),
+        Filter::TiltShift { focus, band, radius } => x4::tilt_shift(&src, focus, band, radius),
+        Filter::TrianglePixelate { size } => x4::triangle_pixelate(&src, size),
+        Filter::TVStatic { amount, seed } => x4::tv_static(&src, amount, seed),
+        Filter::UnsharpMask { radius, amount, threshold } => x4::unsharp_mask(&src, radius, amount, threshold),
+        Filter::VhsTapeDamage { jitter, bleed, noise, seed } => x4::vhs_tape_damage(&src, jitter, bleed, noise, seed),
+        Filter::VintagePrintDamage { fade, scratches, seed } => x4::vintage_print_damage(&src, fade, scratches, seed),
+        Filter::VoronoiMosaic { cell, seed } => x4::voronoi_mosaic(&src, cell, seed),
+        Filter::WatercolorBorder { width, color, seed } => x4::watercolor_border(&src, width, color, seed)?,
+        Filter::WatercolorKuwahara { radius } => x4::watercolor_kuwahara(&src, radius),
+        Filter::WetPlateCollodion { vignette, seed } => x4::wet_plate_collodion(&src, vignette, seed),
+        Filter::Windows11 { radius, shadow } => x4::windows_11(&src, radius, shadow)?,
+        Filter::WindStreaks { streaks, length, strength, seed } => x4::wind_streaks(&src, streaks, length, strength, seed),
+        Filter::WoodcutPrint { line, ink, paper } => x4::woodcut_print(&src, line, ink, paper),
+        Filter::WoodenFrame { width, color, seed } => x4::wooden_frame(&src, width, color, seed)?,
+        Filter::XRayScan { position, tint } => x4::xray_scan(&src, position, tint),
+        Filter::ZigZagBorder { width, color, accent } => x4::zigzag_border(&src, width, color, accent)?,
         // ---- end X4 ----
     };
     Ok(out.into_bitmap())
