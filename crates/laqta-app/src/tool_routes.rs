@@ -88,8 +88,12 @@ impl App {
                 Err(e) => Err(e),
             },
             Action::QrCodeScanRegion => self.qr_region(ts).await,
-            Action::ActiveWindowBorderless => crate::tools::toggle_borderless_active(&self.ports, &self.window_toggles).await.map(|_| Dispatched::Done),
-            Action::ActiveWindowTopMost => crate::tools::toggle_topmost_active(&self.ports, &self.window_toggles).await.map(|_| Dispatched::Done),
+            Action::ActiveWindowBorderless => {
+                crate::tools::toggle_borderless_active(&self.ports, &self.window_toggles).await.map(|_| Dispatched::Done)
+            }
+            Action::ActiveWindowTopMost => {
+                crate::tools::toggle_topmost_active(&self.ports, &self.window_toggles).await.map(|_| Dispatched::Done)
+            }
             Action::InspectWindow => match crate::tools::inspect_active(&self.ports).await {
                 Ok(props) => {
                     let text = props.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join("\n");

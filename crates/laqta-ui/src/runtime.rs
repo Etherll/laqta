@@ -25,6 +25,9 @@ pub(crate) enum UiCommand {
     CloseOverlay,
     Toast(Toast),
     Open(ToolWindow),
+    Pin(laqta_domain::Bitmap),
+    ClosePins,
+    ShowText { title: String, text: String },
     Edit { image: laqta_domain::Bitmap, reply: futures_channel::oneshot::Sender<Result<laqta_domain::Bitmap, PortError>> },
     Prompt { title: String, kind: crate::prompt_window::PromptKind, reply: crate::prompt_window::Reply },
     Quit,
@@ -228,6 +231,15 @@ impl ToolHost for UiHandle {
     fn open(&self, window: ToolWindow) -> Result<(), PortError> {
         self.send(UiCommand::Open(window))
     }
+    fn pin(&self, image: laqta_domain::Bitmap) -> Result<(), PortError> {
+        self.send(UiCommand::Pin(image))
+    }
+    fn close_pins(&self) -> Result<(), PortError> {
+        self.send(UiCommand::ClosePins)
+    }
+    fn show_text(&self, title: &str, text: &str) -> Result<(), PortError> {
+        self.send(UiCommand::ShowText { title: title.to_owned(), text: text.to_owned() })
+    }
 }
 
 /// Checks for an update: the message to show and whether `install_update` can apply it here.
@@ -367,6 +379,10 @@ fn handle(cmd: UiCommand, cx: &mut App) {
         UiCommand::Edit { image, reply } => crate::editor_window::open(Some(image), Some(reply), None, cx),
         UiCommand::Open(ToolWindow::Editor(path)) => crate::editor_window::open_file(path, cx),
         UiCommand::Open(ToolWindow::Effects(path)) => crate::effects_window::open(path, cx),
+        UiCommand::Open(ToolWindow::Tool(kind)) => crate::tools_window::open(kind, cx),
+        UiCommand::Pin(image) => crate::pin_window::pin(image, cx),
+        UiCommand::ClosePins => crate::pin_window::close_all(cx),
+        UiCommand::ShowText { title, text } => crate::pin_window::show_text(title, text, cx),
         UiCommand::Open(other) => tracing::warn!(?other, "no window for this tool yet"),
         UiCommand::Quit => {
             overlay::close(cx);
