@@ -57,7 +57,7 @@ pipewire = "0.10.1"
 wasapi = "0.27.0"
 lzma-rs = "0.3.0"
 tar = "0.4.46"
-rxing = { version = "0.9.3", default-features = false, features = ["encoding_rs"] }
+rxing = { version = "0.9.3", default-features = false, features = ["encoding_rs", "decoders", "qrcode", "multi_barcode_readers"] }
 kamadak-exif = "0.6.2"
 minijinja = { version = "3.0.5", default-features = false, features = ["builtins", "serde"] }
 sha1 = "0.11.0"

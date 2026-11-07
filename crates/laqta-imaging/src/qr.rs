@@ -30,6 +30,33 @@ pub fn qr_encode(text: &str, module: u32) -> Result<Bitmap, QrError> {
     Bitmap::new(size, size, PixelFormat::Rgba8, px.into()).map_err(|e| QrError(e.to_string()))
 }
 
+/// Every barcode/QR code found in the image, by text (the QR tool, "scan QR code" after capture).
+pub fn qr_decode(img: &Bitmap) -> Vec<String> {
+    let (w, h) = (img.width(), img.height());
+    if w == 0 || h == 0 {
+        return Vec::new();
+    }
+    let luma: Vec<u8> = img
+        .pixels()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| {
+            let (r, g, b) = match img.format() {
+                PixelFormat::Rgba8 => (p[0], p[1], p[2]),
+                PixelFormat::Bgra8 => (p[2], p[1], p[0]),
+            };
+            // Transparent pixels read as white, like a page.
+            let y = (299 * r as u32 + 587 * g as u32 + 114 * b as u32) / 1000;
+            (255 - ((255 - y) * p[3] as u32 / 255)) as u8
+        })
+        .collect();
+    match rxing::helpers::detect_multiple_in_luma(luma, w, h) {
+        Ok(results) => results.iter().map(|r| r.getText().to_string()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -41,5 +68,13 @@ mod tests {
         assert_eq!(b.width(), b.height());
         assert_eq!(&b.pixels()[0..4], &[255, 255, 255, 255]); // quiet zone is white
         assert!(b.pixels().as_chunks::<4>().0.iter().any(|p| p[0] == 0));
+    }
+
+    #[test]
+    fn decode_round_trip() {
+        let b = qr_encode("https://example.com/qr", 4).unwrap();
+        assert_eq!(qr_decode(&b), vec!["https://example.com/qr".to_string()]);
+        let blank = Bitmap::new(8, 8, PixelFormat::Rgba8, vec![255; 256].into()).unwrap();
+        assert!(qr_decode(&blank).is_empty());
     }
 }
