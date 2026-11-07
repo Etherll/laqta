@@ -25,9 +25,9 @@ pub const PASSWORD_KEY: &str = "laqta/ftp/password";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const IO_TIMEOUT: Duration = Duration::from_secs(60);
 
-const FTP_PORT: u16 = 21;
+pub(crate) const FTP_PORT: u16 = 21;
 /// The port of implicit FTPS. A config still on the plain FTP port uses it instead.
-const FTPS_IMPLICIT_PORT: u16 = 990;
+pub(crate) const FTPS_IMPLICIT_PORT: u16 = 990;
 
 /// FTP reply codes that matter to the upload.
 const SERVICE_NOT_AVAILABLE: u32 = 421;
@@ -39,9 +39,9 @@ const EXCEEDED_STORAGE: u32 = 552;
 /// The FTPS stream of this target. Explicit mode upgrades the control channel and implicit mode
 /// starts with TLS, so both end up with this type.
 #[cfg(not(windows))]
-type TlsFtp = suppaftp::RustlsFtpStream;
+pub(crate) type TlsFtp = suppaftp::RustlsFtpStream;
 #[cfg(windows)]
-type TlsFtp = suppaftp::NativeTlsFtpStream;
+pub(crate) type TlsFtp = suppaftp::NativeTlsFtpStream;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -230,7 +230,7 @@ impl<R: Read> Read for Counting<R> {
 }
 
 /// Opens the TCP connection, trying each resolved address within the connect timeout.
-fn tcp_connect(config: &FtpConfig) -> Result<TcpStream, UploadError> {
+pub(crate) fn tcp_connect(config: &FtpConfig) -> Result<TcpStream, UploadError> {
     let addresses = (config.host.as_str(), config.port)
         .to_socket_addrs()
         .map_err(|error| UploadError::Network(format!("cannot resolve {}: {error}", config.host)))?;
@@ -246,7 +246,7 @@ fn tcp_connect(config: &FtpConfig) -> Result<TcpStream, UploadError> {
 }
 
 /// Sets timeouts before the greeting is read, so a silent server cannot hold the thread.
-fn open_control<T>(stream: TcpStream) -> Result<ImplFtpStream<T>, UploadError>
+pub(crate) fn open_control<T>(stream: TcpStream) -> Result<ImplFtpStream<T>, UploadError>
 where
     T: TlsStream + Send + 'static,
 {
@@ -262,7 +262,7 @@ fn set_io_timeouts(stream: &TcpStream) -> io::Result<()> {
 /// Puts the IO timeouts on the socket before the handshake. `connect_secure_implicit` opens the
 /// socket and runs the handshake itself, so the timeouts have to be set here.
 #[derive(Debug)]
-struct TimedTls<C>(C);
+pub(crate) struct TimedTls<C>(pub(crate) C);
 
 impl<C> TlsConnector for TimedTls<C>
 where
@@ -279,7 +279,7 @@ where
 /// The rustls connector: the platform verifier on the explicit AWS-LC provider, so the
 /// certificate check uses the OS trust store and no other provider is picked up by accident.
 #[cfg(not(windows))]
-fn connector() -> Result<suppaftp::RustlsConnector, UploadError> {
+pub(crate) fn connector() -> Result<suppaftp::RustlsConnector, UploadError> {
     use rustls::ClientConfig;
     use rustls::crypto::aws_lc_rs::default_provider;
     use rustls_platform_verifier::BuilderVerifierExt;
@@ -294,7 +294,7 @@ fn connector() -> Result<suppaftp::RustlsConnector, UploadError> {
 
 /// The native-tls connector: SChannel, which checks certificates against the Windows trust store.
 #[cfg(windows)]
-fn connector() -> Result<suppaftp::NativeTlsConnector, UploadError> {
+pub(crate) fn connector() -> Result<suppaftp::NativeTlsConnector, UploadError> {
     let connector = native_tls::TlsConnector::new().map_err(|error| UploadError::Network(format!("TLS setup: {error}")))?;
     Ok(suppaftp::NativeTlsConnector::from(connector))
 }
@@ -335,7 +335,7 @@ fn unreadable(path: &std::path::Path, error: &io::Error) -> UploadError {
     UploadError::Unsupported(format!("cannot read {}: {error}", path.display()))
 }
 
-fn ftp_error(error: FtpError) -> UploadError {
+pub(crate) fn ftp_error(error: FtpError) -> UploadError {
     match error {
         FtpError::ConnectionError(error) => network_error(error.to_string()),
         FtpError::SecureError(message) => network_error(format!("TLS: {message}")),
@@ -361,7 +361,7 @@ fn network_error(message: String) -> UploadError {
 
 /// Runs blocking `work` on its own thread and resolves with its result on any executor. A panic
 /// in `work` becomes `BadResponse`, which is not retried.
-async fn on_worker<R, F>(work: F) -> Result<R, UploadError>
+pub(crate) async fn on_worker<R, F>(work: F) -> Result<R, UploadError>
 where
     R: Send + 'static,
     F: FnOnce() -> R + Send + 'static,

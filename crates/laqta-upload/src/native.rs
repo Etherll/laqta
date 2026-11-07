@@ -171,6 +171,59 @@ pub fn native_hosts(accounts: &[HostAccount], deps: &HostDeps) -> NativeHosts {
             // ---- HO-a ----
             // ---- end HO-a ----
             // ---- HO-b ----
+            HostKind::Flickr => {
+                use crate::hosts::flickr::{Flickr, FlickrConfig, FlickrEndpoints};
+                let config = FlickrConfig { api_key: a.get("api_key").into(), public: a.flag("public"), endpoints: FlickrEndpoints::production() };
+                out.destinations.push(Arc::new(Flickr::new(config, deps.secrets.clone(), deps.shell.clone(), deps.csprng.clone(), deps.now_unix.clone())));
+            }
+            HostKind::Box => {
+                use crate::hosts::box_com as b;
+                let o = oauth(deps, b::oauth_config(), a.get("client_id"), secret(deps, a, "client_secret"), b::SECRET_KEY);
+                out.destinations.push(Arc::new(b::BoxCom::new(o, b::BOX_API.into(), b::BOX_UPLOAD.into(), a.get("folder_id").into(), a.flag("share"))));
+            }
+            HostKind::YouTube => {
+                use crate::hosts::youtube as y;
+                let o = oauth(deps, y::oauth_config(), a.get("client_id"), secret(deps, a, "client_secret"), y::SECRET_KEY);
+                out.destinations.push(Arc::new(y::YouTube::new(o, y::GOOGLE_UPLOAD.into(), a.get("privacy"))));
+            }
+            #[cfg(feature = "host-s3")]
+            HostKind::GoogleCloudStorage => {
+                use crate::hosts::gcs as g;
+                let public = Some(a.get("public_url_base").to_owned()).filter(|s| !s.is_empty());
+                let cfg = g::GcsConfig {
+                    endpoint: g::GCS_ENDPOINT.into(),
+                    bucket: a.get("bucket").into(),
+                    path_prefix: a.get("path_prefix").into(),
+                    access_key_id: a.get("access_key_id").into(),
+                    public_url_base: public,
+                };
+                out.destinations.push(Arc::new(g::GoogleCloudStorage::new(&cfg, deps.secrets.clone())));
+            }
+            HostKind::AzureBlob => {
+                use crate::hosts::azure_blob as az;
+                let account = a.get("account");
+                let public = Some(a.get("public_url_base").to_owned()).filter(|s| !s.is_empty());
+                let cfg = az::AzureConfig {
+                    account: account.into(),
+                    container: a.get("container").into(),
+                    path_prefix: a.get("path_prefix").into(),
+                    public_url_base: public,
+                    blob_base: format!("https://{account}.blob.core.windows.net"),
+                };
+                out.destinations.push(Arc::new(az::AzureBlob::new(cfg, deps.secrets.clone(), deps.now_unix.clone())));
+            }
+            HostKind::BackblazeB2 => {
+                use crate::hosts::b2;
+                let public = Some(a.get("public_url_base").to_owned()).filter(|s| !s.is_empty());
+                let cfg = b2::B2Config {
+                    api_base: b2::B2_API.into(),
+                    key_id: a.get("key_id").into(),
+                    bucket: a.get("bucket").into(),
+                    path_prefix: a.get("path_prefix").into(),
+                    public_url_base: public,
+                };
+                out.destinations.push(Arc::new(b2::BackblazeB2::new(cfg, deps.secrets.clone())));
+            }
             // ---- end HO-b ----
             #[allow(unreachable_patterns)]
             _ => tracing::warn!(kind = ?a.kind, "host not built into this binary"),

@@ -213,7 +213,7 @@ async fn put(
 }
 
 #[cfg(not(windows))]
-enum Login {
+pub(crate) enum Login {
     Key(Arc<russh::keys::PrivateKey>),
     Password(String),
 }
@@ -276,9 +276,9 @@ async fn put_over_ssh(put: Put) -> Result<(), UploadError> {
 /// Accepts a server key only when `~/.ssh/known_hosts` already records it, as `sftp.exe` does on
 /// Windows. Unknown and changed keys fail, and the message says what to do.
 #[cfg(not(windows))]
-struct HostKeys {
-    host: String,
-    port: u16,
+pub(crate) struct HostKeys {
+    pub(crate) host: String,
+    pub(crate) port: u16,
 }
 
 #[cfg(not(windows))]
@@ -301,7 +301,7 @@ impl russh::client::Handler for HostKeys {
 
 #[cfg(not(windows))]
 #[derive(Debug)]
-enum ClientError {
+pub(crate) enum ClientError {
     Ssh(russh::Error),
     HostKey(String),
 }
@@ -314,7 +314,7 @@ impl From<russh::Error> for ClientError {
 }
 
 #[cfg(not(windows))]
-fn client_error(error: ClientError) -> UploadError {
+pub(crate) fn client_error(error: ClientError) -> UploadError {
     match error {
         ClientError::Ssh(error) => ssh_error(error),
         ClientError::HostKey(message) => UploadError::Auth(message),
@@ -322,12 +322,12 @@ fn client_error(error: ClientError) -> UploadError {
 }
 
 #[cfg(not(windows))]
-fn ssh_error(error: russh::Error) -> UploadError {
+pub(crate) fn ssh_error(error: russh::Error) -> UploadError {
     UploadError::Network(error.to_string())
 }
 
 #[cfg(not(windows))]
-fn sftp_error(error: russh_sftp::client::error::Error) -> UploadError {
+pub(crate) fn sftp_error(error: russh_sftp::client::error::Error) -> UploadError {
     use russh_sftp::client::error::Error;
     use russh_sftp::protocol::StatusCode;
     match error {
@@ -339,7 +339,7 @@ fn sftp_error(error: russh_sftp::client::error::Error) -> UploadError {
 }
 
 #[cfg(not(windows))]
-fn load_key(path: &Path, passphrase: Option<&str>) -> Result<russh::keys::PrivateKey, UploadError> {
+pub(crate) fn load_key(path: &Path, passphrase: Option<&str>) -> Result<russh::keys::PrivateKey, UploadError> {
     russh::keys::load_secret_key(path, passphrase)
         .map_err(|error| UploadError::Auth(format!("cannot read the SFTP key {}: {error}", path.display())))
 }
