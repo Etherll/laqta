@@ -9,6 +9,7 @@ use laqta_ports::{Clipboard, HotkeyRegistrar, HoverSource, ScreenSource, Shell, 
 mod atspi_elements;
 mod autostart;
 mod clipboard;
+mod highlight;
 mod input;
 mod integration;
 mod secrets;
@@ -40,6 +41,7 @@ pub struct LinuxPorts {
     pub autostart: Arc<dyn laqta_ports::Autostart>,
     pub integration: Arc<dyn laqta_ports::ShellIntegration>,
     pub input: Arc<dyn laqta_ports::InputSynth>,
+    pub highlighter: Arc<dyn laqta_ports::PointerHighlighter>,
 }
 
 pub fn ports(session: Session) -> LinuxPorts {
@@ -70,5 +72,6 @@ pub fn ports_with_token(session: Session, restore_token: Option<String>, on_toke
         autostart: Arc::new(autostart::LinuxAutostart::default()),
         integration: Arc::new(integration::LinuxShellIntegration::default()),
         input: Arc::new(input::LinuxInput::new(session)),
+        highlighter: Arc::new(highlight::LinuxHighlighter::new(session)),
     }
 }
