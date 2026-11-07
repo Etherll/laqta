@@ -336,8 +336,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        chrome_manifest, firefox_manifest, host_key, json_string, remove_send_to, send_to_script, verb_key, write_host_manifests,
-        write_send_to,
+        FILE_TYPES, chrome_manifest, class_key, firefox_manifest, host_key, json_string, remove_send_to, send_to_script, verb_key,
+        write_host_manifests, write_send_to,
     };
 
     fn scratch(name: &str) -> PathBuf {
