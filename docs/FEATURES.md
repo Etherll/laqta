@@ -20,8 +20,8 @@ Areas the survey did not cover in depth need a second pass:
 | Region, custom region, last region | M1 | done |
 | Capture delay, cursor, transparent window (DWM), HDR | M1 | done |
 | Overlay: window and UI-element detection, multi-region, dim, magnifier, crosshairs, info text, toolbar, mouse-button actions, keyboard nudge | M1 | done |
-| Scrolling capture (wheel, arrow, page down, scroll message; stitching) | M6 | planned |
-| Auto capture (start / stop / interval) | M6 | planned |
+| Scrolling capture (wheel, arrow, page down, scroll message; stitching) | M6 | done |
+| Auto capture (start / stop / interval) | M6 | done |
 | Text capture (OCR) | M5 | planned |
 
 ## Recording
@@ -52,7 +52,7 @@ Areas the survey did not cover in depth need a second pass:
 | Image format options (PNG / JPEG / GIF / WebP / BMP, quality, auto JPEG by size, file-exists action, thumbnail) | M1 | done |
 | Toast options (duration, fade, placement, size, click actions), per-event sounds | M1 | done |
 | Name patterns (37 tokens) and upload-info templates (13 tokens; HTML, forum, wiki, Markdown), listed below | M1 / M2 | done |
-| Watch folders | M6 | planned |
+| Watch folders | M6 | done |
 | Clipboard, drag-and-drop, text, URL (download then reupload), folder upload | M2 | done |
 
 **After-capture tasks (23):** ShowQuickTaskMenu, ShowAfterCaptureWindow, BeautifyImage, AddImageEffects, AnnotateImage, OpenInPhotoEditor, CopyImageToClipboard, PinToScreen, SendImageToPrinter, SaveImageToFile, SaveImageToFileWithDialog, SaveThumbnailImageToFile, PerformActions, CopyFileToClipboard, CopyFilePathToClipboard, CopyFolderPathToClipboard, ShowInExplorer, AnalyzeImage, ScanQRCode, DoOCR, ShowBeforeUploadWindow, UploadImageToHost, DeleteFile.
@@ -129,12 +129,12 @@ Hosts in the catalog are `.sxcu` files (ADR 004); hosts written in Rust are mark
 | Tray icon and menu, main window, toggle tray menu | M0–M1 | done |
 | History (list, image grid, stats, tags), legacy History.json migration | M1 | done |
 | Settings files, rotating and weekly backups, export / import archive, portable mode | M1 | done |
-| Sandbox mode | M6 | planned |
-| Import from an existing ShareX install | M6 | planned |
-| CLI (`task`, `workflow`, custom uploader, image effect, native-message input; `-silent`, `-portable`, `-multi`, `-NoHotkeys`) | M6 | planned |
+| Sandbox mode | M6 | done |
+| Import from an existing ShareX install | M6 | done |
+| CLI (`task`, `workflow`, custom uploader, image effect, native-message input; `-silent`, `-portable`, `-multi`, `-NoHotkeys`) | M6 | done |
 | Single instance and argument forwarding | M0 | done |
-| Browser extension native messaging (Chrome, Firefox) | M6 | planned |
+| Browser extension native messaging (Chrome, Firefox) | M6 | done |
 | Run at startup, shell context menu, Send To, file-type registration | M6 | planned |
-| About 30 languages | M6 | planned |
-| Auto-update | M6 | planned |
+| About 30 languages | M6 | done |
+| Auto-update | M6 | done |
 | Steam build | dropped unless requested | dropped |
