@@ -1,1 +1,89 @@
-//! Placeholder; filled in by its M0 step.
+//! Windows adapters for the M0 ports (docs/plan/M0.md §5.3, §5.4).
+//!
+//! Screen capture uses DXGI Desktop Duplication with one D3D11 device per adapter, falling back
+//! to GDI `BitBlt`. Hotkeys and the tray share one dedicated shell thread that owns a hidden
+//! window. Everything here is Windows-only; on other targets the crate is empty.
+
+#[cfg(windows)]
+mod capture_dxgi;
+#[cfg(windows)]
+mod capture_gdi;
+#[cfg(windows)]
+mod clipboard;
+#[cfg(windows)]
+mod shell;
+#[cfg(windows)]
+mod shell_thread;
+
+#[cfg(windows)]
+pub use imp::*;
+
+#[cfg(windows)]
+mod imp {
+    use std::sync::Arc;
+
+    use laqta_domain::Frame;
+    use laqta_ports::{BoxFuture, Clipboard, HotkeyRegistrar, PortError, ScreenSource, Shell, Tray};
+    use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
+
+    use crate::{capture_dxgi, capture_gdi, clipboard, shell, shell_thread};
+
+    /// The Windows adapters, ready to hand to `laqta_app::Ports`.
+    pub struct WindowsPorts {
+        pub screen: Arc<dyn ScreenSource>,
+        pub clipboard: Arc<dyn Clipboard>,
+        pub shell: Arc<dyn Shell>,
+        pub hotkeys: Arc<dyn HotkeyRegistrar>,
+        pub tray: Arc<dyn Tray>,
+    }
+
+    impl std::fmt::Debug for WindowsPorts {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("WindowsPorts")
+        }
+    }
+
+    pub fn ports() -> WindowsPorts {
+        WindowsPorts {
+            screen: Arc::new(WindowsScreen),
+            clipboard: Arc::new(clipboard::WindowsClipboard),
+            shell: Arc::new(shell::WindowsShell),
+            hotkeys: Arc::new(shell_thread::WindowsHotkeys),
+            tray: Arc::new(shell_thread::WindowsTray),
+        }
+    }
+
+    /// Makes the process Per-Monitor-V2 DPI aware, so capture rects are physical pixels. Call it
+    /// first thing in `main`. Failure (already set, e.g. by a manifest) is ignored.
+    pub fn set_dpi_awareness() {
+        // SAFETY: plain Win32 call with a predefined constant.
+        let _ = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    }
+
+    /// Removes the tray icon and stops the shell thread. Call it before the process exits, or
+    /// Explorer keeps a ghost icon until the pointer passes over it.
+    pub fn shutdown() {
+        shell_thread::shutdown();
+    }
+
+    /// Captures with the GDI fallback only. For the contract tests.
+    #[doc(hidden)]
+    pub fn capture_with_gdi() -> Result<Vec<Frame>, PortError> {
+        capture_gdi::capture()
+    }
+
+    #[derive(Debug)]
+    struct WindowsScreen;
+
+    impl ScreenSource for WindowsScreen {
+        fn capture_all(&self) -> BoxFuture<'_, Result<Vec<Frame>, PortError>> {
+            Box::pin(blocking::unblock(|| match capture_dxgi::capture() {
+                Ok(frames) => Ok(frames),
+                Err(e) => {
+                    tracing::info!("DXGI duplication failed ({e}); falling back to GDI");
+                    capture_gdi::capture()
+                }
+            }))
+        }
+    }
+}
