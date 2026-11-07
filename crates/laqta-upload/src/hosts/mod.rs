@@ -30,6 +30,13 @@ pub mod sftp;
 pub mod shared_folder;
 
 // ---- HO-a ----
+pub mod gist;
+pub mod mediafire;
+pub mod nextcloud;
+pub mod privatebin;
+pub mod pushbullet;
+pub mod sendspace;
+pub mod smtp;
 // ---- end HO-a ----
 // ---- HO-b ----
 // ---- end HO-b ----
