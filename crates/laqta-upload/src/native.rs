@@ -238,13 +238,26 @@ pub fn native_hosts(accounts: &[HostAccount], deps: &HostDeps) -> NativeHosts {
             // ---- HO-b ----
             HostKind::Flickr => {
                 use crate::hosts::flickr::{Flickr, FlickrConfig, FlickrEndpoints};
-                let config = FlickrConfig { api_key: a.get("api_key").into(), public: a.flag("public"), endpoints: FlickrEndpoints::production() };
-                out.destinations.push(Arc::new(Flickr::new(config, deps.secrets.clone(), deps.shell.clone(), deps.csprng.clone(), deps.now_unix.clone())));
+                let config =
+                    FlickrConfig { api_key: a.get("api_key").into(), public: a.flag("public"), endpoints: FlickrEndpoints::production() };
+                out.destinations.push(Arc::new(Flickr::new(
+                    config,
+                    deps.secrets.clone(),
+                    deps.shell.clone(),
+                    deps.csprng.clone(),
+                    deps.now_unix.clone(),
+                )));
             }
             HostKind::Box => {
                 use crate::hosts::box_com as b;
                 let o = oauth(deps, b::oauth_config(), a.get("client_id"), secret(deps, a, "client_secret"), b::SECRET_KEY);
-                out.destinations.push(Arc::new(b::BoxCom::new(o, b::BOX_API.into(), b::BOX_UPLOAD.into(), a.get("folder_id").into(), a.flag("share"))));
+                out.destinations.push(Arc::new(b::BoxCom::new(
+                    o,
+                    b::BOX_API.into(),
+                    b::BOX_UPLOAD.into(),
+                    a.get("folder_id").into(),
+                    a.flag("share"),
+                )));
             }
             HostKind::YouTube => {
                 use crate::hosts::youtube as y;

@@ -284,6 +284,7 @@ pub trait ModelService: Send + Sync {
     ) -> laqta_ports::BoxFuture<'static, Result<laqta_domain::settings::CustomModel, String>>;
 }
 
+pub type RemoteStores = Arc<dyn Fn() -> Vec<(String, Arc<dyn laqta_ports::RemoteStorage>)> + Send + Sync>;
 pub type SxieRead = Arc<dyn Fn(&[u8]) -> Result<laqta_domain::effects::Preset, String> + Send + Sync>;
 pub type SxieWrite = Arc<dyn Fn(&laqta_domain::effects::Preset) -> Result<Vec<u8>, String> + Send + Sync>;
 
@@ -311,6 +312,8 @@ pub struct UiServices {
     /// Reads and writes ShareX `.sxie` effect packages (`laqta-import`).
     pub sxie_read: SxieRead,
     pub sxie_write: SxieWrite,
+    /// The S3, FTP and SFTP accounts as remote stores, built from the current settings (M7 D11).
+    pub remote_storages: RemoteStores,
     /// The model manager (ADR 023).
     pub models: Arc<dyn ModelService>,
     /// Update check and install (M6 D12).

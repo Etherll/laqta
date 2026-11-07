@@ -1283,6 +1283,11 @@ impl SettingsWindow {
                     .label("Import custom uploader (.sxcu)…")
                     .on_click(cx.listener(|this, _, _, cx| this.import_sxcu(cx))),
             )
+            .child(
+                Button::new("remote-browser")
+                    .label("Browse remote storage (S3, FTP, SFTP)…")
+                    .on_click(|_, _, cx| crate::remote_window::open(cx)),
+            )
     }
 
     fn clipboard_presets(&self, cx: &mut Context<Self>) -> gpui::Div {

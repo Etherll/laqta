@@ -16,6 +16,7 @@ mod photo_window;
 mod pin_window;
 mod prompt_window;
 mod recording_bar;
+mod remote_window;
 mod runtime;
 mod settings_window;
 mod theme;

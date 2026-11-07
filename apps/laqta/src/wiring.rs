@@ -443,6 +443,11 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                 let importer = importer.clone();
                 Arc::new(move |path: std::path::PathBuf| importer.sharex(&path))
             },
+            remote_storages: {
+                let app = app.clone();
+                let deps = host_deps.clone();
+                Arc::new(move || laqta_upload::remote_storages(&app.settings().hosts, &deps))
+            },
             models: Arc::new(crate::models::Models { data: data.clone(), options: model_options.clone() }),
             check_update: {
                 let last = last_release.clone();
