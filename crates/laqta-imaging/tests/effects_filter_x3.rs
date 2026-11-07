@@ -154,7 +154,10 @@ fn cases() -> Vec<(&'static str, Filter)> {
         ("minecraft_grass", Filter::MinecraftGrass { block: 4, seed: 6 }),
         ("miniature", Filter::Miniature { focus: 0.5, band: 0.3, radius: 2, saturation: 0.4 }),
         ("mosaic_polygon", Filter::MosaicPolygon { size: 5, grout: Rgba::rgb(30, 30, 30), seed: 7 }),
-        ("mosaic_tile_border", Filter::MosaicTileBorder { width: 4, tile: 2, color: Rgba::rgb(40, 120, 170), grout: Rgba::rgb(230, 230, 225), seed: 7 }),
+        (
+            "mosaic_tile_border",
+            Filter::MosaicTileBorder { width: 4, tile: 2, color: Rgba::rgb(40, 120, 170), grout: Rgba::rgb(230, 230, 225), seed: 7 },
+        ),
         ("nebula_starfield", Filter::NebulaStarfield { density: 1.0, nebula: Rgba::rgb(120, 60, 200), strength: 0.8, seed: 8 }),
         ("neon_edge_glow", Filter::NeonEdgeGlow { color: Rgba::rgb(255, 60, 200), strength: 1.0, radius: 1 }),
         ("neon_glow_border", Filter::NeonGlowBorder { width: 4, color: Rgba::rgb(0, 255, 230) }),
@@ -162,8 +165,14 @@ fn cases() -> Vec<(&'static str, Filter)> {
         ("oil_slick_interference", Filter::OilSlickInterference { strength: 0.6, scale: 8, seed: 9 }),
         ("old_camera_flash_burn", Filter::OldCameraFlashBurn { strength: 0.6, sepia: 0.6 }),
         ("ornate_scroll_border", Filter::OrnateScrollBorder { width: 6, color: Rgba::rgb(60, 40, 20), accent: Rgba::rgb(220, 190, 110) }),
-        ("palette_map", Filter::PaletteMap { shadow: Rgba::rgb(20, 10, 60), midtone: Rgba::rgb(220, 90, 120), highlight: Rgba::rgb(255, 240, 200) }),
-        ("paper_stencil_mask", Filter::PaperStencilMask { paper: Rgba::rgb(240, 232, 214), ink: Rgba::rgb(35, 30, 28), threshold: 0.5, grain: 0.6, seed: 10 }),
+        (
+            "palette_map",
+            Filter::PaletteMap { shadow: Rgba::rgb(20, 10, 60), midtone: Rgba::rgb(220, 90, 120), highlight: Rgba::rgb(255, 240, 200) },
+        ),
+        (
+            "paper_stencil_mask",
+            Filter::PaperStencilMask { paper: Rgba::rgb(240, 232, 214), ink: Rgba::rgb(35, 30, 28), threshold: 0.5, grain: 0.6, seed: 10 },
+        ),
         ("pencil_sketch", Filter::PencilSketch { strength: 1.0, radius: 2 }),
     ]
 }

@@ -142,11 +142,15 @@ pub(super) fn apply(image: &Bitmap, effect: &Filter, _cx: &EffectContext<'_>) ->
         Filter::HolographicFoilShimmer { strength, period } => x3::holographic_foil(&src, strength, period),
         Filter::InfraredFalseColor { strength } => x3::infrared_false_color(&src, strength),
         Filter::InkSplatterDrips { count, size, color, seed } => x3::ink_splatter(&src, count, size, color, seed),
-        Filter::InnerShadow { opacity, size, color, offset_x, offset_y } => x3::inner_shadow(&src, opacity, size, color, (offset_x, offset_y)),
+        Filter::InnerShadow { opacity, size, color, offset_x, offset_y } => {
+            x3::inner_shadow(&src, opacity, size, color, (offset_x, offset_y))
+        }
         Filter::JpegArtifact { quality } => x3::jpeg_artifact(&src, quality),
         Filter::LavaMoltenBorder { width, hot, cool, seed } => x3::lava_border(&src, width, hot, cool, seed)?,
         Filter::LensBlur { radius, highlights } => x3::lens_blur(&src, radius, highlights),
-        Filter::LightLeak { center_x, center_y, radius, strength, color } => x3::light_leak(&src, (center_x, center_y), radius, strength, color),
+        Filter::LightLeak { center_x, center_y, radius, strength, color } => {
+            x3::light_leak(&src, (center_x, center_y), radius, strength, color)
+        }
         Filter::LiquidGlass { strength, scale, seed } => x3::liquid_glass(&src, strength, scale, seed),
         Filter::LiquidMercury { scale, seed } => x3::liquid_mercury(&src, scale, seed),
         Filter::LuminanceContourLines { levels, color } => x3::contour_lines(&src, levels, color),

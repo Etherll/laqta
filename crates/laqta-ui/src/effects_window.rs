@@ -51,6 +51,8 @@ struct EffectsWindow {
     selected_effect: Option<usize>,
     category: Category,
     params: Entity<InputState>,
+    /// Filters the add-an-effect list by name.
+    search: Entity<InputState>,
     name: Entity<InputState>,
     sample: Bitmap,
     preview: Option<Arc<RenderImage>>,
@@ -87,6 +89,13 @@ impl EffectsWindow {
         }
         let sample = path.and_then(|p| std::fs::read(p).ok()).and_then(|b| services.codecs.decode(&b).ok()).unwrap_or_else(sample_image);
         let params = cx.new(|cx| InputState::new(window, cx).placeholder("Select an effect to edit its parameters"));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search effects"));
+        cx.subscribe(&search, |_: &mut Self, _, ev: &InputEvent, cx| {
+            if matches!(ev, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
         cx.subscribe(&params, |this: &mut Self, _, ev: &InputEvent, cx| {
             if matches!(ev, InputEvent::Change) {
                 this.apply_params(cx);
@@ -101,6 +110,7 @@ impl EffectsWindow {
             selected_effect: None,
             category: Category::Adjust,
             params,
+            search,
             name,
             sample,
             preview: None,
@@ -383,8 +393,12 @@ impl Render for EffectsWindow {
             );
         }
         let mut add = div().flex().flex_row().flex_wrap().gap(px(4.));
+        let query = self.search.read(cx).value().trim().to_lowercase();
         for (i, e) in self.defaults().into_iter().enumerate() {
             let name = e.name();
+            if !query.is_empty() && !name.to_lowercase().contains(&query) {
+                continue;
+            }
             add = add.child(Button::new(SharedString::from(format!("add-{i}"))).label(name).small().ghost().on_click(cx.listener(
                 move |this, _, window, cx| {
                     this.preset().effects.push(EffectItem { effect: e.clone(), enabled: true });
@@ -407,7 +421,8 @@ impl Render for EffectsWindow {
             .child(div().flex_1().overflow_y_scrollbar().child(list))
             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Add an effect"))
             .child(cats)
-            .child(div().max_h(px(160.)).overflow_y_scrollbar().child(add))
+            .child(Input::new(&self.search).small())
+            .child(div().max_h(px(220.)).overflow_y_scrollbar().child(add))
             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Parameters"))
             .child(div().h(px(150.)).child(Input::new(&self.params).h_full()));
 

@@ -407,11 +407,7 @@ pub(super) fn frost_ice_border(src: &Buf, width: u32, ice: Rgba, base: Rgba, see
         let along = if y.min(ch - 1 - y) <= x.min(cw - 1 - x) { x } else { y };
         let reach = band * (0.35 + 0.65 * unit_hash(seed, (along / 4) as u64));
         let d = depth as f32 + 0.5;
-        if d < reach {
-            pack(lerp3(ice, [255.0; 3], 0.5 * (d / reach).clamp(0.0, 1.0)), 255)
-        } else {
-            pack(base, 255)
-        }
+        if d < reach { pack(lerp3(ice, [255.0; 3], 0.5 * (d / reach).clamp(0.0, 1.0)), 255) } else { pack(base, 255) }
     })
 }
 
@@ -527,13 +523,8 @@ pub(super) fn halation(src: &Buf, threshold: f32, radius: u32, strength: f32) ->
     let threshold = unit(threshold).min(0.999);
     let gain = cap(strength, 4.0).max(0.0) * 255.0;
     let (w, h) = (src.w, src.h);
-    let mut halo: Vec<f32> = src
-        .px
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|p| smoothstep(threshold, 1.0, luma(p)) * f32::from(p[3]) / 255.0)
-        .collect();
+    let mut halo: Vec<f32> =
+        src.px.as_chunks::<4>().0.iter().map(|p| smoothstep(threshold, 1.0, luma(p)) * f32::from(p[3]) / 255.0).collect();
     blur::box3(&mut halo, w, h, 1, radius.min(MAX_HALO_RADIUS) as usize);
     // Film emulsion reacts most to red and least to blue, so the halo leans orange.
     const TINT: [f32; 3] = [1.0, 0.35, 0.15];
@@ -744,11 +735,7 @@ pub(super) fn inner_shadow(src: &Buf, opacity: f32, size: u32, color: Rgba, offs
 /// Colour to YCbCr with luma shifted to zero-centred, as the JPEG transform works on signed values.
 fn to_ycc(p: [u8; 4]) -> [f32; 3] {
     let [r, g, b] = rgb3(p);
-    [
-        0.299 * r + 0.587 * g + 0.114 * b - 128.0,
-        -0.168_736 * r - 0.331_264 * g + 0.5 * b,
-        0.5 * r - 0.418_688 * g - 0.081_312 * b,
-    ]
+    [0.299 * r + 0.587 * g + 0.114 * b - 128.0, -0.168_736 * r - 0.331_264 * g + 0.5 * b, 0.5 * r - 0.418_688 * g - 0.081_312 * b]
 }
 
 /// JPEG artifact: each 8x8 block of luma and chroma goes through a DCT, its coefficients are rounded to

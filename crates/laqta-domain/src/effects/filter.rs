@@ -647,89 +647,241 @@ pub enum Filter {
     // ---- end X3 ----
     // ---- X4 ----
     /// Perlin gradient noise on a `scale` px lattice, mixed toward grey by `strength` (0..=1).
-    PerlinNoise { scale: u32, strength: f32, seed: u64 },
+    PerlinNoise {
+        scale: u32,
+        strength: f32,
+        seed: u64,
+    },
     /// Sorts each run of pixels at least `threshold` (0..=1 luma) bright by luma, along rows or columns.
-    PixelSorting { threshold: f32, vertical: bool },
+    PixelSorting {
+        threshold: f32,
+        vertical: bool,
+    },
     /// Arcs of `color` where a sine plasma field `scale` px across crosses zero, mixed in at `strength`.
-    PlasmaEnergyArcs { scale: u32, strength: f32, color: Rgba, seed: u64 },
+    PlasmaEnergyArcs {
+        scale: u32,
+        strength: f32,
+        color: Rgba,
+        seed: u64,
+    },
     /// The image rebuilt from one seeded dot per `cell` px square, on white.
-    Pointillism { cell: u32, seed: u64 },
+    Pointillism {
+        cell: u32,
+        seed: u64,
+    },
     /// The image on a `color` paper mount, `border` px on three sides and `bottom` px more underneath.
-    PolaroidFrame { border: u32, bottom: u32, color: Rgba },
+    PolaroidFrame {
+        border: u32,
+        bottom: u32,
+        color: Rgba,
+    },
     /// The image in `tiles` x `tiles` panels, each a duotone in its own ink, with white gutters.
-    PopArtGrid { tiles: u32 },
+    PopArtGrid {
+        tiles: u32,
+    },
     /// A hue that turns `bands` times around the centre, mixed in at `strength` (0..=1).
-    RadialRainbow { strength: f32, bands: u32 },
+    RadialRainbow {
+        strength: f32,
+        bands: u32,
+    },
     /// A `width` px frame whose hue turns once around the image.
-    RainbowBorder { width: u32 },
+    RainbowBorder {
+        width: u32,
+    },
     /// The image blurred by `blur_radius` px, with `drops` water drops up to `size` px across that bend the image.
-    RainyWindow { drops: u32, size: u32, blur_radius: u32, seed: u64 },
+    RainyWindow {
+        drops: u32,
+        size: u32,
+        blur_radius: u32,
+        seed: u64,
+    },
     /// A dusk gradient map (violet, magenta, orange, pale yellow) mixed in at `strength`, with dark scan bars.
-    RetroSunset { strength: f32 },
+    RetroSunset {
+        strength: f32,
+    },
     /// One `ink` on `paper`, with `grain` (0..=1) of random dropout and the ink plate one px off the paper.
-    RisoPrint { ink: Rgba, paper: Rgba, grain: f32, seed: u64 },
+    RisoPrint {
+        ink: Rgba,
+        paper: Rgba,
+        grain: f32,
+        seed: u64,
+    },
     /// A `width` px frame of twisted rope, strands alternating between `color` and `accent`.
-    RopeBorder { width: u32, color: Rgba, accent: Rgba },
+    RopeBorder {
+        width: u32,
+        color: Rgba,
+        accent: Rgba,
+    },
     /// Rust-brown patches `scale` px across, where the image dulls by `amount` (0..=1).
-    RustCorrosion { amount: f32, scale: u32, seed: u64 },
+    RustCorrosion {
+        amount: f32,
+        scale: u32,
+        seed: u64,
+    },
     /// Every `spacing`-th row darkened by `strength` (0..=1).
-    Scanline { spacing: u32, strength: f32 },
+    Scanline {
+        spacing: u32,
+        strength: f32,
+    },
     /// Warped fractal wisps of grey smoke `scale` px across, screened over the image at `opacity` (0..=1).
-    SmokeOverlay { opacity: f32, scale: u32, seed: u64 },
+    SmokeOverlay {
+        opacity: f32,
+        scale: u32,
+        seed: u64,
+    },
     /// Haze that thickens toward the top by `fog` (0..=1), with `flakes` white snowflakes falling across.
-    SnowfallDepthFog { flakes: u32, fog: f32, seed: u64 },
+    SnowfallDepthFog {
+        flakes: u32,
+        fog: f32,
+        seed: u64,
+    },
     /// The gradient strength of the luma, drawn as light on black and scaled by `gain`.
-    SobelEdge { gain: f32 },
+    SobelEdge {
+        gain: f32,
+    },
     /// Each pixel scatters to a seeded spot up to `radius` px away, mixed in by `strength` (0..=1).
-    SoftDiffusion { radius: u32, strength: f32, seed: u64 },
+    SoftDiffusion {
+        radius: u32,
+        strength: f32,
+        seed: u64,
+    },
     /// Rotational blur about a centre (fractions of the image size), averaged over an arc of `angle` degrees.
-    SpinBlur { angle: f32, center_x: f32, center_y: f32 },
+    SpinBlur {
+        angle: f32,
+        center_x: f32,
+        center_y: f32,
+    },
     /// Voronoi panes in their average colour, with `lead` px lines along the cell borders.
-    StainedGlass { cell: u32, lead: u32, seed: u64 },
+    StainedGlass {
+        cell: u32,
+        lead: u32,
+        seed: u64,
+    },
     /// A `width` px frame of glass panes, `pane` px square, with `lead` lines between them.
-    StainedGlassBorder { width: u32, pane: u32, lead: Rgba, seed: u64 },
+    StainedGlassBorder {
+        width: u32,
+        pane: u32,
+        lead: Rgba,
+        seed: u64,
+    },
     /// A `width` px frame of `background` night sky with `star` pinpricks scattered over it.
-    StarfieldBorder { width: u32, background: Rgba, star: Rgba, seed: u64 },
+    StarfieldBorder {
+        width: u32,
+        background: Rgba,
+        star: Rgba,
+        seed: u64,
+    },
     /// Glints in four directions from pixels brighter than `threshold`, up to `length` px long, tinted `color`.
-    StarFilter { threshold: f32, length: u32, strength: f32, color: Rgba },
+    StarFilter {
+        threshold: f32,
+        length: u32,
+        strength: f32,
+        color: Rgba,
+    },
     /// Diagonal stripes `period` px apart, tinted `color` at `opacity` (0..=1).
-    StripeOverlay { period: u32, opacity: f32, color: Rgba },
+    StripeOverlay {
+        period: u32,
+        opacity: f32,
+        color: Rgba,
+    },
     /// Edge-preserving blur: neighbours whose luma is within `threshold` (0..=255) of the pixel are averaged over `radius` px.
-    SurfaceBlur { radius: u32, threshold: u8 },
+    SurfaceBlur {
+        radius: u32,
+        threshold: u8,
+    },
     /// Luma through a heat palette (violet, red, yellow, white), mixed in at `strength` (0..=1).
-    ThermalVision { strength: f32 },
+    ThermalVision {
+        strength: f32,
+    },
     /// Blur that grows away from a sharp band `band` (0..=1 of the height) around `focus` (0..=1 down the image).
-    TiltShift { focus: f32, band: f32, radius: u32 },
+    TiltShift {
+        focus: f32,
+        band: f32,
+        radius: u32,
+    },
     /// Square cells `size` px across, each split along its diagonal and filled with each half's average.
-    TrianglePixelate { size: u32 },
+    TrianglePixelate {
+        size: u32,
+    },
     /// `amount` (0..=1) of the pixels turn to random grey snow.
-    TVStatic { amount: f32, seed: u64 },
+    TVStatic {
+        amount: f32,
+        seed: u64,
+    },
     /// Adds back `amount` times the difference from a `radius` px box blur, where it is at least `threshold`.
-    UnsharpMask { radius: u32, amount: f32, threshold: u8 },
+    UnsharpMask {
+        radius: u32,
+        amount: f32,
+        threshold: u8,
+    },
     /// Rows jitter sideways by up to `jitter` px, red and blue smear `bleed` px apart, and the bottom band fills with `noise`.
-    VhsTapeDamage { jitter: u32, bleed: u32, noise: f32, seed: u64 },
+    VhsTapeDamage {
+        jitter: u32,
+        bleed: u32,
+        noise: f32,
+        seed: u64,
+    },
     /// Fades toward a warm sepia by `fade` (0..=1), with `scratches` light vertical scratches and dust specks.
-    VintagePrintDamage { fade: f32, scratches: u32, seed: u64 },
+    VintagePrintDamage {
+        fade: f32,
+        scratches: u32,
+        seed: u64,
+    },
     /// Irregular cells about `cell` px across, each the colour under its feature point.
-    VoronoiMosaic { cell: u32, seed: u64 },
+    VoronoiMosaic {
+        cell: u32,
+        seed: u64,
+    },
     /// A `width` px frame of `color` wash, heavier in patches, with a darker pigment line on the inner edge.
-    WatercolorBorder { width: u32, color: Rgba, seed: u64 },
+    WatercolorBorder {
+        width: u32,
+        color: Rgba,
+        seed: u64,
+    },
     /// Kuwahara filter: each pixel takes the mean of the most even of four `radius` px quadrants.
-    WatercolorKuwahara { radius: u32 },
+    WatercolorKuwahara {
+        radius: u32,
+    },
     /// Blue-grey monochrome with high contrast, faint mottling and corners darkened by `vignette` (0..=1).
-    WetPlateCollodion { vignette: f32, seed: u64 },
+    WetPlateCollodion {
+        vignette: f32,
+        seed: u64,
+    },
     /// A window with rounded corners `radius` px across and a soft `shadow` px wide. The canvas grows by `shadow`.
-    Windows11 { radius: u32, shadow: u32 },
+    Windows11 {
+        radius: u32,
+        shadow: u32,
+    },
     /// `streaks` pale horizontal streaks, up to `length` px long, blown across the image at `strength` (0..=1).
-    WindStreaks { streaks: u32, length: u32, strength: f32, seed: u64 },
+    WindStreaks {
+        streaks: u32,
+        length: u32,
+        strength: f32,
+        seed: u64,
+    },
     /// Diagonal gouges `line` px wide, inked where the image is dark: `ink` on `paper`.
-    WoodcutPrint { line: u32, ink: Rgba, paper: Rgba },
+    WoodcutPrint {
+        line: u32,
+        ink: Rgba,
+        paper: Rgba,
+    },
     /// A `width` px frame of planks in `color`, with wandering grain and a bevel.
-    WoodenFrame { width: u32, color: Rgba, seed: u64 },
+    WoodenFrame {
+        width: u32,
+        color: Rgba,
+        seed: u64,
+    },
     /// The image as an X-ray plate tinted `tint`, with a bright beam across it at `position` (0..=1 down the image).
-    XRayScan { position: f32, tint: Rgba },
+    XRayScan {
+        position: f32,
+        tint: Rgba,
+    },
     /// A `width` px frame in `color` whose inner edge runs in triangular zigzags, the rest in `accent`.
-    ZigZagBorder { width: u32, color: Rgba, accent: Rgba },
+    ZigZagBorder {
+        width: u32,
+        color: Rgba,
+        accent: Rgba,
+    },
     // ---- end X4 ----
 }
 
