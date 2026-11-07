@@ -59,11 +59,13 @@ enum Page {
     Capture,
     Workflows,
     Uploads,
+    Recording,
+    Automation,
     Integration,
     Data,
 }
 
-const PAGES: [(Page, &str); 9] = [
+const PAGES: [(Page, &str); 11] = [
     (Page::General, "General"),
     (Page::AfterCapture, "After capture"),
     (Page::Image, "Image"),
@@ -71,6 +73,8 @@ const PAGES: [(Page, &str); 9] = [
     (Page::Capture, "Capture"),
     (Page::Workflows, "Hotkeys and workflows"),
     (Page::Uploads, "Uploads"),
+    (Page::Recording, "Recording"),
+    (Page::Automation, "Automation"),
     (Page::Integration, "Integration"),
     (Page::Data, "Data"),
 ];
@@ -104,8 +108,25 @@ struct SettingsWindow {
     retries: Entity<InputState>,
     dest_kind: DestKind,
     hosts: Vec<Vec<(&'static str, bool, Entity<InputState>)>>,
+    rec: RecordingInputs,
+    auto_interval: Entity<InputState>,
+    auto_count: Entity<InputState>,
+    scroll: [Entity<InputState>; 6],
+    /// Per watch folder: folder and filter inputs, parallel to `draft.watch_folders`.
+    watch: Vec<(Entity<InputState>, Entity<InputState>)>,
     /// The last update check's message, and whether it can be installed from here.
     update: Option<(String, bool)>,
+}
+
+struct RecordingInputs {
+    fps: Entity<InputState>,
+    gif_fps: Entity<InputState>,
+    crf: Entity<InputState>,
+    countdown: Entity<InputState>,
+    duration: Entity<InputState>,
+    microphone: Entity<InputState>,
+    args: Entity<InputState>,
+    ffmpeg: Entity<InputState>,
 }
 
 fn text_input(value: impl Into<SharedString>, window: &mut Window, cx: &mut Context<SettingsWindow>) -> Entity<InputState> {
@@ -143,12 +164,38 @@ impl SettingsWindow {
             dest_kind: DestKind::Image,
             hosts: Vec::new(),
             update: None,
+            rec: RecordingInputs {
+                fps: text_input(d.recording.fps.to_string(), window, cx),
+                gif_fps: text_input(d.recording.gif_fps.to_string(), window, cx),
+                crf: text_input(
+                    match d.recording.quality {
+                        laqta_domain::record::Quality::Crf(c) => c.to_string(),
+                        _ => String::new(),
+                    },
+                    window,
+                    cx,
+                ),
+                countdown: text_input(d.recording.countdown_secs.to_string(), window, cx),
+                duration: text_input(d.recording.fixed_duration_secs.to_string(), window, cx),
+                microphone: text_input(d.recording.microphone.clone().unwrap_or_default(), window, cx),
+                args: text_input(d.recording.custom_args.clone(), window, cx),
+                ffmpeg: text_input(d.recording.ffmpeg_path.clone(), window, cx),
+            },
+            auto_interval: text_input((draft.auto_capture.interval_ms / 1000).to_string(), window, cx),
+            auto_count: text_input(draft.auto_capture.count.to_string(), window, cx),
+            scroll: {
+                let o = &d.capture.scrolling;
+                [o.start_delay_ms, o.scroll_delay_ms, o.max_frames, o.scroll_amount, o.ignore_top, o.ignore_bottom]
+                    .map(|v| text_input(v.to_string(), window, cx))
+            },
+            watch: Vec::new(),
             draft,
             page: Page::General,
             message: None,
         };
         this.rebuild_workflow_inputs(window, cx);
         this.rebuild_host_inputs(window, cx);
+        this.rebuild_watch_inputs(window, cx);
         this
     }
 
@@ -205,6 +252,39 @@ impl SettingsWindow {
         d.general.custom_task_sound = path(&self.sound_task);
         d.general.custom_error_sound = path(&self.sound_error);
         d.general.toast.duration_ms = num(&self.toast_ms, "Toast duration")?.max(500);
+        {
+            let r = &mut self.draft.defaults.recording;
+            r.fps = num(&self.rec.fps, "Frame rate")?.clamp(1, 240);
+            r.gif_fps = num(&self.rec.gif_fps, "GIF frame rate")?.clamp(1, 60);
+            let crf = Self::value(&self.rec.crf, cx);
+            r.quality = if crf.is_empty() {
+                laqta_domain::record::Quality::Default
+            } else {
+                laqta_domain::record::Quality::Crf(crf.parse::<u8>().ok().filter(|c| *c <= 63).ok_or("Quality (CRF) must be 0–63")?)
+            };
+            r.countdown_secs = num(&self.rec.countdown, "Countdown")?;
+            r.fixed_duration_secs = num(&self.rec.duration, "Fixed duration")?;
+            let mic = Self::value(&self.rec.microphone, cx);
+            r.microphone = (!mic.is_empty()).then_some(mic);
+            r.custom_args = Self::value(&self.rec.args, cx);
+            r.ffmpeg_path = Self::value(&self.rec.ffmpeg, cx);
+        }
+        {
+            let o = &mut self.draft.defaults.capture.scrolling;
+            o.start_delay_ms = num(&self.scroll[0], "Start delay")?;
+            o.scroll_delay_ms = num(&self.scroll[1], "Scroll delay")?.max(50);
+            o.max_frames = num(&self.scroll[2], "Maximum frames")?.clamp(2, 500);
+            o.scroll_amount = num(&self.scroll[3], "Scroll amount")?.clamp(1, 50);
+            o.ignore_top = num(&self.scroll[4], "Fixed rows at the top")?;
+            o.ignore_bottom = num(&self.scroll[5], "Fixed rows at the bottom")?;
+        }
+        self.draft.auto_capture.interval_ms = num(&self.auto_interval, "Auto-capture interval")?.max(1) * 1000;
+        self.draft.auto_capture.count = num(&self.auto_count, "Auto-capture count")?;
+        for (folder, (dir, filter)) in self.draft.watch_folders.iter_mut().zip(&self.watch) {
+            folder.folder = Self::value(dir, cx).into();
+            let f = Self::value(filter, cx);
+            folder.filter = if f.is_empty() { "*".into() } else { f };
+        }
         self.draft.defaults.upload.clipboard_format = Self::value(&self.clipboard_format, cx);
         self.draft.defaults.upload.retries = num(&self.retries, "Retries")?.min(10);
         let secrets = cx.global::<UiState>().services.secrets.clone();
@@ -426,6 +506,199 @@ impl SettingsWindow {
             );
         }
         list
+    }
+
+    fn rebuild_watch_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let folders = self.draft.watch_folders.clone();
+        self.watch = folders
+            .iter()
+            .map(|f| (text_input(f.folder.display().to_string(), window, cx), text_input(f.filter.clone(), window, cx)))
+            .collect();
+    }
+
+    fn recording(&self, cx: &mut Context<Self>) -> gpui::Div {
+        use laqta_domain::record::VideoCodec;
+        let r = &self.draft.defaults.recording;
+        let codec_buttons = |gif: bool, this: &Self, cx: &mut Context<Self>| {
+            let mut list = div().flex().flex_wrap().gap(px(4.));
+            for c in VideoCodec::ALL.into_iter().filter(|c| matches!(c, VideoCodec::Gif | VideoCodec::WebP | VideoCodec::Apng) == gif) {
+                let current = if gif { this.draft.defaults.recording.gif_codec } else { this.draft.defaults.recording.codec };
+                list = list.child(
+                    Button::new(SharedString::from(format!("codec-{gif}-{c:?}"))).label(c.label()).small().selected(current == c).on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            if gif {
+                                this.draft.defaults.recording.gif_codec = c;
+                            } else {
+                                this.draft.defaults.recording.codec = c;
+                            }
+                            cx.notify();
+                        }),
+                    ),
+                );
+            }
+            list
+        };
+        let check = |id: &'static str,
+                     label: &'static str,
+                     on: bool,
+                     f: fn(&mut laqta_domain::record::RecordingSettings, bool),
+                     cx: &mut Context<Self>| {
+            Checkbox::new(id).label(label).checked(on).on_click(cx.listener(move |this, c: &bool, _, cx| {
+                f(&mut this.draft.defaults.recording, *c);
+                cx.notify();
+            }))
+        };
+        widgets::section("Recording", cx)
+            .child(widgets::row("Video codec", codec_buttons(false, self, cx), cx))
+            .child(widgets::row("Animated image codec", codec_buttons(true, self, cx), cx))
+            .child(widgets::row("Frame rate (video)", Input::new(&self.rec.fps), cx))
+            .child(widgets::row("Frame rate (GIF)", Input::new(&self.rec.gif_fps), cx))
+            .child(widgets::row("Quality (CRF, empty = codec default)", Input::new(&self.rec.crf), cx))
+            .child(check("rec-cursor", "Record the mouse cursor", r.show_cursor, |r, c| r.show_cursor = c, cx))
+            .child(check("rec-border", "Show a border around the recorded area", r.show_border, |r, c| r.show_border = c, cx))
+            .child(check("rec-system-audio", "Record system audio", r.record_system_audio, |r, c| r.record_system_audio = c, cx))
+            .child(widgets::row("Microphone (device name, empty = none)", Input::new(&self.rec.microphone), cx))
+            .child(widgets::row("Countdown before start (s)", Input::new(&self.rec.countdown), cx))
+            .child(widgets::row("Stop after (s, 0 = off)", Input::new(&self.rec.duration), cx))
+            .child(widgets::row("Extra FFmpeg arguments", Input::new(&self.rec.args), cx))
+            .child(widgets::row("FFmpeg path (empty = find or download)", Input::new(&self.rec.ffmpeg), cx))
+    }
+
+    fn automation(&self, cx: &mut Context<Self>) -> gpui::Div {
+        use laqta_domain::capture::ScrollMethod;
+        let running = cx.global::<UiState>().services.app.auto_capture_running();
+        let mut actions = div().flex().flex_wrap().gap(px(4.));
+        for a in [Action::PrintScreen, Action::ActiveMonitor, Action::ActiveWindow, Action::CustomRegion, Action::LastRegion] {
+            actions = actions.child(
+                Button::new(SharedString::from(format!("auto-{a:?}")))
+                    .label(crate::i18n::action_label(a))
+                    .small()
+                    .selected(self.draft.auto_capture.action == a)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.draft.auto_capture.action = a;
+                        cx.notify();
+                    })),
+            );
+        }
+        let mut methods = div().flex().flex_wrap().gap(px(4.));
+        for (m, label) in [
+            (ScrollMethod::MouseWheel, "Mouse wheel"),
+            (ScrollMethod::DownArrow, "Down arrow"),
+            (ScrollMethod::PageDown, "Page Down"),
+            (ScrollMethod::ScrollMessage, "Scroll message (Windows)"),
+        ] {
+            methods = methods.child(
+                Button::new(SharedString::from(format!("scroll-{m:?}")))
+                    .label(label)
+                    .small()
+                    .selected(self.draft.defaults.capture.scrolling.method == m)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.draft.defaults.capture.scrolling.method = m;
+                        cx.notify();
+                    })),
+            );
+        }
+        let mut watch = div().flex().flex_col().gap(px(8.));
+        for (i, (folder, (dir, filter))) in self.draft.watch_folders.iter().zip(&self.watch).enumerate() {
+            watch = watch.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .p(px(8.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .child(widgets::row("Folder", Input::new(dir), cx))
+                    .child(widgets::row("Files (e.g. *.png;*.jpg)", Input::new(filter), cx))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(px(12.))
+                            .child(Checkbox::new(SharedString::from(format!("wf-on-{i}"))).label("On").checked(folder.enabled).on_click(
+                                cx.listener(move |this, c: &bool, _, cx| {
+                                    this.draft.watch_folders[i].enabled = *c;
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(
+                                Checkbox::new(SharedString::from(format!("wf-sub-{i}")))
+                                    .label("Include subfolders")
+                                    .checked(folder.include_subfolders)
+                                    .on_click(cx.listener(move |this, c: &bool, _, cx| {
+                                        this.draft.watch_folders[i].include_subfolders = *c;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Checkbox::new(SharedString::from(format!("wf-move-{i}")))
+                                    .label("Move into the screenshots folder")
+                                    .checked(folder.move_to_screenshots)
+                                    .on_click(cx.listener(move |this, c: &bool, _, cx| {
+                                        this.draft.watch_folders[i].move_to_screenshots = *c;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(div().flex_1())
+                            .child(Button::new(SharedString::from(format!("wf-rm-{i}"))).label("Remove").small().ghost().on_click(
+                                cx.listener(move |this, _, window, cx| {
+                                    let _ = this.collect(cx);
+                                    this.draft.watch_folders.remove(i);
+                                    this.rebuild_watch_inputs(window, cx);
+                                    cx.notify();
+                                }),
+                            )),
+                    ),
+            );
+        }
+        widgets::section("Auto capture", cx)
+            .child(widgets::muted("Captures on a timer until you stop it (tray, hotkey, or here).", cx))
+            .child(widgets::row("Capture", actions, cx))
+            .child(widgets::row("Every (seconds)", Input::new(&self.auto_interval), cx))
+            .child(widgets::row("Times (0 = until stopped)", Input::new(&self.auto_count), cx))
+            .child(Button::new("auto-toggle").label(if running { "Stop auto capture" } else { "Save and start auto capture" }).on_click(
+                cx.listener(move |this, _, _, cx| {
+                    if !running {
+                        this.save(cx);
+                    }
+                    let services = cx.global::<UiState>().services.clone();
+                    (services.dispatch)(if running { Action::StopAutoCapture } else { Action::StartAutoCapture });
+                    cx.notify();
+                }),
+            ))
+            .child(div().h(px(12.)))
+            .child(widgets::section("Scrolling capture", cx))
+            .child(widgets::muted(
+                "Select the scrolling area; Laqta scrolls it and stitches the frames. On Wayland you scroll yourself.",
+                cx,
+            ))
+            .child(widgets::row("Scroll with", methods, cx))
+            .child(widgets::row("Wait before the first frame (ms)", Input::new(&self.scroll[0]), cx))
+            .child(widgets::row("Wait after each scroll (ms)", Input::new(&self.scroll[1]), cx))
+            .child(widgets::row("Stop after (frames)", Input::new(&self.scroll[2]), cx))
+            .child(widgets::row("Steps per scroll", Input::new(&self.scroll[3]), cx))
+            .child(widgets::row("Fixed rows at the top (px)", Input::new(&self.scroll[4]), cx))
+            .child(widgets::row("Fixed rows at the bottom (px)", Input::new(&self.scroll[5]), cx))
+            .child(div().h(px(12.)))
+            .child(widgets::section("Watch folders", cx))
+            .child(widgets::muted("New files in these folders are uploaded with your default upload settings.", cx))
+            .child(watch)
+            .child(Button::new("wf-add").label("Add folder…").on_click(cx.listener(|_this, _, _, cx| {
+                let task =
+                    cx.background_spawn(async move { rfd::AsyncFileDialog::new().pick_folder().await.map(|f| f.path().to_path_buf()) });
+                cx.spawn(async move |this, cx| {
+                    if let Some(folder) = task.await {
+                        let _ = this.update_in(cx, |this, window, cx| {
+                            let _ = this.collect(cx);
+                            this.draft.watch_folders.push(laqta_domain::settings::WatchFolder { folder, ..Default::default() });
+                            this.rebuild_watch_inputs(window, cx);
+                            cx.notify();
+                        });
+                    }
+                })
+                .detach();
+            })))
     }
 
     fn integration(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -1055,6 +1328,8 @@ impl Render for SettingsWindow {
             Page::Capture => self.capture(cx),
             Page::Workflows => self.workflows_page(cx),
             Page::Uploads => self.uploads(window, cx),
+            Page::Recording => self.recording(cx),
+            Page::Automation => self.automation(cx),
             Page::Integration => self.integration(cx),
             Page::Data => self.data(cx),
         };
