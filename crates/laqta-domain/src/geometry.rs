@@ -1,7 +1,7 @@
 //! Physical-pixel geometry.
 
 /// A rectangle in physical pixels, in the virtual-desktop coordinate space.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PhysRect {
     pub x: i32,
     pub y: i32,

@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use laqta_domain::{Action, Bitmap, Frame, KeyChord};
 
-use crate::{ActionCallback, BoxFuture, Clipboard, Clock, HotkeyRegistrar, PortError, ScreenSource, Shell, Spawner, Tray, TrayMenu};
+use laqta_domain::region::{HoverTarget, RegionInput};
+
+use crate::{ActionCallback, BoxFuture, Clipboard, Clock, HotkeyRegistrar, HoverSource, InputCallback, Notifier, Overlay, PortError, RegionView, Rng, ScreenSource, Shell, Spawner, Toast, Tray, TrayMenu};
 
 /// Returns the configured frames (or error) on every call.
 #[derive(Debug)]
@@ -46,11 +48,13 @@ pub enum ClipboardBehaviour {
 pub struct FakeClipboard {
     pub behaviour: Mutex<ClipboardBehaviour>,
     pub images: Mutex<Vec<Bitmap>>,
+    pub texts: Mutex<Vec<String>>,
+    pub files: Mutex<Vec<Vec<PathBuf>>>,
 }
 
 impl FakeClipboard {
     pub fn new(behaviour: ClipboardBehaviour) -> Self {
-        FakeClipboard { behaviour: Mutex::new(behaviour), images: Mutex::new(Vec::new()) }
+        FakeClipboard { behaviour: Mutex::new(behaviour), images: Mutex::new(Vec::new()), texts: Mutex::new(Vec::new()), files: Mutex::new(Vec::new()) }
     }
 }
 
@@ -66,16 +70,34 @@ impl Clipboard for FakeClipboard {
             ClipboardBehaviour::Panic => panic!("fake clipboard panicked"),
         }
     }
+    fn set_text(&self, text: &str) -> Result<(), PortError> {
+        self.texts.lock().unwrap().push(text.to_string());
+        Ok(())
+    }
+    fn set_files(&self, paths: &[PathBuf]) -> Result<(), PortError> {
+        self.files.lock().unwrap().push(paths.to_vec());
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
 pub struct FakeShell {
     pub opened: Mutex<Vec<PathBuf>>,
+    pub revealed: Mutex<Vec<PathBuf>>,
+    pub urls: Mutex<Vec<String>>,
 }
 
 impl Shell for FakeShell {
     fn open_path(&self, path: &Path) -> Result<(), PortError> {
         self.opened.lock().unwrap().push(path.to_path_buf());
+        Ok(())
+    }
+    fn reveal(&self, path: &Path) -> Result<(), PortError> {
+        self.revealed.lock().unwrap().push(path.to_path_buf());
+        Ok(())
+    }
+    fn open_url(&self, url: &str) -> Result<(), PortError> {
+        self.urls.lock().unwrap().push(url.to_string());
         Ok(())
     }
 }
@@ -207,5 +229,114 @@ impl Spawner for InlineSpawner {
         *self.compute_calls.lock().unwrap() += 1;
         work();
         Box::pin(async {})
+    }
+}
+
+/// Records what the overlay was asked to show; tests feed input with `send`.
+#[derive(Default)]
+pub struct FakeOverlay {
+    pub shown: Mutex<Option<(Vec<Frame>, RegionView)>>,
+    pub views: Mutex<Vec<RegionView>>,
+    pub closed: Mutex<bool>,
+    pub fail_show: Mutex<Option<PortError>>,
+    callback: Mutex<Option<InputCallback>>,
+}
+
+impl std::fmt::Debug for FakeOverlay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakeOverlay").field("closed", &self.closed).finish_non_exhaustive()
+    }
+}
+
+impl FakeOverlay {
+    /// Delivers one input as if the user did it. Returns false if the overlay isn't open.
+    pub fn send(&self, input: RegionInput) -> bool {
+        let cb = self.callback.lock().unwrap().clone();
+        match cb {
+            Some(cb) if !*self.closed.lock().unwrap() => {
+                cb(input);
+                true
+            }
+            _ => false,
+        }
+    }
+    pub fn is_open(&self) -> bool {
+        self.callback.lock().unwrap().is_some() && !*self.closed.lock().unwrap()
+    }
+    pub fn last_view(&self) -> Option<RegionView> {
+        self.views.lock().unwrap().last().cloned()
+    }
+}
+
+impl Overlay for FakeOverlay {
+    fn show(&self, frames: Vec<Frame>, view: RegionView, on_input: InputCallback) -> Result<(), PortError> {
+        if let Some(e) = self.fail_show.lock().unwrap().clone() {
+            return Err(e);
+        }
+        *self.shown.lock().unwrap() = Some((frames, view.clone()));
+        self.views.lock().unwrap().push(view);
+        *self.callback.lock().unwrap() = Some(on_input);
+        *self.closed.lock().unwrap() = false;
+        Ok(())
+    }
+    fn update(&self, view: RegionView) {
+        self.views.lock().unwrap().push(view);
+    }
+    fn close(&self) {
+        *self.closed.lock().unwrap() = true;
+    }
+}
+
+/// Returns fixed hover targets (or an error) and an optional active window.
+#[derive(Debug)]
+pub struct FakeHoverSource {
+    pub targets: Mutex<Result<Vec<HoverTarget>, PortError>>,
+    pub active: Mutex<Option<HoverTarget>>,
+}
+
+impl FakeHoverSource {
+    pub fn new(targets: Vec<HoverTarget>) -> Self {
+        FakeHoverSource { targets: Mutex::new(Ok(targets)), active: Mutex::new(None) }
+    }
+    pub fn unsupported() -> Self {
+        FakeHoverSource { targets: Mutex::new(Err(PortError::Unsupported("hover targets".into()))), active: Mutex::new(None) }
+    }
+}
+
+impl HoverSource for FakeHoverSource {
+    fn targets(&self) -> BoxFuture<'_, Result<Vec<HoverTarget>, PortError>> {
+        let r = self.targets.lock().unwrap().clone();
+        Box::pin(async move { r })
+    }
+    fn active_window(&self) -> BoxFuture<'_, Result<Option<HoverTarget>, PortError>> {
+        let r = self.active.lock().unwrap().clone();
+        Box::pin(async move { Ok(r) })
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct FakeNotifier {
+    pub toasts: Mutex<Vec<Toast>>,
+}
+
+impl Notifier for FakeNotifier {
+    fn toast(&self, toast: Toast) -> Result<(), PortError> {
+        self.toasts.lock().unwrap().push(toast);
+        Ok(())
+    }
+}
+
+/// Deterministic: returns 0, 1, 2, …
+#[derive(Debug, Default)]
+pub struct CountingRng {
+    next: Mutex<u64>,
+}
+
+impl Rng for CountingRng {
+    fn next_u64(&self) -> u64 {
+        let mut n = self.next.lock().unwrap();
+        let v = *n;
+        *n += 1;
+        v
     }
 }

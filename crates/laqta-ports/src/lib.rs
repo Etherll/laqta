@@ -2,6 +2,8 @@
 
 pub mod desktop;
 pub mod error;
+pub mod notify;
+pub mod overlay;
 pub mod runtime;
 pub mod screen;
 pub mod task;
@@ -11,8 +13,10 @@ pub mod fakes;
 
 pub use desktop::{ActionCallback, Clipboard, HotkeyRegistrar, Shell, Tray, TrayItem, TrayMenu};
 pub use error::PortError;
+pub use notify::{HostInfo, Notifier, Rng, Toast};
+pub use overlay::{HoverSource, InputCallback, Overlay, RegionView};
 pub use runtime::{Clock, Spawner};
-pub use screen::ScreenSource;
+pub use screen::{CaptureRequest, ScreenSource};
 pub use task::{AppError, TaskEvent, TaskId, TaskStatus};
 
 /// A boxed future, so async ports work behind `Arc<dyn Port>`.
