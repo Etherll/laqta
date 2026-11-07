@@ -7,7 +7,7 @@ use ort::session::Session;
 use ort::value::{TensorElementType, ValueType};
 
 use crate::error::MlError;
-use crate::families::{Family, Signature};
+use crate::families::{Count, Family, Signature};
 use crate::runtime::loaded_environment;
 
 /// Checks that the model at `path` has the input and output counts and ranks that `family` expects.
@@ -26,30 +26,45 @@ pub fn validate_custom(path: &Path, family: &str) -> Result<(), MlError> {
     check_signature(family, family.signature(), &inputs, &outputs)
 }
 
-/// Compares a model's tensors with a family's signature. Counts come first, then each tensor's type
-/// and rank for the first input and the first output.
+/// Compares a model's tensors with a family's signature. Counts come first, then every input and every
+/// output must be float32 with an accepted rank.
 fn check_signature(family: Family, want: Signature, inputs: &[&ValueType], outputs: &[&ValueType]) -> Result<(), MlError> {
     let fail = |detail: String| MlError::Shape { family: family.name().to_owned(), detail };
     if inputs.len() != want.inputs {
         return Err(fail(format!("it has {} inputs, expected {}", inputs.len(), want.inputs)));
     }
-    if outputs.len() != want.outputs {
-        return Err(fail(format!("it has {} outputs, expected {}", outputs.len(), want.outputs)));
+    let count_ok = match want.outputs {
+        Count::Exactly(count) => outputs.len() == count,
+        Count::AtLeast(count) => outputs.len() >= count,
+    };
+    if !count_ok {
+        return Err(fail(format!("it has {} outputs, expected {}", outputs.len(), describe(want.outputs))));
     }
-    check_tensor(inputs[0], want.input_rank, "input").map_err(fail)?;
-    check_tensor(outputs[0], want.output_rank, "output").map_err(fail)?;
+    for input in inputs {
+        check_tensor(input, &[want.input_rank], "input").map_err(fail)?;
+    }
+    for output in outputs {
+        check_tensor(output, want.output_ranks, "output").map_err(fail)?;
+    }
     Ok(())
 }
 
-fn check_tensor(value: &ValueType, rank: usize, role: &str) -> Result<(), String> {
+fn describe(count: Count) -> String {
+    match count {
+        Count::Exactly(count) => count.to_string(),
+        Count::AtLeast(count) => format!("at least {count}"),
+    }
+}
+
+fn check_tensor(value: &ValueType, ranks: &[usize], role: &str) -> Result<(), String> {
     let Some(shape) = value.tensor_shape() else {
-        return Err(format!("the first {role} is not a tensor"));
+        return Err(format!("an {role} is not a tensor"));
     };
     if value.tensor_type() != Some(TensorElementType::Float32) {
-        return Err(format!("the first {role} is not float32"));
+        return Err(format!("an {role} is not float32"));
     }
-    if shape.len() != rank {
-        return Err(format!("the first {role} has rank {}, expected {rank}", shape.len()));
+    if !ranks.contains(&shape.len()) {
+        return Err(format!("an {role} has rank {}, expected one of {ranks:?}", shape.len()));
     }
     Ok(())
 }

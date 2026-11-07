@@ -9,6 +9,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+use futures_channel::oneshot;
+use laqta_ports::{BoxFuture, PortError};
 use ort::environment::Environment;
 use ort::ep::ExecutionProviderDispatch;
 use ort::session::Session;
@@ -61,6 +63,28 @@ pub(crate) fn loaded_environment() -> Result<&'static Environment, MlError> {
 
 pub(crate) fn ort_error<R>(error: ort::Error<R>) -> MlError {
     MlError::Ort(error.to_string())
+}
+
+/// Runs `work` on a new thread and resolves with its result, so the caller's executor never waits on a
+/// model. This is the pattern `ModelOcr` uses. A thread that fails to start is reported as a port error.
+pub(crate) fn run_on_thread<T: Send + 'static>(
+    name: &str,
+    work: impl FnOnce() -> Result<T, MlError> + Send + 'static,
+) -> BoxFuture<'static, Result<T, PortError>> {
+    let (sender, receiver) = oneshot::channel();
+    let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
+        // The receiver is gone only if the caller stopped waiting, so the result is not needed.
+        let _ = sender.send(work());
+    });
+    if let Err(error) = spawned {
+        return Box::pin(async move { Err(PortError::Failed(format!("cannot start the model thread: {error}"))) });
+    }
+    Box::pin(async move {
+        match receiver.await {
+            Ok(result) => result.map_err(PortError::from),
+            Err(_) => Err(PortError::Failed("the model thread stopped without a result".into())),
+        }
+    })
 }
 
 struct Loaded {

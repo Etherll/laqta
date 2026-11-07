@@ -9,6 +9,8 @@ pub enum MlError {
     UnknownModel(String),
     #[error("model `{0}` is not installed")]
     NotInstalled(String),
+    #[error("model `{id}` does not serve the {task} task")]
+    WrongTask { id: String, task: &'static str },
     #[error("no installed OCR model reads `{0}`")]
     NoModelForLanguage(String),
     #[error("model `{0}` has no pinned SHA-256 yet (\"pending-owner\"), so it cannot be downloaded")]
