@@ -621,3 +621,19 @@ impl crate::EditorHost for FakeEditorHost {
         Box::pin(async move { r })
     }
 }
+
+/// Returns a fixed result.
+#[derive(Debug, Default)]
+pub struct FakeOcr {
+    pub result: Mutex<crate::OcrResult>,
+}
+
+impl crate::Ocr for FakeOcr {
+    fn recognize(&self, _image: Bitmap, _language: String) -> BoxFuture<'_, Result<crate::OcrResult, PortError>> {
+        let r = self.result.lock().unwrap().clone();
+        Box::pin(async move { Ok(r) })
+    }
+    fn languages(&self) -> Vec<String> {
+        vec!["en".into()]
+    }
+}

@@ -8,6 +8,7 @@ pub mod recording;
 pub mod runtime;
 pub mod screen;
 pub mod task;
+pub mod tools;
 pub mod upload;
 
 #[cfg(feature = "fakes")]
@@ -24,6 +25,7 @@ pub use overlay::{EditorHost, HoverSource, InputCallback, Overlay, RegionView, T
 pub use runtime::{Clock, Spawner};
 pub use screen::{CaptureRequest, ScreenSource};
 pub use task::{AppError, TaskEvent, TaskId, TaskStatus};
+pub use tools::{Ocr, OcrLine, OcrResult, WindowOps};
 pub use upload::{
     Destination, ProgressCallback, Prompt, SecretStore, Sharer, Shortener, UploadData, UploadError, UploadKind, UploadRequest, UploadResult,
     Uploaders,
