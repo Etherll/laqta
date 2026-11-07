@@ -9,6 +9,7 @@ use laqta_domain::effects::TextSpec;
 use laqta_domain::effects::draw::{BorderKind, Draw, Placement, SizeMode};
 use laqta_domain::{Bitmap, PixelFormat};
 
+use super::draw_m7;
 use super::{EffectContext, EffectError};
 
 /// Largest working buffer, in pixels (1 GiB of RGBA8).
@@ -37,6 +38,14 @@ pub(super) fn apply(image: &Bitmap, effect: &Draw, cx: &EffectContext<'_>) -> Re
         Draw::TextEx { text, angle, placement, offset, outline, shadow } => {
             text_ex(&base, cx, text, *angle, Place { anchor: *placement, offset: *offset }, *outline, *shadow)?
         }
+        Draw::Confetti { count, min_size, max_size, seed } => draw_m7::confetti(&base, *count, (*min_size, *max_size), *seed),
+        Draw::DrawLine { from, to, width, color } => draw_m7::line(&base, *from, *to, *width, rgba(*color)),
+        Draw::DrawShape { shape, x, y, width, height, fill, stroke, stroke_width } => {
+            draw_m7::shape(&base, *shape, (*x, *y, *width, *height), (*fill).map(rgba), rgba(*stroke), *stroke_width)
+        }
+        Draw::FakeCursor { x, y, size, shadow } => draw_m7::cursor(&base, (*x, *y), *size, *shadow),
+        Draw::GradientOverlay { start, end, angle, opacity } => draw_m7::gradient_overlay(&base, *start, *end, *angle, *opacity),
+        Draw::Snowflakes { count, min_size, max_size, seed } => draw_m7::snowflakes(&base, *count, (*min_size, *max_size), *seed),
     };
     out.into_bitmap()
 }
@@ -571,7 +580,7 @@ fn to_u32(v: usize) -> Result<u32, EffectError> {
     u32::try_from(v).map_err(|_| EffectError::Invalid(format!("{v} is too large")))
 }
 
-fn to_u8(v: f32) -> u8 {
+pub(super) fn to_u8(v: f32) -> u8 {
     v.round().clamp(0.0, 255.0) as u8
 }
 
@@ -587,7 +596,7 @@ fn over(dst: [u8; 4], src: [u8; 4], src_alpha: f32) -> [u8; 4] {
     [mix(src[0], dst[0]), mix(src[1], dst[1]), mix(src[2], dst[2]), to_u8(out_alpha * 255.0)]
 }
 
-fn lerp(a: Rgba, b: Rgba, t: f32) -> [u8; 4] {
+pub(super) fn lerp(a: Rgba, b: Rgba, t: f32) -> [u8; 4] {
     let mix = |x: u8, y: u8| to_u8(f32::from(x) + (f32::from(y) - f32::from(x)) * t);
     [mix(a.r, b.r), mix(a.g, b.g), mix(a.b, b.b), mix(a.a, b.a)]
 }
@@ -598,10 +607,10 @@ fn scale_alpha(a: u8, b: u8) -> u8 {
 }
 
 /// SplitMix64. A fixed generator, so one seed gives the same layout on every platform.
-struct SplitMix64(u64);
+pub(super) struct SplitMix64(pub(super) u64);
 
 impl SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
+    pub(super) fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -610,9 +619,16 @@ impl SplitMix64 {
     }
 
     /// A value in `0..n`, or 0 when `n` is 0.
-    fn below(&mut self, n: u64) -> u64 {
+    pub(super) fn below(&mut self, n: u64) -> u64 {
         if n == 0 { 0 } else { self.next_u64() % n }
     }
+}
+
+/// A uniform value in 0..1 from a seed and two integers. It is a pure function of its inputs, so
+/// per-pixel noise doesn't depend on the order pixels are visited in.
+pub(super) fn hash_unit(seed: u64, a: u64, b: u64) -> f64 {
+    let mut rng = SplitMix64(seed ^ a.wrapping_mul(0xD6E8_FEB8_6659_FD93) ^ b.rotate_left(29).wrapping_mul(0xA076_1D64_78BD_642F));
+    (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64
 }
 
 #[cfg(test)]

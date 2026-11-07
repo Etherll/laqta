@@ -8,6 +8,7 @@ use laqta_domain::effects::manip::{ForceMethod, Manip};
 use super::EffectContext;
 use super::EffectError;
 use super::draw::{Buf, ensure_size, resize_buf, rgba, rotate_buf, rounded_coverage};
+use super::manip_m7;
 
 pub(super) fn apply(image: &Bitmap, effect: &Manip, _cx: &EffectContext<'_>) -> Result<Bitmap, EffectError> {
     debug_assert!(rayon::current_thread_index().is_some(), "effects must run inside the compute pool");
@@ -26,6 +27,28 @@ pub(super) fn apply(image: &Bitmap, effect: &Manip, _cx: &EffectContext<'_>) -> 
         Manip::RoundedCorners { radius } => rounded_corners(&base, radius),
         Manip::Scale { width_pct, height_pct } => resize_buf(&base, percent(base.w, width_pct), percent(base.h, height_pct))?,
         Manip::Skew { x, y, grow } => skew(&base, x, y, grow)?,
+        Manip::CylinderWrap { strength } => manip_m7::cylinder_wrap(&base, strength),
+        Manip::DisplacementMap { amount, scale, seed } => manip_m7::displacement(&base, amount, scale, seed),
+        Manip::FisheyeLens { strength } => manip_m7::fisheye(&base, strength),
+        Manip::FoldCreaseWarp { angle, position, shade } => manip_m7::fold_crease(&base, angle, position, shade),
+        Manip::GlassSphere { radius, refraction } => manip_m7::glass_sphere(&base, radius, refraction),
+        Manip::Kaleidoscope { segments, rotation } => manip_m7::kaleidoscope(&base, segments, rotation),
+        Manip::LiquifyPushSmudge { centre, radius, push, smudge } => manip_m7::liquify(&base, centre, radius, push, smudge),
+        Manip::MirrorTiles { columns, rows } => manip_m7::mirror_tiles(&base, columns, rows),
+        Manip::PageCurl { progress, shadow, back } => manip_m7::page_curl(&base, progress, shadow, back),
+        Manip::PerspectiveWarp { top_left, top_right, bottom_right, bottom_left } => {
+            manip_m7::perspective(&base, [top_left, top_right, bottom_right, bottom_left])?
+        }
+        Manip::PinchBulge { amount, radius } => manip_m7::pinch_bulge(&base, amount, radius),
+        Manip::PolarWarp { strength } => manip_m7::polar(&base, strength),
+        Manip::RippleRefraction { amplitude, wavelength } => manip_m7::ripple(&base, amplitude, wavelength),
+        Manip::Rotate3D { angle_x, angle_y } => manip_m7::rotate3d(&base, angle_x, angle_y),
+        Manip::Rotate3DBox { angle_x, angle_y, depth } => manip_m7::rotate3d_box(&base, angle_x, angle_y, depth),
+        Manip::Symmetry { vertical, reverse } => manip_m7::symmetry(&base, vertical, reverse),
+        Manip::TileRepeat { columns, rows, gap, color } => manip_m7::tile_repeat(&base, columns, rows, gap, color),
+        Manip::TileShuffle { columns, rows, seed } => manip_m7::tile_shuffle(&base, columns, rows, seed),
+        Manip::Twirl { angle, radius } => manip_m7::twirl(&base, angle, radius),
+        Manip::WaveDistortion { amplitude, wavelength, phase } => manip_m7::wave(&base, amplitude, wavelength, phase),
     };
     out.into_bitmap()
 }

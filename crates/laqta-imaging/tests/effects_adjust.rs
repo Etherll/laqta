@@ -150,7 +150,8 @@ fn snapshots_match_committed_pngs() {
 #[test]
 fn every_variant_has_a_snapshot_case() {
     let cases = cases();
-    for variant in Adjust::defaults() {
+    // The 15 M3 adjustments; each M7 batch checks its own in `effects_x1.rs`.
+    for variant in Adjust::defaults().into_iter().take(15) {
         let covered = cases.iter().any(|(_, c)| std::mem::discriminant(c) == std::mem::discriminant(&variant));
         assert!(covered, "no snapshot case for {}", variant.name());
     }
