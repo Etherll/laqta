@@ -235,9 +235,9 @@ impl Default for UploadSettings {
     fn default() -> Self {
         UploadSettings {
             image_destination: "imgur".into(),
-            text_destination: "sxcu:paste_ee".into(),
+            text_destination: "sxcu:paste-ee".into(),
             file_destination: "sxcu:uguu".into(),
-            url_shortener: "sxcu:is_gd".into(),
+            url_shortener: "sxcu:is-gd".into(),
             url_sharer: "reddit".into(),
             clipboard_format: "$url".into(),
             retries: 2,

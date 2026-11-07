@@ -2,7 +2,7 @@
 
 use laqta_domain::hotkey::{KeyChord, find_conflicts};
 use laqta_domain::naming::{self, NameContext};
-use laqta_domain::workflow::{AfterCaptureTasks, TaskSettingsPatch};
+use laqta_domain::workflow::{AfterCaptureTasks, AfterUploadTasks, TaskSettingsPatch};
 use laqta_domain::{ImageFormat, Settings};
 use laqta_ports::HostInfo;
 
@@ -43,6 +43,57 @@ pub fn after_capture_options() -> Vec<TaskOption> {
         o(AfterCaptureTasks::REMOVE_BACKGROUND, "Remove background", false),
     ]
 }
+
+pub fn after_upload_options() -> Vec<(AfterUploadTasks, &'static str)> {
+    vec![
+        (AfterUploadTasks::COPY_URL_TO_CLIPBOARD, "Copy URL to clipboard"),
+        (AfterUploadTasks::USE_URL_SHORTENER, "Shorten URL"),
+        (AfterUploadTasks::SHARE_URL, "Share URL"),
+        (AfterUploadTasks::OPEN_URL, "Open URL"),
+        (AfterUploadTasks::SHOW_QR_CODE, "Show QR code"),
+        (AfterUploadTasks::SHOW_AFTER_UPLOAD_WINDOW, "Show after upload window"),
+    ]
+}
+
+/// The URL sharing services (`laqta-upload` sharer ids).
+pub const SHARERS: [(&str, &str); 10] = [
+    ("email", "Email"),
+    ("pushbullet", "Pushbullet"),
+    ("facebook", "Facebook"),
+    ("reddit", "Reddit"),
+    ("pinterest", "Pinterest"),
+    ("tumblr", "Tumblr"),
+    ("linkedin", "LinkedIn"),
+    ("vk", "VK"),
+    ("google-lens", "Google Lens"),
+    ("bing-visual-search", "Bing Visual Search"),
+];
+
+/// Shorteners: the catalog's shortener entries plus Bitly when an account exists.
+pub fn shortener_choices(destinations: &[(String, String)], hosts: &[laqta_domain::hosts::HostAccount]) -> Vec<(String, String)> {
+    let _ = destinations;
+    let mut out: Vec<(String, String)> = SHORTENERS.iter().map(|(id, n)| (id.to_string(), n.to_string())).collect();
+    if hosts.iter().any(|h| h.kind == laqta_domain::hosts::HostKind::Bitly) {
+        out.insert(0, ("bitly".into(), "Bitly".into()));
+    }
+    out
+}
+
+/// The catalog's shorteners (`laqta-upload/catalog`).
+pub const SHORTENERS: [(&str, &str); 12] = [
+    ("sxcu:is-gd", "is.gd"),
+    ("sxcu:v-gd", "v.gd"),
+    ("sxcu:tinyurl", "TinyURL"),
+    ("sxcu:yourls", "YOURLS"),
+    ("sxcu:polr", "Polr"),
+    ("sxcu:kutt", "Kutt"),
+    ("sxcu:zero-width", "Zero Width"),
+    ("sxcu:turl", "TURL"),
+    ("sxcu:2-gp", "2.gp"),
+    ("sxcu:qr-net", "qr.net"),
+    ("sxcu:vurl", "vurl"),
+    ("sxcu:nlcm", "nlcm"),
+];
 
 pub fn format_label(format: ImageFormat) -> &'static str {
     match format {

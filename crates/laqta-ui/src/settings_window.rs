@@ -42,6 +42,15 @@ pub(crate) fn open(cx: &mut App) {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+enum DestKind {
+    Image,
+    Text,
+    File,
+    Shortener,
+    Sharer,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     General,
     AfterCapture,
@@ -49,16 +58,18 @@ enum Page {
     Naming,
     Capture,
     Workflows,
+    Uploads,
     Data,
 }
 
-const PAGES: [(Page, &str); 7] = [
+const PAGES: [(Page, &str); 8] = [
     (Page::General, "General"),
     (Page::AfterCapture, "After capture"),
     (Page::Image, "Image"),
     (Page::Naming, "File naming"),
     (Page::Capture, "Capture"),
     (Page::Workflows, "Hotkeys and workflows"),
+    (Page::Uploads, "Uploads"),
     (Page::Data, "Data"),
 ];
 
@@ -87,6 +98,10 @@ struct SettingsWindow {
     sound_task: Entity<InputState>,
     sound_error: Entity<InputState>,
     workflows: Vec<WorkflowInputs>,
+    clipboard_format: Entity<InputState>,
+    retries: Entity<InputState>,
+    dest_kind: DestKind,
+    hosts: Vec<Vec<(&'static str, bool, Entity<InputState>)>>,
 }
 
 fn text_input(value: impl Into<SharedString>, window: &mut Window, cx: &mut Context<SettingsWindow>) -> Entity<InputState> {
@@ -119,11 +134,16 @@ impl SettingsWindow {
             sound_task: text_input(path_text(&d.general.custom_task_sound), window, cx),
             sound_error: text_input(path_text(&d.general.custom_error_sound), window, cx),
             workflows: Vec::new(),
+            clipboard_format: text_input(d.upload.clipboard_format.clone(), window, cx),
+            retries: text_input(d.upload.retries.to_string(), window, cx),
+            dest_kind: DestKind::Image,
+            hosts: Vec::new(),
             draft,
             page: Page::General,
             message: None,
         };
         this.rebuild_workflow_inputs(window, cx);
+        this.rebuild_host_inputs(window, cx);
         this
     }
 
@@ -180,6 +200,21 @@ impl SettingsWindow {
         d.general.custom_task_sound = path(&self.sound_task);
         d.general.custom_error_sound = path(&self.sound_error);
         d.general.toast.duration_ms = num(&self.toast_ms, "Toast duration")?.max(500);
+        self.draft.defaults.upload.clipboard_format = Self::value(&self.clipboard_format, cx);
+        self.draft.defaults.upload.retries = num(&self.retries, "Retries")?.min(10);
+        let secrets = cx.global::<UiState>().services.secrets.clone();
+        for (account, inputs) in self.draft.hosts.iter_mut().zip(&self.hosts) {
+            for (key, secret, input) in inputs {
+                let v = Self::value(input, cx);
+                if *secret {
+                    if !v.is_empty() {
+                        secrets.set(&account.secret_key(key), &v).map_err(|e| format!("Couldn't store the {key}: {e}"))?;
+                    }
+                } else {
+                    account.values.insert(key.to_string(), v);
+                }
+            }
+        }
         for (w, inputs) in self.draft.workflows.iter_mut().zip(&self.workflows) {
             w.name = Self::value(&inputs.name, cx);
             let hk = Self::value(&inputs.hotkey, cx);
@@ -323,6 +358,148 @@ impl SettingsWindow {
             )
             .child(widgets::muted("Bring in the capture history of an existing ShareX install (History.json).", cx))
             .child(Button::new("sharex-history").label("Import ShareX history…").on_click(cx.listener(|this, _, _, cx| this.import_sharex(cx))))
+    }
+
+    fn rebuild_host_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let accounts = self.draft.hosts.clone();
+        self.hosts = accounts
+            .iter()
+            .map(|a| {
+                a.kind
+                    .fields()
+                    .iter()
+                    .map(|f| {
+                        let v = if f.secret { String::new() } else { a.get(f.key).to_string() };
+                        let input = cx.new(|cx| {
+                            let st = InputState::new(window, cx).default_value(v);
+                            if f.secret { st.placeholder("(stored in the system keyring; type to replace)") } else { st }
+                        });
+                        (f.key, f.secret, input)
+                    })
+                    .collect()
+            })
+            .collect();
+    }
+
+    fn uploads(&self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
+        let services = cx.global::<UiState>().services.clone();
+        let u = &self.draft.defaults.upload;
+        let mut kinds = div().flex().gap(px(6.));
+        for (k, label) in [(DestKind::Image, "Images"), (DestKind::Text, "Text"), (DestKind::File, "Files"), (DestKind::Shortener, "URL shortener"), (DestKind::Sharer, "URL sharing")] {
+            kinds = kinds.child(Button::new(SharedString::from(format!("dk-{label}"))).label(label).selected(self.dest_kind == k).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.dest_kind = k;
+                    cx.notify();
+                },
+            )));
+        }
+        let current = match self.dest_kind {
+            DestKind::Image => u.image_destination.clone(),
+            DestKind::Text => u.text_destination.clone(),
+            DestKind::File => u.file_destination.clone(),
+            DestKind::Shortener => u.url_shortener.clone(),
+            DestKind::Sharer => u.url_sharer.clone(),
+        };
+        let choices: Vec<(String, String)> = match self.dest_kind {
+            DestKind::Shortener => present::shortener_choices(&services.uploaders.destination_list(), &self.draft.hosts),
+            DestKind::Sharer => present::SHARERS.iter().map(|(id, n)| (id.to_string(), n.to_string())).collect(),
+            _ => services.uploaders.destination_list(),
+        };
+        let mut list = div().flex().flex_wrap().gap(px(6.)).max_h(px(220.)).overflow_y_scrollbar();
+        for (id, name) in choices {
+            let selected = id == current;
+            let kind = self.dest_kind;
+            list = list.child(Button::new(SharedString::from(format!("dest-{id}"))).label(name).small().selected(selected).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    let u = &mut this.draft.defaults.upload;
+                    match kind {
+                        DestKind::Image => u.image_destination = id.clone(),
+                        DestKind::Text => u.text_destination = id.clone(),
+                        DestKind::File => u.file_destination = id.clone(),
+                        DestKind::Shortener => u.url_shortener = id.clone(),
+                        DestKind::Sharer => u.url_sharer = id.clone(),
+                    }
+                    cx.notify();
+                },
+            )));
+        }
+        let mut after = div().flex().flex_col().gap(px(6.));
+        for (flag, label) in present::after_upload_options() {
+            after = after.child(Checkbox::new(SharedString::from(format!("au-{}", flag.bits()))).label(label).checked(self.draft.defaults.after_upload.contains(flag)).on_click(
+                cx.listener(move |this, v: &bool, _, cx| {
+                    this.draft.defaults.after_upload.set(flag, *v);
+                    cx.notify();
+                }),
+            ));
+        }
+        let mut accounts = div().flex().flex_col().gap(px(8.));
+        for (i, (account, inputs)) in self.draft.hosts.iter().zip(&self.hosts).enumerate() {
+            let mut card = div().flex().flex_col().gap(px(4.)).p(px(8.)).rounded(px(6.)).bg(cx.theme().secondary).child(
+                div().flex().flex_row().items_center().child(div().flex_1().font_weight(gpui::FontWeight::SEMIBOLD).child(account.kind.label())).child(
+                    Button::new(SharedString::from(format!("host-rm-{i}"))).label("Remove").ghost().small().on_click(cx.listener(move |this, _, window, cx| {
+                        if i < this.draft.hosts.len() {
+                            this.draft.hosts.remove(i);
+                            this.rebuild_host_inputs(window, cx);
+                        }
+                        cx.notify();
+                    })),
+                ),
+            );
+            for ((key, _secret, input), field) in inputs.iter().zip(account.kind.fields()) {
+                let _ = key;
+                card = card.child(widgets::row(field.label, Input::new(input), cx));
+            }
+            accounts = accounts.child(card);
+        }
+        let mut add = div().flex().flex_wrap().gap(px(6.)).child(widgets::muted("Add an account:", cx));
+        for kind in laqta_domain::hosts::HostKind::ALL {
+            add = add.child(Button::new(SharedString::from(format!("host-add-{}", kind.id()))).label(kind.label()).small().ghost().on_click(cx.listener(
+                move |this, _, window, cx| {
+                    if this.collect(cx).is_ok() {
+                        this.draft.hosts.push(laqta_domain::hosts::HostAccount::new(kind));
+                        this.rebuild_host_inputs(window, cx);
+                    }
+                    cx.notify();
+                },
+            )));
+        }
+        widgets::section("Uploads", cx)
+            .child(widgets::row("Choose a destination for", kinds, cx))
+            .child(list)
+            .child(Checkbox::new("upload-after-capture").label("Upload after capture").checked(self.draft.defaults.after_capture.contains(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST)).on_click(
+                cx.listener(|this, v: &bool, _, cx| {
+                    this.draft.defaults.after_capture.set(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST, *v);
+                    cx.notify();
+                }),
+            ))
+            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("After upload"))
+            .child(after)
+            .child(widgets::row("Copied text ($url, $shorturl, $deletionurl, …)", Input::new(&self.clipboard_format), cx))
+            .child(widgets::row("Retries on network errors", Input::new(&self.retries), cx))
+            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Accounts"))
+            .child(accounts)
+            .child(add)
+            .child(Button::new("import-sxcu").label("Import custom uploader (.sxcu)…").on_click(cx.listener(|this, _, _, cx| this.import_sxcu(cx))))
+    }
+
+    fn import_sxcu(&mut self, cx: &mut Context<Self>) {
+        let add = cx.global::<UiState>().services.add_custom_uploader.clone();
+        let task = cx.background_spawn(async move {
+            let Some(file) = rfd::AsyncFileDialog::new().add_filter("Custom uploader", &["sxcu", "json"]).pick_file().await else {
+                return Ok(None);
+            };
+            let json = std::fs::read_to_string(file.path()).map_err(|e| e.to_string())?;
+            add(json).map(Some)
+        });
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |this, cx| match r {
+                Ok(Some(id)) => this.report(Ok(format!("Added {id}. Pick it under Uploads.")), cx),
+                Ok(None) => {}
+                Err(e) => this.report(Err(format!("Couldn't add the uploader: {e}")), cx),
+            });
+        })
+        .detach();
     }
 
     fn report(&mut self, result: Result<String, String>, cx: &mut Context<Self>) {
@@ -629,7 +806,7 @@ impl SettingsWindow {
 }
 
 impl Render for SettingsWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut nav = div().w(px(200.)).flex().flex_col().gap(px(4.)).p(px(12.)).border_r_1().border_color(cx.theme().border);
         for (page, label) in PAGES {
             nav = nav.child(
@@ -656,6 +833,7 @@ impl Render for SettingsWindow {
             Page::Naming => self.naming(cx),
             Page::Capture => self.capture(cx),
             Page::Workflows => self.workflows_page(cx),
+            Page::Uploads => self.uploads(window, cx),
             Page::Data => self.data(cx),
         };
         let mut footer = div().flex().flex_row().items_center().gap(px(8.)).p(px(12.)).border_t_1().border_color(cx.theme().border);

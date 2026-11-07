@@ -247,6 +247,13 @@ pub fn run(server: laqta_ipc::Server, startup_actions: Vec<Action>) -> Result<()
             dispatch: dispatch.clone(),
             save_settings,
             data_dir: data.clone(),
+            uploaders: uploaders.clone(),
+            secrets: platform.secrets.clone(),
+            add_custom_uploader: {
+                let uploaders = uploaders.clone();
+                let dir = data.join("uploaders");
+                Arc::new(move |json: String| crate::uploads::add_custom(&uploaders, &dir, &json))
+            },
         };
         laqta_ui::run(services, ui_rx);
     }

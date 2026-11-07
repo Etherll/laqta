@@ -63,3 +63,12 @@ pub fn registry(data: &Path, prompt: Arc<dyn Prompt>, rng: Arc<dyn Rng>) -> Arc<
     }
     SharedRegistry::new(reg)
 }
+
+/// Registers a custom uploader and keeps a copy in `<data>/uploaders/<id>.sxcu`.
+pub fn add_custom(registry: &SharedRegistry, dir: &Path, json: &str) -> Result<String, String> {
+    let id = registry.update(|r| r.add_custom(json)).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let file: String = id.trim_start_matches("custom:").chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    std::fs::write(dir.join(format!("{file}.sxcu")), json).map_err(|e| e.to_string())?;
+    Ok(id)
+}

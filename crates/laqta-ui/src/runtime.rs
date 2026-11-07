@@ -152,6 +152,10 @@ pub struct UiServices {
     pub save_settings: Arc<dyn Fn(Settings) -> Result<(), String> + Send + Sync>,
     /// The data folder, shown in settings.
     pub data_dir: PathBuf,
+    pub uploaders: Arc<dyn laqta_ports::Uploaders>,
+    pub secrets: Arc<dyn laqta_ports::SecretStore>,
+    /// Adds a custom uploader (`.sxcu` JSON): saves it and registers it; returns its id.
+    pub add_custom_uploader: Arc<dyn Fn(String) -> Result<String, String> + Send + Sync>,
 }
 
 impl std::fmt::Debug for UiServices {
