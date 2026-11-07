@@ -14,3 +14,6 @@ serde.workspace = true
 thiserror.workspace = true
 bitflags.workspace = true
 jiff.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

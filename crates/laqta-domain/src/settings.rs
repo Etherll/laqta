@@ -108,19 +108,18 @@ impl Settings {
 
 /// ShareX's default hotkey workflows, ids 1..=5.
 fn default_workflows() -> Vec<Workflow> {
-    // TODO(W1a): names should be Action::label(). The entries marked below use a placeholder action until W1a adds the variant.
     let entries = [
-        (1, "PrintScreen", Action::PrintScreen, Modifiers::empty()),
-        (2, "RectangleRegion", Action::PrintScreen, Modifiers::CTRL), // TODO(W1a): Action::RectangleRegion
-        (3, "ActiveWindow", Action::PrintScreen, Modifiers::ALT), // TODO(W1a): Action::ActiveWindow
-        (4, "ScreenRecorder", Action::PrintScreen, Modifiers::SHIFT), // TODO(W1a): Action::ScreenRecorder
-        (5, "ScreenRecorderGif", Action::PrintScreen, Modifiers::CTRL | Modifiers::SHIFT), // TODO(W1a): Action::ScreenRecorderGif
+        (1, Action::PrintScreen, Modifiers::empty()),
+        (2, Action::RectangleRegion, Modifiers::CTRL),
+        (3, Action::ActiveWindow, Modifiers::ALT),
+        (4, Action::ScreenRecorder, Modifiers::SHIFT),
+        (5, Action::ScreenRecorderGif, Modifiers::CTRL | Modifiers::SHIFT),
     ];
     entries
         .into_iter()
-        .map(|(id, name, action, modifiers)| Workflow {
+        .map(|(id, action, modifiers)| Workflow {
             id: WorkflowId(id),
-            name: name.to_string(),
+            name: action.label().to_string(),
             action,
             hotkey: Some(KeyChord { modifiers, key: Key::PrintScreen }),
             enabled: true,
@@ -208,5 +207,22 @@ mod tests {
         );
         let loaded = Settings::deserialize(empty).expect("an empty object is valid settings");
         assert_eq!(loaded, Settings::default());
+    }
+}
+
+#[cfg(test)]
+mod json_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn settings_json_round_trip() {
+        let s = Settings::default_for(PathBuf::from("/p"));
+        let json = serde_json::to_string_pretty(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(back.workflows[1].name, "Capture region");
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.version, SETTINGS_VERSION);
     }
 }

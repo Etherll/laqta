@@ -5,7 +5,7 @@ use crate::geometry::{MonitorId, PhysRect};
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum CaptureMode {
     Fullscreen,
-    Monitor(#[serde(with = "MonitorIdDef")] MonitorId),
+    Monitor(MonitorId),
     ActiveMonitor,
     ActiveWindow,
     /// A window whose title contains this text.
@@ -16,9 +16,6 @@ pub enum CaptureMode {
 }
 
 /// Serde adapter for `MonitorId`, which has no serde derives in `geometry.rs`. It is stored as its string.
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(remote = "MonitorId")]
-struct MonitorIdDef(String);
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]

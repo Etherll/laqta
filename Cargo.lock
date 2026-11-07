@@ -3159,6 +3159,7 @@ dependencies = [
  "bitflags 2.13.2",
  "jiff",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 

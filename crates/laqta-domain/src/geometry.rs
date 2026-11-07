@@ -28,7 +28,8 @@ impl PhysRect {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct MonitorId(pub String);
 
 #[derive(Clone, Debug, PartialEq)]

@@ -100,7 +100,7 @@ pub fn run(server: laqta_ipc::Server, startup_actions: Vec<Action>) -> Result<()
     // Hotkeys, then the tray (its tooltip depends on whether hotkeys work).
     let settings = app.settings();
     let mut menu: TrayMenu = laqta_ui::presenters::tray::tray_menu(&settings);
-    for (chord, result) in platform.hotkeys.register(&settings.hotkeys, dispatch.clone()) {
+    for (chord, result) in platform.hotkeys.register(&settings.hotkey_bindings(), dispatch.clone()) {
         match result {
             Ok(()) => tracing::info!(?chord, "hotkey registered"),
             Err(PortError::Unsupported(why)) => {
