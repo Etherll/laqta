@@ -7,12 +7,14 @@ use std::sync::Arc;
 use laqta_ports::{Clipboard, HotkeyRegistrar, HoverSource, ScreenSource, Shell, Tray};
 
 mod clipboard;
+mod secrets;
 pub mod session;
 mod shell;
 mod tray;
 mod wayland;
 mod x11;
 
+pub use secrets::SecretServiceStore;
 pub use session::Session;
 
 /// Every port Linux provides in M0, for the session `main` detected.
@@ -24,6 +26,7 @@ pub struct LinuxPorts {
     pub hotkeys: Arc<dyn HotkeyRegistrar>,
     pub tray: Arc<dyn Tray>,
     pub hover: Arc<dyn HoverSource>,
+    pub secrets: Arc<dyn laqta_ports::SecretStore>,
 }
 
 pub fn ports(session: Session) -> LinuxPorts {
@@ -42,5 +45,6 @@ pub fn ports(session: Session) -> LinuxPorts {
         hotkeys,
         tray: Arc::new(tray::SniTray::default()),
         hover,
+        secrets: Arc::new(secrets::SecretServiceStore),
     }
 }
