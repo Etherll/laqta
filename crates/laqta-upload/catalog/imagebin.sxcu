@@ -1,0 +1,10 @@
+{
+  "Version": "15.0.0",
+  "Name": "ImageBin",
+  "DestinationType": "ImageUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "https://imagebin.ca/upload.php",
+  "Body": "MultipartFormData",
+  "FileFormName": "upload",
+  "URL": "{json:url}"
+}

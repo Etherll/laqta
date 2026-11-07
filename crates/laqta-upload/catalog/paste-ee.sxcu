@@ -1,0 +1,11 @@
+{
+  "Version": "15.0.0",
+  "Name": "Paste.ee",
+  "DestinationType": "TextUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "https://api.paste.ee/v1/pastes",
+  "Body": "JSON",
+  "Data": "\\{\"description\": \"\", \"sections\": [\\{\"name\": \"\", \"syntax\": \"autodetect\", \"contents\": \"{input}\"}]}",
+  "URL": "{json:link}",
+  "ErrorMessage": "{json:error}"
+}

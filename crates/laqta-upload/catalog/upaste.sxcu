@@ -1,0 +1,12 @@
+{
+  "Version": "15.0.0",
+  "Name": "uPaste",
+  "DestinationType": "TextUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "https://upaste.me/api/paste",
+  "Body": "FormUrlEncoded",
+  "Arguments": {
+    "content": "{input}"
+  },
+  "URL": "{json:url}"
+}

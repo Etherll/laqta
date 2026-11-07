@@ -1,0 +1,12 @@
+{
+  "Version": "15.0.0",
+  "Name": "Paste2",
+  "DestinationType": "TextUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "https://paste2.org/",
+  "Body": "FormUrlEncoded",
+  "Arguments": {
+    "paste": "{input}"
+  },
+  "URL": "{responseurl}"
+}

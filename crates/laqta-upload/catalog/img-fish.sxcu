@@ -1,0 +1,11 @@
+{
+  "Version": "15.0.0",
+  "Name": "img.fish",
+  "DestinationType": "ImageUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "https://img.fish/api/1/upload",
+  "Body": "MultipartFormData",
+  "FileFormName": "source",
+  "URL": "{json:image.url}",
+  "ErrorMessage": "{json:error.message}"
+}

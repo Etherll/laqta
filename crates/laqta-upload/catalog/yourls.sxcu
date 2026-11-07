@@ -1,0 +1,14 @@
+{
+  "Version": "15.0.0",
+  "Name": "YOURLS",
+  "DestinationType": "UrlShortener",
+  "RequestMethod": "POST",
+  "RequestURL": "{inputbox:YOURLS URL|https://example.com/yourls}/yourls-api.php",
+  "Body": "FormUrlEncoded",
+  "Arguments": {
+    "action": "shorturl",
+    "format": "simple",
+    "signature": "{inputbox:YOURLS signature token}",
+    "url": "{input}"
+  }
+}

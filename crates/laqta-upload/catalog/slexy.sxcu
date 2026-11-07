@@ -1,0 +1,13 @@
+{
+  "Version": "15.0.0",
+  "Name": "Slexy",
+  "DestinationType": "TextUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "https://slexy.org/submit",
+  "Body": "FormUrlEncoded",
+  "Arguments": {
+    "raw": "{input}",
+    "language": "text"
+  },
+  "URL": "{responseurl}"
+}

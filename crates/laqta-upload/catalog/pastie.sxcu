@@ -1,0 +1,14 @@
+{
+  "Version": "15.0.0",
+  "Name": "Pastie",
+  "DestinationType": "TextUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "https://pastie.org/pastes",
+  "Body": "FormUrlEncoded",
+  "Arguments": {
+    "paste[body]": "{input}",
+    "paste[parser]": "plain_text",
+    "paste[authorization]": "burger"
+  },
+  "URL": "{responseurl}"
+}

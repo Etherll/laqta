@@ -1,0 +1,14 @@
+{
+  "Version": "15.0.0",
+  "Name": "Kutt",
+  "DestinationType": "UrlShortener",
+  "RequestMethod": "POST",
+  "RequestURL": "{inputbox:Kutt URL|https://kutt.it}/api/v2/links",
+  "Headers": {
+    "X-API-Key": "{inputbox:Kutt API key}"
+  },
+  "Body": "JSON",
+  "Data": "\\{\"target\": \"{input}\"\\}",
+  "URL": "{json:link}",
+  "ErrorMessage": "{json:message}"
+}

@@ -1,0 +1,14 @@
+{
+  "Version": "15.0.0",
+  "Name": "Puush",
+  "DestinationType": "ImageUploader, TextUploader, FileUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "https://puush.me/api/up",
+  "Body": "MultipartFormData",
+  "Arguments": {
+    "k": "{inputbox:Puush API key}",
+    "z": "poop"
+  },
+  "FileFormName": "f",
+  "URL": "{regex:^0,([^,]+)|1}"
+}

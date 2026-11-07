@@ -1,0 +1,13 @@
+{
+  "Version": "15.0.0",
+  "Name": "Polr",
+  "DestinationType": "UrlShortener",
+  "RequestMethod": "GET",
+  "RequestURL": "{inputbox:Polr URL|https://example.com}/api/v2/action/shorten",
+  "Parameters": {
+    "key": "{inputbox:Polr API key}",
+    "url": "{input}"
+  },
+  "URL": "{json:result}",
+  "ErrorMessage": "{json:error}"
+}

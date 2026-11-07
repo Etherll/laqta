@@ -1,0 +1,16 @@
+{
+  "Version": "15.0.0",
+  "Name": "Chevereto",
+  "DestinationType": "ImageUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "{inputbox:Chevereto URL|https://example.com}/api/1/upload",
+  "Headers": {
+    "X-API-Key": "{inputbox:Chevereto API key}"
+  },
+  "Body": "MultipartFormData",
+  "FileFormName": "source",
+  "URL": "{json:image.url}",
+  "ThumbnailURL": "{json:image.thumb.url}",
+  "DeletionURL": "{json:image.delete_url}",
+  "ErrorMessage": "{json:error.message}"
+}

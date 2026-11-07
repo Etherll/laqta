@@ -1,0 +1,11 @@
+{
+  "Version": "15.0.0",
+  "Name": "TinyURL",
+  "DestinationType": "UrlShortener",
+  "RequestMethod": "GET",
+  "RequestURL": "https://tinyurl.com/api-create.php",
+  "Parameters": {
+    "url": "{input}"
+  },
+  "URL": "{regex:^(https://tinyurl\\.com/[A-Za-z0-9]+)|1}"
+}

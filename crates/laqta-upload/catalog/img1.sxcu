@@ -1,0 +1,13 @@
+{
+  "Version": "15.0.0",
+  "Name": "Img1",
+  "DestinationType": "ImageUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "https://img1.me/api/1/upload",
+  "Body": "MultipartFormData",
+  "FileFormName": "source",
+  "URL": "{json:image.url}",
+  "ThumbnailURL": "{json:image.thumb.url}",
+  "DeletionURL": "{json:image.delete_url}",
+  "ErrorMessage": "{json:error.message}"
+}

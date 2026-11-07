@@ -1,0 +1,10 @@
+{
+  "Version": "15.0.0",
+  "Name": "s-ul",
+  "DestinationType": "ImageUploader, TextUploader, FileUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "https://s-ul.eu/api/v1/upload",
+  "Body": "MultipartFormData",
+  "FileFormName": "file",
+  "URL": "{json:url}"
+}

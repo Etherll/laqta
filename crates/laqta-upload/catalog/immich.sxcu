@@ -1,0 +1,17 @@
+{
+  "Version": "15.0.0",
+  "Name": "Immich",
+  "DestinationType": "ImageUploader, FileUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "{inputbox:Immich server URL|https://immich.example.com}/api/assets",
+  "Headers": {
+    "x-api-key": "{inputbox:Immich API key}"
+  },
+  "Body": "MultipartFormData",
+  "Arguments": {
+    "deviceAssetId": "{filename}",
+    "deviceId": "laqta"
+  },
+  "FileFormName": "assetData",
+  "URL": "{inputbox:Immich server URL|https://immich.example.com}/photos/{json:id}"
+}
