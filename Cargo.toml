@@ -19,6 +19,7 @@ laqta-ipc = { path = "crates/laqta-ipc" }
 laqta-ui = { path = "crates/laqta-ui" }
 laqta-platform-linux = { path = "crates/laqta-platform-linux" }
 laqta-platform-windows = { path = "crates/laqta-platform-windows" }
+laqta-library = { path = "crates/laqta-library" }
 
 # UI (ADR 002: move together)
 gpui = { package = "gpui-pre", version = "=0.3.11" }
@@ -31,6 +32,16 @@ bitflags = "2"
 jiff = { version = "0.2.39", default-features = false, features = ["std"] }
 png = "0.18.1"
 rayon = "1.12"
+jpeg-encoder = "0.7.1"
+zune-jpeg = "0.5.15"
+image-webp = "0.2.4"
+gif = "0.14.2"
+tiff = "0.11.3"
+fast_image_resize = { version = "6.1.0", default-features = false, features = ["std"] }
+serde_json = "1.0.154"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+fastrand = "2.5.0"
+swayipc = "4.0.0"
 
 # application
 async-broadcast = "0.7.2"

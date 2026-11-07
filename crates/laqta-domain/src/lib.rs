@@ -2,10 +2,13 @@
 #![forbid(unsafe_code)]
 
 pub mod action;
+pub mod capture;
 pub mod geometry;
+pub mod history;
 pub mod hotkey;
 pub mod image;
 pub mod naming;
+pub mod region;
 pub mod settings;
 pub mod workflow;
 
