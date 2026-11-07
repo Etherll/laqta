@@ -6,6 +6,7 @@
 pub mod catalog;
 pub mod error;
 pub mod families;
+pub mod install;
 pub mod ocr;
 pub mod runtime;
 pub mod tensor;

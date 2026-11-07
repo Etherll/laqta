@@ -128,7 +128,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             Arc::new(move || s.clone())
         }, Arc::new(ui.clone()))),
         stream: platform.stream.clone(),
-        ocr: Arc::new(stubs::NotYet),
+        ocr: Arc::new(crate::ocr::LazyOcr::new(data.clone(), Arc::new(ui.clone()))),
         window_ops: Arc::new(stubs::NotYet),
         uploaders: uploaders.clone(),
         hover: platform.hover,

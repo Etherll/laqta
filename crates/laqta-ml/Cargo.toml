@@ -21,6 +21,9 @@ toml.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 futures-channel.workspace = true
+tar.workspace = true
+flate2.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

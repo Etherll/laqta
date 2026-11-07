@@ -7,6 +7,7 @@ mod fonts;
 mod logging;
 mod media;
 mod notifier;
+mod ocr;
 mod spawner;
 mod stubs;
 mod uploads;

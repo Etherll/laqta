@@ -4539,6 +4539,7 @@ dependencies = [
  "laqta-ipc",
  "laqta-library",
  "laqta-media",
+ "laqta-ml",
  "laqta-platform-linux",
  "laqta-platform-windows",
  "laqta-ports",
@@ -4703,6 +4704,7 @@ dependencies = [
 name = "laqta-ml"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "futures-channel",
  "laqta-domain",
  "laqta-http",
@@ -4711,10 +4713,12 @@ dependencies = [
  "ndarray",
  "ort",
  "serde",
+ "tar",
  "tempfile",
  "thiserror 2.0.21",
  "toml 1.2.1+spec-1.1.0",
  "tracing",
+ "zip",
 ]
 
 [[package]]

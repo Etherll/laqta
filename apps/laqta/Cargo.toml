@@ -27,6 +27,7 @@ laqta-library.workspace = true
 laqta-upload.workspace = true
 laqta-media.workspace = true
 laqta-editor.workspace = true
+laqta-ml.workspace = true
 cosmic-text.workspace = true
 laqta-http.workspace = true
 gpui.workspace = true
