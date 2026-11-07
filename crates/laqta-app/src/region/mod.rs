@@ -33,6 +33,8 @@ pub struct Selection {
 #[cfg_attr(not(test), allow(dead_code))] // No caller until the dispatcher routes region actions.
 pub(crate) async fn select(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptions) -> Result<Selection, AppError> {
     let bounds = bounds_of(&frames)?;
+    // The overlay takes the frames, so keep each monitor's rect and primary flag for an ActiveMonitor outcome.
+    let monitors: Vec<(PhysRect, bool)> = frames.iter().map(|f| (frame_rect(f), f.monitor.primary)).collect();
     let composed = compose(ports.spawner.as_ref(), frames.clone()).await?;
     let mut state = RegionState::new(RegionConfig {
         bounds,
@@ -41,6 +43,8 @@ pub(crate) async fn select(ports: &Ports, frames: Vec<Frame>, options: &RegionCa
         min_size: options.min_size,
         magnifier_pixels: options.magnifier_pixels,
         info_text: options.info_text.clone(),
+        right_click: options.right_click,
+        middle_click: options.middle_click,
     });
 
     let (tx, mut inputs) = mpsc::unbounded::<RegionInput>();
@@ -66,7 +70,7 @@ pub(crate) async fn select(ports: &Ports, frames: Vec<Frame>, options: &RegionCa
             let changed = state.handle(input);
             if let Some(outcome) = state.outcome().cloned() {
                 ports.overlay.close();
-                return outcome_selection(outcome, &composed, bounds);
+                return outcome_selection(outcome, &composed, bounds, &monitors, state.cursor());
             }
             if changed {
                 let pixel = pixel_at(&composed, bounds, state.cursor());
@@ -117,24 +121,52 @@ pub(crate) fn view(state: &RegionState, bounds: PhysRect, options: &RegionCaptur
     }
 }
 
-fn outcome_selection(outcome: RegionOutcome, composed: &Bitmap, bounds: PhysRect) -> Result<Selection, AppError> {
+/// Turns the session's outcome into a selection. `monitors` holds each frame's rect and primary flag,
+/// and `cursor` is the point the session ended on.
+fn outcome_selection(
+    outcome: RegionOutcome,
+    composed: &Bitmap,
+    bounds: PhysRect,
+    monitors: &[(PhysRect, bool)],
+    cursor: (i32, i32),
+) -> Result<Selection, AppError> {
     match outcome {
         RegionOutcome::Confirmed { rects, target } => {
             let image = crop_rects(composed, bounds, &rects)?;
             Ok(Selection { rects, target, image })
         }
+        RegionOutcome::Fullscreen => whole_rect(composed, bounds, bounds),
+        RegionOutcome::ActiveMonitor => {
+            let rect = monitor_at(monitors, cursor).ok_or_else(|| AppError::Io("no monitors".to_owned()))?;
+            whole_rect(composed, bounds, rect)
+        }
         RegionOutcome::Cancelled => Err(AppError::Cancelled),
     }
 }
 
-/// The union of the monitor rects, each sized to its image. This matches where `compose_monitors`
-/// puts the frames.
+/// A selection of one whole rect, with no hover target.
+fn whole_rect(composed: &Bitmap, bounds: PhysRect, rect: PhysRect) -> Result<Selection, AppError> {
+    let rects = vec![rect];
+    let image = crop_rects(composed, bounds, &rects)?;
+    Ok(Selection { rects, target: None, image })
+}
+
+/// The rect of the monitor under `at`. A point in a gap of a non-rectangular layout falls back to the
+/// primary monitor, then the first one.
+fn monitor_at(monitors: &[(PhysRect, bool)], at: (i32, i32)) -> Option<PhysRect> {
+    let under = monitors.iter().find(|(rect, _)| contains(*rect, i64::from(at.0), i64::from(at.1)));
+    under.or_else(|| monitors.iter().find(|(_, primary)| *primary)).or_else(|| monitors.first()).map(|(rect, _)| *rect)
+}
+
+/// A frame's desktop rect: the monitor's origin with the frame's own size. This is where `compose_monitors`
+/// puts the frame.
+fn frame_rect(frame: &Frame) -> PhysRect {
+    PhysRect { x: frame.monitor.rect.x, y: frame.monitor.rect.y, width: frame.image.width(), height: frame.image.height() }
+}
+
+/// The union of the frame rects. This matches where `compose_monitors` puts the frames.
 fn bounds_of(frames: &[Frame]) -> Result<PhysRect, AppError> {
-    frames
-        .iter()
-        .map(|f| PhysRect { x: f.monitor.rect.x, y: f.monitor.rect.y, width: f.image.width(), height: f.image.height() })
-        .reduce(PhysRect::union)
-        .ok_or_else(|| AppError::Io("no frames to select from".to_owned()))
+    frames.iter().map(frame_rect).reduce(PhysRect::union).ok_or_else(|| AppError::Io("no frames to select from".to_owned()))
 }
 
 /// Composes the frames on the compute pool. A panic there comes back as a value (ADR 020).

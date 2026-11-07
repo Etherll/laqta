@@ -8,8 +8,8 @@ use laqta_domain::region::HoverTarget;
 use laqta_domain::workflow::TaskSettings;
 use laqta_domain::{Action, Settings, WorkflowId};
 use laqta_ports::{
-    AppError, BoxFuture, CaptureRequest, Clipboard, Clock, HostInfo, HoverSource, Notifier, Overlay, Rng, ScreenSource, Shell, Spawner,
-    TaskEvent, TaskId, ToolHost, ToolWindow,
+    AppError, BoxFuture, CaptureRequest, Clipboard, Clock, HostInfo, HoverSource, Notifier, Overlay, PortError, Rng, ScreenSource, Shell,
+    Spawner, TaskEvent, TaskId, ToolHost, ToolWindow,
 };
 
 use crate::files;
@@ -152,6 +152,20 @@ impl App {
         Ok(self.submit(CaptureImage::Image(sel.image), ts, sel.target.as_ref()))
     }
 
+    /// A window capture. With `transparent_window` on, the window's own bitmap (its rounded corners and
+    /// shadow included) when the platform can take it. Otherwise the crop of `frames` to the window's rect.
+    async fn window(&self, frames: Vec<Frame>, target: HoverTarget, ts: TaskSettings) -> Result<Dispatched, AppError> {
+        if ts.capture.transparent_window {
+            let request = CaptureRequest { show_cursor: ts.capture.show_cursor };
+            match self.ports.screen.capture_window(&target, request).await {
+                Ok(bitmap) => return Ok(self.submit(CaptureImage::Image(bitmap), ts, Some(&target))),
+                Err(PortError::Unsupported(_)) => {}
+                Err(error) => return Err(AppError::from(error)),
+            }
+        }
+        self.crop(frames, vec![target.rect], Some(target), ts).await
+    }
+
     async fn region(&self, ts: TaskSettings) -> Result<Dispatched, AppError> {
         let frames = self.frames(&ts).await?;
         let sel = region::select(&self.ports, frames, &ts.capture.region).await?;
@@ -206,7 +220,7 @@ impl App {
                     .await
                     .map_err(AppError::from)?
                     .ok_or_else(|| AppError::Unsupported("no active window".into()))?;
-                self.crop(frames, vec![target.rect], Some(target), ts).await
+                self.window(frames, target, ts).await
             }
             Action::CustomWindow => {
                 let title = ts.capture.custom_window_title.to_lowercase();
@@ -219,7 +233,7 @@ impl App {
                     .into_iter()
                     .find(|t| t.title.to_lowercase().contains(&title))
                     .ok_or_else(|| AppError::Io(format!("no window titled like \"{}\"", ts.capture.custom_window_title)))?;
-                self.crop(frames, vec![target.rect], Some(target), ts).await
+                self.window(frames, target, ts).await
             }
             Action::RectangleRegion | Action::RectangleLight | Action::RectangleTransparent => self.region(ts).await,
             Action::CustomRegion => {

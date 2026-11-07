@@ -9,7 +9,7 @@ use std::pin::{Pin, pin};
 use std::sync::{Arc, Mutex};
 
 use futures_lite::future::{block_on, poll_once};
-use laqta_domain::capture::RegionCaptureOptions;
+use laqta_domain::capture::{RegionCaptureOptions, RegionMouseAction};
 use laqta_domain::region::{Button, HoverTarget, KeyMods, RegionConfig, RegionInput, RegionKey, RegionState, TargetKind};
 use laqta_domain::{Bitmap, Frame, Monitor, MonitorId, PhysRect, PixelFormat};
 use laqta_imaging::Codecs;
@@ -19,7 +19,7 @@ use laqta_ports::fakes::{
 };
 use laqta_ports::{AppError, BoxFuture, HostInfo, HoverSource, PortError, RegionView};
 
-use super::{crop_frames, select, view};
+use super::{Selection, crop_frames, select, view};
 use crate::dispatcher::Ports;
 
 /// The left monitor's pixel as the frame holds it (BGRA), and as the composed image holds it (RGBA).
@@ -311,6 +311,8 @@ fn view_carries_the_magnifier_and_info_text_only_when_enabled() {
         min_size: 2,
         magnifier_pixels: 3,
         info_text: options().info_text,
+        right_click: RegionMouseAction::RemoveShapeOrCancel,
+        middle_click: RegionMouseAction::CancelCapture,
     });
 
     let on = view(&state, bounds, &options(), [1, 2, 3]);
@@ -361,4 +363,52 @@ fn select_future_is_send() {
     let opts = options();
     let session = select(&ports, two_frames(), &opts);
     assert_send(&session);
+}
+
+#[test]
+fn right_click_with_the_fullscreen_action_returns_the_whole_desktop() {
+    in_pool(|| {
+        let overlay = Arc::new(FakeOverlay::default());
+        let ports = test_ports(overlay.clone(), Arc::new(FakeHoverSource::unsupported()));
+        let opts = RegionCaptureOptions { right_click: RegionMouseAction::CaptureFullscreen, ..options() };
+        let mut session = pin!(select(&ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+
+        overlay.send(RegionInput::PointerDown { x: 1, y: 1, button: Button::Right });
+        let selection = step(session.as_mut()).expect("the right click confirms").unwrap();
+
+        assert_eq!(selection.rects, vec![PhysRect { x: 0, y: 0, width: 8, height: 4 }]);
+        assert_eq!(selection.target, None);
+        assert_eq!((selection.image.width(), selection.image.height()), (8, 4));
+        assert_eq!(pixel(&selection.image, 0, 0), LEFT);
+        assert_eq!(pixel(&selection.image, 7, 3), RIGHT);
+        assert!(!overlay.is_open());
+    });
+}
+
+/// Middle-clicks at `at` with the active-monitor action, and returns the selection.
+fn middle_click_selection(at: (i32, i32)) -> Selection {
+    in_pool(move || {
+        let overlay = Arc::new(FakeOverlay::default());
+        let ports = test_ports(overlay.clone(), Arc::new(FakeHoverSource::unsupported()));
+        let opts = RegionCaptureOptions { middle_click: RegionMouseAction::CaptureActiveMonitor, ..options() };
+        let mut session = pin!(select(&ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+
+        overlay.send(RegionInput::PointerDown { x: at.0, y: at.1, button: Button::Middle });
+        step(session.as_mut()).expect("the middle click confirms").unwrap()
+    })
+}
+
+#[test]
+fn middle_click_with_the_active_monitor_action_returns_the_monitor_under_the_cursor() {
+    let right = middle_click_selection((6, 1));
+    assert_eq!(right.rects, vec![PhysRect { x: 4, y: 0, width: 4, height: 4 }]);
+    assert_eq!(right.target, None);
+    assert_eq!((right.image.width(), right.image.height()), (4, 4));
+    assert_eq!(pixels(&right.image), vec![RIGHT; 16]);
+
+    let left = middle_click_selection((1, 1));
+    assert_eq!(left.rects, vec![PhysRect { x: 0, y: 0, width: 4, height: 4 }]);
+    assert_eq!(pixels(&left.image), vec![LEFT; 16]);
 }
