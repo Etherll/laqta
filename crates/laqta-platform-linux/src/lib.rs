@@ -12,6 +12,7 @@ mod secrets;
 pub mod session;
 mod shell;
 mod sound;
+mod stream;
 mod tray;
 mod wayland;
 mod x11;
@@ -30,9 +31,16 @@ pub struct LinuxPorts {
     pub tray: Arc<dyn Tray>,
     pub hover: Arc<dyn HoverSource>,
     pub secrets: Arc<dyn laqta_ports::SecretStore>,
+    pub stream: Arc<dyn laqta_ports::ScreenStream>,
 }
 
 pub fn ports(session: Session) -> LinuxPorts {
+    ports_with_token(session, None, Arc::new(|_: String| {}))
+}
+
+/// Like `ports`, with the ScreenCast restore token `main` saved (ADR 019). `on_token` receives each
+/// new token the portal issues, so `main` can save it.
+pub fn ports_with_token(session: Session, restore_token: Option<String>, on_token: Arc<dyn Fn(String) + Send + Sync>) -> LinuxPorts {
     let (screen, hotkeys, hover): (Arc<dyn ScreenSource>, Arc<dyn HotkeyRegistrar>, Arc<dyn HoverSource>) = match session {
         Session::X11 => (Arc::new(x11::capture::X11Screen), Arc::new(x11::hotkeys::X11Hotkeys::default()), Arc::new(x11::hover::X11Hover)),
         Session::Wayland => (
@@ -49,5 +57,6 @@ pub fn ports(session: Session) -> LinuxPorts {
         tray: Arc::new(tray::SniTray::default()),
         hover: Arc::new(atspi_elements::WithElements::new(hover)),
         secrets: Arc::new(secrets::SecretServiceStore),
+        stream: Arc::new(stream::LinuxScreenStream::new(session, restore_token, on_token)),
     }
 }
