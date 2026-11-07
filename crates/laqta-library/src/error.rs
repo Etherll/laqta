@@ -6,6 +6,8 @@ pub enum LibraryError {
     Json(#[from] serde_json::Error),
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("zip: {0}")]
+    Zip(#[from] zip::result::ZipError),
     #[error("settings version {found} is newer than {supported}")]
     TooNew { found: u32, supported: u32 },
 }

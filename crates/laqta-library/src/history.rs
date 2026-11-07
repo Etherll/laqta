@@ -230,6 +230,18 @@ impl History {
         Ok(HistoryStats { total, by_kind, total_bytes })
     }
 
+    /// Moves the write-ahead log into `history.db` and empties the log, so the file alone holds every
+    /// committed entry. Fails when another connection blocks the checkpoint.
+    pub fn checkpoint(&self) -> Result<(), LibraryError> {
+        // The row is (busy, log frames, checkpointed frames). busy is 1 when SQLite could not finish.
+        let busy: i64 = self.lock().query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+        if busy == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::new(io::ErrorKind::WouldBlock, "history checkpoint was blocked by another connection").into())
+        }
+    }
+
     /// Deletes the oldest entries beyond `max_items`. Returns how many were deleted. 0 keeps everything.
     pub fn trim(&self, max_items: u32) -> Result<u64, LibraryError> {
         if max_items == 0 {
