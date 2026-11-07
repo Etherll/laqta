@@ -7,6 +7,7 @@ mod codecs;
 mod compose;
 pub mod effects;
 pub mod qr;
+pub mod stitch;
 mod ops;
 pub mod png;
 
