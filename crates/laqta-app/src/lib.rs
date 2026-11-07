@@ -2,12 +2,15 @@
 //! private `files` module (ADR 024).
 #![forbid(unsafe_code)]
 
+mod auto_capture;
 mod dispatcher;
 mod files;
 mod recording;
 mod region;
+mod scrolling;
 mod task;
 mod tools;
+mod watch;
 
 pub use dispatcher::{App, Dispatched, Ports};
 pub use region::Selection;

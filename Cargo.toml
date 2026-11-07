@@ -27,6 +27,7 @@ laqta-editor = { path = "crates/laqta-editor" }
 laqta-media = { path = "crates/laqta-media" }
 laqta-ml = { path = "crates/laqta-ml" }
 laqta-import = { path = "crates/laqta-import" }
+laqta-update = { path = "crates/laqta-update" }
 
 # UI (ADR 002: move together)
 gpui = { package = "gpui-pre", version = "=0.3.11" }
@@ -61,6 +62,8 @@ fluent-bundle = "0.16"
 fluent-syntax = "0.12"
 unic-langid = "0.9"
 sys-locale = "0.3"
+notify = "8.2"
+notify-debouncer-full = "0.6"
 flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 rxing = { version = "0.9.3", default-features = false, features = ["encoding_rs", "decoders", "qrcode", "multi_barcode_readers"] }
 kamadak-exif = "0.6.2"
@@ -96,7 +99,7 @@ dirs = "7.0.0"
 # platforms
 arboard = { version = "3.7.0", features = ["wayland-data-control"] }
 windows = "0.62.2"
-x11rb = { version = "0.14.0", features = ["shm", "randr", "xfixes", "allow-unsafe-code"] }
+x11rb = { version = "0.14.0", features = ["shm", "randr", "xfixes", "xtest", "allow-unsafe-code"] }
 libwayshot = "0.9.0"
 ashpd = { version = "0.14.0", default-features = false, features = ["async-io", "screenshot", "screencast", "global_shortcuts"] }
 ksni = { version = "0.3.7", default-features = false, features = ["async-io"] }

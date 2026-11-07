@@ -200,6 +200,8 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         stream: platform.stream.clone(),
         ocr: Arc::new(crate::ocr::LazyOcr::new(data.clone(), Arc::new(ui.clone()))),
         window_ops: platform.window_ops.clone(),
+        input: Arc::new(stubs::Pending),
+        watcher: Arc::new(stubs::Pending),
         uploaders: uploaders.clone(),
         hover: platform.hover,
         notifier: Arc::new(crate::notifier::AppNotifier { ui: ui.clone() }),

@@ -17,6 +17,7 @@ targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 "laqta-upload"   = ["laqta-ports", "laqta-domain", "laqta-http"]
 "laqta-media"    = ["laqta-ports", "laqta-domain", "laqta-http"]
 "laqta-import"   = ["laqta-domain"]
+"laqta-update"   = ["laqta-http"]
 "laqta-ml"       = ["laqta-ports", "laqta-domain", "laqta-imaging", "laqta-http"]
 "laqta"          = ["*"]
 "laqta-nmh"      = ["laqta-ipc"]                                                # apps/laqta

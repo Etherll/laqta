@@ -78,7 +78,15 @@ pub struct ScrollingOptions {
 
 impl Default for ScrollingOptions {
     fn default() -> Self {
-        ScrollingOptions { method: ScrollMethod::MouseWheel, start_delay_ms: 300, scroll_delay_ms: 300, max_frames: 50, scroll_amount: 2, ignore_top: 0, ignore_bottom: 0 }
+        ScrollingOptions {
+            method: ScrollMethod::MouseWheel,
+            start_delay_ms: 300,
+            scroll_delay_ms: 300,
+            max_frames: 50,
+            scroll_amount: 2,
+            ignore_top: 0,
+            ignore_bottom: 0,
+        }
     }
 }
 

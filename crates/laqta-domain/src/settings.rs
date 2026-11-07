@@ -29,6 +29,54 @@ pub struct Settings {
     pub theme: Theme,
     /// UI language tag (`de`, `pt-BR`, …); `None` follows the system (M6 D9).
     pub language: Option<String>,
+    /// Watch folders (M6 D6).
+    pub watch_folders: Vec<WatchFolder>,
+    /// Auto capture (M6 D5).
+    pub auto_capture: AutoCaptureOptions,
+}
+
+/// A folder whose new files run a workflow.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct WatchFolder {
+    pub enabled: bool,
+    pub folder: PathBuf,
+    /// Glob on the file name (`*.png`, `*`); several patterns separated by `;` or `|`.
+    pub filter: String,
+    pub include_subfolders: bool,
+    /// Move the file into the screenshots folder (under its naming subfolder) before the workflow runs.
+    pub move_to_screenshots: bool,
+    /// The workflow whose settings the upload uses; `None` = the defaults.
+    pub workflow: Option<crate::workflow::WorkflowId>,
+}
+
+impl Default for WatchFolder {
+    fn default() -> Self {
+        WatchFolder {
+            enabled: true,
+            folder: PathBuf::new(),
+            filter: "*".into(),
+            include_subfolders: false,
+            move_to_screenshots: false,
+            workflow: None,
+        }
+    }
+}
+
+/// Auto capture: run `action` every `interval_ms`, `count` times (0 = until stopped).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct AutoCaptureOptions {
+    pub action: Action,
+    pub interval_ms: u32,
+    pub count: u32,
+    pub workflow: Option<crate::workflow::WorkflowId>,
+}
+
+impl Default for AutoCaptureOptions {
+    fn default() -> Self {
+        AutoCaptureOptions { action: Action::PrintScreen, interval_ms: 60_000, count: 0, workflow: None }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -76,6 +124,8 @@ impl Settings {
             tray_click: Action::PrintScreen,
             theme: Theme::System,
             language: None,
+            watch_folders: Vec::new(),
+            auto_capture: AutoCaptureOptions::default(),
         }
     }
 

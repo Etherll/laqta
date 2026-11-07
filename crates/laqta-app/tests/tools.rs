@@ -109,6 +109,8 @@ fn harness(frames: Vec<Frame>) -> Harness {
         stream: Arc::new(FakeScreenStream::default()),
         ocr: ocr.clone(),
         window_ops: window_ops.clone(),
+        input: Arc::new(laqta_ports::fakes::FakeInputSynth::default()),
+        watcher: Arc::new(laqta_ports::fakes::FakeFileWatcher::default()),
         uploaders: Arc::new(FakeUploaders::default()),
         hover: hover.clone(),
         notifier: Arc::new(FakeNotifier::default()),

@@ -38,6 +38,10 @@ pub struct Ports {
     pub stream: Arc<dyn laqta_ports::ScreenStream>,
     pub ocr: Arc<dyn laqta_ports::Ocr>,
     pub window_ops: Arc<dyn laqta_ports::WindowOps>,
+    /// Scrolling capture's synthetic scroll (M6 D4).
+    pub input: Arc<dyn laqta_ports::InputSynth>,
+    /// Watch folders (M6 D6).
+    pub watcher: Arc<dyn laqta_ports::FileWatcher>,
     pub uploaders: Arc<dyn laqta_ports::Uploaders>,
     pub hover: Arc<dyn HoverSource>,
     pub notifier: Arc<dyn Notifier>,
@@ -96,6 +100,10 @@ pub struct App {
     pub(crate) recording: std::sync::Mutex<Option<ActiveRecording>>,
     /// The area of the last recording, for `StartScreenRecorder`.
     pub(crate) last_recording_area: std::sync::Mutex<Option<PhysRect>>,
+    /// The running auto capture's stop flag (M6 D5).
+    pub(crate) auto_capture: std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
+    /// Live watch-folder handles (M6 D6); replaced by `start_watch_folders`.
+    pub(crate) watches: std::sync::Mutex<Vec<laqta_ports::WatchHandle>>,
     /// Keeps the event channel open while nobody listens, so sends never fail.
     idle: InactiveReceiver<TaskEvent>,
 }
@@ -120,6 +128,8 @@ impl App {
             last_region: std::sync::Mutex::new(None),
             recording: std::sync::Mutex::new(None),
             last_recording_area: std::sync::Mutex::new(None),
+            auto_capture: std::sync::Mutex::new(None),
+            watches: std::sync::Mutex::new(Vec::new()),
             idle: active.deactivate(),
         })
     }
@@ -453,6 +463,10 @@ impl App {
                 Ok(Dispatched::Done)
             }
             Action::ExitLaqta => Ok(Dispatched::Exit),
+            Action::ScrollingCapture => self.scrolling_capture(ts, workflow).await,
+            Action::AutoCapture => self.auto_capture(None),
+            Action::StartAutoCapture => self.auto_capture(Some(true)),
+            Action::StopAutoCapture => self.auto_capture(Some(false)),
             other => Err(AppError::Unsupported(format!("{} is not available yet", other.label()))),
         }
     }

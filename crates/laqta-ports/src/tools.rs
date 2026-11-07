@@ -48,6 +48,25 @@ pub trait InputSynth: Send + Sync {
     fn scroll(&self, x: i32, y: i32, method: laqta_domain::capture::ScrollMethod, amount: u32) -> Result<(), PortError>;
 }
 
+/// Called with each file that appeared or changed in a watched folder, once it has settled.
+pub type WatchCallback = std::sync::Arc<dyn Fn(std::path::PathBuf) + Send + Sync>;
+
+/// Stops its watch when dropped.
+pub struct WatchHandle(pub Box<dyn std::any::Any + Send + Sync>);
+
+impl std::fmt::Debug for WatchHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WatchHandle")
+    }
+}
+
+/// Folder watching (M6 D6): `laqta-library`'s `notify` adapter; the fake drives `laqta-app::watch` tests.
+pub trait FileWatcher: Send + Sync {
+    /// Calls `on_file` for files created or modified under `folder` (and its subfolders when
+    /// `recursive`), after writes have stopped for a short settle time.
+    fn watch(&self, folder: &std::path::Path, recursive: bool, on_file: WatchCallback) -> Result<WatchHandle, PortError>;
+}
+
 /// Run at login (M6 D10): Windows `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, Linux
 /// `~/.config/autostart/laqta.desktop`.
 pub trait Autostart: Send + Sync {

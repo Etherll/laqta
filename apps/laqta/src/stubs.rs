@@ -30,3 +30,24 @@ pub fn host_info() -> HostInfo {
     };
     HostInfo { user_name: user.clone(), user_login: user, computer_name: computer }
 }
+
+/// Until the platform `InputSynth` and the `notify` watcher land (M6 wave).
+#[derive(Debug)]
+pub struct Pending;
+
+impl laqta_ports::InputSynth for Pending {
+    fn scroll(&self, _x: i32, _y: i32, _m: laqta_domain::capture::ScrollMethod, _a: u32) -> Result<(), laqta_ports::PortError> {
+        Err(laqta_ports::PortError::Unsupported("synthetic scrolling".into()))
+    }
+}
+
+impl laqta_ports::FileWatcher for Pending {
+    fn watch(
+        &self,
+        _f: &std::path::Path,
+        _r: bool,
+        _cb: laqta_ports::WatchCallback,
+    ) -> Result<laqta_ports::WatchHandle, laqta_ports::PortError> {
+        Err(laqta_ports::PortError::Unsupported("watch folders".into()))
+    }
+}

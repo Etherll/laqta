@@ -10,6 +10,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+notify.workspace = true
+notify-debouncer-full.workspace = true
 laqta-domain.workspace = true
 laqta-ports.workspace = true
 serde.workspace = true

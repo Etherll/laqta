@@ -739,3 +739,60 @@ impl crate::WindowOps for FakeWindowOps {
         Ok(vec![("Title".into(), window.title.clone())])
     }
 }
+
+/// Records scroll requests.
+#[derive(Debug, Default)]
+pub struct FakeInputSynth {
+    pub calls: Mutex<Vec<(i32, i32, laqta_domain::capture::ScrollMethod, u32)>>,
+}
+
+impl crate::InputSynth for FakeInputSynth {
+    fn scroll(&self, x: i32, y: i32, method: laqta_domain::capture::ScrollMethod, amount: u32) -> Result<(), PortError> {
+        self.calls.lock().unwrap().push((x, y, method, amount));
+        Ok(())
+    }
+}
+
+/// Keeps each watch's callback; `emit` delivers a file as the adapter would.
+#[derive(Default)]
+pub struct FakeFileWatcher {
+    pub watches: Mutex<Vec<(PathBuf, bool, crate::WatchCallback, Arc<()>)>>,
+}
+
+impl std::fmt::Debug for FakeFileWatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakeFileWatcher").finish_non_exhaustive()
+    }
+}
+
+impl FakeFileWatcher {
+    /// Delivers `file` to every live watch whose folder contains it (directly, or below when recursive).
+    pub fn emit(&self, file: &Path) {
+        let watches: Vec<_> = self
+            .watches
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(d, r, cb, alive)| (d.clone(), *r, cb.clone(), Arc::strong_count(alive) > 1))
+            .collect();
+        for (dir, recursive, cb, alive) in watches {
+            let inside = if recursive { file.starts_with(&dir) } else { file.parent() == Some(dir.as_path()) };
+            if alive && inside {
+                cb(file.to_path_buf());
+            }
+        }
+    }
+
+    /// Folders with a live handle.
+    pub fn live(&self) -> Vec<PathBuf> {
+        self.watches.lock().unwrap().iter().filter(|w| Arc::strong_count(&w.3) > 1).map(|w| w.0.clone()).collect()
+    }
+}
+
+impl crate::FileWatcher for FakeFileWatcher {
+    fn watch(&self, folder: &Path, recursive: bool, on_file: crate::WatchCallback) -> Result<crate::WatchHandle, PortError> {
+        let alive = Arc::new(());
+        self.watches.lock().unwrap().push((folder.to_path_buf(), recursive, on_file, alive.clone()));
+        Ok(crate::WatchHandle(Box::new(alive)))
+    }
+}
