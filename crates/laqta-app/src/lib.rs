@@ -7,9 +7,11 @@ mod files;
 mod recording;
 mod region;
 mod task;
+mod tools;
 
 pub use dispatcher::{App, Dispatched, Ports};
 pub use region::Selection;
 pub use task::TaskJob;
 pub use task::UploadSource;
 pub use task::{CaptureImage, CaptureInfo};
+pub use tools::*;
