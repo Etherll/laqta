@@ -3,6 +3,7 @@
 //! The views implement the `Overlay`, `Notifier` and `ToolHost` ports through [`UiHandle`]; `main`
 //! runs [`run`] on the main thread.
 
+pub mod i18n;
 pub mod presenters;
 
 mod actions_toolbar;

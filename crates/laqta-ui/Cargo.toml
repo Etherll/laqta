@@ -10,6 +10,10 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+fluent-bundle.workspace = true
+fluent-syntax.workspace = true
+unic-langid.workspace = true
+sys-locale.workspace = true
 laqta-domain.workspace = true
 laqta-ports.workspace = true
 laqta-app.workspace = true

@@ -251,6 +251,10 @@ pub struct UiServices {
     /// Imports a ShareX folder or `.sxb` backup (settings, workflows, uploaders, secrets, history) and
     /// applies it; returns a summary.
     pub import_sharex: Arc<dyn Fn(PathBuf) -> Result<String, String> + Send + Sync>,
+    /// Run at login (M6 D10).
+    pub autostart: Arc<dyn laqta_ports::Autostart>,
+    /// "Upload with Laqta" in file managers, Send To, and the browser native-messaging host (M6 D11).
+    pub integration: Arc<dyn laqta_ports::ShellIntegration>,
     /// The font handle shared with the Editor engine (ADR 024).
     pub fonts: laqta_editor::Fonts,
     /// The compute pool and blocking pool (`run_compute` for editor operations that need it).

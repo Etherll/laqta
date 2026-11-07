@@ -57,6 +57,10 @@ pipewire = "0.10.1"
 wasapi = "0.27.0"
 lzma-rs = "0.3.0"
 tar = "0.4.46"
+fluent-bundle = "0.16"
+fluent-syntax = "0.12"
+unic-langid = "0.9"
+sys-locale = "0.3"
 flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 rxing = { version = "0.9.3", default-features = false, features = ["encoding_rs", "decoders", "qrcode", "multi_barcode_readers"] }
 kamadak-exif = "0.6.2"

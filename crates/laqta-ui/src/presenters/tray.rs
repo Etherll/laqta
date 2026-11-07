@@ -3,7 +3,7 @@ use laqta_ports::{TrayItem, TrayMenu};
 
 /// The tray menu. Left click runs `settings.tray_click` (default: capture the screen).
 pub fn tray_menu(settings: &Settings) -> TrayMenu {
-    let item = |label: &str, action| TrayItem { label: label.to_string(), action };
+    let item = |label: &str, action| TrayItem { label: crate::i18n::action(action, label), action };
     TrayMenu {
         tooltip: "Laqta".to_string(),
         default_action: settings.tray_click,

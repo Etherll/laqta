@@ -25,6 +25,9 @@ struct Platform {
     tray: Arc<dyn Tray>,
     secrets: Arc<dyn laqta_ports::SecretStore>,
     stream: Arc<dyn laqta_ports::ScreenStream>,
+    window_ops: Arc<dyn laqta_ports::WindowOps>,
+    autostart: Arc<dyn laqta_ports::Autostart>,
+    integration: Arc<dyn laqta_ports::ShellIntegration>,
 }
 
 #[cfg(target_os = "linux")]
@@ -42,6 +45,9 @@ fn platform() -> Result<Platform, String> {
         tray: p.tray,
         secrets: p.secrets,
         stream: p.stream,
+        window_ops: p.window_ops,
+        autostart: p.autostart,
+        integration: p.integration,
     })
 }
 
@@ -58,6 +64,9 @@ fn platform() -> Result<Platform, String> {
         tray: p.tray,
         secrets: p.secrets,
         stream: p.stream,
+        window_ops: p.window_ops,
+        autostart: p.autostart,
+        integration: p.integration,
     })
 }
 
@@ -190,7 +199,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         )),
         stream: platform.stream.clone(),
         ocr: Arc::new(crate::ocr::LazyOcr::new(data.clone(), Arc::new(ui.clone()))),
-        window_ops: Arc::new(stubs::NotYet),
+        window_ops: platform.window_ops.clone(),
         uploaders: uploaders.clone(),
         hover: platform.hover,
         notifier: Arc::new(crate::notifier::AppNotifier { ui: ui.clone() }),
@@ -267,6 +276,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                 store.save(&s, SETTINGS_VERSION, clock.now()).map_err(|e| e.to_string())?;
             }
             crate::uploads::apply_accounts(&uploaders, &s.hosts, &host_deps);
+            laqta_ui::i18n::set_language(s.language.as_deref());
             app.set_settings(s.clone());
             if use_hotkeys {
                 register_hotkeys(hotkeys.as_ref(), &s, dispatch.clone());
@@ -299,6 +309,8 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     }
 
     let settings = app.settings();
+    let language = laqta_ui::i18n::set_language(settings.language.as_deref());
+    tracing::info!(language, "UI language");
     let mut menu: TrayMenu = laqta_ui::presenters::tray::tray_menu(&settings);
     if use_hotkeys && register_hotkeys(hotkeys.as_ref(), &settings, dispatch.clone()) {
         menu.tooltip = laqta_ui::presenters::tray::TOOLTIP_NO_HOTKEY.to_string();
@@ -379,6 +391,8 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                 let importer = importer.clone();
                 Arc::new(move |path: std::path::PathBuf| importer.sharex(&path))
             },
+            autostart: platform.autostart.clone(),
+            integration: platform.integration.clone(),
             add_custom_uploader: {
                 let uploaders = uploaders.clone();
                 let dir = data.join("uploaders");

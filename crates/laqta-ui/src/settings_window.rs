@@ -59,10 +59,11 @@ enum Page {
     Capture,
     Workflows,
     Uploads,
+    Integration,
     Data,
 }
 
-const PAGES: [(Page, &str); 8] = [
+const PAGES: [(Page, &str); 9] = [
     (Page::General, "General"),
     (Page::AfterCapture, "After capture"),
     (Page::Image, "Image"),
@@ -70,6 +71,7 @@ const PAGES: [(Page, &str); 8] = [
     (Page::Capture, "Capture"),
     (Page::Workflows, "Hotkeys and workflows"),
     (Page::Uploads, "Uploads"),
+    (Page::Integration, "Integration"),
     (Page::Data, "Data"),
 ];
 
@@ -302,6 +304,8 @@ impl SettingsWindow {
                     .child(theme_button("theme-dark", "Dark", Theme::Dark, self, cx)),
                 cx,
             ))
+            .child(widgets::row("Language", self.language_picker(cx), cx))
+            .child(widgets::muted("Translations come from ShareX's translators; text they don't cover stays in English. The tray menu changes after a restart.", cx))
             .child(
                 Checkbox::new("show-toast").label("Show a toast after capture").checked(self.draft.defaults.general.show_toast).on_click(
                     cx.listener(|this, c: &bool, _, cx| {
@@ -350,6 +354,88 @@ impl SettingsWindow {
             .child(widgets::row("Custom capture sound (file)", Input::new(&self.sound_capture), cx))
             .child(widgets::row("Custom task sound (file)", Input::new(&self.sound_task), cx))
             .child(widgets::row("Custom error sound (file)", Input::new(&self.sound_error), cx))
+    }
+
+    fn language_picker(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let mut list = div().flex().flex_wrap().gap(px(4.));
+        let current = self.draft.language.clone();
+        list = list.child(Button::new("lang-system").label("System").small().selected(current.is_none()).on_click(cx.listener(
+            |this, _, _, cx| {
+                this.draft.language = None;
+                cx.notify();
+            },
+        )));
+        for (tag, name, _) in crate::i18n::LOCALES {
+            let tag: &'static str = tag;
+            list = list.child(
+                Button::new(SharedString::from(format!("lang-{tag}")))
+                    .label(*name)
+                    .small()
+                    .selected(current.as_deref() == Some(tag))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.draft.language = Some(tag.to_string());
+                        cx.notify();
+                    })),
+            );
+        }
+        list
+    }
+
+    fn integration(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let services = &cx.global::<UiState>().services;
+        let autostart = services.autostart.is_enabled();
+        let shell = services.integration.is_installed();
+        let mut section = widgets::section("Integration", cx);
+        section =
+            match autostart {
+                Ok(on) => {
+                    section.child(Checkbox::new("autostart").label("Run Laqta when I sign in (starts in the tray)").checked(on).on_click(
+                        cx.listener(|this, c: &bool, _, cx| {
+                            let services = cx.global::<UiState>().services.clone();
+                            let r = std::env::current_exe()
+                                .map_err(|e| e.to_string())
+                                .and_then(|exe| services.autostart.set_enabled(*c, &exe).map_err(|e| e.to_string()));
+                            this.report(
+                                r.map(|()| {
+                                    if *c { "Laqta will start when you sign in.".into() } else { "Laqta will not start at sign-in.".into() }
+                                }),
+                                cx,
+                            );
+                        }),
+                    ))
+                }
+                Err(e) => section.child(widgets::muted(format!("Run at sign-in is not available: {e}"), cx)),
+            };
+        section = section.child(widgets::muted("Adds “Upload with Laqta” to the file manager’s menu and to Send To.", cx));
+        section = match shell {
+            Ok(true) => {
+                section.child(Button::new("shell-off").label("Remove “Upload with Laqta”").on_click(cx.listener(|this, _, _, cx| {
+                    let r = cx.global::<UiState>().services.integration.uninstall().map_err(|e| e.to_string());
+                    this.report(r.map(|()| "Removed from the file manager.".into()), cx);
+                })))
+            }
+            Ok(false) => section.child(Button::new("shell-on").label("Add “Upload with Laqta”").on_click(cx.listener(|this, _, _, cx| {
+                let services = cx.global::<UiState>().services.clone();
+                let r = std::env::current_exe()
+                    .map_err(|e| e.to_string())
+                    .and_then(|exe| services.integration.install(&exe).map_err(|e| e.to_string()));
+                this.report(r.map(|()| "Added to the file manager. Some file managers show it after a restart.".into()), cx);
+            }))),
+            Err(e) => section.child(widgets::muted(format!("File manager integration is not available: {e}"), cx)),
+        };
+        section
+            .child(widgets::muted("Lets the ShareX browser extension (Chrome, Firefox) send pages, images and links to Laqta.", cx))
+            .child(Button::new("nmh").label("Register the browser extension host").on_click(cx.listener(|this, _, _, cx| {
+                let services = cx.global::<UiState>().services.clone();
+                let r = std::env::current_exe().map_err(|e| e.to_string()).and_then(|exe| {
+                    let nmh = exe.with_file_name(if cfg!(windows) { "laqta-nmh.exe" } else { "laqta-nmh" });
+                    if !nmh.exists() {
+                        return Err(format!("{} is missing", nmh.display()));
+                    }
+                    services.integration.install_native_messaging(&nmh).map_err(|e| e.to_string())
+                });
+                this.report(r.map(|()| "Browser extension host registered.".into()), cx);
+            })))
     }
 
     fn data(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -869,23 +955,25 @@ impl SettingsWindow {
             Action::LastRegion,
             Action::CustomRegion,
         ] {
-            add = add.child(Button::new(SharedString::from(format!("add-{action:?}"))).label(action.label()).ghost().on_click(
-                cx.listener(move |this, _, window, cx| {
-                    if this.collect(cx).is_ok() {
-                        let id = this.draft.workflows.iter().map(|w| w.id.0).max().unwrap_or(0) + 1;
-                        this.draft.workflows.push(Workflow {
-                            id: WorkflowId(id),
-                            name: action.label().to_string(),
-                            action,
-                            hotkey: None,
-                            enabled: true,
-                            patch: Default::default(),
-                        });
-                        this.rebuild_workflow_inputs(window, cx);
-                    }
-                    cx.notify();
-                }),
-            ));
+            add = add.child(
+                Button::new(SharedString::from(format!("add-{action:?}"))).label(crate::i18n::action_label(action)).ghost().on_click(
+                    cx.listener(move |this, _, window, cx| {
+                        if this.collect(cx).is_ok() {
+                            let id = this.draft.workflows.iter().map(|w| w.id.0).max().unwrap_or(0) + 1;
+                            this.draft.workflows.push(Workflow {
+                                id: WorkflowId(id),
+                                name: action.label().to_string(),
+                                action,
+                                hotkey: None,
+                                enabled: true,
+                                patch: Default::default(),
+                            });
+                            this.rebuild_workflow_inputs(window, cx);
+                        }
+                        cx.notify();
+                    }),
+                ),
+            );
         }
         page.child(add)
     }
@@ -920,6 +1008,7 @@ impl Render for SettingsWindow {
             Page::Capture => self.capture(cx),
             Page::Workflows => self.workflows_page(cx),
             Page::Uploads => self.uploads(window, cx),
+            Page::Integration => self.integration(cx),
             Page::Data => self.data(cx),
         };
         let mut footer = div().flex().flex_row().items_center().gap(px(8.)).p(px(12.)).border_t_1().border_color(cx.theme().border);

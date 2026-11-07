@@ -77,7 +77,7 @@ impl Render for ActionsToolbar {
                     .label(short_label(action))
                     .small()
                     .ghost()
-                    .tooltip(action.label())
+                    .tooltip(crate::i18n::action_label(action))
                     .on_click(move |_, _, _| d(action)),
             );
         }

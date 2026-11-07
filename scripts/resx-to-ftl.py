@@ -26,9 +26,11 @@ def read(path: Path) -> dict[str, str]:
         if data.get("type") or value is None or not ID.match(name):
             continue
         out[name] = value.text or ""
-
-
     return out
+
+
+def braces(text: str) -> str:
+    return re.sub(r"[{}]", lambda m: '{"' + m.group(0) + '"}', text)
 
 
 def escape(text: str) -> str:
@@ -38,10 +40,10 @@ def escape(text: str) -> str:
     parts = []
     last = 0
     for m in PLACEHOLDER.finditer(text):
-        parts.append(text[last : m.start()].replace("{", '{"{"}').replace("}", '{"}"}'))
+        parts.append(braces(text[last : m.start()]))
         parts.append(literal(m))
         last = m.end()
-    parts.append(text[last:].replace("{", '{"{"}').replace("}", '{"}"}'))
+    parts.append(braces(text[last:]))
     text = "".join(parts)
     lines = text.replace("\r\n", "\n").split("\n")
     out = []

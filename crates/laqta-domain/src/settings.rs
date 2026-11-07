@@ -27,6 +27,8 @@ pub struct Settings {
     pub history: HistoryOptions,
     pub tray_click: Action,
     pub theme: Theme,
+    /// UI language tag (`de`, `pt-BR`, …); `None` follows the system (M6 D9).
+    pub language: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -73,6 +75,7 @@ impl Settings {
             history: HistoryOptions::default(),
             tray_click: Action::PrintScreen,
             theme: Theme::System,
+            language: None,
         }
     }
 
