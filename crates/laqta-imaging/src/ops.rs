@@ -247,3 +247,12 @@ mod tests {
         let _ = resize(&grid(2, 2), 1, 1);
     }
 }
+
+/// The same image as Rgba8 (a cheap clone when it already is).
+pub fn to_rgba(img: &Bitmap) -> Bitmap {
+    if img.format() == laqta_domain::PixelFormat::Rgba8 {
+        return img.clone();
+    }
+    let px: Vec<u8> = img.pixels().as_chunks::<4>().0.iter().flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
+    Bitmap::new(img.width(), img.height(), laqta_domain::PixelFormat::Rgba8, px.into()).unwrap_or_else(|_| img.clone())
+}

@@ -5,6 +5,7 @@
 mod bmp;
 mod codecs;
 mod compose;
+pub mod effects;
 pub mod qr;
 mod ops;
 pub mod png;

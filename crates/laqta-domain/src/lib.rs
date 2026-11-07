@@ -3,6 +3,8 @@
 
 pub mod action;
 pub mod capture;
+pub mod color;
+pub mod effects;
 pub mod geometry;
 pub mod history;
 pub mod hotkey;
