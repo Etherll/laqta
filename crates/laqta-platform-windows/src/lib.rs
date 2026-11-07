@@ -21,6 +21,8 @@ mod clipboard;
 mod cursor;
 #[cfg(any(windows, test))]
 mod hdr;
+#[cfg(any(windows, test))]
+mod highlight;
 #[cfg(windows)]
 mod hover;
 #[cfg(any(windows, test))]
@@ -71,8 +73,8 @@ mod imp {
     use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 
     use crate::{
-        autostart, capture_dxgi, capture_gdi, clipboard, cursor, hover, input, integration, ocr, secrets, shell, shell_thread, stream,
-        transparent, window_ops,
+        autostart, capture_dxgi, capture_gdi, clipboard, cursor, highlight, hover, input, integration, ocr, secrets, shell, shell_thread,
+        stream, transparent, window_ops,
     };
 
     /// The Windows adapters, ready to hand to `laqta_app::Ports`.
@@ -90,6 +92,7 @@ mod imp {
         pub integration: Arc<dyn laqta_ports::ShellIntegration>,
         pub input: Arc<dyn laqta_ports::InputSynth>,
         pub ocr: Arc<dyn laqta_ports::Ocr>,
+        pub highlighter: Arc<dyn laqta_ports::PointerHighlighter>,
     }
 
     impl std::fmt::Debug for WindowsPorts {
@@ -113,6 +116,7 @@ mod imp {
             integration: Arc::new(integration::WindowsShellIntegration::default()),
             input: Arc::new(input::WindowsInput),
             ocr: Arc::new(ocr::WindowsOcr),
+            highlighter: Arc::new(highlight::WindowsHighlighter::default()),
         }
     }
 

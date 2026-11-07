@@ -31,6 +31,7 @@ struct Platform {
     input: Arc<dyn laqta_ports::InputSynth>,
     /// The OS OCR engine, where there is one (Windows).
     os_ocr: Option<Arc<dyn laqta_ports::Ocr>>,
+    highlighter: Arc<dyn laqta_ports::PointerHighlighter>,
 }
 
 #[cfg(target_os = "linux")]
@@ -53,6 +54,7 @@ fn platform() -> Result<Platform, String> {
         integration: p.integration,
         input: p.input,
         os_ocr: None,
+        highlighter: p.highlighter,
     })
 }
 
@@ -74,6 +76,7 @@ fn platform() -> Result<Platform, String> {
         integration: p.integration,
         input: p.input,
         os_ocr: Some(p.ocr),
+        highlighter: p.highlighter,
     })
 }
 
@@ -216,7 +219,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         ocr: Arc::new(crate::ocr::LazyOcr::new(data.clone(), Arc::new(ui.clone()), model_options.clone(), platform.os_ocr.clone())),
         window_ops: platform.window_ops.clone(),
         input: platform.input.clone(),
-        highlighter: Arc::new(stubs::NoHighlighter),
+        highlighter: platform.highlighter.clone(),
         watcher: Arc::new(laqta_library::NotifyWatcher::default()),
         uploaders: uploaders.clone(),
         hover: platform.hover,
