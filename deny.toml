@@ -30,10 +30,13 @@ ignore = true
 multiple-versions = "allow"
 wildcards = "allow"
 deny = [
-    { name = "openssl" },
-    { name = "openssl-sys" },
-    # Tokio only through laqta-http (ADR 007). M0 has no laqta-http, so no wrappers yet.
-    { name = "tokio", wrappers = [] },
+    # OpenSSL stays banned. cargo-deny unifies features across both targets, so it sees
+    # native-tls's OpenSSL backend although Windows builds use SChannel and Linux builds don't
+    # enable native-tls at all (ADR 025; `cargo tree --target <t> -i openssl` is empty for both).
+    { name = "openssl", wrappers = ["native-tls"] },
+    { name = "openssl-sys", wrappers = ["openssl", "native-tls"] },
+    # Tokio only through laqta-http (ADR 007): the wrappers are laqta-http and the HTTP/SSH stack it alone brings in.
+    { name = "tokio", wrappers = ["laqta-http", "reqwest", "hyper", "hyper-util", "hyper-rustls", "h2", "tokio-rustls", "tokio-util", "tower", "russh", "russh-sftp"] },
 ]
 
 [sources]

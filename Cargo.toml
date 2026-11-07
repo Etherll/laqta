@@ -21,6 +21,8 @@ laqta-ui = { path = "crates/laqta-ui" }
 laqta-platform-linux = { path = "crates/laqta-platform-linux" }
 laqta-platform-windows = { path = "crates/laqta-platform-windows" }
 laqta-library = { path = "crates/laqta-library" }
+laqta-http = { path = "crates/laqta-http" }
+laqta-upload = { path = "crates/laqta-upload" }
 
 # UI (ADR 002: move together)
 gpui = { package = "gpui-pre", version = "=0.3.11" }
@@ -67,6 +69,23 @@ x11rb = { version = "0.14.0", features = ["shm", "randr", "xfixes", "allow-unsaf
 libwayshot = "0.9.0"
 ashpd = { version = "0.14.0", default-features = false, features = ["async-io", "screenshot", "global_shortcuts"] }
 ksni = { version = "0.3.7", default-features = false, features = ["async-io"] }
+
+# network (Tokio only inside laqta-http, ADR 007)
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "net", "time", "io-util", "sync", "fs"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["http2", "stream", "multipart"] }  # TLS feature per target (ADR 025)
+sha2 = "0.11.1"
+oauth2 = { version = "5.0.0", default-features = false }
+rusty-s3 = "0.11.0"
+suppaftp = { version = "12.2.1", default-features = false }
+russh = { version = "0.65.1", default-features = false, features = ["ring", "rsa", "flate2"] }
+russh-sftp = "3.0.1"
+serde_json_path = "0.7.2"
+roxmltree = "0.21.2"
+fancy-regex = "0.20.0"
+base64 = "0.23.1"
+url = "2.5.8"
+percent-encoding = "2.3.2"
+zip = { version = "=9.4.1", default-features = false, features = ["deflate"] }
 
 # tooling
 cargo_metadata = "0.23.1"

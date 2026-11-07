@@ -12,6 +12,8 @@ targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 "laqta-platform-linux"   = ["laqta-ports", "laqta-domain"]
 "laqta-platform-windows" = ["laqta-ports", "laqta-domain"]
 "laqta-library"  = ["laqta-ports", "laqta-domain"]
+"laqta-http"     = []
+"laqta-upload"   = ["laqta-ports", "laqta-domain", "laqta-http"]
 "laqta"          = ["*"]                                                # apps/laqta
 
 # Direct non-workspace dependencies allowed per crate (normal deps only).
