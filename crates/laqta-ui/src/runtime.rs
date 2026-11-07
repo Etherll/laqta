@@ -230,6 +230,9 @@ impl ToolHost for UiHandle {
     }
 }
 
+pub type SxieRead = Arc<dyn Fn(&[u8]) -> Result<laqta_domain::effects::Preset, String> + Send + Sync>;
+pub type SxieWrite = Arc<dyn Fn(&laqta_domain::effects::Preset) -> Result<Vec<u8>, String> + Send + Sync>;
+
 /// What the views need from the rest of the program. Built by `main`.
 #[derive(Clone)]
 pub struct UiServices {
@@ -252,8 +255,8 @@ pub struct UiServices {
     /// applies it; returns a summary.
     pub import_sharex: Arc<dyn Fn(PathBuf) -> Result<String, String> + Send + Sync>,
     /// Reads and writes ShareX `.sxie` effect packages (`laqta-import`).
-    pub sxie_read: Arc<dyn Fn(&[u8]) -> Result<laqta_domain::effects::Preset, String> + Send + Sync>,
-    pub sxie_write: Arc<dyn Fn(&laqta_domain::effects::Preset) -> Result<Vec<u8>, String> + Send + Sync>,
+    pub sxie_read: SxieRead,
+    pub sxie_write: SxieWrite,
     /// Run at login (M6 D10).
     pub autostart: Arc<dyn laqta_ports::Autostart>,
     /// "Upload with Laqta" in file managers, Send To, and the browser native-messaging host (M6 D11).

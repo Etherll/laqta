@@ -204,7 +204,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         ocr: Arc::new(crate::ocr::LazyOcr::new(data.clone(), Arc::new(ui.clone()))),
         window_ops: platform.window_ops.clone(),
         input: Arc::new(stubs::Pending),
-        watcher: Arc::new(stubs::Pending),
+        watcher: Arc::new(laqta_library::NotifyWatcher::default()),
         uploaders: uploaders.clone(),
         hover: platform.hover,
         notifier: Arc::new(crate::notifier::AppNotifier { ui: ui.clone() }),
@@ -286,6 +286,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             if use_hotkeys {
                 register_hotkeys(hotkeys.as_ref(), &s, dispatch.clone());
             }
+            app.start_watch_folders();
             Ok(())
         })
     };
@@ -325,6 +326,8 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         Err(PortError::Unsupported(why)) => tracing::warn!("no tray ({why}); the CLI and hotkey still work"),
         Err(e) => tracing::warn!("tray failed: {e}; the CLI and hotkey still work"),
     }
+
+    app.start_watch_folders();
 
     // Startup requests run in order. `-autoclose` quits once they and the tasks they started are done.
     // Without `-silent`, a plain start opens the main window.
