@@ -9,9 +9,11 @@ mod save;
 mod status;
 #[cfg(test)]
 mod tests;
+mod upload;
 
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -46,11 +48,26 @@ pub struct CaptureInfo {
     pub process_name: String,
 }
 
+/// What an Upload job sends.
+#[derive(Clone, Debug)]
+pub enum UploadSource {
+    /// Text, uploaded as a `.txt` file.
+    Text(String),
+    /// A file on disk. Its kind (image, text or other) picks the destination by extension.
+    File(PathBuf),
+    /// A URL to download, then upload as a file of the downloaded type.
+    Url(String),
+    /// A URL to shorten. Nothing is uploaded; the after-upload steps run with shortening on.
+    ShortenUrl(String),
+}
+
 /// Work the dispatcher hands to Task.
 #[derive(Clone, Debug)]
 pub enum TaskJob {
     /// `settings` are the effective task settings. A `None` `screenshots_dir` means the application's folder.
     Capture { image: CaptureImage, settings: TaskSettings, info: CaptureInfo },
+    /// `settings` are the effective task settings, read for the upload and the after-upload steps.
+    Upload { source: UploadSource, settings: TaskSettings },
 }
 
 /// What the steps of every job share. Each job gets a clone.
@@ -122,9 +139,13 @@ impl Task {
 
     /// The folder is resolved here, so the job runs with the folder it was submitted with.
     fn resolve(&self, job: TaskJob) -> TaskJob {
-        let TaskJob::Capture { image, mut settings, info } = job;
-        settings.screenshots_dir.get_or_insert_with(|| self.settings.get().screenshots_dir.clone());
-        TaskJob::Capture { image, settings, info }
+        match job {
+            TaskJob::Capture { image, mut settings, info } => {
+                settings.screenshots_dir.get_or_insert_with(|| self.settings.get().screenshots_dir.clone());
+                TaskJob::Capture { image, settings, info }
+            }
+            upload @ TaskJob::Upload { .. } => upload,
+        }
     }
 
     fn job(&self, id: TaskId, job: TaskJob) -> BoxFuture<'static, ()> {
@@ -141,13 +162,18 @@ impl Task {
             if !jobs.contains(id) {
                 return;
             }
-            // The slot is taken and released outside the guarded body (ADR 020).
+            // The slot is taken and released outside the guarded body (ADR 020). Upload jobs take a slot too.
             let _slot = capture_slots.acquire().await;
             let Some(stop) = jobs.start(id) else { return };
-            let TaskJob::Capture { image, settings, info } = job;
-            let body = run::capture(cx.clone(), id, image, settings, info, stop);
+            let reporter = cx.reporter.clone();
+            let body = async move {
+                match job {
+                    TaskJob::Capture { image, settings, info } => run::capture(cx, id, image, settings, info, stop).await,
+                    TaskJob::Upload { source, settings } => upload::run(cx, id, source, settings, stop).await,
+                }
+            };
             if let Err(payload) = AssertUnwindSafe(body).catch_unwind().await {
-                cx.reporter.fail(id, AppError::Panic(panic_message(&*payload)));
+                reporter.fail(id, AppError::Panic(panic_message(&*payload)));
             }
             jobs.finish(id);
         })

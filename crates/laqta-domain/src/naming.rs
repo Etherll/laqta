@@ -358,6 +358,172 @@ fn pick_index(ctx: &mut NameContext<'_>, len: usize) -> usize {
     ((ctx.rng)() % len as u64) as usize
 }
 
+/// What the upload-info tokens read (ShareX's `$url` family). An empty string is an absent value, so
+/// `$shorturl` falls back to `url` when nothing was shortened.
+#[derive(Clone, Debug)]
+pub struct UploadInfo<'a> {
+    pub url: &'a str,
+    pub short_url: &'a str,
+    pub thumbnail_url: &'a str,
+    pub deletion_url: &'a str,
+    /// The raw response body the host returned.
+    pub result: &'a str,
+    pub file_path: Option<&'a Path>,
+    pub file_name: &'a str,
+    pub thumbnail_path: Option<&'a Path>,
+    pub upload_time: jiff::civil::DateTime,
+}
+
+/// The upload-info token names, without the `$`. `upload_info` takes the longest one that matches.
+const UPLOAD_TOKENS: [&str; 13] = [
+    "url",
+    "shorturl",
+    "thumbnailurl",
+    "deletionurl",
+    "result",
+    "filename",
+    "filenamenoext",
+    "filepath",
+    "folderpath",
+    "foldername",
+    "thumbnailfilename",
+    "thumbnailfilenamenoext",
+    "uploadtime",
+];
+
+/// Expands the upload-info tokens in `template` in one pass, so a value that contains `$url` is never
+/// expanded again. A `$` that starts no token stays literal. Pure: it reads nothing but `info`.
+pub fn upload_info(template: &str, info: &UploadInfo<'_>) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(at) = rest.find('$') {
+        out.push_str(&rest[..at]);
+        let body = &rest[at + 1..];
+        match UPLOAD_TOKENS.iter().copied().filter(|token| body.starts_with(*token)).max_by_key(|token| token.len()) {
+            Some(token) => {
+                out.push_str(&upload_value(token, info));
+                rest = &body[token.len()..];
+            }
+            None => {
+                out.push('$');
+                rest = body;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn upload_value(token: &str, info: &UploadInfo<'_>) -> String {
+    match token {
+        "url" => info.url.to_owned(),
+        "shorturl" => {
+            if info.short_url.is_empty() {
+                info.url.to_owned()
+            } else {
+                info.short_url.to_owned()
+            }
+        }
+        "thumbnailurl" => info.thumbnail_url.to_owned(),
+        "deletionurl" => info.deletion_url.to_owned(),
+        "result" => info.result.to_owned(),
+        "filename" => info.file_name.to_owned(),
+        "filenamenoext" => name_part(Some(Path::new(info.file_name)), true),
+        "filepath" => text_part(info.file_path),
+        "folderpath" => text_part(info.file_path.and_then(Path::parent)),
+        "foldername" => name_part(info.file_path.and_then(Path::parent), false),
+        "thumbnailfilename" => name_part(info.thumbnail_path, false),
+        "thumbnailfilenamenoext" => name_part(info.thumbnail_path, true),
+        "uploadtime" => time_text(info.upload_time),
+        _ => String::new(),
+    }
+}
+
+/// The last component of `path`, or its stem without the extension. Empty when there is no path.
+fn name_part(path: Option<&Path>, stem: bool) -> String {
+    let Some(path) = path else { return String::new() };
+    let part = if stem { path.file_stem() } else { path.file_name() };
+    part.map_or_else(String::new, |part| part.to_string_lossy().into_owned())
+}
+
+fn text_part(path: Option<&Path>) -> String {
+    path.map_or_else(String::new, |path| path.display().to_string())
+}
+
+/// `yyyy-MM-dd HH:mm:ss`, the form `$uploadtime` takes.
+fn time_text(time: jiff::civil::DateTime) -> String {
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", time.year(), time.month(), time.day(), time.hour(), time.minute(), time.second())
+}
+
+#[cfg(test)]
+mod upload_info_tests {
+    use super::*;
+
+    fn info<'a>(file_path: Option<&'a Path>, thumbnail_path: Option<&'a Path>) -> UploadInfo<'a> {
+        UploadInfo {
+            url: "https://h.example/a1",
+            short_url: "",
+            thumbnail_url: "https://h.example/t1",
+            deletion_url: "https://h.example/d1",
+            result: "{\"ok\":true}",
+            file_path,
+            file_name: "Laqta_2026-11-07_14-03-22.png",
+            thumbnail_path,
+            upload_time: jiff::civil::date(2026, 11, 7).at(14, 3, 22, 0),
+        }
+    }
+
+    #[test]
+    fn every_token_takes_its_value() {
+        let file = Path::new("/shots/2026-11/Laqta_2026-11-07_14-03-22.png");
+        let thumb = Path::new("/shots/2026-11/Laqta_2026-11-07_14-03-22-thumbnail.png");
+        let mut value = info(Some(file), Some(thumb));
+        value.short_url = "https://h.example/s";
+        let template = "$url|$shorturl|$thumbnailurl|$deletionurl|$result|$filename|$filenamenoext|$filepath|$folderpath|$foldername|$thumbnailfilename|$thumbnailfilenamenoext|$uploadtime";
+        assert_eq!(
+            upload_info(template, &value),
+            "https://h.example/a1|https://h.example/s|https://h.example/t1|https://h.example/d1|{\"ok\":true}|Laqta_2026-11-07_14-03-22.png|Laqta_2026-11-07_14-03-22|/shots/2026-11/Laqta_2026-11-07_14-03-22.png|/shots/2026-11|2026-11|Laqta_2026-11-07_14-03-22-thumbnail.png|Laqta_2026-11-07_14-03-22-thumbnail|2026-11-07 14:03:22"
+        );
+    }
+
+    #[test]
+    fn longest_name_wins() {
+        let file = Path::new("/shots/a.png");
+        let thumb = Path::new("/shots/a-thumbnail.png");
+        let value = info(Some(file), Some(thumb));
+        assert_eq!(upload_info("$thumbnailfilenamenoext", &value), "a-thumbnail");
+        assert_eq!(upload_info("$thumbnailfilename", &value), "a-thumbnail.png");
+        assert_eq!(upload_info("$filenamenoext", &value), "Laqta_2026-11-07_14-03-22");
+        assert_eq!(upload_info("$shorturl$url", &value), "https://h.example/a1https://h.example/a1");
+    }
+
+    #[test]
+    fn shorturl_falls_back_to_url_when_empty() {
+        let value = info(None, None);
+        assert_eq!(upload_info("$shorturl", &value), "https://h.example/a1");
+    }
+
+    #[test]
+    fn absent_paths_are_empty() {
+        let value = info(None, None);
+        assert_eq!(upload_info("[$filepath|$folderpath|$foldername|$thumbnailfilename]", &value), "[|||]");
+    }
+
+    #[test]
+    fn unknown_dollar_stays_literal() {
+        let value = info(None, None);
+        assert_eq!(upload_info("$nope $ $urlx", &value), "$nope $ https://h.example/a1x");
+        assert_eq!(upload_info("cost $", &value), "cost $");
+    }
+
+    #[test]
+    fn values_are_not_expanded_again() {
+        let mut value = info(None, None);
+        value.url = "https://h.example/?q=$url";
+        assert_eq!(upload_info("$url", &value), "https://h.example/?q=$url");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
