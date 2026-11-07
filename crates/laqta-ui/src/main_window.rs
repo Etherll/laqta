@@ -2,7 +2,7 @@
 //! and dropped on close (ARCHITECTURE §1.4).
 
 use gpui::{
-    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, TitlebarOptions, Window,
+    App, AppContext as _, InteractiveElement as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, TitlebarOptions, Window,
     WindowBounds, WindowOptions, div, img, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
@@ -158,7 +158,18 @@ impl Render for MainWindow {
             recent = recent.child(card);
         }
 
-        widgets::page(cx).child(header).child(
+        let app = cx.global::<UiState>().services.app.clone();
+        let drop_hint = widgets::muted("Drop files here to upload them.", cx);
+        widgets::page(cx)
+            .id("main-drop")
+            .drag_over::<gpui::ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().secondary))
+            .on_drop(move |paths: &gpui::ExternalPaths, _, _| {
+                let ids = app.upload_files(paths.paths().to_vec(), None);
+                tracing::info!(count = ids.len(), "dropped files submitted for upload");
+            })
+            .child(header)
+            .child(div().px(px(12.)).child(drop_hint))
+            .child(
             div()
                 .flex_1()
                 .flex()
