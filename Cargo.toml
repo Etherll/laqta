@@ -28,7 +28,7 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features =
 # core
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"
-bitflags = "2"
+bitflags = { version = "2", features = ["serde"] }
 jiff = { version = "0.2.39", default-features = false, features = ["std"] }
 png = "0.18.1"
 rayon = "1.12"
