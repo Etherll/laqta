@@ -15,6 +15,8 @@ pub struct LazyOcr {
     data: PathBuf,
     prompt: Arc<dyn Prompt>,
     options: crate::models::SharedModelOptions,
+    /// The OS engine (Windows.Media.Ocr) used when the models are declined (M5 D4).
+    fallback: Option<Arc<dyn Ocr>>,
     /// The engine and the (det, rec, provider) it was built for.
     ready: Mutex<Option<((String, String, laqta_domain::settings::ModelProvider), Arc<ModelOcr>)>>,
 }
@@ -30,8 +32,8 @@ fn ml(e: laqta_ml::error::MlError) -> PortError {
 }
 
 impl LazyOcr {
-    pub fn new(data: PathBuf, prompt: Arc<dyn Prompt>, options: crate::models::SharedModelOptions) -> Self {
-        LazyOcr { data, prompt, options, ready: Mutex::new(None) }
+    pub fn new(data: PathBuf, prompt: Arc<dyn Prompt>, options: crate::models::SharedModelOptions, fallback: Option<Arc<dyn Ocr>>) -> Self {
+        LazyOcr { data, prompt, options, fallback, ready: Mutex::new(None) }
     }
 
     async fn get(&self) -> Result<Arc<ModelOcr>, PortError> {
@@ -54,12 +56,20 @@ impl LazyOcr {
         let lib = laqta_ml::install::library_path(&dir, ort_entry);
         let runtime = Arc::new(Runtime::new(lib.clone(), dir.clone(), crate::models::provider(options.provider)));
         // Catalog entries to download; custom models are already on disk.
-        let wanted: Vec<_> = [&det_id, &rec_id].into_iter().filter_map(|id| catalog().model(id)).filter(|e| !runtime.is_installed(e)).collect();
+        let wanted: Vec<_> =
+            [&det_id, &rec_id].into_iter().filter_map(|id| catalog().model(id)).filter(|e| !runtime.is_installed(e)).collect();
         if !lib.exists() || !wanted.is_empty() {
             let mb = (if lib.exists() { 0 } else { ort_entry.size_bytes } + wanted.iter().map(|e| e.size_bytes).sum::<u64>()) / 1_000_000;
             let ok = self
                 .prompt
-                .confirm("Text recognition", &format!("Text recognition needs ONNX Runtime and its models (about {mb} MB). Download them now?"))
+                .confirm(
+                    "Text recognition",
+                    &if self.fallback.is_some() {
+                        format!("Download ONNX Runtime and the text models (about {mb} MB) for better accuracy? Choose No to use Windows' built-in OCR.")
+                    } else {
+                        format!("Text recognition needs ONNX Runtime and its models (about {mb} MB). Download them now?")
+                    },
+                )
                 .await?;
             if !ok {
                 return Err(PortError::Cancelled);
@@ -83,11 +93,18 @@ impl LazyOcr {
 impl Ocr for LazyOcr {
     fn recognize(&self, image: Bitmap, language: String) -> BoxFuture<'_, Result<OcrResult, PortError>> {
         Box::pin(async move {
-            let o = self.get().await?;
-            o.recognize(image, language).await
+            match self.get().await {
+                Ok(o) => o.recognize(image, language).await,
+                Err(PortError::Cancelled) if let Some(f) = &self.fallback => f.recognize(image, language).await,
+                Err(e) => Err(e),
+            }
         })
     }
     fn languages(&self) -> Vec<String> {
-        self.ready.lock().ok().and_then(|g| g.as_ref().map(|(_, o)| o.languages())).unwrap_or_default()
+        let mut l = self.ready.lock().ok().and_then(|g| g.as_ref().map(|(_, o)| o.languages())).unwrap_or_default();
+        if let Some(f) = &self.fallback {
+            l.extend(f.languages());
+        }
+        l
     }
 }

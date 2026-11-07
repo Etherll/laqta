@@ -29,6 +29,8 @@ struct Platform {
     autostart: Arc<dyn laqta_ports::Autostart>,
     integration: Arc<dyn laqta_ports::ShellIntegration>,
     input: Arc<dyn laqta_ports::InputSynth>,
+    /// The OS OCR engine, where there is one (Windows).
+    os_ocr: Option<Arc<dyn laqta_ports::Ocr>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -50,6 +52,7 @@ fn platform() -> Result<Platform, String> {
         autostart: p.autostart,
         integration: p.integration,
         input: p.input,
+        os_ocr: None,
     })
 }
 
@@ -70,6 +73,7 @@ fn platform() -> Result<Platform, String> {
         autostart: p.autostart,
         integration: p.integration,
         input: p.input,
+        os_ocr: Some(p.ocr),
     })
 }
 
@@ -205,7 +209,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             Arc::new(ui.clone()),
         )),
         stream: platform.stream.clone(),
-        ocr: Arc::new(crate::ocr::LazyOcr::new(data.clone(), Arc::new(ui.clone()), model_options.clone())),
+        ocr: Arc::new(crate::ocr::LazyOcr::new(data.clone(), Arc::new(ui.clone()), model_options.clone(), platform.os_ocr.clone())),
         window_ops: platform.window_ops.clone(),
         input: platform.input.clone(),
         highlighter: Arc::new(stubs::NoHighlighter),

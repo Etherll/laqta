@@ -61,11 +61,12 @@ enum Page {
     Uploads,
     Recording,
     Automation,
+    Models,
     Integration,
     Data,
 }
 
-const PAGES: [(Page, &str); 11] = [
+const PAGES: [(Page, &str); 12] = [
     (Page::General, "General"),
     (Page::AfterCapture, "After capture"),
     (Page::Image, "Image"),
@@ -75,6 +76,7 @@ const PAGES: [(Page, &str); 11] = [
     (Page::Uploads, "Uploads"),
     (Page::Recording, "Recording"),
     (Page::Automation, "Automation"),
+    (Page::Models, "Models"),
     (Page::Integration, "Integration"),
     (Page::Data, "Data"),
 ];
@@ -114,6 +116,11 @@ struct SettingsWindow {
     scroll: [Entity<InputState>; 6],
     /// Per watch folder: folder and filter inputs, parallel to `draft.watch_folders`.
     watch: Vec<(Entity<InputState>, Entity<InputState>)>,
+    model_rows: Vec<crate::runtime::ModelRow>,
+    /// Download progress or the last error, per model id.
+    model_status: std::collections::HashMap<String, String>,
+    custom_family: usize,
+    custom_name: Entity<InputState>,
     /// The last update check's message, and whether it can be installed from here.
     update: Option<(String, bool)>,
 }
@@ -189,6 +196,10 @@ impl SettingsWindow {
                     .map(|v| text_input(v.to_string(), window, cx))
             },
             watch: Vec::new(),
+            model_rows: cx.global::<UiState>().services.models.rows(),
+            model_status: Default::default(),
+            custom_family: 0,
+            custom_name: text_input("My model", window, cx),
             draft,
             page: Page::General,
             message: None,
@@ -699,6 +710,202 @@ impl SettingsWindow {
                 })
                 .detach();
             })))
+    }
+
+    fn models_page(&self, cx: &mut Context<Self>) -> gpui::Div {
+        use laqta_domain::settings::ModelProvider;
+        let mut providers = div().flex().gap(px(4.));
+        for (p, label) in [(ModelProvider::Auto, "Automatic"), (ModelProvider::Cpu, "CPU"), (ModelProvider::Gpu, "GPU")] {
+            providers = providers.child(
+                Button::new(SharedString::from(format!("prov-{p:?}")))
+                    .label(label)
+                    .small()
+                    .selected(self.draft.models.provider == p)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.draft.models.provider = p;
+                        cx.notify();
+                    })),
+            );
+        }
+        let mut section = widgets::section("Models", cx)
+            .child(widgets::muted("Local models for text recognition and background removal. Files are checked against pinned hashes.", cx))
+            .child(widgets::row("Run on", providers, cx));
+        for (task, label) in [("ocr-det", "Text detection"), ("ocr-rec", "Text recognition"), ("background", "Background removal")] {
+            let rows: Vec<_> = self.model_rows.iter().filter(|r| r.task == task).cloned().collect();
+            section = section.child(div().pt(px(8.)).font_weight(gpui::FontWeight::SEMIBOLD).child(label));
+            if rows.is_empty() {
+                section = section.child(widgets::muted("No models for this task in this build.", cx));
+            }
+            let chosen = match task {
+                "ocr-det" => self.draft.models.ocr_det.clone(),
+                "ocr-rec" => self.draft.models.ocr_rec.clone(),
+                _ => self.draft.models.background.clone(),
+            };
+            for (i, row) in rows.into_iter().enumerate() {
+                let id = row.id.clone();
+                let selected = chosen.as_deref() == Some(id.as_str()) || (chosen.is_none() && i == 0);
+                let size = crate::presenters::history::format_size(row.size_bytes);
+                let mut line = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        Button::new(SharedString::from(format!("use-{id}")))
+                            .label(if selected { "In use" } else { "Use" })
+                            .small()
+                            .selected(selected)
+                            .on_click(cx.listener({
+                                let id = id.clone();
+                                let task = task.to_owned();
+                                move |this, _, _, cx| {
+                                    let slot = match task.as_str() {
+                                        "ocr-det" => &mut this.draft.models.ocr_det,
+                                        "ocr-rec" => &mut this.draft.models.ocr_rec,
+                                        _ => &mut this.draft.models.background,
+                                    };
+                                    *slot = Some(id.clone());
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                    .child(div().flex_1().flex().flex_col().child(row.name.clone()).child(widgets::muted(
+                        format!(
+                            "{size}{}{}",
+                            if row.licence.is_empty() { String::new() } else { format!(" · {}", row.licence) },
+                            if row.commercial { "" } else { " · non-commercial" }
+                        ),
+                        cx,
+                    )));
+                if let Some(st) = self.model_status.get(&id) {
+                    line = line.child(widgets::muted(st.clone(), cx));
+                }
+                line = if row.installed {
+                    line.child(Button::new(SharedString::from(format!("rm-{id}"))).label("Remove").small().ghost().on_click(cx.listener({
+                        let id = id.clone();
+                        move |this, _, _, cx| {
+                            let services = cx.global::<UiState>().services.clone();
+                            if let Err(e) = services.models.remove(&id) {
+                                this.model_status.insert(id.clone(), e);
+                            }
+                            if row.custom {
+                                this.draft.models.custom.retain(|c| c.id != id);
+                            }
+                            this.model_rows = services.models.rows();
+                            cx.notify();
+                        }
+                    })))
+                } else if row.available {
+                    line.child(Button::new(SharedString::from(format!("dl-{id}"))).label("Download").small().on_click(cx.listener({
+                        let id = id.clone();
+                        move |this, _, _, cx| this.download_model(id.clone(), cx)
+                    })))
+                } else {
+                    line.child(widgets::muted("not yet available", cx))
+                };
+                section = section.child(line);
+            }
+        }
+        let families = cx.global::<UiState>().services.models.families();
+        let mut fam = div().flex().flex_wrap().gap(px(4.));
+        for (i, (task, family)) in families.iter().enumerate() {
+            fam = fam.child(
+                Button::new(SharedString::from(format!("fam-{i}")))
+                    .label(format!("{family} ({task})"))
+                    .small()
+                    .selected(self.custom_family == i)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.custom_family = i;
+                        cx.notify();
+                    })),
+            );
+        }
+        section
+            .child(div().pt(px(8.)).font_weight(gpui::FontWeight::SEMIBOLD).child("Custom model"))
+            .child(widgets::muted(
+                "Add your own ONNX file for a supported family; it is checked against the family's inputs and outputs.",
+                cx,
+            ))
+            .child(widgets::row("Family", fam, cx))
+            .child(widgets::row("Name", Input::new(&self.custom_name), cx))
+            .child(
+                Button::new("custom-add").label("Choose ONNX file…").on_click(cx.listener(move |this, _, _, cx| this.add_custom_model(cx))),
+            )
+    }
+
+    fn download_model(&mut self, id: String, cx: &mut Context<Self>) {
+        let services = cx.global::<UiState>().services.clone();
+        let (tx, mut rx) = futures_channel::mpsc::unbounded::<(u64, Option<u64>)>();
+        let progress: crate::runtime::ModelProgress = std::sync::Arc::new(move |a, b| {
+            let _ = tx.unbounded_send((a, b));
+        });
+        let task = services.models.install(id.clone(), progress);
+        self.model_status.insert(id.clone(), "Starting…".into());
+        cx.notify();
+        let pid = id.clone();
+        cx.spawn(async move |this, cx| {
+            use futures_lite::StreamExt as _;
+            while let Some((a, b)) = rx.next().await {
+                let msg = match b {
+                    Some(t) if t > 0 => format!("{}%", a * 100 / t),
+                    _ => crate::presenters::history::format_size(a),
+                };
+                if this
+                    .update(cx, |this, cx| {
+                        this.model_status.insert(pid.clone(), msg);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+        let bg = cx.background_spawn(task);
+        cx.spawn(async move |this, cx| {
+            let r = bg.await;
+            let _ = this.update(cx, |this, cx| {
+                match r {
+                    Ok(()) => {
+                        this.model_status.remove(&id);
+                    }
+                    Err(e) => {
+                        this.model_status.insert(id.clone(), format!("Failed: {e}"));
+                    }
+                }
+                this.model_rows = cx.global::<UiState>().services.models.rows();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn add_custom_model(&mut self, cx: &mut Context<Self>) {
+        let services = cx.global::<UiState>().services.clone();
+        let families = services.models.families();
+        let Some((_, family)) = families.get(self.custom_family).cloned() else { return };
+        let name = Self::value(&self.custom_name, cx);
+        let task = cx.background_spawn(async move {
+            let Some(file) = rfd::AsyncFileDialog::new().add_filter("ONNX model", &["onnx"]).pick_file().await else { return Ok(None) };
+            services.models.add_custom(file.path().to_path_buf(), family, name).await.map(Some)
+        });
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |this, cx| {
+                match r {
+                    Ok(Some(model)) => {
+                        this.draft.models.custom.retain(|c| c.id != model.id);
+                        this.draft.models.custom.push(model);
+                        this.report(Ok("Custom model added. Save to keep it.".into()), cx);
+                    }
+                    Ok(None) => {}
+                    Err(e) => this.report(Err(format!("Custom model rejected: {e}")), cx),
+                }
+                this.model_rows = cx.global::<UiState>().services.models.rows();
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn integration(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -1330,6 +1537,7 @@ impl Render for SettingsWindow {
             Page::Uploads => self.uploads(window, cx),
             Page::Recording => self.recording(cx),
             Page::Automation => self.automation(cx),
+            Page::Models => self.models_page(cx),
             Page::Integration => self.integration(cx),
             Page::Data => self.data(cx),
         };

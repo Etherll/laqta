@@ -272,7 +272,12 @@ pub trait ModelService: Send + Sync {
     fn install(&self, id: String, progress: ModelProgress) -> laqta_ports::BoxFuture<'static, Result<(), String>>;
     fn remove(&self, id: &str) -> Result<(), String>;
     /// Checks the file against the family and copies it into the models folder.
-    fn add_custom(&self, path: PathBuf, family: String, name: String) -> laqta_ports::BoxFuture<'static, Result<laqta_domain::settings::CustomModel, String>>;
+    fn add_custom(
+        &self,
+        path: PathBuf,
+        family: String,
+        name: String,
+    ) -> laqta_ports::BoxFuture<'static, Result<laqta_domain::settings::CustomModel, String>>;
 }
 
 pub type SxieRead = Arc<dyn Fn(&[u8]) -> Result<laqta_domain::effects::Preset, String> + Send + Sync>;
