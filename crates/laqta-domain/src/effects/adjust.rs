@@ -3,6 +3,14 @@
 
 use crate::color::Rgba;
 
+/// One colour channel, as an input for `ChannelSwap`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Channel {
+    Red,
+    Green,
+    Blue,
+}
+
 /// One adjustment and its parameters. Ranges are ShareX's, and defaults are too where ShareX
 /// sets them; the rest are chosen here.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -41,6 +49,45 @@ pub enum Adjust {
     /// Pixels within `tolerance` of `source` take the RGB of `target`; their alpha is kept. With
     /// `auto_source_from_corner`, `source` is the top-left pixel of the image instead.
     ReplaceColor { source: Rgba, target: Rgba, tolerance: u8, auto_source_from_corner: bool },
+    /// Stretches the luma histogram to the full range. `clip` is the fraction of pixels cut at each
+    /// end (0..0.5), so a few outliers don't set the range. Every channel uses one mapping, so hue holds.
+    AutoContrast { clip: f32 },
+    /// Output `red`, `green` and `blue` each take one of the input channels.
+    ChannelSwap { red: Channel, green: Channel, blue: Channel },
+    /// Local midtone contrast: `strength` (0..1) scales the detail above a blur of `radius` pixels.
+    Clarity { strength: f32, radius: u32 },
+    /// Offsets (-1..1) per RGB channel for shadows, midtones and highlights, weighted by luma.
+    ColorBalance { shadows: [f32; 3], midtones: [f32; 3], highlights: [f32; 3] },
+    /// A cross-processed film look: per-channel S-curves with a colour cast. `strength` is 0..1.
+    CrossProcess { strength: f32 },
+    /// Removes haze with the dark channel prior. `strength` (0..1) is how much haze goes, and
+    /// `radius` is the patch size in pixels.
+    Dehaze { strength: f32, radius: u32 },
+    /// Maps luma onto a gradient from `shadow` to `highlight`, blended over the image by `strength`.
+    DuotoneGradientMap { shadow: Rgba, highlight: Rgba, strength: f32 },
+    /// Multiplies linear light by 2^stops, for -5..5.
+    Exposure { stops: f32 },
+    /// A film stock look: lifted blacks, a soft top end, a colour cast and grain. `grain` (0..1)
+    /// sets the grain amount and `seed` its pattern. `strength` (0..1) blends the result over the image.
+    FilmEmulation { strength: f32, grain: f32, seed: u64 },
+    /// Input black and white, gamma, and output black and white, on 0..255 levels.
+    Levels { in_black: u8, in_white: u8, gamma: f32, out_black: u8, out_white: u8 },
+    /// Saturation up, an S-curve and dark corners. `strength` is 0..1.
+    Lomo { strength: f32 },
+    /// Lifts shadows and pulls highlights down, judged against the blurred luma within `radius`.
+    /// Both strengths are 0..1.
+    ShadowsHighlights { shadows: f32, highlights: f32, radius: u32 },
+    /// Channel values above `threshold` are inverted.
+    Solarize { threshold: u8 },
+    /// Tints shadows toward `shadow` and highlights toward `highlight` by `strength` (0..1). `balance`
+    /// (-1..1) moves the split between them.
+    SplitToning { shadow: Rgba, highlight: Rgba, strength: f32, balance: f32 },
+    /// White balance: `temperature` from -1 (cool) to 1 (warm), `tint` from -1 (magenta) to 1 (green).
+    TemperatureTint { temperature: f32, tint: f32 },
+    /// Pixels with luma at or above `level` become white, the rest black.
+    Threshold { level: u8 },
+    /// Saturates the least saturated pixels most. `value` is 0..1.
+    Vibrance { value: f32 },
 }
 
 /// Identity for `MatrixColor`: 1 at indices 0, 5, 10 and 15.
@@ -71,6 +118,23 @@ impl Adjust {
             Adjust::SelectiveColor { from: Rgba::rgb(255, 0, 0), to: Rgba::rgb(0, 0, 255), tolerance: 32 },
             Adjust::Sepia { value: 100.0 },
             Adjust::ReplaceColor { source: Rgba::WHITE, target: Rgba::BLACK, tolerance: 20, auto_source_from_corner: false },
+            Adjust::AutoContrast { clip: 0.005 },
+            Adjust::ChannelSwap { red: Channel::Blue, green: Channel::Green, blue: Channel::Red },
+            Adjust::Clarity { strength: 0.5, radius: 8 },
+            Adjust::ColorBalance { shadows: [0.0, 0.0, 0.1], midtones: [0.0; 3], highlights: [0.1, 0.05, 0.0] },
+            Adjust::CrossProcess { strength: 0.8 },
+            Adjust::Dehaze { strength: 0.7, radius: 7 },
+            Adjust::DuotoneGradientMap { shadow: Rgba::rgb(20, 20, 60), highlight: Rgba::rgb(255, 220, 140), strength: 1.0 },
+            Adjust::Exposure { stops: 0.5 },
+            Adjust::FilmEmulation { strength: 0.7, grain: 0.3, seed: 1 },
+            Adjust::Levels { in_black: 16, in_white: 235, gamma: 1.0, out_black: 0, out_white: 255 },
+            Adjust::Lomo { strength: 0.7 },
+            Adjust::ShadowsHighlights { shadows: 0.3, highlights: 0.3, radius: 8 },
+            Adjust::Solarize { threshold: 128 },
+            Adjust::SplitToning { shadow: Rgba::rgb(40, 80, 140), highlight: Rgba::rgb(255, 200, 120), strength: 0.5, balance: 0.0 },
+            Adjust::TemperatureTint { temperature: 0.2, tint: 0.0 },
+            Adjust::Threshold { level: 128 },
+            Adjust::Vibrance { value: 0.5 },
         ]
     }
 
@@ -91,6 +155,23 @@ impl Adjust {
             Adjust::SelectiveColor { .. } => "Selective color",
             Adjust::Sepia { .. } => "Sepia",
             Adjust::ReplaceColor { .. } => "Replace color",
+            Adjust::AutoContrast { .. } => "Auto contrast",
+            Adjust::ChannelSwap { .. } => "Channel swap",
+            Adjust::Clarity { .. } => "Clarity",
+            Adjust::ColorBalance { .. } => "Color balance",
+            Adjust::CrossProcess { .. } => "Cross process",
+            Adjust::Dehaze { .. } => "Dehaze",
+            Adjust::DuotoneGradientMap { .. } => "Duotone gradient map",
+            Adjust::Exposure { .. } => "Exposure",
+            Adjust::FilmEmulation { .. } => "Film emulation",
+            Adjust::Levels { .. } => "Levels",
+            Adjust::Lomo { .. } => "Lomo",
+            Adjust::ShadowsHighlights { .. } => "Shadows & highlights",
+            Adjust::Solarize { .. } => "Solarize",
+            Adjust::SplitToning { .. } => "Split toning",
+            Adjust::TemperatureTint { .. } => "Temperature & tint",
+            Adjust::Threshold { .. } => "Threshold",
+            Adjust::Vibrance { .. } => "Vibrance",
         }
     }
 }
@@ -115,9 +196,9 @@ mod tests {
     #[test]
     fn defaults_cover_every_variant_with_a_unique_name() {
         let mut names: Vec<&str> = Adjust::defaults().iter().map(Adjust::name).collect();
-        assert_eq!(names.len(), 15);
+        assert_eq!(names.len(), 32);
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 15);
+        assert_eq!(names.len(), 32);
     }
 }

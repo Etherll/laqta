@@ -7,10 +7,11 @@ use laqta_domain::effects::Adjust;
 use laqta_domain::{Bitmap, PixelFormat};
 use rayon::prelude::*;
 
+use super::adjust_m7;
 use super::{EffectContext, EffectError};
 
 /// Luma weights (the SVG `feColorMatrix` values, which the hue rotation also uses).
-const LUMA: [f32; 3] = [0.213, 0.715, 0.072];
+pub(super) const LUMA: [f32; 3] = [0.213, 0.715, 0.072];
 /// Rows of the grey target: every output channel takes the same luma weights.
 const GRAY: [[f32; 3]; 3] = [[LUMA[0]; 3], [LUMA[1]; 3], [LUMA[2]; 3]];
 /// Sepia target, indexed [input][output].
@@ -58,6 +59,27 @@ pub(super) fn apply(image: &Bitmap, effect: &Adjust, _cx: &EffectContext<'_>) ->
         Adjust::ReplaceColor { source, target, tolerance, auto_source_from_corner } => {
             replace(image, *source, *target, *tolerance, *auto_source_from_corner)
         }
+        Adjust::AutoContrast { clip } => adjust_m7::auto_contrast(image, *clip),
+        Adjust::ChannelSwap { red, green, blue } => adjust_m7::channel_swap(image, *red, *green, *blue),
+        Adjust::Clarity { strength, radius } => adjust_m7::clarity(image, *strength, *radius),
+        Adjust::ColorBalance { shadows, midtones, highlights } => adjust_m7::color_balance(image, *shadows, *midtones, *highlights),
+        Adjust::CrossProcess { strength } => adjust_m7::cross_process(image, *strength),
+        Adjust::Dehaze { strength, radius } => adjust_m7::dehaze(image, *strength, *radius),
+        Adjust::DuotoneGradientMap { shadow, highlight, strength } => adjust_m7::duotone(image, *shadow, *highlight, *strength),
+        Adjust::Exposure { stops } => adjust_m7::exposure(image, *stops),
+        Adjust::FilmEmulation { strength, grain, seed } => adjust_m7::film(image, *strength, *grain, *seed),
+        Adjust::Levels { in_black, in_white, gamma, out_black, out_white } => {
+            adjust_m7::levels(image, *in_black, *in_white, *gamma, *out_black, *out_white)
+        }
+        Adjust::Lomo { strength } => adjust_m7::lomo(image, *strength),
+        Adjust::ShadowsHighlights { shadows, highlights, radius } => adjust_m7::shadows_highlights(image, *shadows, *highlights, *radius),
+        Adjust::Solarize { threshold } => adjust_m7::solarize(image, *threshold),
+        Adjust::SplitToning { shadow, highlight, strength, balance } => {
+            adjust_m7::split_toning(image, *shadow, *highlight, *strength, *balance)
+        }
+        Adjust::TemperatureTint { temperature, tint } => adjust_m7::temperature_tint(image, *temperature, *tint),
+        Adjust::Threshold { level } => adjust_m7::threshold(image, *level),
+        Adjust::Vibrance { value } => adjust_m7::vibrance(image, *value),
     };
     Ok(out)
 }
@@ -120,7 +142,7 @@ fn shifted(c: u8, delta: i32) -> u8 {
 }
 
 /// Runs `f` on every RGBA pixel, one row per task.
-fn map_pixels(image: &Bitmap, f: impl Fn([u8; 4]) -> [u8; 4] + Sync) -> Bitmap {
+pub(super) fn map_pixels(image: &Bitmap, f: impl Fn([u8; 4]) -> [u8; 4] + Sync) -> Bitmap {
     let row_len = image.width() as usize * 4;
     let mut px = image.pixels().to_vec();
     px.par_chunks_mut(row_len).for_each(|row| {
@@ -132,11 +154,11 @@ fn map_pixels(image: &Bitmap, f: impl Fn([u8; 4]) -> [u8; 4] + Sync) -> Bitmap {
 }
 
 /// Clamps a 0..1 value and rounds it to the nearest 8-bit level.
-fn to_u8(v: f32) -> u8 {
+pub(super) fn to_u8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-fn bitmap(width: u32, height: u32, pixels: Vec<u8>) -> Bitmap {
+pub(super) fn bitmap(width: u32, height: u32, pixels: Vec<u8>) -> Bitmap {
     Bitmap::new(width, height, PixelFormat::Rgba8, pixels.into()).unwrap_or_else(|e| unreachable!("pixel buffer built to size: {e:?}"))
 }
 

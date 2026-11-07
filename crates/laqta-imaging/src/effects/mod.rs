@@ -4,9 +4,12 @@ use laqta_domain::Bitmap;
 use laqta_domain::effects::{Effect, Preset, TextSpec};
 
 mod adjust;
+mod adjust_m7;
 mod draw;
+mod draw_m7;
 mod filter;
 mod manip;
+mod manip_m7;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum EffectError {

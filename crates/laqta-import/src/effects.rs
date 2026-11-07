@@ -312,6 +312,25 @@ pub(crate) fn write(effect: &Effect) -> Option<(&'static str, Object)> {
                 p.flag("AutoSourceFromCorner", *auto_source_from_corner);
                 "ReplaceColor"
             }
+            // ---- X1 ----
+            Adjust::AutoContrast { .. }
+            | Adjust::ChannelSwap { .. }
+            | Adjust::Clarity { .. }
+            | Adjust::ColorBalance { .. }
+            | Adjust::CrossProcess { .. }
+            | Adjust::Dehaze { .. }
+            | Adjust::DuotoneGradientMap { .. }
+            | Adjust::Exposure { .. }
+            | Adjust::FilmEmulation { .. }
+            | Adjust::Levels { .. }
+            | Adjust::Lomo { .. }
+            | Adjust::ShadowsHighlights { .. }
+            | Adjust::Solarize { .. }
+            | Adjust::SplitToning { .. }
+            | Adjust::TemperatureTint { .. }
+            | Adjust::Threshold { .. }
+            | Adjust::Vibrance { .. } => return None,
+            // ---- end X1 ----
         },
         Effect::Draw(draw) => match draw {
             Draw::Background { color, gradient } => {
@@ -373,6 +392,14 @@ pub(crate) fn write(effect: &Effect) -> Option<(&'static str, Object)> {
                 p.shadow("Shadow", *shadow);
                 "DrawTextEx"
             }
+            // ---- X1 ----
+            Draw::Confetti { .. }
+            | Draw::DrawLine { .. }
+            | Draw::DrawShape { .. }
+            | Draw::FakeCursor { .. }
+            | Draw::GradientOverlay { .. }
+            | Draw::Snowflakes { .. } => return None,
+            // ---- end X1 ----
         },
         Effect::Filter(filter) => match filter {
             Filter::Blur { radius } => {
@@ -548,6 +575,28 @@ pub(crate) fn write(effect: &Effect) -> Option<(&'static str, Object)> {
                 p.flag("Grow", *grow);
                 "Skew"
             }
+            // ---- X1 ----
+            Manip::CylinderWrap { .. }
+            | Manip::DisplacementMap { .. }
+            | Manip::FisheyeLens { .. }
+            | Manip::FoldCreaseWarp { .. }
+            | Manip::GlassSphere { .. }
+            | Manip::Kaleidoscope { .. }
+            | Manip::LiquifyPushSmudge { .. }
+            | Manip::MirrorTiles { .. }
+            | Manip::PageCurl { .. }
+            | Manip::PerspectiveWarp { .. }
+            | Manip::PinchBulge { .. }
+            | Manip::PolarWarp { .. }
+            | Manip::RippleRefraction { .. }
+            | Manip::Rotate3D { .. }
+            | Manip::Rotate3DBox { .. }
+            | Manip::Symmetry { .. }
+            | Manip::TileRepeat { .. }
+            | Manip::TileShuffle { .. }
+            | Manip::Twirl { .. }
+            | Manip::WaveDistortion { .. } => return None,
+            // ---- end X1 ----
         },
     };
     Some((class, p.into_object()))
