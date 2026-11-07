@@ -48,7 +48,7 @@ fn build_app(dir: &Path, behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner
         clock: Arc::new(ManualClock::new(jiff::civil::date(2026, 11, 7).at(14, 3, 22, 0))),
         spawner,
     };
-    let settings = Settings { screenshots_dir: dir.to_path_buf(), hotkeys: Vec::new() };
+    let settings = Settings { screenshots_dir: dir.to_path_buf(), ..Settings::default_for(dir.to_path_buf()) };
     (App::new(ports, settings), clipboard)
 }
 

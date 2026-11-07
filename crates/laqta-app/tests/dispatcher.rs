@@ -30,7 +30,7 @@ fn harness(screenshots_dir: &Path, screen: FakeScreen) -> Harness {
         clock: Arc::new(ManualClock::new(jiff::civil::date(2026, 11, 7).at(14, 3, 22, 0))),
         spawner: spawner.clone(),
     };
-    let settings = Settings { screenshots_dir: screenshots_dir.to_path_buf(), hotkeys: Vec::new() };
+    let settings = Settings { screenshots_dir: screenshots_dir.to_path_buf(), ..Settings::default_for(screenshots_dir.to_path_buf()) };
     Harness { app: App::new(ports, settings), screen, shell, spawner }
 }
 
