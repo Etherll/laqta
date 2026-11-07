@@ -1,7 +1,7 @@
 status InQueue
 status Preparing
 status Working
-upload_started sxcu:paste_ee
+upload_started sxcu:paste-ee
 uploaded
 url_copied
 status Completed

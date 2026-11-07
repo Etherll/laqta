@@ -700,7 +700,7 @@ fn text_job() {
         let spawner = Arc::new(InlineSpawner::default());
         let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), settings_in(tmp.path()));
         *rig.clipboard.contents.lock().unwrap() = Some(ClipboardContent::Text("hello".to_owned()));
-        let paste = destination(&rig, "sxcu:paste_ee", vec![Ok(uploaded("https://paste.example/abc"))]);
+        let paste = destination(&rig, "sxcu:paste-ee", vec![Ok(uploaded("https://paste.example/abc"))]);
         let mut events = rig.app.events();
 
         let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::UploadText);

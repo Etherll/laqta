@@ -97,7 +97,7 @@ fn upload_text_sends_the_clipboard_text() {
     let tmp = TempDir::new().unwrap();
     let h = harness(tmp.path());
     *h.clipboard.contents.lock().unwrap() = Some(ClipboardContent::Text("hi".to_owned()));
-    let paste = destination(&h, "sxcu:paste_ee", vec![Ok(uploaded("https://paste.example/1"))]);
+    let paste = destination(&h, "sxcu:paste-ee", vec![Ok(uploaded("https://paste.example/1"))]);
 
     assert_eq!(run(&h, Action::UploadText).unwrap(), Dispatched::Task(TaskId(1)));
     let requests = paste.requests.lock().unwrap();
@@ -111,7 +111,7 @@ fn upload_text_asks_when_the_clipboard_has_no_text() {
     let tmp = TempDir::new().unwrap();
     let h = harness(tmp.path());
     h.prompt.texts.lock().unwrap().push_back("typed".to_owned());
-    let paste = destination(&h, "sxcu:paste_ee", vec![Ok(uploaded("https://paste.example/2"))]);
+    let paste = destination(&h, "sxcu:paste-ee", vec![Ok(uploaded("https://paste.example/2"))]);
 
     assert_eq!(run(&h, Action::UploadText).unwrap(), Dispatched::Task(TaskId(1)));
     assert_eq!(paste.requests.lock().unwrap()[0].data, UploadData::Bytes(b"typed".to_vec()));
@@ -143,7 +143,7 @@ fn clipboard_upload_of_text_is_a_text_upload() {
         let tmp = TempDir::new().unwrap();
         let h = harness(tmp.path());
         *h.clipboard.contents.lock().unwrap() = Some(ClipboardContent::Text("notes".to_owned()));
-        let paste = destination(&h, "sxcu:paste_ee", vec![Ok(uploaded("https://paste.example/3"))]);
+        let paste = destination(&h, "sxcu:paste-ee", vec![Ok(uploaded("https://paste.example/3"))]);
 
         assert_eq!(run(&h, action).unwrap(), Dispatched::Task(TaskId(1)));
         assert_eq!(paste.requests.lock().unwrap()[0].data, UploadData::Bytes(b"notes".to_vec()), "{action:?}");
@@ -156,7 +156,7 @@ fn clipboard_upload_of_a_url_downloads_and_uploads_it() {
     let h = harness(tmp.path());
     *h.clipboard.contents.lock().unwrap() = Some(ClipboardContent::Text("https://example.com/a.txt".to_owned()));
     *h.uploaders.download.lock().unwrap() = Some((b"body".to_vec(), "a.txt".to_owned(), "text/plain".to_owned()));
-    let text = destination(&h, "sxcu:paste_ee", vec![Ok(uploaded("https://paste.example/4"))]);
+    let text = destination(&h, "sxcu:paste-ee", vec![Ok(uploaded("https://paste.example/4"))]);
 
     assert_eq!(run(&h, Action::ClipboardUpload).unwrap(), Dispatched::Task(TaskId(1)));
     let requests = text.requests.lock().unwrap();
