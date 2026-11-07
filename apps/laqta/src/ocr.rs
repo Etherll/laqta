@@ -11,6 +11,9 @@ use laqta_ml::ocr::ModelOcr;
 use laqta_ml::runtime::Runtime;
 use laqta_ports::{BoxFuture, Ocr, OcrResult, PortError, Prompt};
 
+/// The detection model, recognition model and provider an engine was built for.
+type EngineKey = (String, String, laqta_domain::settings::ModelProvider);
+
 pub struct LazyOcr {
     data: PathBuf,
     prompt: Arc<dyn Prompt>,
@@ -18,7 +21,7 @@ pub struct LazyOcr {
     /// The OS engine (Windows.Media.Ocr) used when the models are declined (M5 D4).
     fallback: Option<Arc<dyn Ocr>>,
     /// The engine and the (det, rec, provider) it was built for.
-    ready: Mutex<Option<((String, String, laqta_domain::settings::ModelProvider), Arc<ModelOcr>)>>,
+    ready: Mutex<Option<(EngineKey, Arc<ModelOcr>)>>,
 }
 
 impl std::fmt::Debug for LazyOcr {
