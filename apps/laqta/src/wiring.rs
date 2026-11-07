@@ -32,6 +32,7 @@ struct Platform {
     /// The OS OCR engine, where there is one (Windows).
     os_ocr: Option<Arc<dyn laqta_ports::Ocr>>,
     highlighter: Arc<dyn laqta_ports::PointerHighlighter>,
+    native_recorder: Option<Arc<dyn laqta_ports::Media>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -55,6 +56,7 @@ fn platform() -> Result<Platform, String> {
         input: p.input,
         os_ocr: None,
         highlighter: p.highlighter,
+        native_recorder: None,
     })
 }
 
@@ -77,6 +79,7 @@ fn platform() -> Result<Platform, String> {
         input: p.input,
         os_ocr: Some(p.ocr),
         highlighter: p.highlighter,
+        native_recorder: Some(p.native_recorder),
     })
 }
 
@@ -197,6 +200,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let host_deps = crate::uploads::host_deps(platform.secrets.clone(), platform.shell.clone());
     crate::uploads::apply_accounts(&uploaders, &settings.hosts, &host_deps);
     let cloud_options: crate::cloud::SharedCloudOptions = Arc::new(std::sync::RwLock::new(settings.cloud.clone()));
+    let recorder_backend = Arc::new(std::sync::RwLock::new(settings.defaults.recording.backend));
     let model_options: crate::models::SharedModelOptions = Arc::new(std::sync::RwLock::new(settings.models.clone()));
     let ports = Ports {
         screen: platform.screen,
@@ -208,14 +212,19 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         tools: Arc::new(ui.clone()),
         prompt: Arc::new(ui.clone()),
         editor: Arc::new(ui.clone()),
-        media: Arc::new(crate::media::LazyMedia::new(
-            data.clone(),
-            {
-                let s = settings.defaults.recording.ffmpeg_path.clone();
-                Arc::new(move || s.clone())
-            },
-            Arc::new(ui.clone()),
-        )),
+        media: Arc::new(crate::media::SwitchingMedia {
+            ffmpeg: Arc::new(crate::media::LazyMedia::new(
+                data.clone(),
+                {
+                    let s = settings.defaults.recording.ffmpeg_path.clone();
+                    Arc::new(move || s.clone())
+                },
+                Arc::new(ui.clone()),
+            )),
+            native: platform.native_recorder.clone(),
+            stream: platform.stream.clone(),
+            backend: recorder_backend.clone(),
+        }),
         stream: platform.stream.clone(),
         ocr: Arc::new(crate::ocr::LazyOcr::new(data.clone(), Arc::new(ui.clone()), model_options.clone(), platform.os_ocr.clone())),
         window_ops: platform.window_ops.clone(),
@@ -300,6 +309,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let save_settings: crate::imports::SaveSettings = {
         let model_options = model_options.clone();
         let cloud_options = cloud_options.clone();
+        let recorder_backend = recorder_backend.clone();
         let app = app.clone();
         let store = store.clone();
         let clock = clock.clone();
@@ -319,6 +329,9 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             }
             if let Ok(mut c) = cloud_options.write() {
                 *c = s.cloud.clone();
+            }
+            if let Ok(mut b) = recorder_backend.write() {
+                *b = s.defaults.recording.backend;
             }
             app.set_settings(s.clone());
             if use_hotkeys {

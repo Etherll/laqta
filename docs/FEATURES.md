@@ -35,7 +35,7 @@ Areas the survey did not cover in depth need a second pass:
 | Pause, stop, abort, start delay, fixed duration, timer, recording bar, border | M4 | done |
 | Custom FFmpeg args, custom command line, FFmpeg path override and download | M4 | done |
 | Camera overlay (shape, position, size) | M7 | done |
-| Native GPU path (WGC + Media Foundation) | M7 | planned |
+| Native GPU path (WGC + Media Foundation) | M7 | done |
 | Mouse highlighter (while recording and as a tool) | M5 | done |
 
 ## Workflow and tasks

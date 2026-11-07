@@ -83,3 +83,48 @@ impl Media for LazyMedia {
         })
     }
 }
+
+/// FFmpeg, or the native Windows recorder when the settings choose it (M7 D10). A recording the
+/// native recorder refuses (an area, another codec, the camera, custom arguments) reopens the
+/// screen stream and records with FFmpeg instead.
+pub struct SwitchingMedia {
+    pub ffmpeg: std::sync::Arc<dyn laqta_ports::Media>,
+    pub native: Option<std::sync::Arc<dyn laqta_ports::Media>>,
+    pub stream: std::sync::Arc<dyn laqta_ports::ScreenStream>,
+    pub backend: std::sync::Arc<std::sync::RwLock<laqta_domain::record::RecorderBackend>>,
+}
+
+impl laqta_ports::Media for SwitchingMedia {
+    fn start(
+        &self,
+        input: laqta_ports::RecordingInput,
+        spec: laqta_domain::record::RecordSpec,
+        output: std::path::PathBuf,
+    ) -> laqta_ports::BoxFuture<'_, Result<Box<dyn laqta_ports::RecordingHandle>, laqta_ports::PortError>> {
+        Box::pin(async move {
+            let native = self.backend.read().map(|b| *b == laqta_domain::record::RecorderBackend::Native).unwrap_or(false);
+            if let (true, Some(n)) = (native, &self.native) {
+                match n.start(input, spec.clone(), output.clone()).await {
+                    Err(laqta_ports::PortError::Unsupported(why)) => {
+                        tracing::info!("native recorder declined ({why}); recording with FFmpeg");
+                        let input = self.stream.open(spec.area, spec.show_cursor, spec.fps, &spec.audio).await?;
+                        return self.ffmpeg.start(input, spec, output).await;
+                    }
+                    other => return other,
+                }
+            }
+            self.ffmpeg.start(input, spec, output).await
+        })
+    }
+    fn transcode(
+        &self,
+        input: &std::path::Path,
+        output: &std::path::Path,
+        spec: laqta_ports::TranscodeSpec,
+    ) -> laqta_ports::BoxFuture<'_, Result<(), laqta_ports::PortError>> {
+        self.ffmpeg.transcode(input, output, spec)
+    }
+    fn probe(&self, input: &std::path::Path) -> laqta_ports::BoxFuture<'_, Result<laqta_ports::MediaInfo, laqta_ports::PortError>> {
+        self.ffmpeg.probe(input)
+    }
+}

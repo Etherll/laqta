@@ -124,8 +124,7 @@ fn open(path: &Path) -> Result<IMFSinkWriter, PortError> {
     }
     let url: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
     // SAFETY: `url` is NUL-terminated and outlives the call. No byte stream is given, so the writer opens the file.
-    unsafe { MFCreateSinkWriterFromURL(PCWSTR(url.as_ptr()), None::<&IMFByteStream>, Some(&attributes)) }
-        .map_err(failed("MP4 sink"))
+    unsafe { MFCreateSinkWriterFromURL(PCWSTR(url.as_ptr()), None::<&IMFByteStream>, Some(&attributes)) }.map_err(failed("MP4 sink"))
 }
 
 /// Packs two 32-bit values into one `MF_MT_*` attribute value, high word first.

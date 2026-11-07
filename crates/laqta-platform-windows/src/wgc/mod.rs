@@ -59,7 +59,12 @@ pub(crate) struct NativeRecorder;
 
 #[cfg(windows)]
 impl Media for NativeRecorder {
-    fn start(&self, input: RecordingInput, spec: RecordSpec, output: PathBuf) -> BoxFuture<'_, Result<Box<dyn RecordingHandle>, PortError>> {
+    fn start(
+        &self,
+        input: RecordingInput,
+        spec: RecordSpec,
+        output: PathBuf,
+    ) -> BoxFuture<'_, Result<Box<dyn RecordingHandle>, PortError>> {
         Box::pin(blocking::unblock(move || {
             let job = plan(input, &spec, output)?;
             let recording = session::start(job)?;
