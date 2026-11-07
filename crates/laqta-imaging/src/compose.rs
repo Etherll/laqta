@@ -1,12 +1,12 @@
 use laqta_domain::{Bitmap, Frame, PhysRect, PixelFormat};
 use rayon::prelude::*;
 
-/// Places each frame at `monitor.rect.(x, y)` minus the union's origin, on a transparent canvas the
-/// size of the union. Converts BGRA to RGBA. Mixed-scale rule for M0: if frames' scales differ,
-/// they are laid out left to right in order of `rect.x` with top edges aligned (M1 replaces this).
+/// Places each frame at its monitor's rect origin minus the union's origin, at its own image size,
+/// on a transparent canvas the size of the union. Converts BGRA to RGBA. Rects are always physical
+/// pixels (M1 D2), so frames are only placed, never scaled or re-laid out.
 pub fn compose_monitors(frames: &[Frame]) -> Bitmap {
     debug_assert!(rayon::current_thread_index().is_some(), "compose_monitors must run inside the compute pool");
-    let placements = layout(frames);
+    let placements = destinations(frames);
     let Some(union) = placements.iter().map(|(r, _)| *r).reduce(PhysRect::union) else {
         return empty();
     };
@@ -44,28 +44,13 @@ fn empty() -> Bitmap {
     Bitmap::new(0, 0, PixelFormat::Rgba8, Vec::new().into()).unwrap_or_else(|_| unreachable!())
 }
 
-/// Each frame's destination rect (sized to its image) and its image.
-fn layout(frames: &[Frame]) -> Vec<(PhysRect, &Bitmap)> {
-    let mixed = frames.windows(2).any(|w| w[0].monitor.scale != w[1].monitor.scale);
-    if !mixed {
-        return frames
-            .iter()
-            .map(|f| {
-                let r = f.monitor.rect;
-                (PhysRect { x: r.x, y: r.y, width: f.image.width(), height: f.image.height() }, &f.image)
-            })
-            .collect();
-    }
-    let mut ordered: Vec<&Frame> = frames.iter().collect();
-    ordered.sort_by_key(|f| f.monitor.rect.x);
-    let top = ordered.iter().map(|f| f.monitor.rect.y).min().unwrap_or(0);
-    let mut x = ordered.first().map(|f| f.monitor.rect.x).unwrap_or(0);
-    ordered
-        .into_iter()
+/// Each frame's destination rect (its monitor origin, sized to its image) and its image.
+fn destinations(frames: &[Frame]) -> Vec<(PhysRect, &Bitmap)> {
+    frames
+        .iter()
         .map(|f| {
-            let r = PhysRect { x, y: top, width: f.image.width(), height: f.image.height() };
-            x = r.right();
-            (r, &f.image)
+            let r = f.monitor.rect;
+            (PhysRect { x: r.x, y: r.y, width: f.image.width(), height: f.image.height() }, &f.image)
         })
         .collect()
 }
@@ -122,17 +107,18 @@ mod tests {
     }
 
     #[test]
-    fn mixed_scale_left_to_right_top_aligned() {
-        // Logical-coordinate rects that overlap once scaled; M0 rule lays them out by x.
+    fn negative_origin_monitor_left_of_primary() {
+        // A monitor left of the primary sits at negative x, so the union starts at its left edge.
         let frames = [
-            frame(1000, 100, 4, 2, 2.0, [2, 2, 2, 255], PixelFormat::Rgba8),
-            frame(0, 0, 3, 3, 1.0, [1, 1, 1, 255], PixelFormat::Rgba8),
+            frame(-4, -2, 4, 4, 1.0, [5, 5, 5, 255], PixelFormat::Rgba8),
+            frame(0, 0, 4, 4, 1.0, [7, 7, 7, 255], PixelFormat::Rgba8),
         ];
         let out = pool().install(|| compose_monitors(&frames));
-        assert_eq!((out.width(), out.height()), (7, 3));
-        assert_eq!(at(&out, 0, 0), [1, 1, 1, 255]);
-        assert_eq!(at(&out, 3, 0), [2, 2, 2, 255]);
-        assert_eq!(at(&out, 3, 2), [0, 0, 0, 0]);
+        assert_eq!((out.width(), out.height()), (8, 6));
+        assert_eq!(at(&out, 0, 0), [5, 5, 5, 255]);
+        assert_eq!(at(&out, 3, 1), [5, 5, 5, 255]);
+        assert_eq!(at(&out, 4, 2), [7, 7, 7, 255]);
+        assert_eq!(at(&out, 0, 5), [0, 0, 0, 0]);
     }
 
     #[test]
