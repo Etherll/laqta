@@ -14,6 +14,7 @@ use laqta_ports::{
 };
 
 use crate::files;
+use crate::recording::{ActiveRecording, Area};
 use crate::region;
 use crate::task::compute;
 use crate::task::{CaptureImage, CaptureInfo};
@@ -86,11 +87,15 @@ impl SettingsCell {
 }
 
 pub struct App {
-    ports: Arc<Ports>,
-    settings: Arc<SettingsCell>,
-    task: Task,
+    pub(crate) ports: Arc<Ports>,
+    pub(crate) settings: Arc<SettingsCell>,
+    pub(crate) task: Task,
     /// The last confirmed region selection, for `LastRegion`.
     last_region: std::sync::Mutex<Option<(Vec<PhysRect>, Option<HoverTarget>)>>,
+    /// The recording that is starting or running (one at a time). Its driver clears it when the recording ends.
+    pub(crate) recording: std::sync::Mutex<Option<ActiveRecording>>,
+    /// The area of the last recording, for `StartScreenRecorder`.
+    pub(crate) last_recording_area: std::sync::Mutex<Option<PhysRect>>,
     /// Keeps the event channel open while nobody listens, so sends never fail.
     idle: InactiveReceiver<TaskEvent>,
 }
@@ -108,7 +113,15 @@ impl App {
         let ports = Arc::new(ports);
         let settings = Arc::new(SettingsCell::new(settings));
         let task = Task::new(Arc::clone(&ports), Arc::clone(&settings), events);
-        Arc::new(App { ports, settings, task, last_region: std::sync::Mutex::new(None), idle: active.deactivate() })
+        Arc::new(App {
+            ports,
+            settings,
+            task,
+            last_region: std::sync::Mutex::new(None),
+            recording: std::sync::Mutex::new(None),
+            last_recording_area: std::sync::Mutex::new(None),
+            idle: active.deactivate(),
+        })
     }
 
     pub fn dispatch(self: &Arc<Self>, action: Action, workflow: Option<WorkflowId>) -> BoxFuture<'static, Result<Dispatched, AppError>> {
@@ -138,7 +151,7 @@ impl App {
         self.settings.set(settings);
     }
 
-    async fn frames(&self, ts: &TaskSettings) -> Result<Vec<Frame>, AppError> {
+    pub(crate) async fn frames(&self, ts: &TaskSettings) -> Result<Vec<Frame>, AppError> {
         if ts.capture.delay_ms > 0 {
             self.ports.clock.sleep(std::time::Duration::from_millis(ts.capture.delay_ms as u64)).await;
         }
@@ -410,6 +423,26 @@ impl App {
             Action::ImageBeautifier => self.beautify_file(ts).await,
             Action::StopUploads => {
                 self.task.stop_all();
+                Ok(Dispatched::Done)
+            }
+            Action::ScreenRecorder => self.record(Area::Region, false, ts).await,
+            Action::ScreenRecorderActiveWindow => self.record(Area::ActiveWindow, false, ts).await,
+            Action::ScreenRecorderCustomRegion => self.record(Area::CustomRegion, false, ts).await,
+            Action::StartScreenRecorder => self.record(Area::LastRecording, false, ts).await,
+            Action::ScreenRecorderGif => self.record(Area::Region, true, ts).await,
+            Action::ScreenRecorderGifActiveWindow => self.record(Area::ActiveWindow, true, ts).await,
+            Action::ScreenRecorderGifCustomRegion => self.record(Area::CustomRegion, true, ts).await,
+            Action::StartScreenRecorderGif => self.record(Area::LastRecording, true, ts).await,
+            Action::StopScreenRecording => {
+                self.recording_stop();
+                Ok(Dispatched::Done)
+            }
+            Action::PauseScreenRecording => {
+                self.recording_toggle_pause();
+                Ok(Dispatched::Done)
+            }
+            Action::AbortScreenRecording => {
+                self.recording_abort();
                 Ok(Dispatched::Done)
             }
             Action::ExitLaqta => Ok(Dispatched::Exit),

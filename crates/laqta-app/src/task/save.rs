@@ -81,6 +81,20 @@ pub(super) async fn chosen(cx: &Context, path: PathBuf, bytes: Vec<u8>) -> Resul
     Ok(())
 }
 
+/// Picks the file a recording writes (M4 §4.4): the first free name a saved image would get in `dir`, with `ext`.
+/// It takes the save slot, so two jobs never pick the same name.
+pub(super) async fn recording_output(
+    cx: &Context,
+    settings: &TaskSettings,
+    dir: &Path,
+    size: (u32, u32),
+    ext: &str,
+) -> Result<PathBuf, AppError> {
+    let _slot = Arc::clone(&cx.saves).acquire().await;
+    let candidates = image_candidates(cx, settings, &CaptureInfo::default(), dir, size, ext);
+    files::first_free(cx.ports.spawner.as_ref(), candidates).await.map_err(io_error)
+}
+
 /// The candidate paths for the image, in order. The name and subfolder patterns are expanded here, reading
 /// the clock, the counter and the random source once. Nothing awaits in here, so the random source never
 /// lives across an await point.

@@ -13,7 +13,7 @@ mod upload;
 
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -59,6 +59,10 @@ pub enum UploadSource {
     Url(String),
     /// A URL to shorten. Nothing is uploaded; the after-upload steps run with shortening on.
     ShortenUrl(String),
+    /// A file already saved to the screenshots folder (a finished recording). Its after-capture steps run as for
+    /// a saved image: copy the file, copy its path, reveal it. Then the upload (when its flag is set), the
+    /// after-upload steps and the toast.
+    SavedFile(PathBuf),
 }
 
 /// Work the dispatcher hands to Task.
@@ -108,9 +112,30 @@ impl Task {
         }
     }
 
+    /// A new task id, for a recording (its events carry the id, but it is not a Task job).
+    pub(crate) fn next_id(&self) -> TaskId {
+        TaskId(self.next_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Sends an event on the task channel. The recording session reports through it.
+    pub(crate) fn emit(&self, event: TaskEvent) {
+        self.reporter.emit(event);
+    }
+
+    /// The file a recording writes (M4 §4.4): the first free name a saved image would get in `dir`, with `ext`.
+    pub(crate) async fn recording_output(
+        &self,
+        settings: &TaskSettings,
+        dir: &Path,
+        size: (u32, u32),
+        ext: &str,
+    ) -> Result<PathBuf, AppError> {
+        save::recording_output(&self.context(), settings, dir, size, ext).await
+    }
+
     /// Emits `InQueue` and hands the job to the spawner. The job runs later, unless it is stopped first.
     pub(crate) fn submit(&self, job: TaskJob) -> TaskId {
-        let id = TaskId(self.next_id.fetch_add(1, Ordering::Relaxed));
+        let id = self.next_id();
         let job = self.resolve(job);
         self.jobs.add(id);
         self.reporter.status(id, TaskStatus::InQueue);
@@ -150,16 +175,21 @@ impl Task {
         }
     }
 
-    fn job(&self, id: TaskId, job: TaskJob) -> BoxFuture<'static, ()> {
-        let capture_slots = Arc::clone(&self.capture_slots);
-        let jobs = Arc::clone(&self.jobs);
-        let cx = Context {
+    /// What the steps of a job share, built from this Task's ports, settings, slots and counter.
+    fn context(&self) -> Context {
+        Context {
             ports: Arc::clone(&self.ports),
             settings: Arc::clone(&self.settings),
             reporter: self.reporter.clone(),
             saves: Arc::clone(&self.save_slots),
             counter: Arc::clone(&self.counter),
-        };
+        }
+    }
+
+    fn job(&self, id: TaskId, job: TaskJob) -> BoxFuture<'static, ()> {
+        let capture_slots = Arc::clone(&self.capture_slots);
+        let jobs = Arc::clone(&self.jobs);
+        let cx = self.context();
         Box::pin(async move {
             // Stopped while queued: `stop` has already reported it, so it takes no slot and runs nothing.
             if !jobs.contains(id) {

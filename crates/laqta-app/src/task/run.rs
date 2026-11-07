@@ -128,7 +128,7 @@ impl Job {
         };
 
         if let Some(preview) = preview {
-            self.toast(saved, preview, url)?;
+            self.toast(saved, Some(preview), url)?;
         }
         if flags.contains(AfterCaptureTasks::DELETE_FILE) {
             self.delete(saved).await?;
@@ -387,6 +387,59 @@ impl Job {
         }
     }
 
+    /// A file a recording session already saved (M4 §4.4), so nothing is written here. Its save is reported as
+    /// `Saved`. Then the steps that work on a saved file, as for a saved image: copy the file, copy its path, reveal
+    /// it. Then the upload (when the upload flag is set), the after-upload steps and the toast.
+    pub(super) async fn saved_file(&mut self, path: PathBuf) -> Step {
+        self.checkpoint()?;
+        self.cx.counter.fetch_add(1, Ordering::SeqCst);
+        let saved = SavedFile { path };
+        self.emit(TaskEvent::Saved { id: self.id, path: saved.path.clone() });
+        let flags = self.settings.after_capture;
+        if flags.contains(AfterCaptureTasks::COPY_FILE_TO_CLIPBOARD) {
+            self.copy_file(Some(&saved))?;
+        }
+        if flags.contains(AfterCaptureTasks::COPY_FILE_PATH_TO_CLIPBOARD) {
+            self.copy_path(Some(&saved))?;
+        }
+        if flags.contains(AfterCaptureTasks::SHOW_IN_EXPLORER) {
+            self.reveal(Some(&saved))?;
+        }
+        let url = if flags.contains(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST) { self.upload_saved(&saved).await? } else { None };
+        if self.settings.general.show_toast {
+            self.toast(Some(&saved), None, url)?;
+        }
+        self.complete();
+        Ok(())
+    }
+
+    /// The upload of a saved file: the before-upload window first (Cancel skips the upload), then the file itself.
+    async fn upload_saved(&mut self, saved: &SavedFile) -> Step<Option<String>> {
+        let name = upload::file_name_of(&saved.path);
+        let kind = upload::kind_for_name(&name);
+        if self.settings.after_capture.contains(AfterCaptureTasks::SHOW_BEFORE_UPLOAD_WINDOW)
+            && !self.choose_destination(kind.clone(), &name).await?
+        {
+            return Ok(None);
+        }
+        let size = match files::size(self.cx.ports.spawner.as_ref(), saved.path.clone()).await {
+            Ok(size) => size,
+            Err(error) => return Err(self.fail(AppError::Io(error.to_string()))),
+        };
+        let request = UploadRequest {
+            file_name: name.clone(),
+            kind: kind.clone(),
+            data: UploadData::Path(saved.path.clone()),
+            mime: upload::mime_for_name(&name).to_owned(),
+        };
+        let sent = Sent { path: Some(saved.path.clone()), name, ..Sent::default() };
+        match self.send(kind, request, size, sent, self.settings.after_upload).await {
+            Ok(url) => Ok(url),
+            Err(Ended::Stopped) => Err(Halt),
+            Err(Ended::Failed(error)) => Err(self.fail(error)),
+        }
+    }
+
     /// The before-upload window. Returns false when the upload should be skipped: the user cancelled, or the
     /// window could not be shown. The destination the user picked is used for this job's upload of `kind`.
     async fn choose_destination(&mut self, kind: UploadKind, name: &str) -> Step<bool> {
@@ -476,14 +529,15 @@ impl Job {
         Ok(())
     }
 
-    /// The toast for a capture. `url` is the upload's URL, shortened when shortening worked.
-    fn toast(&self, saved: Option<&SavedFile>, preview: Bitmap, url: Option<String>) -> Step {
+    /// The toast for a capture, or for a saved file (`preview` is None: no image). `url` is the upload's URL,
+    /// shortened when shortening worked.
+    fn toast(&self, saved: Option<&SavedFile>, preview: Option<Bitmap>, url: Option<String>) -> Step {
         self.checkpoint()?;
         let (title, body, path) = match saved {
             Some(saved) => ("Screenshot saved", saved.path.display().to_string(), Some(saved.path.clone())),
             None => ("Screenshot copied", String::new(), None),
         };
-        let toast = Toast { title: title.to_owned(), body, image: Some(preview), path, url, options: self.settings.general.toast.clone() };
+        let toast = Toast { title: title.to_owned(), body, image: preview, path, url, options: self.settings.general.toast.clone() };
         match self.cx.ports.notifier.toast(toast) {
             Ok(()) => self.emit(TaskEvent::Notified { id: self.id }),
             Err(error) => self.step_failed("toast", error),
