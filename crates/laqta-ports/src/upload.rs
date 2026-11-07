@@ -110,6 +110,37 @@ pub trait Prompt: Send + Sync {
     fn choose(&self, title: &str, options: &[String]) -> BoxFuture<'_, Result<usize, PortError>>;
     fn show_text(&self, title: &str, text: &str) -> BoxFuture<'_, Result<(), PortError>>;
     fn confirm(&self, title: &str, text: &str) -> BoxFuture<'_, Result<bool, PortError>>;
+
+    /// Files to upload (the system file dialog).
+    fn pick_files(&self, title: &str) -> BoxFuture<'_, Result<Vec<std::path::PathBuf>, PortError>> {
+        let _ = title;
+        Box::pin(async { Err(PortError::Unsupported("file picker".into())) })
+    }
+
+    fn pick_folder(&self, title: &str) -> BoxFuture<'_, Result<std::path::PathBuf, PortError>> {
+        let _ = title;
+        Box::pin(async { Err(PortError::Unsupported("folder picker".into())) })
+    }
+
+    /// The after-capture window: shows the image and lets the user change what happens next.
+    /// Returns the chosen after-capture and after-upload flag bits.
+    fn after_capture(&self, image: &laqta_domain::Bitmap, after_capture: u32, after_upload: u32) -> BoxFuture<'_, Result<(u32, u32), PortError>> {
+        let _ = image;
+        Box::pin(async move { Ok((after_capture, after_upload)) })
+    }
+
+    /// The before-upload window: confirm the upload and pick a destination among `(id, name)`.
+    fn before_upload(&self, file_name: &str, destinations: &[(String, String)], current: &str) -> BoxFuture<'_, Result<String, PortError>> {
+        let _ = (file_name, destinations);
+        let current = current.to_string();
+        Box::pin(async move { Ok(current) })
+    }
+
+    /// Where "save as" writes: the system save dialog, starting from `suggested`.
+    fn save_path(&self, suggested: &std::path::Path) -> BoxFuture<'_, Result<std::path::PathBuf, PortError>> {
+        let _ = suggested;
+        Box::pin(async { Err(PortError::Unsupported("save dialog".into())) })
+    }
 }
 
 /// OS credential storage. `Unsupported` when no keyring exists; callers then keep the secret in
