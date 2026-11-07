@@ -28,6 +28,7 @@ struct Platform {
     window_ops: Arc<dyn laqta_ports::WindowOps>,
     autostart: Arc<dyn laqta_ports::Autostart>,
     integration: Arc<dyn laqta_ports::ShellIntegration>,
+    input: Arc<dyn laqta_ports::InputSynth>,
 }
 
 #[cfg(target_os = "linux")]
@@ -48,6 +49,7 @@ fn platform() -> Result<Platform, String> {
         window_ops: p.window_ops,
         autostart: p.autostart,
         integration: p.integration,
+        input: p.input,
     })
 }
 
@@ -67,6 +69,7 @@ fn platform() -> Result<Platform, String> {
         window_ops: p.window_ops,
         autostart: p.autostart,
         integration: p.integration,
+        input: p.input,
     })
 }
 
@@ -203,7 +206,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         stream: platform.stream.clone(),
         ocr: Arc::new(crate::ocr::LazyOcr::new(data.clone(), Arc::new(ui.clone()))),
         window_ops: platform.window_ops.clone(),
-        input: Arc::new(stubs::Pending),
+        input: platform.input.clone(),
         watcher: Arc::new(laqta_library::NotifyWatcher::default()),
         uploaders: uploaders.clone(),
         hover: platform.hover,
