@@ -40,3 +40,19 @@ pub trait WindowOps: Send + Sync {
     /// Properties for the inspector: (name, value) pairs such as class, pid, style flags.
     fn inspect(&self, window: &HoverTarget) -> Result<Vec<(String, String)>, PortError>;
 }
+
+/// Run at login (M6 D10): Windows `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, Linux
+/// `~/.config/autostart/laqta.desktop`.
+pub trait Autostart: Send + Sync {
+    fn is_enabled(&self) -> Result<bool, PortError>;
+    fn set_enabled(&self, enabled: bool, executable: &std::path::Path) -> Result<(), PortError>;
+}
+
+/// "Upload with Laqta" in the file manager and Send To (M6 D11).
+pub trait ShellIntegration: Send + Sync {
+    fn is_installed(&self) -> Result<bool, PortError>;
+    fn install(&self, executable: &std::path::Path) -> Result<(), PortError>;
+    fn uninstall(&self) -> Result<(), PortError>;
+    /// Registers the browser native-messaging host manifest (Chrome and Firefox) for `nmh`.
+    fn install_native_messaging(&self, nmh: &std::path::Path) -> Result<(), PortError>;
+}
