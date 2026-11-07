@@ -284,7 +284,19 @@ fn workflow_settings_apply() {
 /// (which wait for overlay input) are covered above.
 #[test]
 fn every_action_routes() {
-    let waits = [Action::RectangleRegion, Action::RectangleLight, Action::RectangleTransparent, Action::LastRegion];
+    // Region selections wait on the overlay; recordings start a driver that runs until stopped.
+    let waits = [
+        Action::RectangleRegion,
+        Action::RectangleLight,
+        Action::RectangleTransparent,
+        Action::LastRegion,
+        Action::ScreenRecorder,
+        Action::ScreenRecorderActiveWindow,
+        Action::StartScreenRecorder,
+        Action::ScreenRecorderGif,
+        Action::ScreenRecorderGifActiveWindow,
+        Action::StartScreenRecorderGif,
+    ];
     for &a in Action::ALL.iter().filter(|a| !waits.contains(a)) {
         let tmp = TempDir::new().unwrap();
         let h = harness(tmp.path(), |_| {});
