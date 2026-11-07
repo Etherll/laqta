@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Context, Div, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
+    AnyWindowHandle, prelude::FluentBuilder as _, App, AppContext as _, Bounds, Context, Div, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage,
     StatefulInteractiveElement as _, Styled as _, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, img,
     point, px, size,
@@ -340,12 +340,13 @@ impl Render for OverlayView {
 
         // The toolbar sits at the top centre of the first monitor; its clicks don't reach the canvas.
         if self.index == 0 {
+            let annotate_on = view.annotate;
             let mut bar = div()
                 .id("laqta-overlay-toolbar")
                 .absolute()
                 .top(px(12.))
-                .left(px(win_w / 2.0 - 190.0))
-                .w(px(380.))
+                .left(px(win_w / 2.0 - 235.0))
+                .w(px(470.))
                 .flex()
                 .flex_row()
                 .gap(px(4.))
@@ -358,6 +359,7 @@ impl Render for OverlayView {
                 .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation());
             for (i, (label, cmd)) in [
                 ("Capture", RegionCommand::Confirm),
+                ("Annotate", RegionCommand::Annotate),
                 ("Fullscreen", RegionCommand::Fullscreen),
                 ("Monitor", RegionCommand::ActiveMonitor),
                 ("Cancel", RegionCommand::Cancel),
@@ -375,6 +377,7 @@ impl Render for OverlayView {
                         .rounded(px(6.))
                         .cursor_pointer()
                         .hover(|s| s.bg(color(0xffffff, 0.15)))
+                        .when(cmd == RegionCommand::Annotate && annotate_on, |d| d.bg(color(0x3b82f6, 0.85)))
                         .child(label)
                         .on_click(cx.listener(move |this, _, _, cx| this.send(RegionInput::Command(cmd), cx))),
                 );

@@ -25,6 +25,8 @@ pub struct RegionView {
     pub show_crosshair: bool,
     /// 0 = no dimming, 255 = black outside the selection.
     pub dim_alpha: u8,
+    /// Annotate mode is on: the toolbar's Annotate button shows as pressed.
+    pub annotate: bool,
 }
 
 pub type InputCallback = Arc<dyn Fn(RegionInput) + Send + Sync>;

@@ -198,9 +198,12 @@ impl App {
         self.crop(frames, vec![target.rect], Some(target), ts).await
     }
 
-    async fn region(&self, ts: TaskSettings) -> Result<Dispatched, AppError> {
+    async fn region(&self, mut ts: TaskSettings) -> Result<Dispatched, AppError> {
         let frames = self.frames(&ts).await?;
         let sel = region::select(&self.ports, frames, &ts.capture.region).await?;
+        if sel.annotate {
+            ts.after_capture.insert(laqta_domain::workflow::AfterCaptureTasks::ANNOTATE_IMAGE);
+        }
         if let Ok(mut last) = self.last_region.lock() {
             *last = Some((sel.rects.clone(), sel.target.clone()));
         }

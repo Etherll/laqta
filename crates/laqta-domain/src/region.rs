@@ -96,6 +96,8 @@ pub enum RegionCommand {
     Cancel,
     Fullscreen,
     ActiveMonitor,
+    /// Confirm, then open the selection in the editor before the after-capture steps (M3 §1.4).
+    Annotate,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,6 +146,8 @@ pub struct RegionState {
     regions: Vec<PhysRect>,
     /// The target each region was confirmed from, if any, parallel to `regions`.
     region_targets: Vec<Option<HoverTarget>>,
+    /// Set when the session was confirmed with `Annotate`.
+    annotate: bool,
     active: Option<usize>,
     /// Index into `targets` of the target under the cursor.
     hover: Option<usize>,
@@ -162,6 +166,11 @@ struct View {
 }
 
 impl RegionState {
+    /// Whether the user confirmed with `Annotate`: the capture opens in the editor first.
+    pub fn annotate_requested(&self) -> bool {
+        self.annotate
+    }
+
     pub fn new(config: RegionConfig) -> Self {
         let cursor = centre(config.bounds);
         Self {
@@ -169,6 +178,7 @@ impl RegionState {
             targets: Vec::new(),
             regions: Vec::new(),
             region_targets: Vec::new(),
+            annotate: false,
             active: None,
             hover: None,
             cursor,
@@ -318,6 +328,16 @@ impl RegionState {
             RegionInput::PointerUp { x, y, button } => self.pointer_up((x, y), button),
             RegionInput::Key { key, mods } => self.key(key, mods),
             RegionInput::Command(RegionCommand::Confirm) => self.confirm(),
+            // With a selection, confirm it for annotation; with none yet, toggle annotate mode, so the
+            // next confirmed selection opens in the editor.
+            RegionInput::Command(RegionCommand::Annotate) => {
+                if self.regions.is_empty() && self.hovered_target().is_none() {
+                    self.annotate = !self.annotate;
+                } else {
+                    self.annotate = true;
+                    self.confirm();
+                }
+            }
             RegionInput::Command(RegionCommand::Cancel) => self.finish(RegionOutcome::Cancelled),
             RegionInput::Command(RegionCommand::Fullscreen) => self.finish(RegionOutcome::Fullscreen),
             RegionInput::Command(RegionCommand::ActiveMonitor) => self.finish(RegionOutcome::ActiveMonitor),
@@ -1095,6 +1115,19 @@ mod tests {
         state.handle(move_to(400, 300));
         state.handle(middle_press(400, 300));
         assert_eq!(state.outcome(), Some(&RegionOutcome::Confirmed { rects: vec![win.rect], target: Some(win) }));
+    }
+
+    #[test]
+    fn annotate_confirms_and_flags() {
+        let mut state = RegionState::new(with_clicks(RegionMouseAction::None, RegionMouseAction::None, false));
+        state.handle(RegionInput::Command(RegionCommand::Annotate));
+        assert!(state.annotate_requested() && state.outcome().is_none());
+        state.handle(RegionInput::Command(RegionCommand::Annotate));
+        assert!(!state.annotate_requested());
+        state.handle(RegionInput::Command(RegionCommand::Annotate));
+        drag(&mut state, (10, 10), (60, 60));
+        assert!(state.annotate_requested());
+        assert!(matches!(state.outcome(), Some(RegionOutcome::Confirmed { .. })));
     }
 
     #[test]

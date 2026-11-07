@@ -25,6 +25,8 @@ pub struct Selection {
     pub rects: Vec<PhysRect>,
     pub target: Option<HoverTarget>,
     pub image: Bitmap,
+    /// Confirmed with the overlay's Annotate button: the capture opens in the editor first.
+    pub annotate: bool,
 }
 
 /// Shows the overlay over `frames` and runs the selection until the user confirms (`Ok`) or cancels
@@ -70,7 +72,8 @@ pub(crate) async fn select(ports: &Ports, frames: Vec<Frame>, options: &RegionCa
             let changed = state.handle(input);
             if let Some(outcome) = state.outcome().cloned() {
                 ports.overlay.close();
-                return outcome_selection(outcome, &composed, bounds, &monitors, state.cursor());
+                let annotate = state.annotate_requested();
+                return outcome_selection(outcome, &composed, bounds, &monitors, state.cursor()).map(|s| Selection { annotate, ..s });
             }
             if changed {
                 let pixel = pixel_at(&composed, bounds, state.cursor());
@@ -97,7 +100,7 @@ pub(crate) async fn crop_frames(
     let bounds = bounds_of(&frames)?;
     let composed = compose(ports.spawner.as_ref(), frames).await?;
     let image = crop_rects(&composed, bounds, &rects)?;
-    Ok(Selection { rects, target, image })
+    Ok(Selection { rects, target, image, annotate: false })
 }
 
 /// The overlay's view of `state`. `pixel` is the RGB under the cursor, and `bounds` is the desktop
@@ -118,6 +121,7 @@ pub(crate) fn view(state: &RegionState, bounds: PhysRect, options: &RegionCaptur
         info_text: options.show_info.then(|| state.info_text(pixel)),
         show_crosshair: options.show_crosshair,
         dim_alpha: options.dim_alpha,
+        annotate: state.annotate_requested(),
     }
 }
 
@@ -133,7 +137,7 @@ fn outcome_selection(
     match outcome {
         RegionOutcome::Confirmed { rects, target } => {
             let image = crop_rects(composed, bounds, &rects)?;
-            Ok(Selection { rects, target, image })
+            Ok(Selection { rects, target, image, annotate: false })
         }
         RegionOutcome::Fullscreen => whole_rect(composed, bounds, bounds),
         RegionOutcome::ActiveMonitor => {
@@ -148,7 +152,7 @@ fn outcome_selection(
 fn whole_rect(composed: &Bitmap, bounds: PhysRect, rect: PhysRect) -> Result<Selection, AppError> {
     let rects = vec![rect];
     let image = crop_rects(composed, bounds, &rects)?;
-    Ok(Selection { rects, target: None, image })
+    Ok(Selection { rects, target: None, image, annotate: false })
 }
 
 /// The rect of the monitor under `at`. A point in a gap of a non-rectangular layout falls back to the
