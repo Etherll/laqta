@@ -2,7 +2,8 @@
 //!
 //! Screen capture uses DXGI Desktop Duplication with one D3D11 device per adapter, falling back
 //! to GDI `BitBlt`. Hotkeys and the tray share one dedicated shell thread that owns a hidden
-//! window. Everything here is Windows-only; on other targets the crate is empty.
+//! window. Everything here is Windows-only; on other targets the crate is empty. The pure helpers
+//! (key codes, window rules, frame patches) also build under `test`, so their tests run on Linux.
 
 #[cfg(windows)]
 mod capture_dxgi;
@@ -11,7 +12,15 @@ mod capture_gdi;
 #[cfg(windows)]
 mod clipboard;
 #[cfg(windows)]
+mod cursor;
+#[cfg(windows)]
 mod hover;
+#[cfg(any(windows, test))]
+mod keys;
+#[cfg(any(windows, test))]
+mod patch;
+#[cfg(any(windows, test))]
+mod window_rules;
 #[cfg(windows)]
 mod shell;
 #[cfg(windows)]
@@ -25,10 +34,10 @@ mod imp {
     use std::sync::Arc;
 
     use laqta_domain::Frame;
-    use laqta_ports::{BoxFuture, Clipboard, HotkeyRegistrar, PortError, ScreenSource, Shell, Tray};
+    use laqta_ports::{BoxFuture, CaptureRequest, Clipboard, HotkeyRegistrar, PortError, ScreenSource, Shell, Tray};
     use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 
-    use crate::{capture_dxgi, capture_gdi, clipboard, hover, shell, shell_thread};
+    use crate::{capture_dxgi, capture_gdi, clipboard, cursor, hover, shell, shell_thread};
 
     /// The Windows adapters, ready to hand to `laqta_app::Ports`.
     pub struct WindowsPorts {
@@ -81,13 +90,28 @@ mod imp {
 
     impl ScreenSource for WindowsScreen {
         fn capture_all(&self) -> BoxFuture<'_, Result<Vec<Frame>, PortError>> {
-            Box::pin(blocking::unblock(|| match capture_dxgi::capture() {
-                Ok(frames) => Ok(frames),
-                Err(e) => {
-                    tracing::info!("DXGI duplication failed ({e}); falling back to GDI");
-                    capture_gdi::capture()
+            Box::pin(blocking::unblock(capture_frames))
+        }
+
+        fn capture(&self, request: CaptureRequest) -> BoxFuture<'_, Result<Vec<Frame>, PortError>> {
+            Box::pin(blocking::unblock(move || {
+                let mut frames = capture_frames()?;
+                if request.show_cursor {
+                    cursor::draw_onto(&mut frames);
                 }
+                Ok(frames)
             }))
+        }
+    }
+
+    /// One frame per monitor: DXGI duplication, or GDI when duplication fails.
+    fn capture_frames() -> Result<Vec<Frame>, PortError> {
+        match capture_dxgi::capture() {
+            Ok(frames) => Ok(frames),
+            Err(e) => {
+                tracing::info!("DXGI duplication failed ({e}); falling back to GDI");
+                capture_gdi::capture()
+            }
         }
     }
 }

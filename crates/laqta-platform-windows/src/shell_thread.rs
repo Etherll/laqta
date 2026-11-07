@@ -17,13 +17,12 @@ use std::mem::size_of;
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
-use laqta_domain::{Action, Key, KeyChord, Modifiers};
+use laqta_domain::{Action, KeyChord, Modifiers};
 use laqta_ports::{ActionCallback, HotkeyRegistrar, PortError, Tray, TrayMenu};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, UnregisterHotKey,
-    VK_SNAPSHOT,
 };
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW,
@@ -37,6 +36,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HSTRING, w};
 
+use crate::keys;
+
 const WM_LAQTA_COMMAND: u32 = WM_APP + 1;
 const WM_LAQTA_TRAY: u32 = WM_APP + 2;
 const TRAY_ID: u32 = 1;
@@ -47,6 +48,7 @@ type HotkeyResults = Vec<(KeyChord, Result<(), PortError>)>;
 enum Command {
     Hotkeys { bindings: Vec<(KeyChord, Action)>, on_fire: ActionCallback, reply: mpsc::Sender<HotkeyResults> },
     Tray { menu: TrayMenu, on_select: ActionCallback, reply: mpsc::Sender<Result<(), PortError>> },
+    UnregisterAll { reply: mpsc::Sender<()> },
     Shutdown { reply: mpsc::Sender<()> },
 }
 
@@ -78,6 +80,15 @@ impl HotkeyRegistrar for WindowsHotkeys {
         match send(|reply| Command::Hotkeys { bindings, on_fire, reply }) {
             Ok(results) => results,
             Err(e) => chords.into_iter().map(|c| (c, Err(e.clone()))).collect(),
+        }
+    }
+
+    fn unregister_all(&self) {
+        // Nothing can be registered before the shell thread exists, so don't start it just to clear.
+        if let Some(Ok(_)) = WINDOW.get()
+            && let Err(e) = send(|reply| Command::UnregisterAll { reply })
+        {
+            tracing::warn!("could not clear hotkeys: {e}");
         }
     }
 }
@@ -238,17 +249,15 @@ fn handle(hwnd: HWND, command: Command) {
             });
             let _ = reply.send(result);
         }
+        Command::UnregisterAll { reply } => {
+            unregister_hotkeys(hwnd);
+            let _ = reply.send(());
+        }
         Command::Shutdown { reply } => {
-            let (ids, icon) = STATE.with(|s| {
-                let mut s = s.borrow_mut();
-                let ids: Vec<i32> = s.hotkeys.drain().map(|(id, _)| id).collect();
-                (ids, std::mem::take(&mut s.icon_added))
-            });
+            unregister_hotkeys(hwnd);
+            let icon = STATE.with(|s| std::mem::take(&mut s.borrow_mut().icon_added));
             // SAFETY: plain Win32 calls on this thread's window.
             unsafe {
-                for id in ids {
-                    let _ = UnregisterHotKey(Some(hwnd), id);
-                }
                 if icon {
                     let data = NOTIFYICONDATAW { cbSize: size_of::<NOTIFYICONDATAW>() as u32, hWnd: hwnd, uID: TRAY_ID, ..Default::default() };
                     let _ = Shell_NotifyIconW(NIM_DELETE, &data);
@@ -260,17 +269,26 @@ fn handle(hwnd: HWND, command: Command) {
     }
 }
 
-fn register_hotkeys(hwnd: HWND, bindings: &[(KeyChord, Action)], on_fire: ActionCallback) -> HotkeyResults {
-    let old: Vec<i32> = STATE.with(|s| s.borrow_mut().hotkeys.drain().map(|(id, _)| id).collect());
-    for id in old {
+/// Unregisters every hotkey this window holds and forgets the callback.
+fn unregister_hotkeys(hwnd: HWND) {
+    let ids: Vec<i32> = STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        s.on_hotkey = None;
+        s.hotkeys.drain().map(|(id, _)| id).collect()
+    });
+    for id in ids {
         // SAFETY: unregistering ids this window registered.
         let _ = unsafe { UnregisterHotKey(Some(hwnd), id) };
     }
+}
+
+fn register_hotkeys(hwnd: HWND, bindings: &[(KeyChord, Action)], on_fire: ActionCallback) -> HotkeyResults {
+    unregister_hotkeys(hwnd);
     let mut registered = HashMap::new();
     let mut results = Vec::with_capacity(bindings.len());
     for (index, (chord, action)) in bindings.iter().enumerate() {
         let id = index as i32 + 1;
-        let result = match virtual_key(chord.key) {
+        let result = match keys::vk(chord.key) {
             None => Err(PortError::Unsupported(format!("key {:?}", chord.key))),
             // SAFETY: plain Win32 call on this thread's window.
             Some(vk) => unsafe { RegisterHotKey(Some(hwnd), id, modifiers(chord.modifiers) | MOD_NOREPEAT, vk) }
@@ -287,13 +305,6 @@ fn register_hotkeys(hwnd: HWND, bindings: &[(KeyChord, Action)], on_fire: Action
         s.on_hotkey = Some(on_fire);
     });
     results
-}
-
-fn virtual_key(key: Key) -> Option<u32> {
-    match key {
-        Key::PrintScreen => Some(u32::from(VK_SNAPSHOT.0)),
-        _ => None,
-    }
 }
 
 fn modifiers(m: Modifiers) -> HOT_KEY_MODIFIERS {
