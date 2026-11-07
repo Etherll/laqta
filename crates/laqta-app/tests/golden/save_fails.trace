@@ -1,0 +1,5 @@
+status InQueue
+status Preparing
+status Working
+failed io
+status Failed
