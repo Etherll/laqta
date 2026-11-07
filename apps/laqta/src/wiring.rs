@@ -24,7 +24,7 @@ fn platform(clock: Arc<dyn Clock>, spawner: Arc<dyn Spawner>) -> Result<Platform
     tracing::info!("session: {session:?}");
     let p = laqta_platform_linux::ports(session);
     Ok(Platform {
-        ports: stubs::ports(p.screen, p.clipboard, p.shell, clock, spawner),
+        ports: stubs::ports(p.screen, p.clipboard, p.shell, p.hover, clock, spawner),
         hotkeys: p.hotkeys,
         tray: p.tray,
     })
@@ -35,7 +35,7 @@ fn platform(clock: Arc<dyn Clock>, spawner: Arc<dyn Spawner>) -> Result<Platform
     laqta_platform_windows::set_dpi_awareness();
     let p = laqta_platform_windows::ports();
     Ok(Platform {
-        ports: stubs::ports(p.screen, p.clipboard, p.shell, clock, spawner),
+        ports: stubs::ports(p.screen, p.clipboard, p.shell, p.hover, clock, spawner),
         hotkeys: p.hotkeys,
         tray: p.tray,
     })

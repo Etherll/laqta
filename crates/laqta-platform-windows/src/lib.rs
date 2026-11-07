@@ -11,6 +11,8 @@ mod capture_gdi;
 #[cfg(windows)]
 mod clipboard;
 #[cfg(windows)]
+mod hover;
+#[cfg(windows)]
 mod shell;
 #[cfg(windows)]
 mod shell_thread;
@@ -26,7 +28,7 @@ mod imp {
     use laqta_ports::{BoxFuture, Clipboard, HotkeyRegistrar, PortError, ScreenSource, Shell, Tray};
     use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 
-    use crate::{capture_dxgi, capture_gdi, clipboard, shell, shell_thread};
+    use crate::{capture_dxgi, capture_gdi, clipboard, hover, shell, shell_thread};
 
     /// The Windows adapters, ready to hand to `laqta_app::Ports`.
     pub struct WindowsPorts {
@@ -35,6 +37,7 @@ mod imp {
         pub shell: Arc<dyn Shell>,
         pub hotkeys: Arc<dyn HotkeyRegistrar>,
         pub tray: Arc<dyn Tray>,
+        pub hover: Arc<dyn laqta_ports::HoverSource>,
     }
 
     impl std::fmt::Debug for WindowsPorts {
@@ -50,6 +53,7 @@ mod imp {
             shell: Arc::new(shell::WindowsShell),
             hotkeys: Arc::new(shell_thread::WindowsHotkeys),
             tray: Arc::new(shell_thread::WindowsTray),
+            hover: Arc::new(hover::WindowsHover),
         }
     }
 

@@ -24,7 +24,7 @@ pub struct Ports {
     pub rng: Arc<dyn Rng>,
     /// Plain values `main` supplies, not ports.
     pub host: HostInfo,
-    // codecs: added with W1f
+    pub codecs: laqta_imaging::Codecs,
 }
 
 impl fmt::Debug for Ports {

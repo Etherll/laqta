@@ -20,6 +20,7 @@ default = []
 laqta-domain.workspace = true
 laqta-ports.workspace = true
 laqta-app.workspace = true
+laqta-imaging.workspace = true
 laqta-ipc.workspace = true
 laqta-ui.workspace = true
 gpui.workspace = true

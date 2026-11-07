@@ -63,6 +63,7 @@ pub fn ports(
     screen: Arc<dyn ScreenSource>,
     clipboard: Arc<dyn Clipboard>,
     shell: Arc<dyn Shell>,
+    hover: Arc<dyn HoverSource>,
     clock: Arc<dyn Clock>,
     spawner: Arc<dyn Spawner>,
 ) -> Ports {
@@ -73,9 +74,10 @@ pub fn ports(
         clock,
         spawner,
         overlay: Arc::new(NoOverlay),
-        hover: Arc::new(NoHover),
+        hover,
         notifier: Arc::new(LogNotifier),
         rng: Arc::new(SystemRng(std::sync::Mutex::new(fastrand::Rng::new()))),
         host: host_info(),
+        codecs: laqta_imaging::Codecs::builtin(),
     }
 }

@@ -3124,6 +3124,7 @@ dependencies = [
  "jiff",
  "laqta-app",
  "laqta-domain",
+ "laqta-imaging",
  "laqta-ipc",
  "laqta-platform-linux",
  "laqta-platform-windows",
@@ -3222,6 +3223,7 @@ dependencies = [
  "laqta-ports",
  "libwayshot",
  "png 0.18.1",
+ "swayipc",
  "tracing",
  "x11rb 0.14.0",
 ]
@@ -5536,6 +5538,28 @@ dependencies = [
  "skrifa 0.44.0",
  "yazi",
  "zeno",
+]
+
+[[package]]
+name = "swayipc"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7fd6ee13016b1ae2fbf741ddb2133d983a3fecdc34686eec6202e2a80612d82f"
+dependencies = [
+ "serde",
+ "serde_json",
+ "swayipc-types",
+]
+
+[[package]]
+name = "swayipc-types"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a38abba293875141fd89c08df734fc1621218ef3b4adf0e585c155ff62c0cc4d"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

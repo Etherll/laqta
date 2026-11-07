@@ -34,6 +34,7 @@ fn harness(screenshots_dir: &Path, screen: FakeScreen) -> Harness {
         notifier: Arc::new(laqta_ports::fakes::FakeNotifier::default()),
         rng: Arc::new(laqta_ports::fakes::CountingRng::default()),
         host: laqta_ports::HostInfo::default(),
+        codecs: laqta_imaging::Codecs::builtin(),
     };
     let settings = Settings { screenshots_dir: screenshots_dir.to_path_buf(), ..Settings::default_for(screenshots_dir.to_path_buf()) };
     Harness { app: App::new(ports, settings), screen, shell, spawner }

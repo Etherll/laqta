@@ -52,6 +52,7 @@ fn build_app(dir: &Path, behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner
         notifier: Arc::new(laqta_ports::fakes::FakeNotifier::default()),
         rng: Arc::new(laqta_ports::fakes::CountingRng::default()),
         host: laqta_ports::HostInfo::default(),
+        codecs: laqta_imaging::Codecs::builtin(),
     };
     let settings = Settings { screenshots_dir: dir.to_path_buf(), ..Settings::default_for(dir.to_path_buf()) };
     (App::new(ports, settings), clipboard)

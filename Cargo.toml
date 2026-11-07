@@ -60,7 +60,7 @@ dirs = "7.0.0"
 # platforms
 arboard = { version = "3.7.0", features = ["wayland-data-control"] }
 windows = "0.62.2"
-x11rb = { version = "0.14.0", features = ["shm", "randr", "allow-unsafe-code"] }
+x11rb = { version = "0.14.0", features = ["shm", "randr", "xfixes", "allow-unsafe-code"] }
 libwayshot = "0.9.0"
 ashpd = { version = "0.14.0", default-features = false, features = ["async-io", "screenshot", "global_shortcuts"] }
 ksni = { version = "0.3.7", default-features = false, features = ["async-io"] }

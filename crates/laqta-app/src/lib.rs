@@ -4,6 +4,7 @@
 
 mod dispatcher;
 mod files;
+mod region;
 mod task;
 
 pub use dispatcher::{App, Dispatched, Ports};
