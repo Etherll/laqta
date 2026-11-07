@@ -25,7 +25,12 @@ fn play(sound: Sound, custom: Option<&Path>) -> Result<(), PortError> {
     laqta_platform_linux::play_sound(sound, custom)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+fn play(sound: Sound, custom: Option<&Path>) -> Result<(), PortError> {
+    laqta_platform_windows::play_sound(sound, custom)
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 fn play(_sound: Sound, _custom: Option<&Path>) -> Result<(), PortError> {
     Err(PortError::Unsupported("sounds".into()))
 }

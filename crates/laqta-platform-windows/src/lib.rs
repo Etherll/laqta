@@ -49,20 +49,12 @@ pub use sound::play_sound;
 mod imp {
     use std::sync::Arc;
 
-<<<<<<< HEAD
-    use laqta_domain::Frame;
+    use laqta_domain::region::HoverTarget;
+    use laqta_domain::{Bitmap, Frame};
     use laqta_ports::{BoxFuture, CaptureRequest, Clipboard, HotkeyRegistrar, PortError, ScreenSource, SecretStore, Shell, Tray};
     use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 
-    use crate::{capture_dxgi, capture_gdi, clipboard, cursor, hover, secrets, shell, shell_thread};
-=======
-    use laqta_domain::region::HoverTarget;
-    use laqta_domain::{Bitmap, Frame};
-    use laqta_ports::{BoxFuture, CaptureRequest, Clipboard, HotkeyRegistrar, PortError, ScreenSource, Shell, Tray};
-    use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
-
-    use crate::{capture_dxgi, capture_gdi, clipboard, cursor, hover, shell, shell_thread, transparent};
->>>>>>> worktree-agent-a0e682905dee1f70b
+    use crate::{capture_dxgi, capture_gdi, clipboard, cursor, hover, secrets, shell, shell_thread, transparent};
 
     /// The Windows adapters, ready to hand to `laqta_app::Ports`.
     pub struct WindowsPorts {
