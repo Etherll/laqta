@@ -1,0 +1,90 @@
+# The model catalog (ADR 023). Shipped with each release; downloads are verified against the
+# pinned SHA-256 with laqta-http's verified fetch.
+#
+# Each [[model]] entry:
+#   id, task ("ocr-det" | "ocr-rec" | "background"), family (a name from families/mod.rs),
+#   name, description, url, sha256 (64 lowercase hex, or "pending-owner"), size_bytes,
+#   licence, commercial, precisions, languages (rec: BCP-47 tags or script names).
+#   Rec entries also carry dict_url, dict_sha256 and dict_size_bytes: the character
+#   dictionary, one entry per line, without the CTC blank (the loader adds it).
+#   default = true marks the one entry per task that is used when none is chosen.
+#
+# sha256 = "pending-owner" refuses the download with a named error, so an unverified file never
+# lands on disk. Every hash below was checked against the file it names.
+#
+# Hugging Face URLs are pinned to a commit. The dictionaries come from PaddleOCR at a pinned commit.
+
+[[model]]
+id = "ppocr-v5-mobile-det"
+task = "ocr-det"
+family = "o1-det"
+default = true
+name = "PP-OCRv5 mobile text detection"
+description = "Finds text lines in an image (DBNet). Works for any script."
+url = "https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx/resolve/e6f4fa85f00e168c862bc462aebca69eef9b3d3d/inference.onnx"
+sha256 = "a431985659dc921974177a95adcfbb90fd9e51989a5e04d70d0b75f597b6e61d"
+size_bytes = 4826518
+licence = "Apache-2.0"
+commercial = true
+precisions = ["fp32"]
+languages = []
+
+[[model]]
+id = "ppocr-v5-mobile-rec-multi"
+task = "ocr-rec"
+family = "o1-rec"
+default = true
+name = "PP-OCRv5 mobile recognition, Chinese, English, Japanese"
+description = "Reads text lines in Simplified and Traditional Chinese, English and Japanese."
+url = "https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_rec_onnx/resolve/ed152b8b495f84de93cda5709d768548a9127622/inference.onnx"
+sha256 = "da72dc72ca4dc220df0dfde68c1dedc31c58d3e76a25871122e5056227d50092"
+size_bytes = 16534782
+licence = "Apache-2.0"
+commercial = true
+precisions = ["fp32"]
+languages = ["zh", "en", "ja"]
+dict_url = "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf/ppocr/utils/dict/ppocrv5_dict.txt"
+dict_sha256 = "d1979e9f794c464c0d2e0b70a7fe14dd978e9dc644c0e71f14158cdf8342af1b"
+dict_size_bytes = 74012
+
+[[model]]
+id = "ppocr-v5-mobile-rec-latin"
+task = "ocr-rec"
+family = "o1-rec"
+default = false
+name = "PP-OCRv5 mobile recognition, Latin script"
+description = "Reads text lines in Latin-script languages. Smaller than the multilingual model."
+url = "https://huggingface.co/PaddlePaddle/latin_PP-OCRv5_mobile_rec_onnx/resolve/89d3a50e2c27e2e7cceeab0e944c25c807d5db4f/inference.onnx"
+sha256 = "7888113072263cb471b93f66dd5e2ad70548dc526fa1ace760d0d973dd121498"
+size_bytes = 8042023
+licence = "Apache-2.0"
+commercial = true
+precisions = ["fp32"]
+languages = ["latin"]
+dict_url = "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf/ppocr/utils/dict/ppocrv5_latin_dict.txt"
+dict_sha256 = "ccbcc45730b3fbbd9050c5bc74db6a99067141ef1035e3d14889a84a6b9b1aff"
+dict_size_bytes = 2616
+
+# ONNX Runtime, loaded at first use (ADR 023). The archive is verified before it is unpacked.
+# `library` is the path of the shared library inside the archive. Unpacking is not implemented
+# here yet, so the owner decides how the file is placed.
+
+[[onnxruntime]]
+os = "linux"
+arch = "x86_64"
+version = "1.23.2"
+url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz"
+sha256 = "1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b"
+size_bytes = 8309231
+archive = "tgz"
+library = "onnxruntime-linux-x64-1.23.2/lib/libonnxruntime.so.1.23.2"
+
+[[onnxruntime]]
+os = "windows"
+arch = "x86_64"
+version = "1.23.2"
+url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip"
+sha256 = "0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd"
+size_bytes = 78127794
+archive = "zip"
+library = "onnxruntime-win-x64-1.23.2/lib/onnxruntime.dll"
