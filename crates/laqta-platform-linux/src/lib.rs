@@ -7,7 +7,9 @@ use std::sync::Arc;
 use laqta_ports::{Clipboard, HotkeyRegistrar, HoverSource, ScreenSource, Shell, Tray};
 
 mod atspi_elements;
+mod autostart;
 mod clipboard;
+mod integration;
 mod secrets;
 pub mod session;
 mod shell;
@@ -15,6 +17,7 @@ mod sound;
 mod stream;
 mod tray;
 mod wayland;
+mod window_ops;
 mod x11;
 
 pub use secrets::SecretServiceStore;
@@ -32,6 +35,9 @@ pub struct LinuxPorts {
     pub hover: Arc<dyn HoverSource>,
     pub secrets: Arc<dyn laqta_ports::SecretStore>,
     pub stream: Arc<dyn laqta_ports::ScreenStream>,
+    pub window_ops: Arc<dyn laqta_ports::WindowOps>,
+    pub autostart: Arc<dyn laqta_ports::Autostart>,
+    pub integration: Arc<dyn laqta_ports::ShellIntegration>,
 }
 
 pub fn ports(session: Session) -> LinuxPorts {
@@ -58,5 +64,8 @@ pub fn ports_with_token(session: Session, restore_token: Option<String>, on_toke
         hover: Arc::new(atspi_elements::WithElements::new(hover)),
         secrets: Arc::new(secrets::SecretServiceStore),
         stream: Arc::new(stream::LinuxScreenStream::new(session, restore_token, on_token)),
+        window_ops: Arc::new(window_ops::LinuxWindowOps::new(session)),
+        autostart: Arc::new(autostart::LinuxAutostart::default()),
+        integration: Arc::new(integration::LinuxShellIntegration::default()),
     }
 }
