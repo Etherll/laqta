@@ -8,23 +8,106 @@ const MAX_LINE_BYTES: usize = 4096;
 
 const REQUEST_PREFIX: &str = "action ";
 
-/// The text name of an action, as used by `--action` and the protocol.
+/// The text name of an action, as used by `--action` and the protocol: the variant name in
+/// kebab-case, except `ExitLaqta`, which is `exit`.
 pub fn action_name(action: Action) -> &'static str {
     match action {
+        Action::FileUpload => "file-upload",
+        Action::FolderUpload => "folder-upload",
+        Action::ClipboardUpload => "clipboard-upload",
+        Action::ClipboardUploadWithContentViewer => "clipboard-upload-with-content-viewer",
+        Action::UploadText => "upload-text",
+        Action::UploadUrl => "upload-url",
+        Action::DragDropUpload => "drag-drop-upload",
+        Action::ShortenUrl => "shorten-url",
+        Action::StopUploads => "stop-uploads",
         Action::PrintScreen => "print-screen",
+        Action::ActiveWindow => "active-window",
+        Action::CustomWindow => "custom-window",
+        Action::ActiveMonitor => "active-monitor",
+        Action::RectangleRegion => "rectangle-region",
+        Action::RectangleLight => "rectangle-light",
+        Action::RectangleTransparent => "rectangle-transparent",
+        Action::CustomRegion => "custom-region",
+        Action::LastRegion => "last-region",
+        Action::ScrollingCapture => "scrolling-capture",
+        Action::AutoCapture => "auto-capture",
+        Action::StartAutoCapture => "start-auto-capture",
+        Action::StopAutoCapture => "stop-auto-capture",
+        Action::ScreenRecorder => "screen-recorder",
+        Action::ScreenRecorderActiveWindow => "screen-recorder-active-window",
+        Action::ScreenRecorderCustomRegion => "screen-recorder-custom-region",
+        Action::StartScreenRecorder => "start-screen-recorder",
+        Action::ScreenRecorderGif => "screen-recorder-gif",
+        Action::ScreenRecorderGifActiveWindow => "screen-recorder-gif-active-window",
+        Action::ScreenRecorderGifCustomRegion => "screen-recorder-gif-custom-region",
+        Action::StartScreenRecorderGif => "start-screen-recorder-gif",
+        Action::StopScreenRecording => "stop-screen-recording",
+        Action::PauseScreenRecording => "pause-screen-recording",
+        Action::AbortScreenRecording => "abort-screen-recording",
+        Action::ColorPicker => "color-picker",
+        Action::ScreenColorPicker => "screen-color-picker",
+        Action::Ruler => "ruler",
+        Action::PinToScreen => "pin-to-screen",
+        Action::PinToScreenFromScreen => "pin-to-screen-from-screen",
+        Action::PinToScreenFromClipboard => "pin-to-screen-from-clipboard",
+        Action::PinToScreenFromFile => "pin-to-screen-from-file",
+        Action::PinToScreenCloseAll => "pin-to-screen-close-all",
+        Action::ImageEditor => "image-editor",
+        Action::ImageBeautifier => "image-beautifier",
+        Action::ImageEffects => "image-effects",
+        Action::ImageViewer => "image-viewer",
+        Action::ImageCombiner => "image-combiner",
+        Action::ImageSplitter => "image-splitter",
+        Action::ImageThumbnailer => "image-thumbnailer",
+        Action::ImageResizer => "image-resizer",
+        Action::ImageConverter => "image-converter",
+        Action::ImageWatermark => "image-watermark",
+        Action::ImageComparer => "image-comparer",
+        Action::IconConverter => "icon-converter",
+        Action::VideoConverter => "video-converter",
+        Action::VideoTrimmer => "video-trimmer",
+        Action::VideoThumbnailer => "video-thumbnailer",
+        Action::GifMaker => "gif-maker",
+        Action::GifTrimmer => "gif-trimmer",
+        Action::AnalyzeImage => "analyze-image",
+        Action::RemoveBackground => "remove-background",
+        Action::Ocr => "ocr",
+        Action::QrCode => "qr-code",
+        Action::QrCodeDecodeFromScreen => "qr-code-decode-from-screen",
+        Action::QrCodeScanRegion => "qr-code-scan-region",
+        Action::HashCheck => "hash-check",
+        Action::Metadata => "metadata",
+        Action::StripMetadata => "strip-metadata",
+        Action::IndexFolder => "index-folder",
+        Action::ClipboardViewer => "clipboard-viewer",
+        Action::BorderlessWindow => "borderless-window",
+        Action::ActiveWindowBorderless => "active-window-borderless",
+        Action::ActiveWindowTopMost => "active-window-top-most",
+        Action::InspectWindow => "inspect-window",
+        Action::MonitorTest => "monitor-test",
+        Action::NetworkMonitor => "network-monitor",
+        Action::MouseHighlighter => "mouse-highlighter",
+        Action::PhotoEditor => "photo-editor",
+        Action::DisableHotkeys => "disable-hotkeys",
+        Action::OpenMainWindow => "open-main-window",
         Action::OpenScreenshotsFolder => "open-screenshots-folder",
+        Action::OpenHistory => "open-history",
+        Action::OpenImageHistory => "open-image-history",
+        Action::OpenSettings => "open-settings",
+        Action::ToggleActionsToolbar => "toggle-actions-toolbar",
+        Action::ToggleTrayMenu => "toggle-tray-menu",
         Action::ExitLaqta => "exit",
         _ => "unknown",
     }
 }
 
+/// The action with this name, ignoring ASCII case. Only the names `action_name` returns match.
 pub fn parse_action(name: &str) -> Option<Action> {
-    match name {
-        "print-screen" => Some(Action::PrintScreen),
-        "open-screenshots-folder" => Some(Action::OpenScreenshotsFolder),
-        "exit" => Some(Action::ExitLaqta),
-        _ => None,
-    }
+    Action::ALL
+        .iter()
+        .copied()
+        .find(|&action| action_name(action).eq_ignore_ascii_case(name))
 }
 
 /// Reads one line without its line break. `Ok(None)` means the stream ended. A line that is too

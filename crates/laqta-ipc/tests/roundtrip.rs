@@ -1,6 +1,7 @@
 use interprocess::local_socket::{GenericFilePath, prelude::*};
 use laqta_domain::Action;
 use laqta_ipc::{Claim, action_name, claim_at, parse_action};
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 
 /// A unique endpoint inside `dir`. Windows gets a pipe name derived from the directory's name.
@@ -161,15 +162,48 @@ fn overlong_request_gets_malformed_reply_and_hangs_up() {
     assert!(line.is_empty(), "connection should be closed, got {line:?}");
 }
 
+/// CamelCase to kebab-case. `action_name` follows this rule for every action except `ExitLaqta`.
+fn kebab(camel: &str) -> String {
+    let mut out = String::new();
+    for (index, ch) in camel.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            if index > 0 {
+                out.push('-');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 #[test]
 fn action_names_round_trip() {
-    let actions = [
-        Action::PrintScreen,
-        Action::OpenScreenshotsFolder,
-        Action::ExitLaqta,
-    ];
-    for action in actions {
-        assert_eq!(parse_action(action_name(action)), Some(action));
+    let mut seen = HashSet::new();
+    for &action in Action::ALL {
+        let name = action_name(action);
+        assert_eq!(parse_action(name), Some(action), "round trip of {name}");
+        assert_eq!(
+            parse_action(&name.to_uppercase()),
+            Some(action),
+            "case-insensitive {name}"
+        );
+        assert!(seen.insert(name), "duplicate name {name}");
+        assert!(
+            name.bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                && !name.starts_with('-')
+                && !name.ends_with('-')
+                && !name.contains("--"),
+            "{name} is not lowercase kebab-case"
+        );
+        let expected = if action == Action::ExitLaqta {
+            "exit".to_owned()
+        } else {
+            kebab(&format!("{action:?}"))
+        };
+        assert_eq!(name, expected, "name of {action:?}");
     }
     assert_eq!(action_name(Action::PrintScreen), "print-screen");
     assert_eq!(
@@ -177,5 +211,7 @@ fn action_names_round_trip() {
         "open-screenshots-folder"
     );
     assert_eq!(action_name(Action::ExitLaqta), "exit");
+    assert_eq!(parse_action("PRINT-SCREEN"), Some(Action::PrintScreen));
     assert_eq!(parse_action("bogus"), None);
+    assert_eq!(parse_action("unknown"), None);
 }
