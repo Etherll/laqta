@@ -18,7 +18,7 @@ Areas the survey did not cover in depth need a second pass:
 | Fullscreen, monitor, active monitor | M0–M1 | done |
 | Window, active window, custom window | M1 | done |
 | Region, custom region, last region | M1 | done |
-| Capture delay, cursor, transparent window (DWM), HDR | M1 | planned |
+| Capture delay, cursor, transparent window (DWM), HDR | M1 | done |
 | Overlay: window and UI-element detection, multi-region, dim, magnifier, crosshairs, info text, toolbar, mouse-button actions, keyboard nudge | M1 | done |
 | Scrolling capture (wheel, arrow, page down, scroll message; stitching) | M6 | planned |
 | Auto capture (start / stop / interval) | M6 | planned |
