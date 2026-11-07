@@ -158,21 +158,24 @@ fn ftp_file_urls_join_the_base_and_encode_the_name() {
 }
 
 #[test]
-fn ftps_is_unsupported_because_no_tls_feature_is_built() {
-    let config = ftp::FtpConfig {
-        host: "127.0.0.1".to_owned(),
-        port: 21,
-        username: "laqta".to_owned(),
-        directory: String::new(),
-        url_base: "https://files.example.com".to_owned(),
-        passive: true,
-        tls: ftp::FtpTls::Explicit,
-    };
-    let destination = ftp::Ftp::new(config, store(&[]));
+fn ftps_to_a_closed_port_is_a_network_error_in_both_modes() {
+    for tls in [ftp::FtpTls::Explicit, ftp::FtpTls::Implicit] {
+        let config = ftp::FtpConfig {
+            host: "127.0.0.1".to_owned(),
+            port: closed_port(),
+            username: "laqta".to_owned(),
+            directory: String::new(),
+            url_base: "https://files.example.com".to_owned(),
+            passive: true,
+            tls,
+        };
+        let destination = ftp::Ftp::new(config, store(&[]));
 
-    let error = block_on(destination.upload(png("a.png", b"x"), progress())).unwrap_err();
+        let error = block_on(destination.upload(png("a.png", b"x"), progress())).unwrap_err();
 
-    assert!(matches!(error, UploadError::Unsupported(_)), "{error:?}");
+        assert!(matches!(error, UploadError::Network(_)), "{tls:?}: {error:?}");
+        assert!(error.is_retryable(), "{tls:?}: {error:?}");
+    }
 }
 
 #[test]
