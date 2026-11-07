@@ -36,6 +36,10 @@ pub(crate) fn open(images_only: bool, cx: &mut App) {
 
 struct HistoryWindow {
     search: Entity<InputState>,
+    tags: Entity<InputState>,
+    editing_tags: Option<i64>,
+    grid: bool,
+    stats: String,
     images_only: bool,
     page: u32,
     rows: Vec<HistoryRow>,
@@ -44,7 +48,8 @@ struct HistoryWindow {
 
 impl HistoryWindow {
     fn new(images_only: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search file names, URLs and hosts"));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search names, URLs and hosts; #tag filters by tag"));
+        let tags = cx.new(|cx| InputState::new(window, cx).placeholder("Tags, separated by commas"));
         cx.subscribe(&search, |this: &mut Self, _, ev: &InputEvent, cx| {
             if matches!(ev, InputEvent::Change) {
                 this.page = 0;
@@ -52,7 +57,7 @@ impl HistoryWindow {
             }
         })
         .detach();
-        let mut this = HistoryWindow { search, images_only, page: 0, rows: Vec::new(), error: None };
+        let mut this = HistoryWindow { search, tags, editing_tags: None, grid: images_only, stats: String::new(), images_only, page: 0, rows: Vec::new(), error: None };
         this.reload(cx);
         this
     }
@@ -63,13 +68,18 @@ impl HistoryWindow {
             return;
         };
         let q = history::page_query(&self.search.read(cx).value(), self.images_only, self.page);
-        let task = cx.background_spawn(async move { store.query(&q).map(|items| items.iter().map(history::row).collect::<Vec<_>>()) });
+        let task = cx.background_spawn(async move {
+            let rows = store.query(&q).map(|items| items.iter().map(history::row).collect::<Vec<_>>());
+            let stats = store.stats().map(|s| history::stats_line(&s)).unwrap_or_default();
+            rows.map(|r| (r, stats))
+        });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
                 match result {
-                    Ok(rows) => {
+                    Ok((rows, stats)) => {
                         this.rows = rows;
+                        this.stats = stats;
                         this.error = None;
                     }
                     Err(e) => this.error = Some(e.to_string()),
@@ -78,6 +88,24 @@ impl HistoryWindow {
             });
         })
         .detach();
+    }
+
+    fn edit_tags(&mut self, id: i64, current: &[String], window: &mut Window, cx: &mut Context<Self>) {
+        self.editing_tags = Some(id);
+        let text = current.join(", ");
+        self.tags.update(cx, |input, cx| input.set_value(text, window, cx));
+        cx.notify();
+    }
+
+    fn save_tags(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.editing_tags.take() else { return };
+        let tags = history::parse_tags(&self.tags.read(cx).value());
+        if let Some(store) = cx.global::<UiState>().services.history.clone()
+            && let Err(e) = store.set_tags(id, &tags)
+        {
+            self.error = Some(e.to_string());
+        }
+        self.reload(cx);
     }
 
     fn delete(&mut self, id: i64, cx: &mut Context<Self>) {
@@ -102,6 +130,10 @@ impl Render for HistoryWindow {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(div().flex_1().child(Input::new(&self.search)))
+            .child(Checkbox::new("grid").label("Grid").checked(self.grid).on_click(cx.listener(|this, checked: &bool, _, cx| {
+                this.grid = *checked;
+                cx.notify();
+            })))
             .child(Checkbox::new("images-only").label("Images only").checked(self.images_only).on_click(cx.listener(
                 |this, checked: &bool, _, cx| {
                     this.images_only = *checked;
@@ -117,7 +149,43 @@ impl Render for HistoryWindow {
         if self.rows.is_empty() && self.error.is_none() {
             list = list.child(widgets::muted("Nothing here yet.", cx));
         }
-        for r in &self.rows {
+        if let Some(id) = self.editing_tags {
+            list = list.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(8.))
+                    .items_center()
+                    .child(widgets::muted(format!("Tags for item {id}:"), cx))
+                    .child(div().flex_1().child(Input::new(&self.tags)))
+                    .child(Button::new("tags-save").label("Save tags").primary().on_click(cx.listener(|this, _, _, cx| this.save_tags(cx))))
+                    .child(Button::new("tags-cancel").label("Cancel").ghost().on_click(cx.listener(|this, _, _, cx| {
+                        this.editing_tags = None;
+                        cx.notify();
+                    }))),
+            );
+        }
+        if self.grid {
+            let mut grid = div().flex().flex_row().flex_wrap().gap(px(8.));
+            for r in &self.rows {
+                let mut card = div().w(px(180.)).flex().flex_col().gap(px(4.)).p(px(6.)).rounded(px(6.)).bg(cx.theme().secondary);
+                let thumb = div().h(px(120.)).flex().justify_center().items_center().overflow_hidden();
+                card = card.child(match &r.thumbnail {
+                    Some(t) => thumb.child(img(t.clone()).max_h_full().max_w_full()),
+                    None => thumb.child(widgets::muted(r.kind, cx)),
+                });
+                card = card.child(div().text_xs().truncate().child(r.title.clone())).child(widgets::muted(r.when.clone(), cx));
+                if let Some(path) = r.path.clone() {
+                    let s1 = shell.clone();
+                    card = card.child(Button::new(SharedString::from(format!("g-open-{}", r.id))).label("Open").ghost().on_click(move |_, _, _| {
+                        let _ = s1.open_path(&path);
+                    }));
+                }
+                grid = grid.child(card);
+            }
+            list = list.child(grid);
+        }
+        for r in self.rows.iter().filter(|_| !self.grid) {
             let id = r.id;
             let mut line = div().flex().flex_row().items_center().gap(px(10.)).p(px(6.)).rounded(px(6.)).bg(cx.theme().secondary);
             let thumb = div().w(px(96.)).h(px(64.)).flex().justify_center().items_center().overflow_hidden();
@@ -126,9 +194,19 @@ impl Render for HistoryWindow {
                 None => thumb.child(widgets::muted(r.kind, cx)),
             });
             let meta: Vec<String> = [r.when.clone(), r.size.clone(), r.dimensions.clone()].into_iter().filter(|s| !s.is_empty()).collect();
+            let tags = if r.tags.is_empty() { String::new() } else { format!(" · #{}", r.tags.join(" #")) };
             line = line.child(
-                div().flex_1().flex().flex_col().child(div().truncate().child(r.title.clone())).child(widgets::muted(meta.join(" · "), cx)),
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .child(div().truncate().child(r.title.clone()))
+                    .child(widgets::muted(format!("{}{tags}", meta.join(" · ")), cx)),
             );
+            let current = r.tags.clone();
+            line = line.child(Button::new(SharedString::from(format!("tags-{id}"))).label("Tags").ghost().on_click(cx.listener(
+                move |this, _, window, cx| this.edit_tags(id, &current, window, cx),
+            )));
             if let Some(path) = r.path.clone() {
                 let (s1, s2) = (shell.clone(), shell.clone());
                 let (p1, p2, p3) = (path.clone(), path.clone(), path.clone());
@@ -173,6 +251,8 @@ impl Render for HistoryWindow {
                 this.reload(cx);
             })))
             .child(widgets::muted(format!("Page {}", self.page + 1), cx))
+            .child(div().flex_1())
+            .child(widgets::muted(self.stats.clone(), cx))
             .child(Button::new("next").label("Next").disabled(!more).on_click(cx.listener(|this, _, _, cx| {
                 this.page += 1;
                 this.reload(cx);

@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use laqta_domain::history::{HistoryItem, HistoryKind, HistoryQuery};
+use laqta_domain::history::{HistoryItem, HistoryKind, HistoryQuery, HistoryStats};
 
 pub const PAGE_SIZE: u32 = 50;
 
@@ -17,6 +17,7 @@ pub struct HistoryRow {
     pub path: Option<PathBuf>,
     pub url: Option<String>,
     pub thumbnail: Option<PathBuf>,
+    pub tags: Vec<String>,
 }
 
 pub fn format_size(bytes: u64) -> String {
@@ -54,14 +55,44 @@ pub fn row(item: &HistoryItem) -> HistoryRow {
         path: item.path.clone(),
         url: item.url.clone(),
         thumbnail: item.thumbnail_path.clone().or_else(|| if item.kind == HistoryKind::Image { item.path.clone() } else { None }),
+        tags: item.tags.clone(),
     }
 }
 
-/// The query for one page of the history view. `page` starts at 0.
+/// "1,204 items · 980 images · 1.2 GB".
+pub fn stats_line(stats: &HistoryStats) -> String {
+    let images = stats.by_kind.iter().find(|(k, _)| *k == HistoryKind::Image).map(|(_, n)| *n).unwrap_or(0);
+    format!("{} items · {} images · {}", stats.total, images, format_size(stats.total_bytes))
+}
+
+/// Tags typed as "work, bug 12, todo" → trimmed, non-empty, de-duplicated, in order.
+pub fn parse_tags(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in text.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+        if !out.iter().any(|o| o == t) {
+            out.push(t.to_string());
+        }
+    }
+    out
+}
+
+/// The query for one page of the history view. `page` starts at 0. A `#tag` word filters by tag.
 pub fn page_query(text: &str, images_only: bool, page: u32) -> HistoryQuery {
-    let text = text.trim();
+    let mut tag = None;
+    let words: Vec<&str> = text
+        .split_whitespace()
+        .filter(|w| match w.strip_prefix('#') {
+            Some(t) if !t.is_empty() => {
+                tag = Some(t.to_string());
+                false
+            }
+            _ => true,
+        })
+        .collect();
+    let text = words.join(" ");
     HistoryQuery {
-        text: if text.is_empty() { None } else { Some(text.to_string()) },
+        text: if text.is_empty() { None } else { Some(text) },
+        tag,
         kind: images_only.then_some(HistoryKind::Image),
         offset: page * PAGE_SIZE,
         limit: PAGE_SIZE,
@@ -78,6 +109,13 @@ mod tests {
         assert_eq!(format_size(512), "512 B");
         assert_eq!(format_size(1536), "1.5 KB");
         assert_eq!(format_size(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    #[test]
+    fn tags_and_stats() {
+        assert_eq!(parse_tags(" work, ,bug 12,work "), vec!["work".to_string(), "bug 12".to_string()]);
+        let st = HistoryStats { total: 3, by_kind: vec![(HistoryKind::Image, 2), (HistoryKind::Text, 1)], total_bytes: 2048 };
+        assert_eq!(stats_line(&st), "3 items · 2 images · 2.0 KB");
     }
 
     #[test]

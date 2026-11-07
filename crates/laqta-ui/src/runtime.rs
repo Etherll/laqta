@@ -17,7 +17,7 @@ use laqta_ports::{
 };
 
 use crate::presenters::task_list::TaskList;
-use crate::{history_window, main_window, overlay, settings_window, toast};
+use crate::{history_window, main_window, overlay, settings_window, toast, tray_popup};
 
 pub(crate) enum UiCommand {
     ShowOverlay { frames: Vec<Frame>, view: RegionView, on_input: InputCallback },
@@ -108,6 +108,7 @@ pub(crate) struct UiState {
     pub main: Option<gpui::AnyWindowHandle>,
     pub settings: Option<gpui::AnyWindowHandle>,
     pub history: Option<gpui::AnyWindowHandle>,
+    pub tray_popup: Option<gpui::AnyWindowHandle>,
 }
 
 impl gpui::Global for UiState {}
@@ -126,6 +127,7 @@ pub fn run(services: UiServices, rx: UiReceiver) {
             main: None,
             settings: None,
             history: None,
+            tray_popup: None,
         });
 
         // Task events feed the task list; this task sleeps until an event arrives.
@@ -167,6 +169,7 @@ fn handle(cmd: UiCommand, cx: &mut App) {
         UiCommand::Open(ToolWindow::Settings) => settings_window::open(cx),
         UiCommand::Open(ToolWindow::History) => history_window::open(false, cx),
         UiCommand::Open(ToolWindow::ImageHistory) => history_window::open(true, cx),
+        UiCommand::Open(ToolWindow::TrayMenu) => tray_popup::toggle(cx),
         UiCommand::Open(other) => tracing::warn!(?other, "no window for this tool yet"),
         UiCommand::Quit => {
             overlay::close(cx);

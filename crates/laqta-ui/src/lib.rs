@@ -12,6 +12,7 @@ mod runtime;
 mod settings_window;
 mod theme;
 mod toast;
+mod tray_popup;
 mod widgets;
 
 pub use runtime::{UiHandle, UiReceiver, UiServices, run};

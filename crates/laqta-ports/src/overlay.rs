@@ -53,6 +53,8 @@ pub enum ToolWindow {
     Settings,
     History,
     ImageHistory,
+    /// The tray menu as a popup (`Action::ToggleTrayMenu`).
+    TrayMenu,
 }
 
 pub trait ToolHost: Send + Sync {
