@@ -11,6 +11,7 @@ pub mod hosts;
 pub mod hotkey;
 pub mod image;
 pub mod naming;
+pub mod record;
 pub mod region;
 pub mod settings;
 pub mod workflow;

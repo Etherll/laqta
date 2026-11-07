@@ -4,6 +4,7 @@ pub mod desktop;
 pub mod error;
 pub mod notify;
 pub mod overlay;
+pub mod recording;
 pub mod runtime;
 pub mod screen;
 pub mod task;
@@ -15,6 +16,10 @@ pub mod fakes;
 pub use desktop::{ActionCallback, Clipboard, ClipboardContent, HotkeyRegistrar, Shell, Tray, TrayItem, TrayMenu};
 pub use error::PortError;
 pub use notify::{HostInfo, Notifier, Rng, Sound, Toast};
+pub use recording::{
+    AudioInput, FrameSource, Media, MediaInfo, OsScreenRef, PcmFormat, PcmSource, RecordingHandle, RecordingInput, ScreenStream, TranscodeSpec,
+    VideoSource,
+};
 pub use overlay::{HoverSource, InputCallback, Overlay, RegionView, ToolHost, ToolWindow};
 pub use runtime::{Clock, Spawner};
 pub use screen::{CaptureRequest, ScreenSource};

@@ -505,3 +505,104 @@ impl crate::Uploaders for FakeUploaders {
         Box::pin(async move { r })
     }
 }
+
+/// Frames of a fixed colour, `count` of them.
+#[derive(Debug)]
+pub struct FakeFrames {
+    pub size: (u32, u32),
+    pub left: u32,
+}
+
+impl crate::FrameSource for FakeFrames {
+    fn size(&self) -> (u32, u32) {
+        self.size
+    }
+    fn fps(&self) -> u32 {
+        30
+    }
+    fn next_frame(&mut self) -> Result<Option<Bitmap>, PortError> {
+        if self.left == 0 {
+            return Ok(None);
+        }
+        self.left -= 1;
+        let (w, h) = self.size;
+        Ok(Some(Bitmap::new(w, h, laqta_domain::PixelFormat::Bgra8, vec![128; (w * h * 4) as usize].into()).unwrap()))
+    }
+    fn stop(&mut self) {
+        self.left = 0;
+    }
+}
+
+/// Opens `FakeFrames` (or fails), and lists fixed devices.
+#[derive(Debug, Default)]
+pub struct FakeScreenStream {
+    pub fail: Mutex<Option<PortError>>,
+    pub opened: Mutex<Vec<laqta_domain::geometry::PhysRect>>,
+}
+
+impl crate::ScreenStream for FakeScreenStream {
+    fn open(&self, area: laqta_domain::geometry::PhysRect, _show_cursor: bool, _fps: u32, _audio: &[laqta_domain::record::AudioDevice]) -> BoxFuture<'_, Result<crate::RecordingInput, PortError>> {
+        self.opened.lock().unwrap().push(area);
+        let r = match self.fail.lock().unwrap().clone() {
+            Some(e) => Err(e),
+            None => Ok(crate::RecordingInput { video: crate::VideoSource::Frames(Box::new(FakeFrames { size: (area.width, area.height), left: 3 })), audio: Vec::new() }),
+        };
+        Box::pin(async move { r })
+    }
+    fn audio_devices(&self) -> BoxFuture<'_, Result<Vec<laqta_domain::record::AudioDevice>, PortError>> {
+        Box::pin(async { Ok(vec![laqta_domain::record::AudioDevice { id: "mic".into(), name: "Microphone".into(), loopback: false }]) })
+    }
+}
+
+/// Records calls; `stop` writes a tiny file at the output path (via the returned path only — no I/O)
+/// and returns it. `crash_after_start` makes `is_alive` false.
+#[derive(Debug, Default)]
+pub struct FakeMedia {
+    pub calls: Arc<Mutex<Vec<String>>>,
+    pub crash: Mutex<bool>,
+}
+
+#[derive(Debug)]
+struct FakeHandle {
+    calls: Arc<Mutex<Vec<String>>>,
+    output: PathBuf,
+    crashed: bool,
+}
+
+impl crate::RecordingHandle for FakeHandle {
+    fn pause(&mut self) -> BoxFuture<'_, Result<(), PortError>> {
+        self.calls.lock().unwrap().push("pause".into());
+        Box::pin(async { Ok(()) })
+    }
+    fn resume(&mut self) -> BoxFuture<'_, Result<(), PortError>> {
+        self.calls.lock().unwrap().push("resume".into());
+        Box::pin(async { Ok(()) })
+    }
+    fn stop(self: Box<Self>) -> BoxFuture<'static, Result<PathBuf, PortError>> {
+        self.calls.lock().unwrap().push("stop".into());
+        let out = self.output.clone();
+        Box::pin(async move { Ok(out) })
+    }
+    fn abort(self: Box<Self>) -> BoxFuture<'static, Result<(), PortError>> {
+        self.calls.lock().unwrap().push("abort".into());
+        Box::pin(async { Ok(()) })
+    }
+    fn is_alive(&mut self) -> bool {
+        !self.crashed
+    }
+}
+
+impl crate::Media for FakeMedia {
+    fn start(&self, _input: crate::RecordingInput, spec: laqta_domain::record::RecordSpec, output: PathBuf) -> BoxFuture<'_, Result<Box<dyn crate::RecordingHandle>, PortError>> {
+        self.calls.lock().unwrap().push(format!("start {:?} {}x{}", spec.codec, spec.area.width, spec.area.height));
+        let h: Box<dyn crate::RecordingHandle> = Box::new(FakeHandle { calls: self.calls.clone(), output, crashed: *self.crash.lock().unwrap() });
+        Box::pin(async move { Ok(h) })
+    }
+    fn transcode(&self, input: &Path, output: &Path, _spec: crate::TranscodeSpec) -> BoxFuture<'_, Result<(), PortError>> {
+        self.calls.lock().unwrap().push(format!("transcode {} {}", input.display(), output.display()));
+        Box::pin(async { Ok(()) })
+    }
+    fn probe(&self, _input: &Path) -> BoxFuture<'_, Result<crate::MediaInfo, PortError>> {
+        Box::pin(async { Ok(crate::MediaInfo { duration_secs: 3.0, width: 640, height: 480, fps: 30.0, video_codec: "h264".into(), audio_codec: None, size_bytes: 1000 }) })
+    }
+}

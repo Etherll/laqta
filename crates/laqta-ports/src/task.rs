@@ -118,6 +118,14 @@ pub enum TaskEvent {
     Shared { id: TaskId, url: String },
     /// Asks the UI to show the after-upload window or a QR code for the URL.
     ShowUrl { id: TaskId, url: String, qr: bool },
+    /// M4 recording session (the id is the recording's own task id).
+    RecordingCountdown { id: TaskId, seconds_left: u32 },
+    RecordingStarted { id: TaskId, area: laqta_domain::geometry::PhysRect },
+    RecordingPaused { id: TaskId },
+    RecordingResumed { id: TaskId },
+    RecordingTick { id: TaskId, elapsed_secs: u32 },
+    RecordingStopped { id: TaskId, path: PathBuf },
+    RecordingFailed { id: TaskId, error: AppError, partial: Option<PathBuf> },
 }
 
 impl TaskEvent {
@@ -144,7 +152,14 @@ impl TaskEvent {
             | TaskEvent::UrlCopied { id, .. }
             | TaskEvent::UrlOpened { id, .. }
             | TaskEvent::Shared { id, .. }
-            | TaskEvent::ShowUrl { id, .. } => *id,
+            | TaskEvent::ShowUrl { id, .. }
+            | TaskEvent::RecordingCountdown { id, .. }
+            | TaskEvent::RecordingStarted { id, .. }
+            | TaskEvent::RecordingPaused { id }
+            | TaskEvent::RecordingResumed { id }
+            | TaskEvent::RecordingTick { id, .. }
+            | TaskEvent::RecordingStopped { id, .. }
+            | TaskEvent::RecordingFailed { id, .. } => *id,
         }
     }
 }
