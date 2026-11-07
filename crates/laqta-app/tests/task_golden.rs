@@ -1127,3 +1127,26 @@ fn perform_action_output_is_uploaded_as_its_kind() {
         assert_eq!(requests[0].data, UploadData::Path(output));
     });
 }
+
+/// A finished recording handed to Task (M4): the after-capture file steps run on the file, with the
+/// recording's toast.
+#[test]
+fn saved_recording() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), settings_in(tmp.path()));
+        let file = tmp.path().join("rec.mp4");
+        std::fs::write(&file, [0u8; 16]).unwrap();
+        let mut events = rig.app.events();
+
+        rig.app.upload_source(laqta_app::UploadSource::SavedFile(file.clone()), None);
+        drive(&spawner);
+        let trace = render(&mut events, tmp.path(), false);
+
+        assert_eq!(trace, include_str!("golden/saved_recording.trace"));
+        let toasts = rig.notifier.toasts.lock().unwrap();
+        assert!(toasts.iter().all(|t| t.title == "Recording saved"), "{:?}", toasts.iter().map(|t| &t.title).collect::<Vec<_>>());
+        assert!(file.exists());
+    });
+}

@@ -534,6 +534,7 @@ impl Job {
     fn toast(&self, saved: Option<&SavedFile>, preview: Option<Bitmap>, url: Option<String>) -> Step {
         self.checkpoint()?;
         let (title, body, path) = match saved {
+            Some(saved) if preview.is_none() && is_recording(&saved.path) => ("Recording saved", saved.path.display().to_string(), Some(saved.path.clone())),
             Some(saved) => ("Screenshot saved", saved.path.display().to_string(), Some(saved.path.clone())),
             None => ("Screenshot copied", String::new(), None),
         };
@@ -640,4 +641,9 @@ fn needs_file(flags: AfterCaptureTasks) -> bool {
             | AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST
             | AfterCaptureTasks::DELETE_FILE,
     )
+}
+
+/// A screen recording's output, by extension (FFmpeg's containers and GIF).
+fn is_recording(path: &std::path::Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| ["mp4", "webm", "mkv", "mov", "avi", "gif"].iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
