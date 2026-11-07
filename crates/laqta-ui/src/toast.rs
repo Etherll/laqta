@@ -18,7 +18,7 @@ use crate::runtime::UiState;
 
 const MARGIN: f32 = 16.0;
 
-fn render_image(bitmap: &Bitmap) -> Option<Arc<RenderImage>> {
+pub(crate) fn render_image(bitmap: &Bitmap) -> Option<Arc<RenderImage>> {
     let mut bytes = bitmap.pixels().to_vec();
     if bitmap.format() == PixelFormat::Rgba8 {
         for px in bytes.as_chunks_mut::<4>().0 {

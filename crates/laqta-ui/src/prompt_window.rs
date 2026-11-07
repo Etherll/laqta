@@ -9,7 +9,7 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::ScrollableElement as _;
-use gpui_component::{ActiveTheme as _, Root};
+use gpui_component::{ActiveTheme as _, Root, Selectable as _};
 use laqta_ports::PortError;
 
 use crate::widgets;
@@ -19,6 +19,8 @@ pub(crate) enum PromptKind {
     Choose { options: Vec<String> },
     Show { text: String },
     Confirm { text: String },
+    AfterCapture { image: Option<std::sync::Arc<gpui::RenderImage>>, after_capture: u32, after_upload: u32 },
+    BeforeUpload { file_name: String, destinations: Vec<(String, String)>, current: String },
 }
 
 pub(crate) enum Answer {
@@ -26,18 +28,21 @@ pub(crate) enum Answer {
     Index(usize),
     Ok,
     Bool(bool),
+    Flags(u32, u32),
 }
 
 pub(crate) type Reply = oneshot::Sender<Result<Answer, PortError>>;
 
 pub(crate) fn open(title: String, kind: PromptKind, reply: Reply, cx: &mut App) {
-    let height = match &kind {
-        PromptKind::Choose { options } => 120.0 + 36.0 * options.len().min(10) as f32,
-        PromptKind::Show { .. } => 360.0,
-        _ => 170.0,
+    let (width, height) = match &kind {
+        PromptKind::Choose { options } => (460.0, 120.0 + 36.0 * options.len().min(10) as f32),
+        PromptKind::Show { .. } => (460.0, 360.0),
+        PromptKind::AfterCapture { .. } => (820.0, 640.0),
+        PromptKind::BeforeUpload { .. } => (560.0, 420.0),
+        _ => (460.0, 170.0),
     };
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(460.), px(height)), cx)),
+        window_bounds: Some(WindowBounds::centered(size(px(width), px(height)), cx)),
         titlebar: Some(TitlebarOptions { title: Some(SharedString::from(title.clone())), ..Default::default() }),
         kind: WindowKind::Dialog,
         focus: true,
@@ -122,6 +127,77 @@ impl Render for PromptWindow {
             PromptKind::Show { text } => {
                 body = body.child(div().flex_1().overflow_y_scrollbar().p(px(6.)).rounded(px(4.)).bg(cx.theme().secondary).child(text.clone()));
                 footer = footer.child(Button::new("ok").label("Close").primary().on_click(cx.listener(|this, _, w, _| this.answer(Ok(Answer::Ok), w))));
+            }
+            PromptKind::AfterCapture { image, after_capture, after_upload } => {
+                if let Some(img) = image {
+                    body = body.child(div().h(px(300.)).flex().justify_center().overflow_hidden().child(gpui::img(img.clone()).max_h_full().max_w_full()));
+                }
+                let (ac, au) = (*after_capture, *after_upload);
+                let mut flags = div().flex().flex_wrap().gap(px(6.));
+                for o in crate::presenters::settings::after_capture_options().into_iter().filter(|o| o.available) {
+                    let bits = o.flag.bits();
+                    flags = flags.child(
+                        gpui_component::checkbox::Checkbox::new(SharedString::from(format!("acw-{bits}")))
+                            .label(o.label)
+                            .checked(ac & bits != 0)
+                            .on_click(cx.listener(move |this, v: &bool, _, cx| {
+                                if let PromptKind::AfterCapture { after_capture, .. } = &mut this.kind {
+                                    if *v { *after_capture |= bits } else { *after_capture &= !bits }
+                                }
+                                cx.notify();
+                            })),
+                    );
+                }
+                let upload_bit = laqta_domain::workflow::AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST.bits();
+                flags = flags.child(
+                    gpui_component::checkbox::Checkbox::new("acw-upload").label("Upload image to host").checked(ac & upload_bit != 0).on_click(
+                        cx.listener(move |this, v: &bool, _, cx| {
+                            if let PromptKind::AfterCapture { after_capture, .. } = &mut this.kind {
+                                if *v { *after_capture |= upload_bit } else { *after_capture &= !upload_bit }
+                            }
+                            cx.notify();
+                        }),
+                    ),
+                );
+                body = body.child(flags);
+                footer = footer
+                    .child(Button::new("cancel").label("Cancel").on_click(cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w))))
+                    .child(Button::new("ok").label("Continue").primary().on_click(cx.listener(move |this, _, w, _| {
+                        let r = match &this.kind {
+                            PromptKind::AfterCapture { after_capture, after_upload, .. } => (*after_capture, *after_upload),
+                            _ => (ac, au),
+                        };
+                        this.answer(Ok(Answer::Flags(r.0, r.1)), w);
+                    })));
+            }
+            PromptKind::BeforeUpload { file_name, destinations, current } => {
+                body = body.child(widgets::muted(format!("Upload {file_name} to:"), cx));
+                let mut list = div().flex().flex_col().gap(px(4.));
+                for (i, (id, name)) in destinations.iter().enumerate() {
+                    let id2 = id.clone();
+                    list = list.child(
+                        Button::new(SharedString::from(format!("bu-{i}")))
+                            .label(name.clone())
+                            .w_full()
+                            .selected(id == current)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let PromptKind::BeforeUpload { current, .. } = &mut this.kind {
+                                    *current = id2.clone();
+                                }
+                                cx.notify();
+                            })),
+                    );
+                }
+                body = body.child(div().flex_1().overflow_y_scrollbar().child(list));
+                footer = footer
+                    .child(Button::new("cancel").label("Cancel").on_click(cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w))))
+                    .child(Button::new("ok").label("Upload").primary().on_click(cx.listener(|this, _, w, _| {
+                        let id = match &this.kind {
+                            PromptKind::BeforeUpload { current, .. } => current.clone(),
+                            _ => String::new(),
+                        };
+                        this.answer(Ok(Answer::Text(id)), w);
+                    })));
             }
             PromptKind::Confirm { text } => {
                 body = body.child(widgets::muted(text.clone(), cx));

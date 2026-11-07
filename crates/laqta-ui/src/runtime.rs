@@ -119,6 +119,65 @@ impl laqta_ports::Prompt for UiHandle {
             }
         })
     }
+    fn pick_files(&self, title: &str) -> laqta_ports::BoxFuture<'_, Result<Vec<PathBuf>, PortError>> {
+        let title = title.to_string();
+        Box::pin(async move {
+            match rfd::AsyncFileDialog::new().set_title(title).pick_files().await {
+                Some(files) => Ok(files.iter().map(|f| f.path().to_path_buf()).collect()),
+                None => Err(PortError::Cancelled),
+            }
+        })
+    }
+    fn pick_folder(&self, title: &str) -> laqta_ports::BoxFuture<'_, Result<PathBuf, PortError>> {
+        let title = title.to_string();
+        Box::pin(async move {
+            match rfd::AsyncFileDialog::new().set_title(title).pick_folder().await {
+                Some(f) => Ok(f.path().to_path_buf()),
+                None => Err(PortError::Cancelled),
+            }
+        })
+    }
+    fn save_path(&self, suggested: &std::path::Path) -> laqta_ports::BoxFuture<'_, Result<PathBuf, PortError>> {
+        let mut d = rfd::AsyncFileDialog::new();
+        if let Some(dir) = suggested.parent() {
+            d = d.set_directory(dir);
+        }
+        if let Some(name) = suggested.file_name() {
+            d = d.set_file_name(name.to_string_lossy());
+        }
+        Box::pin(async move {
+            match d.save_file().await {
+                Some(f) => Ok(f.path().to_path_buf()),
+                None => Err(PortError::Cancelled),
+            }
+        })
+    }
+    fn after_capture(&self, image: &laqta_domain::Bitmap, after_capture: u32, after_upload: u32) -> laqta_ports::BoxFuture<'_, Result<(u32, u32), PortError>> {
+        use crate::prompt_window::{Answer, PromptKind};
+        // GPUI scales the full image; `thumbnail` would need the compute pool.
+        let rx = self.ask("After capture", PromptKind::AfterCapture { image: crate::toast::render_image(image), after_capture, after_upload });
+        Box::pin(async move {
+            match rx.await {
+                Ok(Ok(Answer::Flags(a, b))) => Ok((a, b)),
+                Ok(Err(e)) => Err(e),
+                _ => Err(PortError::Cancelled),
+            }
+        })
+    }
+    fn before_upload(&self, file_name: &str, destinations: &[(String, String)], current: &str) -> laqta_ports::BoxFuture<'_, Result<String, PortError>> {
+        use crate::prompt_window::{Answer, PromptKind};
+        let rx = self.ask(
+            "Before upload",
+            PromptKind::BeforeUpload { file_name: file_name.to_string(), destinations: destinations.to_vec(), current: current.to_string() },
+        );
+        Box::pin(async move {
+            match rx.await {
+                Ok(Ok(Answer::Text(id))) => Ok(id),
+                Ok(Err(e)) => Err(e),
+                _ => Err(PortError::Cancelled),
+            }
+        })
+    }
     fn confirm(&self, title: &str, text: &str) -> laqta_ports::BoxFuture<'_, Result<bool, PortError>> {
         use crate::prompt_window::{Answer, PromptKind};
         let rx = self.ask(title, PromptKind::Confirm { text: text.to_string() });
