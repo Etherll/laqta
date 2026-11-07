@@ -2,6 +2,7 @@
 //! run inside the compute pool handed out by `Spawner::run_compute`.
 #![forbid(unsafe_code)]
 
+pub mod beautify;
 mod bmp;
 mod codecs;
 mod compose;

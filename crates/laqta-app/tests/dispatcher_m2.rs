@@ -14,7 +14,7 @@ use laqta_ports::fakes::{
     ClipboardBehaviour, CountingRng, FakeClipboard, FakeDestination, FakeHoverSource, FakeNotifier, FakeOverlay, FakePrompt, FakeScreen,
     FakeShell, FakeShortener, FakeToolHost, FakeUploaders, InlineSpawner, ManualClock,
 };
-use laqta_ports::{AppError, ClipboardContent, HostInfo, TaskEvent, TaskId, UploadData, UploadError, UploadKind, UploadResult};
+use laqta_ports::{AppError, ClipboardContent, HostInfo, PortError, TaskEvent, TaskId, UploadData, UploadError, UploadKind, UploadResult};
 use tempfile::TempDir;
 
 struct H {
@@ -274,5 +274,64 @@ fn file_upload_with_no_path_is_unsupported() {
 
     let err = run(&h, Action::FileUpload).unwrap_err();
     assert!(matches!(err, AppError::Unsupported(_)), "got {err:?}");
+    assert!(h.spawner.spawned.lock().unwrap().is_empty());
+}
+
+#[test]
+fn file_upload_uploads_each_picked_file() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path());
+    let first = tmp.path().join("one.zip");
+    let second = tmp.path().join("two.zip");
+    std::fs::write(&first, b"1").unwrap();
+    std::fs::write(&second, b"22").unwrap();
+    h.prompt.files.lock().unwrap().push_back(Ok(vec![first.clone(), second.clone()]));
+    let uguu = destination(&h, "sxcu:uguu", vec![Ok(uploaded("https://u.example/7")), Ok(uploaded("https://u.example/8"))]);
+
+    assert_eq!(run(&h, Action::FileUpload).unwrap(), Dispatched::Task(TaskId(1)));
+    assert!(h.prompt.texts.lock().unwrap().is_empty(), "the file picker answered, so no path was typed");
+    let requests = uguu.requests.lock().unwrap();
+    assert_eq!(requests.iter().map(|r| r.file_name.as_str()).collect::<Vec<_>>(), vec!["one.zip", "two.zip"]);
+    assert_eq!(requests[1].data, UploadData::Path(second));
+}
+
+#[test]
+fn file_upload_cancelled_in_the_picker_submits_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path());
+    h.prompt.files.lock().unwrap().push_back(Err(PortError::Cancelled));
+
+    assert_eq!(run(&h, Action::FileUpload).unwrap(), Dispatched::Done);
+    assert!(h.spawner.spawned.lock().unwrap().is_empty());
+}
+
+#[test]
+fn folder_upload_submits_one_file_job_per_file_in_the_folder() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path());
+    let folder = tmp.path().join("pics");
+    std::fs::create_dir_all(folder.join("nested")).unwrap();
+    std::fs::write(folder.join("b.zip"), b"b").unwrap();
+    std::fs::write(folder.join("a.zip"), b"a").unwrap();
+    std::fs::write(folder.join("nested").join("deep.zip"), b"d").unwrap();
+    h.prompt.folders.lock().unwrap().push_back(Ok(folder));
+    let uguu = destination(&h, "sxcu:uguu", vec![Ok(uploaded("https://u.example/9")), Ok(uploaded("https://u.example/10"))]);
+
+    assert_eq!(run(&h, Action::FolderUpload).unwrap(), Dispatched::Task(TaskId(1)));
+    // Non-recursive and sorted: the subfolder's file is not uploaded, and the two others go in name order.
+    let requests = uguu.requests.lock().unwrap();
+    assert_eq!(requests.iter().map(|r| r.file_name.as_str()).collect::<Vec<_>>(), vec!["a.zip", "b.zip"]);
+}
+
+#[test]
+fn folder_upload_of_an_empty_folder_is_unsupported() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path());
+    let folder = tmp.path().join("empty");
+    std::fs::create_dir_all(&folder).unwrap();
+    h.prompt.folders.lock().unwrap().push_back(Ok(folder));
+
+    let err = run(&h, Action::FolderUpload).unwrap_err();
+    assert!(matches!(err, AppError::Unsupported(ref s) if s == "the folder has no files"), "got {err:?}");
     assert!(h.spawner.spawned.lock().unwrap().is_empty());
 }

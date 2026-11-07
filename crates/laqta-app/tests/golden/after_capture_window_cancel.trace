@@ -1,0 +1,4 @@
+status InQueue
+status Preparing
+status Working
+status Stopped
