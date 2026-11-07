@@ -4,6 +4,7 @@
 
 mod dispatcher;
 mod files;
+mod recording;
 mod region;
 mod task;
 

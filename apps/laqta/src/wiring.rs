@@ -24,6 +24,7 @@ struct Platform {
     hotkeys: Arc<dyn HotkeyRegistrar>,
     tray: Arc<dyn Tray>,
     secrets: Arc<dyn laqta_ports::SecretStore>,
+    stream: Arc<dyn laqta_ports::ScreenStream>,
 }
 
 #[cfg(target_os = "linux")]
@@ -32,14 +33,14 @@ fn platform() -> Result<Platform, String> {
     let session = Session::detect().ok_or("no display: neither WAYLAND_DISPLAY nor DISPLAY is set")?;
     tracing::info!("session: {session:?}");
     let p = laqta_platform_linux::ports(session);
-    Ok(Platform { screen: p.screen, clipboard: p.clipboard, shell: p.shell, hover: p.hover, hotkeys: p.hotkeys, tray: p.tray, secrets: p.secrets })
+    Ok(Platform { screen: p.screen, clipboard: p.clipboard, shell: p.shell, hover: p.hover, hotkeys: p.hotkeys, tray: p.tray, secrets: p.secrets, stream: p.stream })
 }
 
 #[cfg(windows)]
 fn platform() -> Result<Platform, String> {
     laqta_platform_windows::set_dpi_awareness();
     let p = laqta_platform_windows::ports();
-    Ok(Platform { screen: p.screen, clipboard: p.clipboard, shell: p.shell, hover: p.hover, hotkeys: p.hotkeys, tray: p.tray, secrets: p.secrets })
+    Ok(Platform { screen: p.screen, clipboard: p.clipboard, shell: p.shell, hover: p.hover, hotkeys: p.hotkeys, tray: p.tray, secrets: p.secrets, stream: p.stream })
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -87,7 +88,8 @@ fn register_hotkeys(hotkeys: &dyn HotkeyRegistrar, settings: &Settings, on_fire:
     unsupported
 }
 
-pub fn run(server: laqta_ipc::Server, startup_actions: Vec<Action>) -> Result<(), String> {
+pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<(), String> {
+    let startup_actions = args.actions();
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let spawner = AppSpawner::start(clock.clone()).map_err(|e| format!("cannot start the app worker: {e}"))?;
     let platform = platform()?;
@@ -121,8 +123,11 @@ pub fn run(server: laqta_ipc::Server, startup_actions: Vec<Action>) -> Result<()
         tools: Arc::new(ui.clone()),
         prompt: Arc::new(ui.clone()),
         editor: Arc::new(ui.clone()),
-        media: Arc::new(stubs::NoRecording),
-        stream: Arc::new(stubs::NoRecording),
+        media: Arc::new(crate::media::LazyMedia::new(data.clone(), {
+            let s = settings.defaults.recording.ffmpeg_path.clone();
+            Arc::new(move || s.clone())
+        }, Arc::new(ui.clone()))),
+        stream: platform.stream.clone(),
         uploaders: uploaders.clone(),
         hover: platform.hover,
         notifier: Arc::new(crate::notifier::AppNotifier { ui: ui.clone() }),
@@ -184,7 +189,7 @@ pub fn run(server: laqta_ipc::Server, startup_actions: Vec<Action>) -> Result<()
     }
 
     // IPC: replies after the dispatch returns.
-    {
+    if let Some(server) = server {
         let app = app.clone();
         let quit_tx = quit_tx.clone();
         server.serve(move |action| match futures_lite::future::block_on(app.dispatch(action, None)) {
@@ -252,6 +257,9 @@ pub fn run(server: laqta_ipc::Server, startup_actions: Vec<Action>) -> Result<()
             data_dir: data.clone(),
             uploaders: uploaders.clone(),
             secrets: platform.secrets.clone(),
+            fonts: crate::fonts::fonts(),
+            spawner: spawner.clone(),
+            codecs: laqta_imaging::Codecs::builtin(),
             add_custom_uploader: {
                 let uploaders = uploaders.clone();
                 let dir = data.join("uploaders");

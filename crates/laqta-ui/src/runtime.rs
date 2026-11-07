@@ -229,6 +229,11 @@ pub struct UiServices {
     pub secrets: Arc<dyn laqta_ports::SecretStore>,
     /// Adds a custom uploader (`.sxcu` JSON): saves it and registers it; returns its id.
     pub add_custom_uploader: Arc<dyn Fn(String) -> Result<String, String> + Send + Sync>,
+    /// The font handle shared with the Editor engine (ADR 024).
+    pub fonts: laqta_editor::Fonts,
+    /// The compute pool and blocking pool (`run_compute` for editor operations that need it).
+    pub spawner: Arc<dyn laqta_ports::Spawner>,
+    pub codecs: laqta_imaging::Codecs,
 }
 
 impl std::fmt::Debug for UiServices {
@@ -247,6 +252,7 @@ pub(crate) struct UiState {
     pub history: Option<gpui::AnyWindowHandle>,
     pub tray_popup: Option<gpui::AnyWindowHandle>,
     pub actions_toolbar: Option<gpui::AnyWindowHandle>,
+    pub recording: crate::recording_bar::RecordingWindows,
 }
 
 impl gpui::Global for UiState {}
@@ -267,6 +273,7 @@ pub fn run(services: UiServices, rx: UiReceiver) {
             history: None,
             tray_popup: None,
             actions_toolbar: None,
+            recording: Default::default(),
         });
 
         // Task events feed the task list; this task sleeps until an event arrives.
@@ -274,6 +281,10 @@ pub fn run(services: UiServices, rx: UiReceiver) {
         cx.spawn(async move |cx: &mut AsyncApp| {
             while let Ok(event) = events.recv().await {
                 let event: TaskEvent = event;
+                {
+                    let e = event.clone();
+                    cx.update(|cx| crate::recording_bar::on_event(&e, cx));
+                }
                 if let TaskEvent::ShowUrl { url, qr, .. } = &event {
                     let (url, qr) = (url.clone(), *qr);
                     cx.update(|cx| crate::url_window::open(url, qr, cx));
@@ -317,6 +328,7 @@ fn handle(cmd: UiCommand, cx: &mut App) {
         UiCommand::Prompt { title, kind, reply } => crate::prompt_window::open(title, kind, reply, cx),
         UiCommand::Edit { image, reply } => crate::editor_window::open(Some(image), Some(reply), None, cx),
         UiCommand::Open(ToolWindow::Editor(path)) => crate::editor_window::open_file(path, cx),
+        UiCommand::Open(ToolWindow::Effects(path)) => crate::effects_window::open(path, cx),
         UiCommand::Open(other) => tracing::warn!(?other, "no window for this tool yet"),
         UiCommand::Quit => {
             overlay::close(cx);

@@ -7,10 +7,12 @@ pub mod presenters;
 
 mod actions_toolbar;
 mod editor_window;
+mod effects_window;
 mod history_window;
 mod main_window;
 mod overlay;
 mod prompt_window;
+mod recording_bar;
 mod runtime;
 mod settings_window;
 mod theme;

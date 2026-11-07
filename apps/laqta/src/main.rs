@@ -3,7 +3,9 @@
 
 mod blocking_pool;
 mod cli;
+mod fonts;
 mod logging;
+mod media;
 mod notifier;
 mod spawner;
 mod stubs;
@@ -25,29 +27,34 @@ fn main() -> ExitCode {
         }
     };
 
-    let server = match laqta_ipc::claim() {
-        Ok(laqta_ipc::Claim::Primary(server)) => server,
-        Ok(laqta_ipc::Claim::Secondary(mut client)) => {
-            if args.actions.is_empty() {
+    if args.startup_delay_secs > 0 {
+        std::thread::sleep(std::time::Duration::from_secs(args.startup_delay_secs as u64));
+    }
+    let claim = if args.multi { None } else { Some(laqta_ipc::claim()) };
+    let server = match claim {
+        None => None,
+        Some(Ok(laqta_ipc::Claim::Primary(server))) => Some(server),
+        Some(Ok(laqta_ipc::Claim::Secondary(mut client))) => {
+            if args.requests.is_empty() {
                 println!("Laqta is already running");
                 return ExitCode::SUCCESS;
             }
-            for action in args.actions {
-                if let Err(e) = client.send(action) {
+            for request in &args.requests {
+                if let Err(e) = client.send_request(request) {
                     eprintln!("laqta: {e}");
                     return ExitCode::from(1);
                 }
             }
             return ExitCode::SUCCESS;
         }
-        Err(e) => {
+        Some(Err(e)) => {
             eprintln!("laqta: cannot claim the single-instance endpoint: {e}");
             return ExitCode::from(1);
         }
     };
 
     let _log_guard = logging::init();
-    match wiring::run(server, args.actions) {
+    match wiring::run(server, args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {
             tracing::error!("{msg}");
