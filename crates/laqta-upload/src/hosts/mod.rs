@@ -39,6 +39,13 @@ pub mod sendspace;
 pub mod smtp;
 // ---- end HO-a ----
 // ---- HO-b ----
+pub mod azure_blob;
+pub mod b2;
+pub mod box_com;
+pub mod flickr;
+#[cfg(feature = "host-s3")]
+pub mod gcs;
+pub mod youtube;
 // ---- end HO-b ----
 
 use laqta_http::{Body, HttpError, Request, Response};

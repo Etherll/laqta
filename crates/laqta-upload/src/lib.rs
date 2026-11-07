@@ -5,7 +5,10 @@ pub mod hosts;
 pub mod native;
 pub mod oauth;
 pub mod registry;
+pub mod remote;
 pub mod sharers;
 pub mod sxcu;
 pub mod sxcu_destination;
 pub mod uploaders;
+
+pub use remote::remote_storages;

@@ -116,7 +116,7 @@ pub fn object_url(config: &S3Config, key: &str) -> Result<String, UploadError> {
     }
 }
 
-fn bucket(config: &S3Config) -> Result<Bucket, UploadError> {
+pub(crate) fn bucket(config: &S3Config) -> Result<Bucket, UploadError> {
     let endpoint =
         Url::parse(&config.endpoint).map_err(|error| UploadError::Unsupported(format!("S3 endpoint {:?}: {error}", config.endpoint)))?;
     let style = if config.use_path_style { UrlStyle::Path } else { UrlStyle::VirtualHost };
