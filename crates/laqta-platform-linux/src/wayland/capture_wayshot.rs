@@ -4,18 +4,14 @@ use laqta_domain::{Bitmap, Frame, Monitor, MonitorId, PhysRect, PixelFormat};
 use laqta_ports::PortError;
 use libwayshot::WayshotConnection;
 
+use super::layout::{OutputLayout, max_scale, to_physical};
+
 fn fail(e: impl std::fmt::Display) -> PortError {
     PortError::Failed(format!("wayshot: {e}"))
 }
 
-/// One output's layout: its logical rect in the compositor's space.
-#[derive(Clone, Debug)]
-pub struct OutputLayout {
-    pub name: String,
-    pub description: String,
-    pub logical: PhysRect,
-}
-
+/// The outputs' logical layout. wayshot reports no scale, so `scale` is 1.0 here; `capture_all`
+/// fills it in from the captured pixels.
 pub fn layout() -> Result<Vec<OutputLayout>, PortError> {
     let conn = WayshotConnection::new().map_err(fail)?;
     Ok(conn.get_all_outputs().iter().map(to_layout).collect())
@@ -27,34 +23,94 @@ fn to_layout(o: &libwayshot::output::OutputInfo) -> OutputLayout {
         name: o.name.clone(),
         description: o.description.clone(),
         logical: PhysRect { x: r.position.x, y: r.position.y, width: r.size.width, height: r.size.height },
+        scale: 1.0,
     }
 }
 
-/// Captures every output. Monitor rects keep the logical origin and the captured (physical) size;
-/// `scale` is physical / logical width, so `compose_monitors`' mixed-scale rule applies.
+/// Captures every output into physical virtual-desktop space (D2). An output's scale is its
+/// captured width over its logical width. The space uses the largest scale, so a frame whose
+/// capture is smaller is resampled to its physical size.
 pub fn capture_all() -> Result<Vec<Frame>, PortError> {
     let conn = WayshotConnection::new().map_err(fail)?;
     let outputs = conn.get_all_outputs().to_vec();
     if outputs.is_empty() {
         return Err(PortError::Failed("wayshot: no outputs".into()));
     }
-    let mut frames = Vec::with_capacity(outputs.len());
-    for (i, o) in outputs.iter().enumerate() {
+    let mut layouts = Vec::with_capacity(outputs.len());
+    let mut images = Vec::with_capacity(outputs.len());
+    for o in &outputs {
+        let mut layout = to_layout(o);
         let img = conn.screenshot_single_output(o, false).map_err(fail)?.into_rgba8();
+        layout.scale = if layout.logical.width > 0 { img.width() as f32 / layout.logical.width as f32 } else { 1.0 };
+        layouts.push(layout);
+        images.push(img);
+    }
+    let s_max = max_scale(&layouts);
+    let mut frames = Vec::with_capacity(layouts.len());
+    for (i, (layout, img)) in layouts.iter().zip(images).enumerate() {
+        let rect = to_physical(layout.logical, s_max);
         let (w, h) = (img.width(), img.height());
-        let l = to_layout(o);
-        let scale = if l.logical.width > 0 { w as f32 / l.logical.width as f32 } else { 1.0 };
-        let image = Bitmap::new(w, h, PixelFormat::Rgba8, Arc::from(img.into_raw())).map_err(fail)?;
+        let raw = img.into_raw();
+        let rgba = if (w, h) == (rect.width, rect.height) {
+            raw
+        } else {
+            scale_nearest(&raw, w, h, rect.width, rect.height)
+        };
+        let image = Bitmap::new(rect.width, rect.height, PixelFormat::Rgba8, Arc::from(rgba)).map_err(fail)?;
         frames.push(Frame {
             monitor: Monitor {
-                id: MonitorId(l.name.clone()),
-                name: if l.description.is_empty() { l.name.clone() } else { l.description.clone() },
-                rect: PhysRect { x: l.logical.x, y: l.logical.y, width: w, height: h },
-                scale,
+                id: MonitorId(layout.name.clone()),
+                name: if layout.description.is_empty() { layout.name.clone() } else { layout.description.clone() },
+                rect,
+                scale: s_max,
                 primary: i == 0,
             },
             image,
         });
     }
     Ok(frames)
+}
+
+/// Nearest-neighbour resize of tightly packed RGBA8 pixels from `w` x `h` to `new_w` x `new_h`.
+pub(crate) fn scale_nearest(rgba: &[u8], w: u32, h: u32, new_w: u32, new_h: u32) -> Vec<u8> {
+    let (w, h, new_w, new_h) = (w as usize, h as usize, new_w as usize, new_h as usize);
+    if w == 0 || h == 0 {
+        return vec![0; new_w * new_h * 4];
+    }
+    let mut out = Vec::with_capacity(new_w * new_h * 4);
+    for y in 0..new_h {
+        let row = (y * h / new_h) * w;
+        for x in 0..new_w {
+            let i = (row + x * w / new_w) * 4;
+            out.extend_from_slice(&rgba[i..i + 4]);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scale_nearest_upscales_by_integer_factor() {
+        let px = [1, 2, 3, 255, 4, 5, 6, 255];
+        // 2x1 → 4x1: each pixel doubled.
+        assert_eq!(scale_nearest(&px, 2, 1, 4, 1), [1, 2, 3, 255, 1, 2, 3, 255, 4, 5, 6, 255, 4, 5, 6, 255]);
+    }
+
+    #[test]
+    fn scale_nearest_handles_non_integer_ratio() {
+        let px = [1, 1, 1, 255, 2, 2, 2, 255];
+        // 2x1 → 3x1: source columns 0, 0, 1.
+        assert_eq!(scale_nearest(&px, 2, 1, 3, 1), [1, 1, 1, 255, 1, 1, 1, 255, 2, 2, 2, 255]);
+        // 1x2 → 1x3: source rows 0, 0, 1.
+        assert_eq!(scale_nearest(&px, 1, 2, 1, 3), [1, 1, 1, 255, 1, 1, 1, 255, 2, 2, 2, 255]);
+    }
+
+    #[test]
+    fn scale_nearest_identity() {
+        let px = [9, 8, 7, 255, 6, 5, 4, 255, 3, 2, 1, 255, 0, 0, 0, 0];
+        assert_eq!(scale_nearest(&px, 2, 2, 2, 2), px);
+    }
 }
