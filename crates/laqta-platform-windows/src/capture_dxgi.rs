@@ -1,30 +1,49 @@
 //! DXGI Desktop Duplication stills. One D3D11 device per adapter, so on hybrid-GPU laptops each
-//! output is duplicated on the adapter that owns it. Frames never include the cursor; HDR outputs
-//! are read through the 8-bit path (both M1).
+//! output is duplicated on the adapter that owns it. Frames never include the cursor. SDR outputs
+//! are read as 8-bit BGRA. HDR outputs (scRGB) are duplicated as FP16 and tonemapped to sRGB, with
+//! the 8-bit duplication as the fallback when the driver refuses FP16.
 
+use std::mem::size_of;
 use std::time::{Duration, Instant};
 
 use laqta_domain::{Bitmap, Frame, PixelFormat};
-use windows::Win32::Foundation::{E_FAIL, HMODULE};
+use windows::Win32::Devices::Display::{
+    DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL, DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_HEADER,
+    DISPLAYCONFIG_DEVICE_INFO_TYPE, DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SDR_WHITE_LEVEL,
+    DISPLAYCONFIG_SOURCE_DEVICE_NAME, DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QDC_ONLY_ACTIVE_PATHS, QueryDisplayConfig,
+};
+use windows::Win32::Foundation::{E_FAIL, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, HMODULE, LUID};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION,
     D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_UNSPECIFIED, DXGI_SAMPLE_DESC,
+    DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
+    DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_UNSPECIFIED, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory1, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput1, IDXGIResource,
+    CreateDXGIFactory1, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput, IDXGIOutput1,
+    IDXGIOutput5, IDXGIOutput6, IDXGIResource,
 };
 use windows::core::{Error, Interface, Result};
 
 use crate::capture_gdi::monitor_from_handle;
+use crate::hdr::tonemap_frame;
 
 /// How long to wait for a frame whose `LastPresentTime` is set.
 const FIRST_FRAME_BUDGET: Duration = Duration::from_millis(500);
 
-type Staging = Option<(ID3D11Texture2D, u32, u32)>;
+/// SDR white in scRGB units when Windows reports no SDR white level: 3.0, which is 240 nits.
+const FALLBACK_SDR_WHITE: f32 = 3.0;
+
+/// A GPU staging copy of the last presented frame, kept while its size and format stay the same.
+struct Staging {
+    texture: ID3D11Texture2D,
+    width: u32,
+    height: u32,
+    format: DXGI_FORMAT,
+}
 
 pub(crate) fn capture() -> Result<Vec<Frame>> {
     // SAFETY: COM calls on interfaces owned by this function; DXGI needs no apartment.
@@ -52,7 +71,8 @@ pub(crate) fn capture() -> Result<Vec<Frame>> {
                     return Err(E_FAIL.into());
                 }
                 let monitor = monitor_from_handle(desc.Monitor).ok_or_else(|| Error::from(E_FAIL))?;
-                let image = duplicate(&output.cast::<IDXGIOutput1>()?, &device, &context)?;
+                let hdr_white = is_scrgb(&output).then(|| sdr_white_scale(&monitor.name));
+                let image = duplicate(&output.cast::<IDXGIOutput1>()?, &device, &context, hdr_white)?;
                 frames.push(Frame { monitor, image });
             }
         }
@@ -61,6 +81,96 @@ pub(crate) fn capture() -> Result<Vec<Frame>> {
         }
         Ok(frames)
     }
+}
+
+/// Whether the output shows an scRGB (HDR) desktop. Windows older than 10 1703 has no
+/// `IDXGIOutput6`, so those outputs count as SDR.
+fn is_scrgb(output: &IDXGIOutput) -> bool {
+    let Ok(output6) = output.cast::<IDXGIOutput6>() else {
+        return false;
+    };
+    // SAFETY: a plain query on a live output.
+    unsafe { output6.GetDesc1() }.is_ok_and(|desc| desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709)
+}
+
+/// SDR white in scRGB units for the monitor named `device`: `SDRWhiteLevel / 1000`, since 1000 is
+/// 80 nits and scRGB 1.0 is 80 nits. Falls back to 240 nits when Windows reports no level.
+fn sdr_white_scale(device: &str) -> f32 {
+    sdr_white_level(device).map_or(FALLBACK_SDR_WHITE, |level| level as f32 / 1000.0)
+}
+
+/// The `SDRWhiteLevel` of the active display path whose GDI device name is `device`.
+/// The active display paths. The buffers are sized with `GetDisplayConfigBufferSizes`, and the query
+/// is retried when the topology changes between the two calls.
+fn active_paths() -> Option<Vec<DISPLAYCONFIG_PATH_INFO>> {
+    for _ in 0..3 {
+        let mut paths = 0u32;
+        let mut modes = 0u32;
+        // SAFETY: both out-pointers are locals.
+        let sized = unsafe { GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &raw mut paths, &raw mut modes) };
+        if sized != ERROR_SUCCESS {
+            return None;
+        }
+        let mut path_info = vec![DISPLAYCONFIG_PATH_INFO::default(); paths as usize];
+        let mut mode_info = vec![DISPLAYCONFIG_MODE_INFO::default(); modes as usize];
+        // SAFETY: each array has the capacity the sizing call reported, and the counts are in-out.
+        let got = unsafe {
+            QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &raw mut paths, path_info.as_mut_ptr(), &raw mut modes, mode_info.as_mut_ptr(), None)
+        };
+        if got == ERROR_SUCCESS {
+            path_info.truncate(paths as usize);
+            return Some(path_info);
+        }
+        if got != ERROR_INSUFFICIENT_BUFFER {
+            return None;
+        }
+    }
+    None
+}
+
+fn sdr_white_level(device: &str) -> Option<u32> {
+    active_paths()?.iter().find_map(|path| {
+        let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+            header: device_info_header(
+                DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>(),
+                path.sourceInfo.adapterId,
+                path.sourceInfo.id,
+            ),
+            ..Default::default()
+        };
+        // SAFETY: the packet's header declares its type and size, and the packet outlives the call.
+        if unsafe { DisplayConfigGetDeviceInfo(&raw mut source.header) } != 0 {
+            return None;
+        }
+        if wide_to_string(&source.viewGdiDeviceName) != device {
+            return None;
+        }
+        let mut white = DISPLAYCONFIG_SDR_WHITE_LEVEL {
+            header: device_info_header(
+                DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
+                size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>(),
+                path.targetInfo.adapterId,
+                path.targetInfo.id,
+            ),
+            SDRWhiteLevel: 0,
+        };
+        // SAFETY: as above; the level is queried on the path's target, not its source.
+        if unsafe { DisplayConfigGetDeviceInfo(&raw mut white.header) } != 0 {
+            return None;
+        }
+        Some(white.SDRWhiteLevel).filter(|&level| level > 0)
+    })
+}
+
+fn device_info_header(kind: DISPLAYCONFIG_DEVICE_INFO_TYPE, size: usize, adapter: LUID, id: u32) -> DISPLAYCONFIG_DEVICE_INFO_HEADER {
+    DISPLAYCONFIG_DEVICE_INFO_HEADER { r#type: kind, size: size as u32, adapterId: adapter, id }
+}
+
+/// A NUL-terminated UTF-16 buffer as a `String`, lossily.
+fn wide_to_string(wide: &[u16]) -> String {
+    let len = wide.iter().position(|&c| c == 0).unwrap_or(wide.len());
+    String::from_utf16_lossy(&wide[..len])
 }
 
 unsafe fn create_device(adapter: &IDXGIAdapter1) -> Result<(ID3D11Device, ID3D11DeviceContext)> {
@@ -89,12 +199,22 @@ unsafe fn create_device(adapter: &IDXGIAdapter1) -> Result<(ID3D11Device, ID3D11
 /// Acquires frames until one has `LastPresentTime != 0`, for at most 500 ms, and copies it into a
 /// staging texture. Frames with `LastPresentTime == 0` can be blank on some drivers, so a timeout
 /// fails and the caller falls back to GDI.
-unsafe fn duplicate(output: &IDXGIOutput1, device: &ID3D11Device, context: &ID3D11DeviceContext) -> Result<Bitmap> {
+///
+/// With `hdr_white` set (an scRGB output), FP16 duplication is tried first. If the driver refuses
+/// it, the 8-bit duplication is used. The format of the texture that was acquired decides whether
+/// the frame is tonemapped.
+unsafe fn duplicate(output: &IDXGIOutput1, device: &ID3D11Device, context: &ID3D11DeviceContext, hdr_white: Option<f32>) -> Result<Bitmap> {
     // SAFETY: all calls are on live COM objects; each acquired frame is released before the next.
     unsafe {
-        let dupl = output.DuplicateOutput(device)?;
+        let fp16 = hdr_white
+            .and_then(|_| output.cast::<IDXGIOutput5>().ok())
+            .and_then(|output5| output5.DuplicateOutput1(device, 0, &[DXGI_FORMAT_R16G16B16A16_FLOAT]).ok());
+        let dupl = match fp16 {
+            Some(dupl) => dupl,
+            None => output.DuplicateOutput(device)?,
+        };
         let deadline = Instant::now() + FIRST_FRAME_BUDGET;
-        let mut staging: Staging = None;
+        let mut staging: Option<Staging> = None;
         let mut presented = false;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -118,7 +238,7 @@ unsafe fn duplicate(output: &IDXGIOutput1, device: &ID3D11Device, context: &ID3D
             }
         }
         match staging {
-            Some((texture, w, h)) if presented => read_staging(context, &texture, w, h),
+            Some(staging) if presented => read_frame(context, &staging, hdr_white),
             _ => Err(DXGI_ERROR_WAIT_TIMEOUT.into()),
         }
     }
@@ -128,17 +248,18 @@ unsafe fn copy_to_staging(
     device: &ID3D11Device,
     context: &ID3D11DeviceContext,
     resource: Option<&IDXGIResource>,
-    staging: &mut Staging,
+    staging: &mut Option<Staging>,
 ) -> Result<()> {
     // SAFETY: GetDesc writes into a local; CopyResource takes two live textures of equal shape.
     unsafe {
         let texture: ID3D11Texture2D = resource.ok_or_else(|| Error::from(E_FAIL))?.cast()?;
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         texture.GetDesc(&mut desc);
-        if desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM {
+        if desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM && desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT {
             return Err(E_FAIL.into());
         }
-        if staging.as_ref().is_none_or(|(_, w, h)| (*w, *h) != (desc.Width, desc.Height)) {
+        let reusable = staging.as_ref().is_some_and(|s| (s.width, s.height, s.format) == (desc.Width, desc.Height, desc.Format));
+        if !reusable {
             let sd = D3D11_TEXTURE2D_DESC {
                 Width: desc.Width,
                 Height: desc.Height,
@@ -153,31 +274,59 @@ unsafe fn copy_to_staging(
             };
             let mut created = None;
             device.CreateTexture2D(&sd, None, Some(&mut created))?;
-            *staging = Some((created.ok_or_else(|| Error::from(E_FAIL))?, desc.Width, desc.Height));
+            *staging = Some(Staging {
+                texture: created.ok_or_else(|| Error::from(E_FAIL))?,
+                width: desc.Width,
+                height: desc.Height,
+                format: desc.Format,
+            });
         }
-        if let Some((target, _, _)) = staging.as_ref() {
-            context.CopyResource(target, &texture);
+        if let Some(target) = staging.as_ref() {
+            context.CopyResource(&target.texture, &texture);
         }
         Ok(())
     }
 }
 
-unsafe fn read_staging(context: &ID3D11DeviceContext, texture: &ID3D11Texture2D, w: u32, h: u32) -> Result<Bitmap> {
+/// Reads a staging copy into a `Bitmap`. FP16 frames are tonemapped to opaque sRGB; 8-bit frames
+/// are made opaque.
+fn read_frame(context: &ID3D11DeviceContext, staging: &Staging, hdr_white: Option<f32>) -> Result<Bitmap> {
+    let fp16 = staging.format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+    let bytes_per_pixel = if fp16 { 8 } else { 4 };
+    // SAFETY: `staging.texture` is the texture copied to above and is alive here.
+    let raw = unsafe { read_staging(context, &staging.texture, staging.width, staging.height, bytes_per_pixel)? };
+    let pixels = if fp16 {
+        tonemap_frame(&raw, hdr_white.unwrap_or(FALLBACK_SDR_WHITE))
+    } else {
+        let mut px = raw;
+        for p in px.as_chunks_mut::<4>().0 {
+            p[3] = 255;
+        }
+        px
+    };
+    Bitmap::new(staging.width, staging.height, PixelFormat::Bgra8, pixels.into()).map_err(|_| E_FAIL.into())
+}
+
+/// Copies the packed rows of a mapped staging texture out, `bytes_per_pixel` bytes per pixel.
+unsafe fn read_staging(
+    context: &ID3D11DeviceContext,
+    texture: &ID3D11Texture2D,
+    w: u32,
+    h: u32,
+    bytes_per_pixel: usize,
+) -> Result<Vec<u8>> {
     // SAFETY: the mapped pointer is valid for RowPitch * h bytes until Unmap.
     unsafe {
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         context.Map(texture, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
         let pitch = mapped.RowPitch as usize;
-        let row = w as usize * 4;
+        let row = w as usize * bytes_per_pixel;
         let src = std::slice::from_raw_parts(mapped.pData as *const u8, pitch * h as usize);
         let mut px = Vec::with_capacity(row * h as usize);
         for y in 0..h as usize {
             px.extend_from_slice(&src[y * pitch..y * pitch + row]);
         }
         context.Unmap(texture, 0);
-        for p in px.as_chunks_mut::<4>().0 {
-            p[3] = 255;
-        }
-        Bitmap::new(w, h, PixelFormat::Bgra8, px.into()).map_err(|_| E_FAIL.into())
+        Ok(px)
     }
 }

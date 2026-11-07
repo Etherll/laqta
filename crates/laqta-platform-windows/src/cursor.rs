@@ -25,12 +25,21 @@ const MAX_EDGE: i32 = 512;
 /// Draws the cursor, when one is showing, onto every frame it overlaps. On failure the frames are
 /// left as they were, and the reason goes to the debug log.
 pub(crate) fn draw_onto(frames: &mut [Frame]) {
-    if let Err(e) = draw(frames) {
+    if let Err(e) = draw(frames.iter_mut().map(|f| (&mut f.image, f.monitor.rect))) {
         tracing::debug!("cursor not drawn: {e}");
     }
 }
 
-fn draw(frames: &mut [Frame]) -> Result<()> {
+/// Draws the cursor, when one is showing, onto `image`, whose top-left pixel is at `origin` on the
+/// virtual desktop. Failure is logged and leaves the image as it was.
+pub(crate) fn draw_onto_image(image: &mut Bitmap, origin: PhysRect) {
+    if let Err(e) = draw(std::iter::once((image, origin))) {
+        tracing::debug!("cursor not drawn: {e}");
+    }
+}
+
+/// Draws the cursor onto each `(image, origin)` pair that it overlaps.
+fn draw<'a>(images: impl IntoIterator<Item = (&'a mut Bitmap, PhysRect)>) -> Result<()> {
     let mut info = CURSORINFO { cbSize: size_of::<CURSORINFO>() as u32, ..Default::default() };
     // SAFETY: `info` is sized as GetCursorInfo requires.
     unsafe { GetCursorInfo(&raw mut info) }?;
@@ -52,8 +61,8 @@ fn draw(frames: &mut [Frame]) -> Result<()> {
         width: width as u32,
         height: height as u32,
     };
-    for frame in frames.iter_mut() {
-        draw_on_frame(frame, icon, cursor)?;
+    for (image, origin) in images {
+        draw_on_image(image, origin, icon, cursor)?;
     }
     Ok(())
 }
@@ -86,23 +95,22 @@ fn cursor_size(info: &ICONINFO) -> Option<(i32, i32)> {
     ((1..=MAX_EDGE).contains(&width) && (1..=MAX_EDGE).contains(&height)).then_some((width, height))
 }
 
-/// Draws the cursor onto `frame`, if the cursor's rect overlaps the frame.
-fn draw_on_frame(frame: &mut Frame, icon: HICON, cursor: PhysRect) -> Result<()> {
-    if frame.image.format() != PixelFormat::Bgra8 {
+/// Draws the cursor onto `image`, whose top-left pixel is at `origin`, if the cursor's rect overlaps it.
+fn draw_on_image(image: &mut Bitmap, origin: PhysRect, icon: HICON, cursor: PhysRect) -> Result<()> {
+    if image.format() != PixelFormat::Bgra8 {
         return Ok(());
     }
-    let (width, height) = (frame.image.width(), frame.image.height());
-    let origin = frame.monitor.rect;
+    let (width, height) = (image.width(), image.height());
     let local = PhysRect { x: cursor.x.saturating_sub(origin.x), y: cursor.y.saturating_sub(origin.y), ..cursor };
     if overlap(local, PhysRect { x: 0, y: 0, width, height }).is_none() {
         return Ok(());
     }
-    let mut patch = extract(frame.image.pixels(), width, height, local);
+    let mut patch = extract(image.pixels(), width, height, local);
     render_into(icon, local.width as i32, local.height as i32, &mut patch)?;
-    let mut pixels = frame.image.pixels().to_vec();
+    let mut pixels = image.pixels().to_vec();
     write_back(&mut pixels, width, height, local, &patch);
-    if let Ok(image) = Bitmap::new(width, height, PixelFormat::Bgra8, pixels.into()) {
-        frame.image = image;
+    if let Ok(drawn) = Bitmap::new(width, height, PixelFormat::Bgra8, pixels.into()) {
+        *image = drawn;
     }
     Ok(())
 }

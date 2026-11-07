@@ -1,10 +1,14 @@
 //! Windows adapters for the M0 ports (docs/plan/M0.md §5.3, §5.4).
 //!
 //! Screen capture uses DXGI Desktop Duplication with one D3D11 device per adapter, falling back
-//! to GDI `BitBlt`. Hotkeys and the tray share one dedicated shell thread that owns a hidden
-//! window. Everything here is Windows-only; on other targets the crate is empty. The pure helpers
-//! (key codes, window rules, frame patches) also build under `test`, so their tests run on Linux.
+//! to GDI `BitBlt`; HDR outputs are tonemapped to sRGB. Transparent window capture uses GDI over
+//! backdrops. Hotkeys and the tray share one dedicated shell thread that owns a hidden window.
+//! Per-event sounds play through `PlaySound`. Everything here is Windows-only; on other targets the
+//! crate is empty. The pure helpers (key codes, window rules, frame patches, HDR math, backdrop
+//! alpha, the shutter sound) also build under `test`, so their tests run on Linux.
 
+#[cfg(any(windows, test))]
+mod backdrop;
 #[cfg(windows)]
 mod capture_dxgi;
 #[cfg(windows)]
@@ -13,6 +17,8 @@ mod capture_gdi;
 mod clipboard;
 #[cfg(windows)]
 mod cursor;
+#[cfg(any(windows, test))]
+mod hdr;
 #[cfg(windows)]
 mod hover;
 #[cfg(any(windows, test))]
@@ -24,20 +30,29 @@ mod shell;
 #[cfg(windows)]
 mod shell_thread;
 #[cfg(any(windows, test))]
+mod shutter;
+#[cfg(windows)]
+mod sound;
+#[cfg(windows)]
+mod transparent;
+#[cfg(any(windows, test))]
 mod window_rules;
 
 #[cfg(windows)]
 pub use imp::*;
+#[cfg(windows)]
+pub use sound::play_sound;
 
 #[cfg(windows)]
 mod imp {
     use std::sync::Arc;
 
-    use laqta_domain::Frame;
+    use laqta_domain::region::HoverTarget;
+    use laqta_domain::{Bitmap, Frame};
     use laqta_ports::{BoxFuture, CaptureRequest, Clipboard, HotkeyRegistrar, PortError, ScreenSource, Shell, Tray};
     use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 
-    use crate::{capture_dxgi, capture_gdi, clipboard, cursor, hover, shell, shell_thread};
+    use crate::{capture_dxgi, capture_gdi, clipboard, cursor, hover, shell, shell_thread, transparent};
 
     /// The Windows adapters, ready to hand to `laqta_app::Ports`.
     pub struct WindowsPorts {
@@ -101,6 +116,11 @@ mod imp {
                 }
                 Ok(frames)
             }))
+        }
+
+        fn capture_window(&self, target: &HoverTarget, request: CaptureRequest) -> BoxFuture<'_, Result<Bitmap, PortError>> {
+            let target = target.clone();
+            Box::pin(blocking::unblock(move || transparent::capture(&target, request.show_cursor)))
         }
     }
 
