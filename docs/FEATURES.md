@@ -28,12 +28,12 @@ Areas the survey did not cover in depth need a second pass:
 
 | Feature | Milestone | Status |
 | - | - | - |
-| Video: region, active window, custom region, last region | M4 | planned |
-| GIF: same start modes | M4 | planned |
-| Codecs: x264, x265, VP8, VP9, Xvid, NVENC, AMF, QSV, GIF, WebP, APNG (+ VAAPI, AV1 new) | M4 | planned |
-| Audio: system loopback, microphone, gain, mix | M4 | planned |
-| Pause, stop, abort, start delay, fixed duration, timer, recording bar, border | M4 | planned |
-| Custom FFmpeg args, custom command line, FFmpeg path override and download | M4 | planned |
+| Video: region, active window, custom region, last region | M4 | done |
+| GIF: same start modes | M4 | done |
+| Codecs: x264, x265, VP8, VP9, Xvid, NVENC, AMF, QSV, GIF, WebP, APNG (+ VAAPI, AV1 new) | M4 | done |
+| Audio: system loopback, microphone, gain, mix | M4 | done |
+| Pause, stop, abort, start delay, fixed duration, timer, recording bar, border | M4 | done |
+| Custom FFmpeg args, custom command line, FFmpeg path override and download | M4 | done |
 | Camera overlay (shape, position, size) | M7 | planned |
 | Native GPU path (WGC + Media Foundation) | M7 | planned |
 | Mouse highlighter (while recording and as a tool) | M5 | planned |
@@ -94,13 +94,13 @@ Hosts in the catalog are `.sxcu` files (ADR 004); hosts written in Rust are mark
 
 | Feature | Milestone | Status |
 | - | - | - |
-| 21 annotation tools (Select, Rectangle, Ellipse, Line, Arrow, Freehand, Text, SpeechBalloon, Step, Image, Clone, Emoji, Cursor, Highlight, SmartEraser, Blur, Pixelate, Magnify, Spotlight, Crop, CutOut) | M3 | planned |
-| Undo / redo, clipboard, nudge, toolbar customization and hotkeys | M3 | planned |
-| Annotate inside the region overlay | M3 | planned |
-| The 60 classic image effects (15 adjustments, 8 drawings, 27 filters, 10 manipulations) | M3 | planned |
+| 21 annotation tools (Select, Rectangle, Ellipse, Line, Arrow, Freehand, Text, SpeechBalloon, Step, Image, Clone, Emoji, Cursor, Highlight, SmartEraser, Blur, Pixelate, Magnify, Spotlight, Crop, CutOut) | M3 | done |
+| Undo / redo, clipboard, nudge, toolbar customization and hotkeys | M3 | done |
+| Annotate inside the region overlay | M3 | done |
+| The 60 classic image effects (15 adjustments, 8 drawings, 27 filters, 10 manipulations) | M3 | done |
 | About 240 newer effects (adjustments, drawings, filters, borders, film, glitch) | M7 | planned |
-| Effect presets, `.sxie` packages, random effect | M3 | planned |
-| Image beautifier | M3 | planned |
+| Effect presets, `.sxie` packages, random effect | M3 | done |
+| Image beautifier | M3 | done |
 | Photo editor: layers (raster, shape, text, adjustment, fill, frame, group, smart object), styles, blend modes, masks, selection tools, brushes, retouch, inpainting | M7 | planned |
 
 ## Tools
