@@ -2,11 +2,14 @@
 # pinned SHA-256 with laqta-http's verified fetch.
 #
 # Each [[model]] entry:
-#   id, task ("ocr-det" | "ocr-rec" | "background"), family (a name from families/mod.rs),
+#   id, task ("ocr-det" | "ocr-rec" | "background" | "inpaint"), family (a name from families/mod.rs),
 #   name, description, url, sha256 (64 lowercase hex, or "pending-owner"), size_bytes,
 #   licence, commercial, precisions, languages (rec: BCP-47 tags or script names).
 #   Rec entries also carry dict_url, dict_sha256 and dict_size_bytes: the character
 #   dictionary, one entry per line, without the CTC blank (the loader adds it).
+#   The matting-parametric family takes a [model.matting] table right after its entry:
+#   input_size, mean, std, output_index (negative counts from the end; -1 is the last output),
+#   and activation ("sigmoid" | "minmax" | "none"). No other family takes that table.
 #   default = true marks the one entry per task that is used when none is chosen.
 #
 # sha256 = "pending-owner" refuses the download with a named error, so an unverified file never
@@ -64,6 +67,110 @@ languages = ["latin"]
 dict_url = "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf/ppocr/utils/dict/ppocrv5_latin_dict.txt"
 dict_sha256 = "ccbcc45730b3fbbd9050c5bc74db6a99067141ef1035e3d14889a84a6b9b1aff"
 dict_size_bytes = 2616
+
+# Background removal (ADR 023, M7 D6). BiRefNet and BEN2 take 1024 px inputs, U²-Net-p 320 px.
+# BiRefNet exports several outputs and the last one is the finest, so it reads output -1.
+
+[[model]]
+id = "birefnet-lite"
+task = "background"
+family = "matting-parametric"
+default = true
+name = "BiRefNet lite, fp32"
+description = "Separates the main subject from its background. Full-precision weights, the default. Large download."
+url = "https://huggingface.co/onnx-community/BiRefNet_lite-ONNX/resolve/de15b22ba131738a16dff04aab8bdf8dc32e3ac1/onnx/model.onnx"
+sha256 = "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333"
+size_bytes = 224005088
+licence = "MIT"
+commercial = true
+precisions = ["fp32"]
+
+[model.matting]
+input_size = 1024
+mean = [0.485, 0.456, 0.406]
+std = [0.229, 0.224, 0.225]
+output_index = -1
+activation = "sigmoid"
+
+[[model]]
+id = "birefnet-lite-fp16"
+task = "background"
+family = "matting-parametric"
+default = false
+name = "BiRefNet lite, fp16"
+description = "The BiRefNet lite model with half-precision weights. About half the download of the fp32 model; the edges can differ slightly."
+url = "https://huggingface.co/onnx-community/BiRefNet_lite-ONNX/resolve/de15b22ba131738a16dff04aab8bdf8dc32e3ac1/onnx/model_fp16.onnx"
+sha256 = "d39b897ceb16ae654c1731f3dba0cf9b368d9cae74b5a57459b455cc8bfec402"
+size_bytes = 114538221
+licence = "MIT"
+commercial = true
+precisions = ["fp16"]
+
+[model.matting]
+input_size = 1024
+mean = [0.485, 0.456, 0.406]
+std = [0.229, 0.224, 0.225]
+output_index = -1
+activation = "sigmoid"
+
+[[model]]
+id = "ben2-base"
+task = "background"
+family = "matting-parametric"
+default = false
+name = "BEN2 base"
+description = "Background removal at 1024 px. MIT licence, commercial use allowed."
+url = "https://huggingface.co/PramaLLC/BEN2/resolve/e48a20765fb421d19dcdb0bf3cc61e802ca5ec8f/BEN2_Base.onnx"
+sha256 = "22cea62108ff53b7ccc20f7a008bf30494228d84b1687f29ecbe76936a998101"
+size_bytes = 222932053
+licence = "MIT"
+commercial = true
+precisions = ["fp32"]
+
+[model.matting]
+input_size = 1024
+mean = [0.0, 0.0, 0.0]
+std = [1.0, 1.0, 1.0]
+output_index = 0
+activation = "none"
+
+[[model]]
+id = "u2netp"
+task = "background"
+family = "matting-parametric"
+default = false
+name = "U²-Net-p"
+description = "The small background removal model, about 4.6 MB. Works at 320 px, so fine edges are lost. Use it where size or speed matters most."
+url = "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx"
+sha256 = "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8"
+size_bytes = 4574861
+licence = "Apache-2.0"
+commercial = true
+precisions = ["fp32"]
+
+[model.matting]
+input_size = 320
+mean = [0.485, 0.456, 0.406]
+std = [0.229, 0.224, 0.225]
+output_index = 0
+activation = "minmax"
+
+# Inpainting (ADR 023, M7 D4). The photo editor's inpainting tool runs this model on a crop around
+# the masked area and pastes back only the masked pixels.
+
+[[model]]
+id = "big-lama"
+task = "inpaint"
+family = "lama"
+default = true
+name = "Big-LaMa inpainting, 512 px"
+description = "Fills the masked area with plausible content. Works on a 512 px crop around the mask, so large masks lose detail."
+url = "https://huggingface.co/Carve/LaMa-ONNX/resolve/c3c0c9e468934d62e79c329e35d82dd09ff8c444/lama_fp32.onnx"
+sha256 = "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6"
+size_bytes = 208044816
+licence = "Apache-2.0"
+commercial = true
+precisions = ["fp32"]
 
 # ONNX Runtime, loaded at first use (ADR 023). The archive is verified before it is unpacked.
 # `library` is the path of the shared library inside the archive. Unpacking is not implemented

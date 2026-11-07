@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use crate::error::MlError;
 use crate::families::Family;
+use crate::families::matting::MattingParams;
 
 const CATALOG_TOML: &str = include_str!("../catalog/models.toml");
 
@@ -20,21 +21,26 @@ pub enum Task {
     OcrDet,
     OcrRec,
     Background,
+    Inpaint,
 }
 
 impl Task {
+    /// Every task, in the order the settings list them.
+    pub const ALL: [Task; 4] = [Task::OcrDet, Task::OcrRec, Task::Background, Task::Inpaint];
+
     /// The name used in the catalog and in the session cache.
     pub fn as_str(self) -> &'static str {
         match self {
             Task::OcrDet => "ocr-det",
             Task::OcrRec => "ocr-rec",
             Task::Background => "background",
+            Task::Inpaint => "inpaint",
         }
     }
 }
 
-/// One model in the catalog.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// One model in the catalog. `PartialEq` only: the matting parameters hold `f32` values.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ModelEntry {
     pub id: String,
     pub task: Task,
@@ -58,6 +64,9 @@ pub struct ModelEntry {
     pub dict_sha256: Option<String>,
     #[serde(default)]
     pub dict_size_bytes: Option<u64>,
+    /// The `[model.matting]` table, required by the `matting-parametric` family and refused by others.
+    #[serde(default)]
+    pub matting: Option<MattingParams>,
 }
 
 impl ModelEntry {
@@ -81,7 +90,7 @@ pub struct OrtArchive {
 }
 
 /// The parsed catalog.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Catalog {
     #[serde(rename = "model", default)]
     pub models: Vec<ModelEntry>,
@@ -138,6 +147,12 @@ impl Catalog {
             if model.size_bytes == 0 {
                 return Err(fail("size_bytes must be set".into()));
             }
+            match (family, &model.matting) {
+                (Family::MattingParametric, Some(params)) => params.check().map_err(fail)?,
+                (Family::MattingParametric, None) => return Err(fail("a matting family needs a [model.matting] table".into())),
+                (_, Some(_)) => return Err(fail("only a matting family has a [model.matting] table".into())),
+                (_, None) => {}
+            }
             match model.task {
                 Task::OcrRec => {
                     let dict_url = model.dict_url.as_deref().ok_or_else(|| fail("a recogniser needs dict_url".into()))?;
@@ -158,7 +173,7 @@ impl Catalog {
                 }
             }
         }
-        for task in [Task::OcrDet, Task::OcrRec, Task::Background] {
+        for task in Task::ALL {
             let entries: Vec<&ModelEntry> = self.models_for(task).collect();
             let defaults = entries.iter().filter(|model| model.default).count();
             if !entries.is_empty() && defaults != 1 {
@@ -209,6 +224,7 @@ pub fn catalog() -> &'static Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::families::matting::Activation;
 
     #[test]
     fn the_shipped_catalog_is_valid() {
@@ -265,6 +281,119 @@ mod tests {
     #[test]
     fn a_family_for_the_wrong_task_is_rejected() {
         let text = CATALOG_TOML.replacen("family = \"o1-det\"", "family = \"o1-rec\"", 1);
+        assert!(matches!(Catalog::parse(&text), Err(MlError::Catalog(_))));
+    }
+
+    /// The background and inpainting entries, with the URL, size and SHA-256 from M7.md's model table.
+    const M7_MODELS: [(&str, &str, u64, &str); 5] = [
+        (
+            "birefnet-lite",
+            "https://huggingface.co/onnx-community/BiRefNet_lite-ONNX/resolve/de15b22ba131738a16dff04aab8bdf8dc32e3ac1/onnx/model.onnx",
+            224005088,
+            "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333",
+        ),
+        (
+            "birefnet-lite-fp16",
+            "https://huggingface.co/onnx-community/BiRefNet_lite-ONNX/resolve/de15b22ba131738a16dff04aab8bdf8dc32e3ac1/onnx/model_fp16.onnx",
+            114538221,
+            "d39b897ceb16ae654c1731f3dba0cf9b368d9cae74b5a57459b455cc8bfec402",
+        ),
+        (
+            "ben2-base",
+            "https://huggingface.co/PramaLLC/BEN2/resolve/e48a20765fb421d19dcdb0bf3cc61e802ca5ec8f/BEN2_Base.onnx",
+            222932053,
+            "22cea62108ff53b7ccc20f7a008bf30494228d84b1687f29ecbe76936a998101",
+        ),
+        (
+            "u2netp",
+            "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx",
+            4574861,
+            "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8",
+        ),
+        (
+            "big-lama",
+            "https://huggingface.co/Carve/LaMa-ONNX/resolve/c3c0c9e468934d62e79c329e35d82dd09ff8c444/lama_fp32.onnx",
+            208044816,
+            "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6",
+        ),
+    ];
+
+    #[test]
+    fn the_new_entries_match_the_m7_model_table() {
+        for (id, url, size, sha256) in M7_MODELS {
+            let model = catalog().model(id).expect("the entry is in the catalog");
+            assert_eq!(model.url, url, "{id}");
+            assert_eq!(model.size_bytes, size, "{id}");
+            assert_eq!(model.sha256, sha256, "{id}");
+        }
+    }
+
+    #[test]
+    fn the_new_entries_have_their_task_family_and_a_64_hex_hash() {
+        let expected = [
+            ("birefnet-lite", Task::Background, "matting-parametric"),
+            ("birefnet-lite-fp16", Task::Background, "matting-parametric"),
+            ("ben2-base", Task::Background, "matting-parametric"),
+            ("u2netp", Task::Background, "matting-parametric"),
+            ("big-lama", Task::Inpaint, "lama"),
+        ];
+        for (id, task, family) in expected {
+            let model = catalog().model(id).expect("the entry is in the catalog");
+            assert_eq!(model.task, task, "{id}");
+            assert_eq!(model.family, family, "{id}");
+            assert_eq!(model.sha256.len(), 64, "{id}");
+            assert!(model.sha256.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)), "{id}: lower-case hex");
+            assert!(!model.is_pending(), "{id}");
+        }
+    }
+
+    #[test]
+    fn each_task_with_entries_has_exactly_one_default() {
+        for task in Task::ALL {
+            let entries: Vec<&ModelEntry> = catalog().models_for(task).collect();
+            assert!(!entries.is_empty(), "{} has no entries", task.as_str());
+            let defaults = entries.iter().filter(|model| model.default).count();
+            assert_eq!(defaults, 1, "{} has {defaults} defaults", task.as_str());
+        }
+        assert_eq!(catalog().default_for(Task::Background).expect("a default").id, "birefnet-lite");
+        assert_eq!(catalog().default_for(Task::Inpaint).expect("a default").id, "big-lama");
+    }
+
+    #[test]
+    fn the_matting_entries_carry_their_parameters() {
+        let birefnet = catalog().model("birefnet-lite").expect("entry").matting.expect("parameters");
+        assert_eq!(birefnet.input_size, 1024);
+        assert_eq!(birefnet.mean, [0.485, 0.456, 0.406]);
+        assert_eq!(birefnet.std, [0.229, 0.224, 0.225]);
+        assert_eq!(birefnet.output_index, -1, "BiRefNet reads the last, finest output");
+        assert_eq!(birefnet.activation, Activation::Sigmoid);
+
+        let ben2 = catalog().model("ben2-base").expect("entry").matting.expect("parameters");
+        assert_eq!((ben2.input_size, ben2.mean, ben2.std), (1024, [0.0; 3], [1.0; 3]));
+        assert_eq!((ben2.output_index, ben2.activation), (0, Activation::Identity));
+
+        let u2netp = catalog().model("u2netp").expect("entry").matting.expect("parameters");
+        assert_eq!((u2netp.input_size, u2netp.output_index, u2netp.activation), (320, 0, Activation::Minmax));
+
+        assert!(catalog().model("big-lama").expect("entry").matting.is_none());
+        assert!(catalog().model("ppocr-v5-mobile-det").expect("entry").matting.is_none());
+    }
+
+    #[test]
+    fn a_matting_entry_without_its_table_is_rejected() {
+        let text = CATALOG_TOML.replacen("\n[model.matting]\n", "\n[model.matting_renamed]\n", 1);
+        assert!(matches!(Catalog::parse(&text), Err(MlError::Catalog(_))));
+    }
+
+    #[test]
+    fn an_unknown_activation_is_rejected() {
+        let text = CATALOG_TOML.replacen("activation = \"sigmoid\"", "activation = \"relu\"", 1);
+        assert!(matches!(Catalog::parse(&text), Err(MlError::Catalog(_))));
+    }
+
+    #[test]
+    fn a_zero_standard_deviation_is_rejected() {
+        let text = CATALOG_TOML.replacen("std = [0.229, 0.224, 0.225]", "std = [0.0, 0.224, 0.225]", 1);
         assert!(matches!(Catalog::parse(&text), Err(MlError::Catalog(_))));
     }
 

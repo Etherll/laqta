@@ -5,6 +5,8 @@
 
 use laqta_domain::{Bitmap, PhysRect, PixelFormat};
 
+use crate::error::MlError;
+
 /// A packed 8-bit image in B, G, R order. PP-OCR was trained on BGR, so the channels stay in that order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BgrImage {
@@ -113,12 +115,128 @@ pub fn resample_nchw(src: &BgrImage, region: PhysRect, dst_width: u32, dst_heigh
     out
 }
 
+/// A packed 8-bit RGBA image with straight alpha. The matting and inpainting families read and write
+/// it in R, G, B, A order, whatever order the bitmap came in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RgbaImage {
+    width: usize,
+    height: usize,
+    data: Vec<u8>,
+}
+
+impl RgbaImage {
+    /// Copies a bitmap into R, G, B, A order.
+    pub fn from_bitmap(bitmap: &Bitmap) -> Self {
+        let mut data = bitmap.pixels().to_vec();
+        if bitmap.format() == PixelFormat::Bgra8 {
+            swap_red_blue(&mut data);
+        }
+        RgbaImage { width: bitmap.width() as usize, height: bitmap.height() as usize, data }
+    }
+
+    /// Converts back to a bitmap in `format`. The pixel count is unchanged, so this fails only if the
+    /// bitmap rejects the buffer.
+    pub fn into_bitmap(mut self, format: PixelFormat) -> Result<Bitmap, MlError> {
+        if format == PixelFormat::Bgra8 {
+            swap_red_blue(&mut self.data);
+        }
+        Bitmap::new(self.width as u32, self.height as u32, format, self.data.into()).map_err(|error| MlError::Inference(error.to_string()))
+    }
+
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    /// One channel of a pixel: 0 is red, 1 green, 2 blue and 3 alpha.
+    pub fn channel(&self, x: usize, y: usize, channel: usize) -> u8 {
+        self.data[(y * self.width + x) * 4 + channel]
+    }
+
+    pub fn set_channel(&mut self, x: usize, y: usize, channel: usize, value: u8) {
+        self.data[(y * self.width + x) * 4 + channel] = value;
+    }
+}
+
+fn swap_red_blue(data: &mut [u8]) {
+    for pixel in data.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
+}
+
+/// The source position of destination index `index`, when `dst_len` destination pixels cover
+/// `src_len` source pixels. Sample centres are aligned, so the first and last destination pixels sit
+/// half a step inside the ends of the source.
+pub fn source_coord(index: usize, src_len: usize, dst_len: usize) -> f32 {
+    (index as f32 + 0.5) * (src_len as f32 / dst_len as f32) - 0.5
+}
+
+/// Bilinear sample of a `width` x `height` grid at `(x, y)` in grid units. `at(x, y)` reads one grid
+/// value at an integer position. Positions outside the grid are clamped to its edge. The grid must
+/// not be empty.
+pub fn bilinear(width: usize, height: usize, x: f32, y: f32, at: impl Fn(usize, usize) -> f32) -> f32 {
+    let max_x = width.saturating_sub(1) as f32;
+    let max_y = height.saturating_sub(1) as f32;
+    let x = x.clamp(0.0, max_x);
+    let y = y.clamp(0.0, max_y);
+    let (x0, y0) = (x.floor(), y.floor());
+    let (x1, y1) = ((x0 + 1.0).min(max_x), (y0 + 1.0).min(max_y));
+    let (fx, fy) = (x - x0, y - y0);
+    let (x0, y0, x1, y1) = (x0 as usize, y0 as usize, x1 as usize, y1 as usize);
+    let top = at(x0, y0) * (1.0 - fx) + at(x1, y0) * fx;
+    let bottom = at(x0, y1) * (1.0 - fx) + at(x1, y1) * fx;
+    top * (1.0 - fy) + bottom * fy
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn rect(x: i32, y: i32, width: u32, height: u32) -> PhysRect {
         PhysRect { x, y, width, height }
+    }
+
+    #[test]
+    fn rgba_from_bgra_swaps_red_and_blue_both_ways() {
+        let bitmap = Bitmap::new(1, 1, PixelFormat::Bgra8, vec![10, 20, 30, 255].into()).expect("valid bitmap");
+        let image = RgbaImage::from_bitmap(&bitmap);
+        assert_eq!(image.channel(0, 0, 0), 30);
+        assert_eq!(image.channel(0, 0, 2), 10);
+        assert_eq!(image.channel(0, 0, 3), 255);
+        let back = image.into_bitmap(PixelFormat::Bgra8).expect("valid bitmap");
+        assert_eq!(back.pixels(), &[10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn rgba_from_rgba_keeps_the_order() {
+        let bitmap = Bitmap::new(2, 1, PixelFormat::Rgba8, vec![1, 2, 3, 4, 5, 6, 7, 8].into()).expect("valid bitmap");
+        let mut image = RgbaImage::from_bitmap(&bitmap);
+        assert_eq!(image.width(), 2);
+        assert_eq!(image.channel(1, 0, 2), 7);
+        image.set_channel(1, 0, 3, 99);
+        let back = image.into_bitmap(PixelFormat::Rgba8).expect("valid bitmap");
+        assert_eq!(back.pixels(), &[1, 2, 3, 4, 5, 6, 7, 99]);
+    }
+
+    #[test]
+    fn source_coord_aligns_sample_centres() {
+        // Halving 4 pixels: destination 0 covers source 0 and 1, so its centre is at 0.5.
+        assert!((source_coord(0, 4, 2) - 0.5).abs() < 1e-6);
+        assert!((source_coord(1, 4, 2) - 2.5).abs() < 1e-6);
+        // Same size maps each pixel to itself.
+        assert!((source_coord(3, 4, 4) - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn bilinear_interpolates_and_clamps_at_the_edges() {
+        let grid = [0.0_f32, 10.0];
+        let at = |x: usize, _y: usize| grid[x];
+        assert!((bilinear(2, 1, 0.5, 0.0, at) - 5.0).abs() < 1e-6);
+        assert!(bilinear(2, 1, -5.0, 0.0, at).abs() < 1e-6);
+        assert!((bilinear(2, 1, 9.0, 0.0, at) - 10.0).abs() < 1e-6);
     }
 
     #[test]
