@@ -14,6 +14,7 @@ mod settings_window;
 mod theme;
 mod toast;
 mod tray_popup;
+mod url_window;
 mod widgets;
 
 pub use runtime::{UiHandle, UiReceiver, UiServices, run};

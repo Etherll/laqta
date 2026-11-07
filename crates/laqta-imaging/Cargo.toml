@@ -20,3 +20,4 @@ image-webp.workspace = true
 gif.workspace = true
 tiff.workspace = true
 fast_image_resize.workspace = true
+qrcode.workspace = true

@@ -20,7 +20,7 @@ targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Direct non-workspace dependencies allowed per crate (normal deps only).
 [allow]
 "laqta-domain"  = ["serde", "thiserror", "bitflags", "jiff"]
-"laqta-imaging" = ["png", "rayon", "thiserror", "jpeg-encoder", "zune-jpeg", "image-webp", "gif", "tiff", "fast_image_resize"]
+"laqta-imaging" = ["png", "rayon", "thiserror", "jpeg-encoder", "zune-jpeg", "image-webp", "gif", "tiff", "fast_image_resize", "qrcode"]
 "laqta-ports"   = ["thiserror", "jiff"]
 "laqta-editor"  = ["tiny-skia", "cosmic-text", "thiserror", "rayon", "serde"]
 

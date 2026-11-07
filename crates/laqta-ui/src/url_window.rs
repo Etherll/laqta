@@ -1,0 +1,73 @@
+//! The after-upload window and the QR code view (after-upload tasks `ShowAfterUploadWindow`,
+//! `ShowQRCode`).
+
+use std::sync::Arc;
+
+use gpui::{
+    App, AppContext as _, ClipboardItem, Context, IntoElement, ParentElement as _, Render, RenderImage, Styled as _, TitlebarOptions,
+    Window, WindowBounds, WindowOptions, div, img, px, size,
+};
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::{ActiveTheme as _, Root};
+use smallvec::SmallVec;
+
+use crate::runtime::UiState;
+use crate::widgets;
+
+fn qr_image(url: &str) -> Option<Arc<RenderImage>> {
+    let bmp = laqta_imaging::qr::qr_encode(url, 6).ok()?;
+    let mut bytes = bmp.pixels().to_vec();
+    for p in bytes.as_chunks_mut::<4>().0 {
+        p.swap(0, 2);
+    }
+    let buffer = image::RgbaImage::from_raw(bmp.width(), bmp.height(), bytes)?;
+    Some(Arc::new(RenderImage::new(SmallVec::<[image::Frame; 1]>::from_elem(image::Frame::new(buffer), 1))))
+}
+
+pub(crate) fn open(url: String, qr: bool, cx: &mut App) {
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::centered(size(px(520.), px(if qr { 560. } else { 200. })), cx)),
+        titlebar: Some(TitlebarOptions { title: Some(if qr { "QR code" } else { "Upload finished" }.into()), ..Default::default() }),
+        app_id: Some("laqta".into()),
+        focus: true,
+        ..Default::default()
+    };
+    let result = cx.open_window(options, |window, cx| {
+        let view = cx.new(|_| UrlWindow { qr: if qr { qr_image(&url) } else { None }, url });
+        cx.new(|cx| Root::new(view, window, cx))
+    });
+    if let Err(e) = result {
+        tracing::warn!("url window failed: {e:#}");
+    }
+}
+
+struct UrlWindow {
+    url: String,
+    qr: Option<Arc<RenderImage>>,
+}
+
+impl Render for UrlWindow {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let shell = cx.global::<UiState>().services.shell.clone();
+        let (u1, u2) = (self.url.clone(), self.url.clone());
+        let mut body = div().flex_1().flex().flex_col().gap(px(10.)).p(px(14.)).items_center();
+        if let Some(q) = &self.qr {
+            body = body.child(img(q.clone()).w(px(360.)).h(px(360.)));
+        }
+        body = body.child(div().p(px(6.)).rounded(px(4.)).bg(cx.theme().secondary).w_full().truncate().child(self.url.clone()));
+        let footer = div()
+            .flex()
+            .flex_row()
+            .gap(px(8.))
+            .p(px(12.))
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(widgets::muted("", cx).flex_1())
+            .child(Button::new("copy").label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(u1.clone()))))
+            .child(Button::new("open").label("Open").primary().on_click(move |_, _, _| {
+                let _ = shell.open_url(&u2);
+            }))
+            .child(Button::new("close").label("Close").ghost().on_click(|_, window, _| window.remove_window()));
+        widgets::page(cx).child(body).child(footer)
+    }
+}

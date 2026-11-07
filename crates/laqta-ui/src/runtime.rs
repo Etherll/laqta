@@ -195,6 +195,10 @@ pub fn run(services: UiServices, rx: UiReceiver) {
         cx.spawn(async move |cx: &mut AsyncApp| {
             while let Ok(event) = events.recv().await {
                 let event: TaskEvent = event;
+                if let TaskEvent::ShowUrl { url, qr, .. } = &event {
+                    let (url, qr) = (url.clone(), *qr);
+                    cx.update(|cx| crate::url_window::open(url, qr, cx));
+                }
                 cx.update(|cx| {
                     tasks.update(cx, |list, cx| {
                         list.apply(&event);

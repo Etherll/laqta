@@ -1,0 +1,45 @@
+//! QR code encoding (after-upload "Show QR code", the QR tool).
+
+use laqta_domain::{Bitmap, PixelFormat};
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("qr: {0}")]
+pub struct QrError(pub String);
+
+/// Renders `text` as a black-on-white QR code, `module` pixels per module, with a 4-module quiet zone.
+pub fn qr_encode(text: &str, module: u32) -> Result<Bitmap, QrError> {
+    let code = qrcode::QrCode::new(text.as_bytes()).map_err(|e| QrError(e.to_string()))?;
+    let n = code.width() as u32;
+    let module = module.max(1);
+    let quiet = 4;
+    let size = (n + 2 * quiet) * module;
+    let colors = code.to_colors();
+    let mut px = vec![255u8; (size * size * 4) as usize];
+    for (i, c) in colors.iter().enumerate() {
+        if *c != qrcode::Color::Dark {
+            continue;
+        }
+        let (mx, my) = (i as u32 % n + quiet, i as u32 / n + quiet);
+        for y in my * module..(my + 1) * module {
+            for x in mx * module..(mx + 1) * module {
+                let o = ((y * size + x) * 4) as usize;
+                px[o..o + 3].copy_from_slice(&[0, 0, 0]);
+            }
+        }
+    }
+    Bitmap::new(size, size, PixelFormat::Rgba8, px.into()).map_err(|e| QrError(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn encodes_with_quiet_zone() {
+        let b = qr_encode("https://example.com/a", 3).unwrap();
+        assert_eq!(b.width(), b.height());
+        assert_eq!(&b.pixels()[0..4], &[255, 255, 255, 255]); // quiet zone is white
+        assert!(b.pixels().as_chunks::<4>().0.iter().any(|p| p[0] == 0));
+    }
+}
