@@ -14,6 +14,7 @@ laqta-domain.workspace = true
 laqta-ports.workspace = true
 blocking.workspace = true
 arboard.workspace = true
+wasapi.workspace = true
 tracing.workspace = true
 windows = { workspace = true, features = [
     "Win32_Devices_Display",

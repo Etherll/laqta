@@ -25,6 +25,7 @@ laqta-ipc.workspace = true
 laqta-ui.workspace = true
 laqta-library.workspace = true
 laqta-upload.workspace = true
+laqta-media.workspace = true
 laqta-http.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true

@@ -25,6 +25,7 @@ async-io.workspace = true
 swayipc.workspace = true
 atspi.workspace = true
 oo7.workspace = true
+pipewire.workspace = true
 
 [dev-dependencies]
 laqta-ports.workspace = true
