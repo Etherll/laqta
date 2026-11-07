@@ -606,3 +606,18 @@ impl crate::Media for FakeMedia {
         Box::pin(async { Ok(crate::MediaInfo { duration_secs: 3.0, width: 640, height: 480, fps: 30.0, video_codec: "h264".into(), audio_codec: None, size_bytes: 1000 }) })
     }
 }
+
+/// Returns the image it was given (or a fixed one), counting calls.
+#[derive(Debug, Default)]
+pub struct FakeEditorHost {
+    pub calls: Mutex<u32>,
+    pub result: Mutex<Option<Result<Bitmap, PortError>>>,
+}
+
+impl crate::EditorHost for FakeEditorHost {
+    fn edit(&self, image: Bitmap) -> BoxFuture<'_, Result<Bitmap, PortError>> {
+        *self.calls.lock().unwrap() += 1;
+        let r = self.result.lock().unwrap().clone().unwrap_or(Ok(image));
+        Box::pin(async move { r })
+    }
+}

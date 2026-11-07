@@ -20,7 +20,7 @@ pub use recording::{
     AudioInput, FrameSource, Media, MediaInfo, OsScreenRef, PcmFormat, PcmSource, RecordingHandle, RecordingInput, ScreenStream, TranscodeSpec,
     VideoSource,
 };
-pub use overlay::{HoverSource, InputCallback, Overlay, RegionView, ToolHost, ToolWindow};
+pub use overlay::{EditorHost, HoverSource, InputCallback, Overlay, RegionView, ToolHost, ToolWindow};
 pub use runtime::{Clock, Spawner};
 pub use screen::{CaptureRequest, ScreenSource};
 pub use task::{AppError, TaskEvent, TaskId, TaskStatus};

@@ -25,6 +25,7 @@ pub(crate) enum UiCommand {
     CloseOverlay,
     Toast(Toast),
     Open(ToolWindow),
+    Edit { image: laqta_domain::Bitmap, reply: futures_channel::oneshot::Sender<Result<laqta_domain::Bitmap, PortError>> },
     Prompt { title: String, kind: crate::prompt_window::PromptKind, reply: crate::prompt_window::Reply },
     Quit,
 }
@@ -191,6 +192,19 @@ impl laqta_ports::Prompt for UiHandle {
     }
 }
 
+impl laqta_ports::EditorHost for UiHandle {
+    fn edit(&self, image: laqta_domain::Bitmap) -> laqta_ports::BoxFuture<'_, Result<laqta_domain::Bitmap, PortError>> {
+        let (tx, rx) = futures_channel::oneshot::channel();
+        let sent = self.tx.unbounded_send(UiCommand::Edit { image, reply: tx });
+        Box::pin(async move {
+            if sent.is_err() {
+                return Err(PortError::Unsupported("the UI is not running".into()));
+            }
+            rx.await.unwrap_or(Err(PortError::Cancelled))
+        })
+    }
+}
+
 impl ToolHost for UiHandle {
     fn open(&self, window: ToolWindow) -> Result<(), PortError> {
         self.send(UiCommand::Open(window))
@@ -301,6 +315,8 @@ fn handle(cmd: UiCommand, cx: &mut App) {
         UiCommand::Open(ToolWindow::TrayMenu) => tray_popup::toggle(cx),
         UiCommand::Open(ToolWindow::ActionsToolbar) => crate::actions_toolbar::toggle(cx),
         UiCommand::Prompt { title, kind, reply } => crate::prompt_window::open(title, kind, reply, cx),
+        UiCommand::Edit { image, reply } => crate::editor_window::open(Some(image), Some(reply), None, cx),
+        UiCommand::Open(ToolWindow::Editor(path)) => crate::editor_window::open_file(path, cx),
         UiCommand::Open(other) => tracing::warn!(?other, "no window for this tool yet"),
         UiCommand::Quit => {
             overlay::close(cx);

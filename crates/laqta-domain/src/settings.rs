@@ -15,6 +15,8 @@ pub struct Settings {
     pub hosts: Vec<crate::hosts::HostAccount>,
     /// External programs for `PERFORM_ACTIONS`.
     pub actions: Vec<crate::workflow::ExternalAction>,
+    /// Image effect presets (ShareX's effect presets; `.sxie` import/export).
+    pub effect_presets: Vec<crate::effects::Preset>,
     pub version: u32,
     pub screenshots_dir: PathBuf,
     pub defaults: TaskSettings,
@@ -59,6 +61,7 @@ impl Settings {
         Settings {
             hosts: Vec::new(),
             actions: Vec::new(),
+            effect_presets: Vec::new(),
             version: SETTINGS_VERSION,
             screenshots_dir: pictures_dir.join("Laqta"),
             defaults: TaskSettings::default(),

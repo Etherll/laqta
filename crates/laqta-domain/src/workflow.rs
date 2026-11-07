@@ -188,6 +188,10 @@ impl Default for NamingSettings {
 #[serde(default)]
 pub struct TaskSettings {
     pub after_capture: AfterCaptureTasks,
+    pub beautify: BeautifySettings,
+    /// The effect preset `ADD_IMAGE_EFFECTS` applies (by name, from `Settings.effect_presets`);
+    /// empty = the first preset.
+    pub effect_preset: String,
     pub upload: UploadSettings,
     pub recording: crate::record::RecordingSettings,
     pub after_upload: AfterUploadTasks,
@@ -205,6 +209,8 @@ impl Default for TaskSettings {
             after_capture: AfterCaptureTasks::SAVE_IMAGE_TO_FILE | AfterCaptureTasks::COPY_IMAGE_TO_CLIPBOARD,
             after_upload: AfterUploadTasks::COPY_URL_TO_CLIPBOARD,
             upload: UploadSettings::default(),
+            beautify: BeautifySettings::default(),
+            effect_preset: String::new(),
             recording: crate::record::RecordingSettings::default(),
             general: GeneralSettings::default(),
             image: ImageSettings::default(),
@@ -289,6 +295,32 @@ mod action_tests {
     }
 }
 
+/// The beautifier (`AfterCaptureTasks::BEAUTIFY_IMAGE`): padding, background, rounded corners, shadow.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct BeautifySettings {
+    pub padding: u32,
+    pub background: crate::color::Rgba,
+    /// A second colour makes a diagonal gradient.
+    pub background_end: Option<crate::color::Rgba>,
+    pub corner_radius: u32,
+    pub shadow_size: u32,
+    pub shadow_opacity: f32,
+}
+
+impl Default for BeautifySettings {
+    fn default() -> Self {
+        BeautifySettings {
+            padding: 64,
+            background: crate::color::Rgba::rgb(0x6a, 0x5a, 0xcd),
+            background_end: Some(crate::color::Rgba::rgb(0xff, 0x8c, 0x69)),
+            corner_radius: 12,
+            shadow_size: 24,
+            shadow_opacity: 0.5,
+        }
+    }
+}
+
 /// Where uploads go and how results are reported (ShareX's destinations and upload settings).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -326,6 +358,8 @@ impl Default for UploadSettings {
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TaskSettingsPatch {
     pub after_capture: Option<AfterCaptureTasks>,
+    pub beautify: Option<BeautifySettings>,
+    pub effect_preset: Option<String>,
     pub upload: Option<UploadSettings>,
     pub recording: Option<crate::record::RecordingSettings>,
     pub after_upload: Option<AfterUploadTasks>,
@@ -343,6 +377,8 @@ impl TaskSettings {
             after_capture: patch.after_capture.unwrap_or(defaults.after_capture),
             after_upload: patch.after_upload.unwrap_or(defaults.after_upload),
             upload: patch.upload.clone().unwrap_or_else(|| defaults.upload.clone()),
+            beautify: patch.beautify.clone().unwrap_or_else(|| defaults.beautify.clone()),
+            effect_preset: patch.effect_preset.clone().unwrap_or_else(|| defaults.effect_preset.clone()),
             recording: patch.recording.clone().unwrap_or_else(|| defaults.recording.clone()),
             general: patch.general.clone().unwrap_or_else(|| defaults.general.clone()),
             image: patch.image.clone().unwrap_or_else(|| defaults.image.clone()),
@@ -364,6 +400,8 @@ impl TaskSettingsPatch {
             (self.after_capture.is_some(), "after_capture"),
             (self.after_upload.is_some(), "after_upload"),
             (self.upload.is_some(), "upload"),
+            (self.beautify.is_some(), "beautify"),
+            (self.effect_preset.is_some(), "effects"),
             (self.recording.is_some(), "recording"),
             (self.general.is_some(), "general"),
             (self.image.is_some(), "image"),

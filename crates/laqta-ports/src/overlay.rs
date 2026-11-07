@@ -57,8 +57,18 @@ pub enum ToolWindow {
     TrayMenu,
     /// The floating actions toolbar (`Action::ToggleActionsToolbar`).
     ActionsToolbar,
+    /// The effects window with live preview (`Action::ImageEffects`), optionally on a file.
+    Effects(Option<std::path::PathBuf>),
+    /// The image editor on a file (`Action::ImageEditor` with no capture).
+    Editor(Option<std::path::PathBuf>),
 }
 
 pub trait ToolHost: Send + Sync {
     fn open(&self, window: ToolWindow) -> Result<(), PortError>;
+}
+
+/// The annotation editor window (`AfterCaptureTasks::ANNOTATE_IMAGE`): returns the edited image when
+/// the user continues, `Cancelled` when they close it.
+pub trait EditorHost: Send + Sync {
+    fn edit(&self, image: laqta_domain::Bitmap) -> crate::BoxFuture<'_, Result<laqta_domain::Bitmap, PortError>>;
 }

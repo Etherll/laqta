@@ -31,3 +31,39 @@ pub fn host_info() -> HostInfo {
     HostInfo { user_name: user.clone(), user_login: user, computer_name: computer }
 }
 
+
+/// Until the platform's recording stream and the FFmpeg adapter are wired (M4).
+#[derive(Debug)]
+pub struct NoRecording;
+
+impl laqta_ports::ScreenStream for NoRecording {
+    fn open(
+        &self,
+        _area: laqta_domain::geometry::PhysRect,
+        _show_cursor: bool,
+        _fps: u32,
+        _audio: &[laqta_domain::record::AudioDevice],
+    ) -> laqta_ports::BoxFuture<'_, Result<laqta_ports::RecordingInput, laqta_ports::PortError>> {
+        Box::pin(async { Err(laqta_ports::PortError::Unsupported("screen recording".into())) })
+    }
+    fn audio_devices(&self) -> laqta_ports::BoxFuture<'_, Result<Vec<laqta_domain::record::AudioDevice>, laqta_ports::PortError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
+impl laqta_ports::Media for NoRecording {
+    fn start(
+        &self,
+        _input: laqta_ports::RecordingInput,
+        _spec: laqta_domain::record::RecordSpec,
+        _output: std::path::PathBuf,
+    ) -> laqta_ports::BoxFuture<'_, Result<Box<dyn laqta_ports::RecordingHandle>, laqta_ports::PortError>> {
+        Box::pin(async { Err(laqta_ports::PortError::Unsupported("FFmpeg".into())) })
+    }
+    fn transcode(&self, _i: &std::path::Path, _o: &std::path::Path, _s: laqta_ports::TranscodeSpec) -> laqta_ports::BoxFuture<'_, Result<(), laqta_ports::PortError>> {
+        Box::pin(async { Err(laqta_ports::PortError::Unsupported("FFmpeg".into())) })
+    }
+    fn probe(&self, _i: &std::path::Path) -> laqta_ports::BoxFuture<'_, Result<laqta_ports::MediaInfo, laqta_ports::PortError>> {
+        Box::pin(async { Err(laqta_ports::PortError::Unsupported("FFmpeg".into())) })
+    }
+}
