@@ -184,6 +184,7 @@ impl App {
             show_cursor: ts.recording.show_cursor,
             audio: devices,
             custom_args: ts.recording.custom_args.clone(),
+            camera: ts.recording.camera.enabled.then(|| ts.recording.camera.clone()),
         };
         let handle = self.ports.media.start(input, spec, output.clone()).await.map_err(AppError::from)?;
         self.emit(TaskEvent::RecordingStarted { id, area: rect });

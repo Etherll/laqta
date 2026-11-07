@@ -134,6 +134,8 @@ struct RecordingInputs {
     microphone: Entity<InputState>,
     args: Entity<InputState>,
     ffmpeg: Entity<InputState>,
+    camera_device: Entity<InputState>,
+    camera_size: Entity<InputState>,
 }
 
 fn text_input(value: impl Into<SharedString>, window: &mut Window, cx: &mut Context<SettingsWindow>) -> Entity<InputState> {
@@ -187,6 +189,8 @@ impl SettingsWindow {
                 microphone: text_input(d.recording.microphone.clone().unwrap_or_default(), window, cx),
                 args: text_input(d.recording.custom_args.clone(), window, cx),
                 ffmpeg: text_input(d.recording.ffmpeg_path.clone(), window, cx),
+                camera_device: text_input(d.recording.camera.device.clone(), window, cx),
+                camera_size: text_input(d.recording.camera.size_percent.to_string(), window, cx),
             },
             auto_interval: text_input((draft.auto_capture.interval_ms / 1000).to_string(), window, cx),
             auto_count: text_input(draft.auto_capture.count.to_string(), window, cx),
@@ -279,6 +283,8 @@ impl SettingsWindow {
             r.microphone = (!mic.is_empty()).then_some(mic);
             r.custom_args = Self::value(&self.rec.args, cx);
             r.ffmpeg_path = Self::value(&self.rec.ffmpeg, cx);
+            r.camera.device = Self::value(&self.rec.camera_device, cx);
+            r.camera.size_percent = num(&self.rec.camera_size, "Camera size")?.clamp(5, 100) as u8;
         }
         {
             let o = &mut self.draft.defaults.capture.scrolling;
@@ -580,6 +586,57 @@ impl SettingsWindow {
             .child(widgets::row("Stop after (s, 0 = off)", Input::new(&self.rec.duration), cx))
             .child(widgets::row("Extra FFmpeg arguments", Input::new(&self.rec.args), cx))
             .child(widgets::row("FFmpeg path (empty = find or download)", Input::new(&self.rec.ffmpeg), cx))
+            .child(widgets::row("Recorder", self.backend_buttons(cx), cx))
+            .child(div().h(px(8.)))
+            .child(check("rec-camera", "Show the camera over the recording", r.camera.enabled, |r, c| r.camera.enabled = c, cx))
+            .child(widgets::row("Camera (device; empty = first camera on Linux)", Input::new(&self.rec.camera_device), cx))
+            .child(widgets::row("Camera shape", self.camera_buttons(cx), cx))
+            .child(widgets::row("Camera size (% of width)", Input::new(&self.rec.camera_size), cx))
+    }
+
+    fn backend_buttons(&self, cx: &mut Context<Self>) -> gpui::Div {
+        use laqta_domain::record::RecorderBackend as B;
+        let mut row = div().flex().gap(px(4.));
+        for (b, label) in [(B::Ffmpeg, "FFmpeg"), (B::Native, "Native (Windows)")] {
+            row = row.child(
+                Button::new(SharedString::from(format!("backend-{b:?}")))
+                    .label(label)
+                    .small()
+                    .selected(self.draft.defaults.recording.backend == b)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.draft.defaults.recording.backend = b;
+                        cx.notify();
+                    })),
+            );
+        }
+        row
+    }
+
+    fn camera_buttons(&self, cx: &mut Context<Self>) -> gpui::Div {
+        use laqta_domain::record::{CameraShape as S, Corner as C};
+        let cam = &self.draft.defaults.recording.camera;
+        let mut row = div().flex().flex_wrap().gap(px(4.));
+        for (s, label) in [(S::Circle, "Circle"), (S::RoundedRectangle, "Rounded"), (S::Rectangle, "Rectangle")] {
+            row = row.child(
+                Button::new(SharedString::from(format!("camshape-{s:?}"))).label(label).small().selected(cam.shape == s).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.draft.defaults.recording.camera.shape = s;
+                        cx.notify();
+                    }),
+                ),
+            );
+        }
+        for (c, label) in [(C::TopLeft, "↖"), (C::TopRight, "↗"), (C::BottomLeft, "↙"), (C::BottomRight, "↘")] {
+            row = row.child(
+                Button::new(SharedString::from(format!("camcorner-{c:?}"))).label(label).small().selected(cam.corner == c).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.draft.defaults.recording.camera.corner = c;
+                        cx.notify();
+                    }),
+                ),
+            );
+        }
+        row
     }
 
     fn automation(&self, cx: &mut Context<Self>) -> gpui::Div {

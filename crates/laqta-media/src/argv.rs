@@ -88,11 +88,19 @@ pub fn record_args_on(
     for input in audio {
         audio_input(&mut a, host, input);
     }
-    let filters: Vec<&str> = input_filters(video, capture).into_iter().chain(codec_filters(codec)).collect();
-    if !filters.is_empty() {
-        a.opt("-vf", filters.join(","));
+    let camera = spec.camera.as_ref().filter(|c| c.enabled && camera_device(host, c).is_some());
+    if let Some(cam) = camera {
+        camera_input(&mut a, host, cam);
+        let index = 1 + audio.len();
+        a.flag(&["-filter_complex"]).push(camera_graph(spec, cam, index, &input_filters(video, capture), &codec_filters(codec)));
+        a.flag(&["-map", "[vout]"]);
+    } else {
+        let filters: Vec<&str> = input_filters(video, capture).into_iter().chain(codec_filters(codec)).collect();
+        if !filters.is_empty() {
+            a.opt("-vf", filters.join(","));
+        }
+        a.flag(&["-map", "0:v"]);
     }
-    a.flag(&["-map", "0:v"]);
     map_audio(&mut a, audio.len(), stdin_fed);
     encoder(&mut a, codec, spec.quality);
     if !audio.is_empty() {
@@ -380,6 +388,57 @@ fn codec_filters(codec: VideoCodec) -> Vec<&'static str> {
     if codec == VideoCodec::Vaapi { vec!["format=nv12", "hwupload"] } else { Vec::new() }
 }
 
+/// The camera device FFmpeg opens: the setting, or the first V4L2 device on Linux. Windows needs a
+/// DirectShow name, so an empty setting there means no camera.
+fn camera_device(host: Host, cam: &laqta_domain::record::CameraOverlay) -> Option<String> {
+    match (host, cam.device.trim()) {
+        (Host::Linux, "") => Some("/dev/video0".into()),
+        (Host::Windows, "") => None,
+        (_, name) => Some(name.to_owned()),
+    }
+}
+
+/// The camera input, after the screen and the audio inputs (so audio keeps indices 1..).
+fn camera_input(a: &mut Argv, host: Host, cam: &laqta_domain::record::CameraOverlay) {
+    let device = camera_device(host, cam).unwrap_or_default();
+    a.flag(&["-thread_queue_size", "512"]);
+    match host {
+        Host::Linux => {
+            a.flag(&["-f", "v4l2", "-i"]).push(device);
+        }
+        Host::Windows => {
+            a.flag(&["-f", "dshow", "-i"]).push(format!("video={device}"));
+        }
+    }
+}
+
+/// The video graph with the camera: the screen through its input filters, the camera scaled to
+/// `size_percent` of the recording's width and masked to its shape, overlaid at the corner, then the
+/// codec's filters. The result is `[vout]`.
+fn camera_graph(spec: &RecordSpec, cam: &laqta_domain::record::CameraOverlay, index: usize, input: &[&str], codec: &[&str]) -> String {
+    use laqta_domain::record::{CameraShape, Corner};
+    let width = (spec.area.width * u32::from(cam.size_percent.clamp(5, 100)) / 100).max(16) & !1;
+    let base = if input.is_empty() { "null".to_owned() } else { input.join(",") };
+    let shape = match cam.shape {
+        CameraShape::Circle => format!(
+            "crop='min(iw,ih)':'min(iw,ih)',scale={width}:{width},format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(hypot(X-W/2,Y-H/2),W/2),255,0)'"
+        ),
+        CameraShape::RoundedRectangle => format!(
+            "scale={width}:-2,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(gt(abs(X-W/2),W/2-W/8)*gt(abs(Y-H/2),H/2-W/8)*gt(hypot(abs(X-W/2)-(W/2-W/8),abs(Y-H/2)-(H/2-W/8)),W/8),0,255)'"
+        ),
+        CameraShape::Rectangle => format!("scale={width}:-2"),
+    };
+    let m = cam.margin;
+    let (x, y) = match cam.corner {
+        Corner::TopLeft => (format!("{m}"), format!("{m}")),
+        Corner::TopRight => (format!("main_w-overlay_w-{m}"), format!("{m}")),
+        Corner::BottomLeft => (format!("{m}"), format!("main_h-overlay_h-{m}")),
+        Corner::BottomRight => (format!("main_w-overlay_w-{m}"), format!("main_h-overlay_h-{m}")),
+    };
+    let tail = if codec.is_empty() { String::new() } else { format!(",{}", codec.join(",")) };
+    format!("[0:v]{base}[base];[{index}:v]{shape}[cam];[base][cam]overlay={x}:{y}:shortest=1{tail}[vout]")
+}
+
 /// Maps the video, then the audio: one input as is, several through `amix`. A stdin input ends
 /// `amix` with the shortest input, so a stopped PCM stream ends the file.
 fn map_audio(a: &mut Argv, count: usize, stdin_fed: bool) {
@@ -559,6 +618,7 @@ mod tests {
             show_cursor: true,
             audio: Vec::new(),
             custom_args: String::new(),
+            camera: None,
         }
     }
 
@@ -607,6 +667,31 @@ mod tests {
 
     fn quality_of(codec: VideoCodec, quality: Quality) -> Vec<String> {
         record(Host::Linux, WindowsCapture::Ddagrab, &spec(codec, quality), &x11_target(), &[])
+    }
+
+    #[test]
+    fn camera_overlay_adds_an_input_and_a_graph() {
+        use laqta_domain::record::{CameraOverlay, CameraShape, Corner};
+        let mut s = spec(VideoCodec::X264, Quality::Crf(23));
+        s.camera = Some(CameraOverlay {
+            enabled: true,
+            device: String::new(),
+            shape: CameraShape::Circle,
+            corner: Corner::BottomRight,
+            size_percent: 25,
+            margin: 16,
+        });
+        let video = VideoInputDesc::RawFrames { width: 64, height: 48, fps: 30 };
+        let args = record_args_on(Host::Linux, WindowsCapture::Ddagrab, &s, &video, &[], Path::new("/o.mkv"));
+        assert!(seq(&args, &["-thread_queue_size", "512", "-f", "v4l2", "-i", "/dev/video0"]));
+        let graph = args.iter().skip_while(|a| *a != "-filter_complex").nth(1).expect("a filter graph");
+        assert!(graph.starts_with("[0:v]null[base];[1:v]crop="), "{graph}");
+        assert!(graph.ends_with("[base][cam]overlay=main_w-overlay_w-16:main_h-overlay_h-16:shortest=1[vout]"), "{graph}");
+        assert!(seq(&args, &["-map", "[vout]"]));
+        assert!(!args.iter().any(|a| a == "-vf"));
+        // Windows needs a device name; without one there is no camera.
+        let none = record_args_on(Host::Windows, WindowsCapture::Ddagrab, &s, &video, &[], Path::new("/o.mkv"));
+        assert!(!none.iter().any(|a| a == "dshow" || a.starts_with("video=")));
     }
 
     #[test]

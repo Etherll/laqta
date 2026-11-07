@@ -207,6 +207,8 @@ pub struct RecordSpec {
     pub show_cursor: bool,
     pub audio: Vec<AudioDevice>,
     pub custom_args: String,
+    /// The camera picture over the recording (M7 D9); `None` = off.
+    pub camera: Option<CameraOverlay>,
 }
 
 #[cfg(test)]

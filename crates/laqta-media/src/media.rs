@@ -241,6 +241,7 @@ mod tests {
             show_cursor: true,
             audio: Vec::new(),
             custom_args: String::new(),
+            camera: None,
         }
     }
 
