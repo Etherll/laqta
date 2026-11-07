@@ -68,6 +68,7 @@ fn match_displays(frames: &[Frame], cx: &App) -> Vec<Option<Bounds<Pixels>>> {
     out
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn is_wayland() -> bool {
     cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
 }
