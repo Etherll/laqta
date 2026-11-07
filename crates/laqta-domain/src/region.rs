@@ -71,6 +71,17 @@ pub enum RegionInput {
     PointerUp { x: i32, y: i32, button: Button },
     Key { key: RegionKey, mods: KeyMods },
     TargetsLoaded(Vec<HoverTarget>),
+    /// A button on the overlay toolbar.
+    Command(RegionCommand),
+}
+
+/// The overlay toolbar's buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegionCommand {
+    Confirm,
+    Cancel,
+    Fullscreen,
+    ActiveMonitor,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -292,6 +303,10 @@ impl RegionState {
             RegionInput::PointerDown { x, y, button } => self.pointer_down((x, y), button),
             RegionInput::PointerUp { x, y, button } => self.pointer_up((x, y), button),
             RegionInput::Key { key, mods } => self.key(key, mods),
+            RegionInput::Command(RegionCommand::Confirm) => self.confirm(),
+            RegionInput::Command(RegionCommand::Cancel) => self.finish(RegionOutcome::Cancelled),
+            RegionInput::Command(RegionCommand::Fullscreen) => self.finish(RegionOutcome::Fullscreen),
+            RegionInput::Command(RegionCommand::ActiveMonitor) => self.finish(RegionOutcome::ActiveMonitor),
             // `handle` routes this variant to `load_targets`.
             RegionInput::TargetsLoaded(_) => {}
         }
@@ -1108,5 +1123,39 @@ mod tests {
         assert_eq!(state.phase(), &Phase::Idle);
         assert_eq!(state.active_region(), Some(rect(100, 100, 100, 100)));
         assert_eq!(state.outcome(), None);
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+
+    fn state() -> RegionState {
+        RegionState::new(RegionConfig {
+            bounds: PhysRect { x: 0, y: 0, width: 100, height: 100 },
+            multi_region: false,
+            snap_to_targets: true,
+            min_size: 2,
+            magnifier_pixels: 5,
+            info_text: String::new(),
+            right_click: Default::default(),
+            middle_click: Default::default(),
+        })
+    }
+
+    #[test]
+    fn toolbar_commands_finish() {
+        for (cmd, out) in [
+            (RegionCommand::Cancel, RegionOutcome::Cancelled),
+            (RegionCommand::Fullscreen, RegionOutcome::Fullscreen),
+            (RegionCommand::ActiveMonitor, RegionOutcome::ActiveMonitor),
+        ] {
+            let mut s = state();
+            s.handle(RegionInput::Command(cmd));
+            assert_eq!(s.outcome(), Some(&out));
+        }
+        let mut s = state();
+        s.handle(RegionInput::Command(RegionCommand::Confirm));
+        assert_eq!(s.outcome(), None, "nothing selected yet");
     }
 }
