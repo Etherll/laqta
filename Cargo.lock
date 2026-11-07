@@ -4718,6 +4718,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "laqta-nmh"
+version = "0.1.0"
+dependencies = [
+ "laqta-ipc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "laqta-platform-linux"
 version = "0.1.0"
 dependencies = [

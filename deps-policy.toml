@@ -18,7 +18,8 @@ targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 "laqta-media"    = ["laqta-ports", "laqta-domain", "laqta-http"]
 "laqta-import"   = ["laqta-domain"]
 "laqta-ml"       = ["laqta-ports", "laqta-domain", "laqta-imaging", "laqta-http"]
-"laqta"          = ["*"]                                                # apps/laqta
+"laqta"          = ["*"]
+"laqta-nmh"      = ["laqta-ipc"]                                                # apps/laqta
 
 # Direct non-workspace dependencies allowed per crate (normal deps only).
 [allow]

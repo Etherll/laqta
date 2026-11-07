@@ -1,0 +1,19 @@
+[package]
+name = "laqta-nmh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "laqta-nmh"
+path = "src/main.rs"
+
+[dependencies]
+laqta-ipc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
