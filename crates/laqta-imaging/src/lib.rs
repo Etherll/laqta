@@ -11,6 +11,7 @@ pub mod qr;
 pub mod stitch;
 mod ops;
 pub mod png;
+pub mod tools;
 
 pub use codecs::{CodecError, CodecExtension, Codecs, EncodeOptions, sniff};
 pub use compose::compose_monitors;
