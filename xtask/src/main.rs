@@ -140,10 +140,10 @@ fn check_deps(root: &Path, offline: bool) -> Result<Vec<Violation>, String> {
         }
         // placement
         for d in &normal {
-            if let Some(places) = policy.placement.get(&d.name) {
-                if !places.contains(&name) {
-                    out.insert(Violation { kind: "placement", message: format!("{name} -> {}: {} is allowed only in {places:?}", d.name, d.name) });
-                }
+            if let Some(places) = policy.placement.get(&d.name)
+                && !places.contains(&name)
+            {
+                out.insert(Violation { kind: "placement", message: format!("{name} -> {}: {} is allowed only in {places:?}", d.name, d.name) });
             }
         }
     }
