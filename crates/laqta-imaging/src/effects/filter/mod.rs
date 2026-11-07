@@ -18,6 +18,7 @@ mod tone;
 mod x2;
 // ---- end X2 ----
 // ---- X3 ----
+mod x3;
 // ---- end X3 ----
 // ---- X4 ----
 // ---- end X4 ----
@@ -123,6 +124,48 @@ pub(super) fn apply(image: &Bitmap, effect: &Filter, _cx: &EffectContext<'_>) ->
         Filter::FilmGrain { amount, seed } => x2::film_grain(&src, amount, seed),
         // ---- end X2 ----
         // ---- X3 ----
+        Filter::FilmStripFrame { width, strip, hole } => x3::film_strip_frame(&src, width, strip, hole)?,
+        Filter::FrostedGlass { radius, opacity, seed } => x3::frosted_glass(&src, radius, opacity, seed),
+        Filter::FrostedGlassIceEdges { radius, edge, ice, seed } => x3::frosted_glass_ice_edges(&src, radius, edge, ice, seed),
+        Filter::FrostIceBorder { width, ice, base, seed } => x3::frost_ice_border(&src, width, ice, base, seed)?,
+        Filter::GhostTrail { copies, offset_x, offset_y, opacity } => x3::ghost_trail(&src, copies, (offset_x, offset_y), opacity),
+        Filter::Glare { threshold, length, strength } => x3::glare(&src, threshold, length, strength),
+        Filter::GlitchShift { bands, max_shift, seed } => x3::glitch_shift(&src, bands, max_shift, seed),
+        Filter::GoldenBorder { width, color } => x3::golden_border(&src, width, color)?,
+        Filter::GradientFadeBorder { width, color } => x3::gradient_fade_border(&src, width, color)?,
+        Filter::Halation { threshold, radius, strength } => x3::halation(&src, threshold, radius, strength),
+        Filter::HeatHazeRefraction { amplitude, wavelength } => x3::heat_haze(&src, amplitude, wavelength),
+        Filter::HeatMap => x3::heat_map(&src),
+        Filter::HexagonalPixelate { size } => x3::hexagonal_pixelate(&src, size),
+        Filter::HologramScan { line_spacing, strength, tint } => x3::hologram_scan(&src, line_spacing, strength, tint),
+        Filter::HolographicFoilShimmer { strength, period } => x3::holographic_foil(&src, strength, period),
+        Filter::InfraredFalseColor { strength } => x3::infrared_false_color(&src, strength),
+        Filter::InkSplatterDrips { count, size, color, seed } => x3::ink_splatter(&src, count, size, color, seed),
+        Filter::InnerShadow { opacity, size, color, offset_x, offset_y } => x3::inner_shadow(&src, opacity, size, color, (offset_x, offset_y)),
+        Filter::JpegArtifact { quality } => x3::jpeg_artifact(&src, quality),
+        Filter::LavaMoltenBorder { width, hot, cool, seed } => x3::lava_border(&src, width, hot, cool, seed)?,
+        Filter::LensBlur { radius, highlights } => x3::lens_blur(&src, radius, highlights),
+        Filter::LightLeak { center_x, center_y, radius, strength, color } => x3::light_leak(&src, (center_x, center_y), radius, strength, color),
+        Filter::LiquidGlass { strength, scale, seed } => x3::liquid_glass(&src, strength, scale, seed),
+        Filter::LiquidMercury { scale, seed } => x3::liquid_mercury(&src, scale, seed),
+        Filter::LuminanceContourLines { levels, color } => x3::contour_lines(&src, levels, color),
+        Filter::MacOSWindow { bar, radius, bar_color } => x3::macos_window(&src, bar, radius, bar_color)?,
+        Filter::MarbleBorder { width, base, vein, seed } => x3::marble_border(&src, width, base, vein, seed)?,
+        Filter::MatrixDigitalRain { column, strength, color, seed } => x3::matrix_rain(&src, column, strength, color, seed),
+        Filter::MinecraftGrass { block, seed } => x3::minecraft_grass(&src, block, seed)?,
+        Filter::Miniature { focus, band, radius, saturation } => x3::miniature(&src, focus, band, radius, saturation),
+        Filter::MosaicPolygon { size, grout, seed } => x3::mosaic_polygon(&src, size, grout, seed),
+        Filter::MosaicTileBorder { width, tile, color, grout, seed } => x3::mosaic_tile_border(&src, width, tile, color, grout, seed)?,
+        Filter::NebulaStarfield { density, nebula, strength, seed } => x3::nebula_starfield(&src, density, nebula, strength, seed),
+        Filter::NeonEdgeGlow { color, strength, radius } => x3::neon_edge_glow(&src, color, strength, radius),
+        Filter::NeonGlowBorder { width, color } => x3::neon_glow_border(&src, width, color)?,
+        Filter::NightVision { gain, grain, seed } => x3::night_vision(&src, gain, grain, seed),
+        Filter::OilSlickInterference { strength, scale, seed } => x3::oil_slick(&src, strength, scale, seed),
+        Filter::OldCameraFlashBurn { strength, sepia } => x3::old_camera_flash(&src, strength, sepia),
+        Filter::OrnateScrollBorder { width, color, accent } => x3::ornate_scroll_border(&src, width, color, accent)?,
+        Filter::PaletteMap { shadow, midtone, highlight } => x3::palette_map(&src, shadow, midtone, highlight),
+        Filter::PaperStencilMask { paper, ink, threshold, grain, seed } => x3::paper_stencil(&src, paper, ink, threshold, grain, seed),
+        Filter::PencilSketch { strength, radius } => x3::pencil_sketch(&src, strength, radius),
         // ---- end X3 ----
         // ---- X4 ----
         // ---- end X4 ----

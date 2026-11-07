@@ -395,6 +395,255 @@ pub enum Filter {
     },
     // ---- end X2 ----
     // ---- X3 ----
+    /// Sprocket holes in `hole` down the left and right margins of a `strip` frame, `width` px deep.
+    FilmStripFrame {
+        width: u32,
+        strip: Rgba,
+        hole: Rgba,
+    },
+    /// Each pixel averages samples scattered within `radius` px, then clouds toward white by `opacity` (0..=1).
+    FrostedGlass {
+        radius: u32,
+        opacity: f32,
+        seed: u64,
+    },
+    /// Frosted glass, with `ice` crystals within `edge` px of the border that grow inward.
+    FrostedGlassIceEdges {
+        radius: u32,
+        edge: u32,
+        ice: Rgba,
+        seed: u64,
+    },
+    /// A `base` frame with `ice` crystals growing in from the outer edge, `width` px deep.
+    FrostIceBorder {
+        width: u32,
+        ice: Rgba,
+        base: Rgba,
+        seed: u64,
+    },
+    /// `copies` faded copies, each `offset` px further on, trail behind the image. `opacity` is the nearest copy's strength.
+    GhostTrail {
+        copies: u32,
+        offset_x: i32,
+        offset_y: i32,
+        opacity: f32,
+    },
+    /// Pixels brighter than `threshold` (0..=1 luma) streak along eight rays `length` px long (capped at 48), added at `strength`.
+    Glare {
+        threshold: f32,
+        length: u32,
+        strength: f32,
+    },
+    /// `bands` random horizontal bands shifted up to `max_shift` px, with red and blue split further than green.
+    GlitchShift {
+        bands: u32,
+        max_shift: u32,
+        seed: u64,
+    },
+    /// A `color` frame with dark rules and a bright sheen, `width` px deep.
+    GoldenBorder {
+        width: u32,
+        color: Rgba,
+    },
+    /// The margin fades from `color` into the image beside it, `width` px deep.
+    GradientFadeBorder {
+        width: u32,
+        color: Rgba,
+    },
+    /// Bright parts (above `threshold`, 0..=1 luma) spill a red-orange halo `radius` px wide, added at `strength`.
+    Halation {
+        threshold: f32,
+        radius: u32,
+        strength: f32,
+    },
+    /// Rows wobble sideways by up to `amplitude` px (capped at 64), with a wavelength of `wavelength` px.
+    HeatHazeRefraction {
+        amplitude: u32,
+        wavelength: u32,
+    },
+    /// Luma mapped to a thermal palette, from black through red and yellow to white.
+    HeatMap,
+    /// Average colour in flat-top hexagons of circumradius `size` px.
+    HexagonalPixelate {
+        size: u32,
+    },
+    /// Monochrome in `tint`, with scanlines every `line_spacing` rows and a roll band, mixed in at `strength`.
+    HologramScan {
+        line_spacing: u32,
+        strength: f32,
+        tint: Rgba,
+    },
+    /// Diagonal rainbow bands, `period` px per cycle, multiplied in at `strength` (0..=1).
+    HolographicFoilShimmer {
+        strength: f32,
+        period: u32,
+    },
+    /// Near-infrared false colour: foliage turns red and the sky purple. `strength` 0..=1 mixes from the original.
+    InfraredFalseColor {
+        strength: f32,
+    },
+    /// `count` ink splats in `color`, each `size` (0..=1 of the shorter side) across, with droplets and drips.
+    InkSplatterDrips {
+        count: u32,
+        size: f32,
+        color: Rgba,
+        seed: u64,
+    },
+    /// The inside edge of the shape darkens to `color`, lit from the offset. `opacity` 0..=1, `size` px blur.
+    InnerShadow {
+        opacity: f32,
+        size: u32,
+        color: Rgba,
+        offset_x: i32,
+        offset_y: i32,
+    },
+    /// 8x8 DCT block quantisation at `quality` (1..=100, where 100 is near lossless): blocky and ringing.
+    JpegArtifact {
+        quality: u8,
+    },
+    /// A `cool` crust frame with `hot` molten cracks, `width` px deep.
+    LavaMoltenBorder {
+        width: u32,
+        hot: Rgba,
+        cool: Rgba,
+        seed: u64,
+    },
+    /// Disc blur of `radius` px (capped at 24). Bright taps count for more by `highlights` (up to 16).
+    LensBlur {
+        radius: u32,
+        highlights: f32,
+    },
+    /// A `color` glow from a point (`center_x`, `center_y` as 0..=1 of the image) falling off over `radius`
+    /// (0..=1 of the diagonal), screened over the image at `strength`.
+    LightLeak {
+        center_x: f32,
+        center_y: f32,
+        radius: f32,
+        strength: f32,
+        color: Rgba,
+    },
+    /// The image seen through a wavy pane: up to `strength` px of displacement over `scale` px of noise.
+    LiquidGlass {
+        strength: u32,
+        scale: u32,
+        seed: u64,
+    },
+    /// The image as a silver liquid with ripples `scale` px across, lit from the top left.
+    LiquidMercury {
+        scale: u32,
+        seed: u64,
+    },
+    /// Lines in `color` where luma crosses one of `levels` bands (2..=64), over a washed-out image.
+    LuminanceContourLines {
+        levels: u8,
+        color: Rgba,
+    },
+    /// A `bar_color` title bar `bar` px tall with three buttons, and rounded corners `radius` px across.
+    MacOSWindow {
+        bar: u32,
+        radius: u32,
+        bar_color: Rgba,
+    },
+    /// A marble frame of `base` with `vein` veins, `width` px deep.
+    MarbleBorder {
+        width: u32,
+        base: Rgba,
+        vein: Rgba,
+        seed: u64,
+    },
+    /// Falling glyph columns `column` px wide (3..=64) in `color` over a dimmed image, at `strength`.
+    MatrixDigitalRain {
+        column: u32,
+        strength: f32,
+        color: Rgba,
+        seed: u64,
+    },
+    /// Image pixelated to `block` px blocks, with a grass row above and a dirt row below.
+    MinecraftGrass {
+        block: u32,
+        seed: u64,
+    },
+    /// Tilt-shift: rows outside the `focus` band (0..=1 of the height) blur by `radius` px. `band` is the sharp share.
+    Miniature {
+        focus: f32,
+        band: f32,
+        radius: u32,
+        saturation: f32,
+    },
+    /// Voronoi cells of about `size` px, each the cell's average colour, with `grout` seams.
+    MosaicPolygon {
+        size: u32,
+        grout: Rgba,
+        seed: u64,
+    },
+    /// A `color` frame of `tile` px squares (2..=4096) with `grout` lines, `width` px deep.
+    MosaicTileBorder {
+        width: u32,
+        tile: u32,
+        color: Rgba,
+        grout: Rgba,
+        seed: u64,
+    },
+    /// Clouds of `nebula` screened over the image at `strength`, with stars; `density` 0..=1.
+    NebulaStarfield {
+        density: f32,
+        nebula: Rgba,
+        strength: f32,
+        seed: u64,
+    },
+    /// Dimmed image with its edges lit in `color`, glowing `radius` px out (capped at 128) at `strength`.
+    NeonEdgeGlow {
+        color: Rgba,
+        strength: f32,
+        radius: u32,
+    },
+    /// A `color` neon tube in a frame `width` px deep, bright at its core.
+    NeonGlowBorder {
+        width: u32,
+        color: Rgba,
+    },
+    /// Monochrome green with `gain` and `grain` (each 0..=1) and a dark circular vignette.
+    NightVision {
+        gain: f32,
+        grain: f32,
+        seed: u64,
+    },
+    /// Thin-film interference fringes screened over the image at `strength`; `scale` px swirls.
+    OilSlickInterference {
+        strength: f32,
+        scale: u32,
+        seed: u64,
+    },
+    /// A hot centre flash that burns to white, with a sepia cast of `sepia` (0..=1).
+    OldCameraFlashBurn {
+        strength: f32,
+        sepia: f32,
+    },
+    /// A `color` band `width` px deep with a repeating scroll of `accent` rings and a rail.
+    OrnateScrollBorder {
+        width: u32,
+        color: Rgba,
+        accent: Rgba,
+    },
+    /// Luma mapped to a three-stop gradient: `shadow`, then `midtone`, then `highlight`.
+    PaletteMap {
+        shadow: Rgba,
+        midtone: Rgba,
+        highlight: Rgba,
+    },
+    /// Dark areas cut out as `ink` from `paper`, with paper tooth `grain` and stencil edges that bend with blotches.
+    PaperStencilMask {
+        paper: Rgba,
+        ink: Rgba,
+        threshold: f32,
+        grain: f32,
+        seed: u64,
+    },
+    /// Grey colour dodge of the image by its blurred inverse (`radius` px), mixed from white at `strength`.
+    PencilSketch {
+        strength: f32,
+        radius: u32,
+    },
     // ---- end X3 ----
     // ---- X4 ----
     // ---- end X4 ----
@@ -474,6 +723,48 @@ impl Filter {
             Filter::FilmGrain { .. } => "Film grain",
             // ---- end X2 ----
             // ---- X3 ----
+            Filter::FilmStripFrame { .. } => "Film strip frame",
+            Filter::FrostedGlass { .. } => "Frosted glass",
+            Filter::FrostedGlassIceEdges { .. } => "Frosted glass ice edges",
+            Filter::FrostIceBorder { .. } => "Frost ice border",
+            Filter::GhostTrail { .. } => "Ghost trail",
+            Filter::Glare { .. } => "Glare",
+            Filter::GlitchShift { .. } => "Glitch shift",
+            Filter::GoldenBorder { .. } => "Golden border",
+            Filter::GradientFadeBorder { .. } => "Gradient fade border",
+            Filter::Halation { .. } => "Halation",
+            Filter::HeatHazeRefraction { .. } => "Heat haze refraction",
+            Filter::HeatMap => "Heat map",
+            Filter::HexagonalPixelate { .. } => "Hexagonal pixelate",
+            Filter::HologramScan { .. } => "Hologram scan",
+            Filter::HolographicFoilShimmer { .. } => "Holographic foil shimmer",
+            Filter::InfraredFalseColor { .. } => "Infrared false color",
+            Filter::InkSplatterDrips { .. } => "Ink splatter drips",
+            Filter::InnerShadow { .. } => "Inner shadow",
+            Filter::JpegArtifact { .. } => "JPEG artifact",
+            Filter::LavaMoltenBorder { .. } => "Lava molten border",
+            Filter::LensBlur { .. } => "Lens blur",
+            Filter::LightLeak { .. } => "Light leak",
+            Filter::LiquidGlass { .. } => "Liquid glass",
+            Filter::LiquidMercury { .. } => "Liquid mercury",
+            Filter::LuminanceContourLines { .. } => "Luminance contour lines",
+            Filter::MacOSWindow { .. } => "macOS window",
+            Filter::MarbleBorder { .. } => "Marble border",
+            Filter::MatrixDigitalRain { .. } => "Matrix digital rain",
+            Filter::MinecraftGrass { .. } => "Minecraft grass",
+            Filter::Miniature { .. } => "Miniature",
+            Filter::MosaicPolygon { .. } => "Mosaic polygon",
+            Filter::MosaicTileBorder { .. } => "Mosaic tile border",
+            Filter::NebulaStarfield { .. } => "Nebula starfield",
+            Filter::NeonEdgeGlow { .. } => "Neon edge glow",
+            Filter::NeonGlowBorder { .. } => "Neon glow border",
+            Filter::NightVision { .. } => "Night vision",
+            Filter::OilSlickInterference { .. } => "Oil slick interference",
+            Filter::OldCameraFlashBurn { .. } => "Old camera flash burn",
+            Filter::OrnateScrollBorder { .. } => "Ornate scroll border",
+            Filter::PaletteMap { .. } => "Palette map",
+            Filter::PaperStencilMask { .. } => "Paper stencil mask",
+            Filter::PencilSketch { .. } => "Pencil sketch",
             // ---- end X3 ----
             // ---- X4 ----
             // ---- end X4 ----
@@ -554,6 +845,48 @@ impl Filter {
             Filter::FilmGrain { amount: 0.25, seed: 1 },
             // ---- end X2 ----
             // ---- X3 ----
+            Filter::FilmStripFrame { width: 24, strip: Rgba::rgb(22, 22, 22), hole: Rgba::rgb(240, 240, 240) },
+            Filter::FrostedGlass { radius: 4, opacity: 0.5, seed: 1 },
+            Filter::FrostedGlassIceEdges { radius: 3, edge: 24, ice: Rgba::rgb(210, 235, 255), seed: 1 },
+            Filter::FrostIceBorder { width: 20, ice: Rgba::rgb(225, 245, 255), base: Rgba::rgb(160, 200, 225), seed: 1 },
+            Filter::GhostTrail { copies: 4, offset_x: 6, offset_y: 0, opacity: 0.4 },
+            Filter::Glare { threshold: 0.8, length: 24, strength: 1.0 },
+            Filter::GlitchShift { bands: 8, max_shift: 14, seed: 1 },
+            Filter::GoldenBorder { width: 18, color: Rgba::rgb(212, 175, 55) },
+            Filter::GradientFadeBorder { width: 30, color: Rgba::rgb(40, 40, 60) },
+            Filter::Halation { threshold: 0.75, radius: 8, strength: 0.6 },
+            Filter::HeatHazeRefraction { amplitude: 3, wavelength: 24 },
+            Filter::HeatMap,
+            Filter::HexagonalPixelate { size: 10 },
+            Filter::HologramScan { line_spacing: 3, strength: 0.6, tint: Rgba::rgb(90, 220, 255) },
+            Filter::HolographicFoilShimmer { strength: 0.5, period: 40 },
+            Filter::InfraredFalseColor { strength: 1.0 },
+            Filter::InkSplatterDrips { count: 3, size: 0.2, color: Rgba::rgb(20, 20, 60), seed: 1 },
+            Filter::InnerShadow { opacity: 0.8, size: 8, color: Rgba::BLACK, offset_x: 4, offset_y: 4 },
+            Filter::JpegArtifact { quality: 20 },
+            Filter::LavaMoltenBorder { width: 20, hot: Rgba::rgb(255, 110, 20), cool: Rgba::rgb(60, 20, 10), seed: 1 },
+            Filter::LensBlur { radius: 8, highlights: 2.0 },
+            Filter::LightLeak { center_x: 0.0, center_y: 0.0, radius: 0.6, strength: 0.7, color: Rgba::rgb(255, 120, 40) },
+            Filter::LiquidGlass { strength: 6, scale: 24, seed: 1 },
+            Filter::LiquidMercury { scale: 40, seed: 1 },
+            Filter::LuminanceContourLines { levels: 12, color: Rgba::rgb(20, 40, 90) },
+            Filter::MacOSWindow { bar: 28, radius: 10, bar_color: Rgba::rgb(230, 230, 232) },
+            Filter::MarbleBorder { width: 20, base: Rgba::rgb(236, 232, 226), vein: Rgba::rgb(120, 110, 100), seed: 1 },
+            Filter::MatrixDigitalRain { column: 12, strength: 0.8, color: Rgba::rgb(60, 255, 90), seed: 1 },
+            Filter::MinecraftGrass { block: 8, seed: 1 },
+            Filter::Miniature { focus: 0.5, band: 0.3, radius: 4, saturation: 0.4 },
+            Filter::MosaicPolygon { size: 12, grout: Rgba::rgb(30, 30, 30), seed: 1 },
+            Filter::MosaicTileBorder { width: 16, tile: 6, color: Rgba::rgb(40, 120, 170), grout: Rgba::rgb(230, 230, 225), seed: 1 },
+            Filter::NebulaStarfield { density: 0.5, nebula: Rgba::rgb(120, 60, 200), strength: 0.7, seed: 1 },
+            Filter::NeonEdgeGlow { color: Rgba::rgb(255, 60, 200), strength: 1.0, radius: 3 },
+            Filter::NeonGlowBorder { width: 16, color: Rgba::rgb(0, 255, 230) },
+            Filter::NightVision { gain: 0.5, grain: 0.4, seed: 1 },
+            Filter::OilSlickInterference { strength: 0.5, scale: 60, seed: 1 },
+            Filter::OldCameraFlashBurn { strength: 0.6, sepia: 0.6 },
+            Filter::OrnateScrollBorder { width: 22, color: Rgba::rgb(60, 40, 20), accent: Rgba::rgb(220, 190, 110) },
+            Filter::PaletteMap { shadow: Rgba::rgb(20, 10, 60), midtone: Rgba::rgb(220, 90, 120), highlight: Rgba::rgb(255, 240, 200) },
+            Filter::PaperStencilMask { paper: Rgba::rgb(240, 232, 214), ink: Rgba::rgb(35, 30, 28), threshold: 0.5, grain: 0.6, seed: 1 },
+            Filter::PencilSketch { strength: 1.0, radius: 6 },
             // ---- end X3 ----
             // ---- X4 ----
             // ---- end X4 ----
