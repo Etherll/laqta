@@ -104,6 +104,8 @@ struct SettingsWindow {
     retries: Entity<InputState>,
     dest_kind: DestKind,
     hosts: Vec<Vec<(&'static str, bool, Entity<InputState>)>>,
+    /// The last update check's message, and whether it can be installed from here.
+    update: Option<(String, bool)>,
 }
 
 fn text_input(value: impl Into<SharedString>, window: &mut Window, cx: &mut Context<SettingsWindow>) -> Entity<InputState> {
@@ -140,6 +142,7 @@ impl SettingsWindow {
             retries: text_input(d.upload.retries.to_string(), window, cx),
             dest_kind: DestKind::Image,
             hosts: Vec::new(),
+            update: None,
             draft,
             page: Page::General,
             message: None,
@@ -305,6 +308,7 @@ impl SettingsWindow {
                 cx,
             ))
             .child(widgets::row("Language", self.language_picker(cx), cx))
+            .child(widgets::row("Updates", self.updates_row(cx), cx))
             .child(widgets::muted("Translations come from ShareX's translators; text they don't cover stays in English. The tray menu changes after a restart.", cx))
             .child(
                 Checkbox::new("show-toast").label("Show a toast after capture").checked(self.draft.defaults.general.show_toast).on_click(
@@ -354,6 +358,49 @@ impl SettingsWindow {
             .child(widgets::row("Custom capture sound (file)", Input::new(&self.sound_capture), cx))
             .child(widgets::row("Custom task sound (file)", Input::new(&self.sound_task), cx))
             .child(widgets::row("Custom error sound (file)", Input::new(&self.sound_error), cx))
+    }
+
+    fn updates_row(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let mut row = div().flex().flex_wrap().items_center().gap(px(8.)).child(
+            Button::new("update-check").label("Check for updates").on_click(cx.listener(|this, _, _, cx| {
+                this.update = Some(("Checking…".into(), false));
+                cx.notify();
+                let check = cx.global::<UiState>().services.check_update.clone();
+                let task = cx.background_spawn(async move { check().await });
+                cx.spawn(async move |this, cx| {
+                    let r = task.await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.update = Some(r.unwrap_or_else(|e| (format!("Couldn't check for updates: {e}"), false)));
+                        cx.notify();
+                    });
+                })
+                .detach();
+            })),
+        );
+        if let Some((msg, installable)) = &self.update {
+            if *installable {
+                row = row.child(Button::new("update-install").label("Install and restart").primary().on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.update = Some(("Downloading the update…".into(), false));
+                        cx.notify();
+                        let install = cx.global::<UiState>().services.install_update.clone();
+                        let task = cx.background_spawn(async move { install().await });
+                        cx.spawn(async move |this, cx| {
+                            let r = task.await;
+                            let _ = this.update(cx, |this, cx| {
+                                if let Err(e) = r {
+                                    this.update = Some((format!("Update failed: {e}"), false));
+                                    cx.notify();
+                                }
+                            });
+                        })
+                        .detach();
+                    },
+                )));
+            }
+            row = row.child(widgets::muted(msg.clone(), cx));
+        }
+        row
     }
 
     fn language_picker(&self, cx: &mut Context<Self>) -> gpui::Div {

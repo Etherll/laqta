@@ -4608,6 +4608,7 @@ dependencies = [
  "laqta-platform-windows",
  "laqta-ports",
  "laqta-ui",
+ "laqta-update",
  "laqta-upload",
  "rayon",
  "tracing",

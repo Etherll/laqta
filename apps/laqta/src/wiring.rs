@@ -385,6 +385,8 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                 ui_quit.quit();
             })
             .map_err(|e| e.to_string())?;
+        let last_release: Arc<Mutex<Option<laqta_update::Release>>> = Arc::new(Mutex::new(None));
+        let quit_ui = quit_tx.clone();
         let services = UiServices {
             app: app.clone(),
             history: history.clone(),
@@ -402,6 +404,37 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             import_sharex: {
                 let importer = importer.clone();
                 Arc::new(move |path: std::path::PathBuf| importer.sharex(&path))
+            },
+            check_update: {
+                let last = last_release.clone();
+                Arc::new(move || {
+                    let last = last.clone();
+                    Box::pin(async move {
+                        let found = laqta_http::run(crate::updates::check()).await?;
+                        let msg = crate::updates::describe(&found);
+                        let installable = cfg!(windows) && found.is_some();
+                        if let Ok(mut l) = last.lock() {
+                            *l = found;
+                        }
+                        Ok((msg, installable))
+                    })
+                })
+            },
+            install_update: {
+                let last = last_release.clone();
+                let data = data.clone();
+                let quit = quit_ui.clone();
+                Arc::new(move || {
+                    let release = last.lock().ok().and_then(|l| l.clone());
+                    let data = data.clone();
+                    let quit = quit.clone();
+                    Box::pin(async move {
+                        let release = release.ok_or("check for updates first")?;
+                        laqta_http::run(crate::updates::install(release, data)).await?;
+                        let _ = quit.send(());
+                        Ok(())
+                    })
+                })
             },
             sxie_read: Arc::new(|bytes: &[u8]| laqta_import::parse_sxie(bytes).map_err(|e| e.to_string())),
             sxie_write: Arc::new(|preset: &laqta_domain::effects::Preset| laqta_import::write_sxie(preset).map_err(|e| e.to_string())),

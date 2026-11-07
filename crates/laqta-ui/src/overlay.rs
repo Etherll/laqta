@@ -5,10 +5,10 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyWindowHandle, prelude::FluentBuilder as _, App, AppContext as _, Bounds, Context, Div, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
+    AnyWindowHandle, App, AppContext as _, Bounds, Context, Div, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage,
     StatefulInteractiveElement as _, Styled as _, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, img,
-    point, px, size,
+    point, prelude::FluentBuilder as _, px, size,
 };
 use laqta_domain::geometry::PhysRect;
 use laqta_domain::region::{Button, KeyMods, RegionCommand, RegionInput, RegionKey};

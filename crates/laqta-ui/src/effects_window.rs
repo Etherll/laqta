@@ -215,7 +215,9 @@ impl EffectsWindow {
         let write = cx.global::<UiState>().services.sxie_write.clone();
         let task = cx.background_spawn(async move {
             let bytes = write(&preset)?;
-            let Some(file) = rfd::AsyncFileDialog::new().set_file_name(format!("{}.sxie", preset.name)).save_file().await else { return Ok(None) };
+            let Some(file) = rfd::AsyncFileDialog::new().set_file_name(format!("{}.sxie", preset.name)).save_file().await else {
+                return Ok(None);
+            };
             std::fs::write(file.path(), bytes).map_err(|e| e.to_string())?;
             Ok::<_, String>(Some(file.path().display().to_string()))
         });
@@ -282,8 +284,20 @@ impl Render for EffectsWindow {
 
         presets = presets
             .child(div().h(px(8.)))
-            .child(Button::new("sxie-import").label("Import .sxie…").small().ghost().on_click(cx.listener(|this, _, _, cx| this.import_sxie(cx))))
-            .child(Button::new("sxie-export").label("Export .sxie…").small().ghost().on_click(cx.listener(|this, _, _, cx| this.export_sxie(cx))))
+            .child(
+                Button::new("sxie-import")
+                    .label("Import .sxie…")
+                    .small()
+                    .ghost()
+                    .on_click(cx.listener(|this, _, _, cx| this.import_sxie(cx))),
+            )
+            .child(
+                Button::new("sxie-export")
+                    .label("Export .sxie…")
+                    .small()
+                    .ghost()
+                    .on_click(cx.listener(|this, _, _, cx| this.export_sxie(cx))),
+            )
             .child(div().h(px(8.)))
             .child(widgets::muted("After capture, apply:", cx));
         let this_name = self.presets.get(self.selected).map(|p| p.name.clone()).unwrap_or_default();
@@ -293,10 +307,12 @@ impl Render for EffectsWindow {
                 this.after_capture = this_name.clone();
                 cx.notify();
             })))
-            .child(Button::new("ac-random").label("A random preset").small().selected(self.after_capture == "*").on_click(cx.listener(|this, _, _, cx| {
-                this.after_capture = "*".into();
-                cx.notify();
-            })));
+            .child(Button::new("ac-random").label("A random preset").small().selected(self.after_capture == "*").on_click(cx.listener(
+                |this, _, _, cx| {
+                    this.after_capture = "*".into();
+                    cx.notify();
+                },
+            )));
 
         // The selected preset's effects.
         let effects = self.presets.get(self.selected).map(|p| p.effects.clone()).unwrap_or_default();

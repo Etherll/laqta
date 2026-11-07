@@ -25,6 +25,7 @@ laqta-ipc.workspace = true
 laqta-ui.workspace = true
 laqta-import.workspace = true
 laqta-library.workspace = true
+laqta-update.workspace = true
 laqta-upload.workspace = true
 laqta-media.workspace = true
 laqta-editor.workspace = true

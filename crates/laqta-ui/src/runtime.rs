@@ -230,6 +230,9 @@ impl ToolHost for UiHandle {
     }
 }
 
+/// Checks for an update: the message to show and whether `install_update` can apply it here.
+pub type UpdateCheck = Arc<dyn Fn() -> laqta_ports::BoxFuture<'static, Result<(String, bool), String>> + Send + Sync>;
+pub type UpdateInstall = Arc<dyn Fn() -> laqta_ports::BoxFuture<'static, Result<(), String>> + Send + Sync>;
 pub type SxieRead = Arc<dyn Fn(&[u8]) -> Result<laqta_domain::effects::Preset, String> + Send + Sync>;
 pub type SxieWrite = Arc<dyn Fn(&laqta_domain::effects::Preset) -> Result<Vec<u8>, String> + Send + Sync>;
 
@@ -257,6 +260,9 @@ pub struct UiServices {
     /// Reads and writes ShareX `.sxie` effect packages (`laqta-import`).
     pub sxie_read: SxieRead,
     pub sxie_write: SxieWrite,
+    /// Update check and install (M6 D12).
+    pub check_update: UpdateCheck,
+    pub install_update: UpdateInstall,
     /// Run at login (M6 D10).
     pub autostart: Arc<dyn laqta_ports::Autostart>,
     /// "Upload with Laqta" in file managers, Send To, and the browser native-messaging host (M6 D11).

@@ -12,6 +12,7 @@ mod ocr;
 mod requests;
 mod spawner;
 mod stubs;
+mod updates;
 mod uploads;
 mod wiring;
 
