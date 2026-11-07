@@ -1,0 +1,55 @@
+name: ci
+on: [push, pull_request]
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  LAQTA_CONTRACT: "1"
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with: { tool: "cargo-nextest@0.9.151,cargo-deny@0.20.2" }
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libdbus-1-dev pkg-config
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo deny check
+      - run: cargo xtask check-deps
+      - run: cargo xtask check-deps --self-test
+  test-x11:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with: { tool: "cargo-nextest@0.9.151" }
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libdbus-1-dev pkg-config xvfb x11-xserver-utils
+      - run: |
+          Xvfb :99 -screen 0 1920x1080x24 &
+          sleep 2
+          DISPLAY=:99 xsetroot -solid "#336699"
+      - run: cargo nextest run --workspace
+        env: { DISPLAY: ":99" }
+      - run: cargo test --doc --workspace
+        env: { DISPLAY: ":99" }
+  test-wayland:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with: { tool: "cargo-nextest@0.9.151" }
+      - run: sudo apt-get update && sudo apt-get install -y sway swaybg libxkbcommon-dev libwayland-dev libdbus-1-dev pkg-config
+      - run: |
+          export XDG_RUNTIME_DIR=$(mktemp -d)
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 sway -c ci/sway.conf &
+          sleep 3
+          echo "WAYLAND_DISPLAY=$(ls $XDG_RUNTIME_DIR | grep -m1 '^wayland-[0-9]*$')" >> "$GITHUB_ENV"
+      - run: cargo nextest run -p laqta-platform-linux
+  test-windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with: { tool: "cargo-nextest@0.9.151" }
+      - run: cargo nextest run --workspace

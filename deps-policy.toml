@@ -1,0 +1,41 @@
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+
+# The allowed workspace edges for the crates M0 creates, copied from ARCHITECTURE.md §3.
+# Each milestone plan adds the rows for the crates it creates. An edge not listed fails.
+[edges]
+"laqta-domain"   = []
+"laqta-imaging"  = ["laqta-domain"]
+"laqta-ports"    = ["laqta-domain"]
+"laqta-app"      = ["laqta-ports", "laqta-imaging", "laqta-domain"]   # + laqta-editor from M3
+"laqta-ipc"      = ["laqta-domain"]
+"laqta-ui"       = ["laqta-app", "laqta-ports", "laqta-domain"]       # + editor (M3), library (M1)
+"laqta-platform-linux"   = ["laqta-ports", "laqta-domain"]
+"laqta-platform-windows" = ["laqta-ports", "laqta-domain"]
+"laqta"          = ["*"]                                                # apps/laqta
+
+# Direct non-workspace dependencies allowed per crate (normal deps only).
+[allow]
+"laqta-domain"  = ["serde", "thiserror", "bitflags", "jiff"]
+"laqta-imaging" = ["png", "rayon", "thiserror"]
+"laqta-ports"   = ["thiserror", "jiff"]
+
+# Transitive bans for the pure core, laqta-ports and laqta-app.
+[deny]
+crates = ["laqta-domain", "laqta-imaging", "laqta-editor", "laqta-ports", "laqta-app"]
+forbid = ["gpui-pre", "gpui-pre-platform", "gpui-component", "tokio", "reqwest", "hyper", "ureq",
+          "rusqlite", "libsqlite3-sys", "ort", "ort-sys", "oar-ocr", "pipewire", "libspa",
+          "libwayshot", "wayland-client", "wayland-protocols", "wayland-protocols-wlr", "x11rb",
+          "windows", "zbus", "ashpd", "ksni", "arboard", "notify", "mio", "keyring-core",
+          "interprocess", "libpulse-binding", "wasapi", "async-io"]
+
+# Frameworks allowed only in these crates, as direct dependencies of any workspace crate.
+[placement]
+"gpui-pre"          = ["laqta-ui", "laqta"]
+"gpui-pre-platform" = ["laqta-ui", "laqta"]
+"gpui-component"    = ["laqta-ui", "laqta"]
+"tokio"             = ["laqta-http"]
+"reqwest"           = ["laqta-http"]
+
+[[source_rule]]
+path = "crates/laqta-ui/src/presenters"
+forbid_imports = ["gpui", "gpui_platform", "gpui_component", "laqta_library"]
