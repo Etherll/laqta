@@ -479,7 +479,6 @@ fn control_actions_with_nothing_running_are_done() {
 
 #[test]
 fn highlighter_is_on_only_while_recording() {
-    use laqta_ports::PointerHighlighter as _;
     in_pool(|| {
         let tmp = TempDir::new().unwrap();
         let mut h = harness(tmp.path(), |s| {
