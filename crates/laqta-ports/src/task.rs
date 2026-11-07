@@ -113,6 +113,10 @@ pub enum TaskEvent {
         id: TaskId,
         path: PathBuf,
     },
+    /// `REMOVE_BACKGROUND`: the background was removed.
+    BackgroundRemoved {
+        id: TaskId,
+    },
     /// `PIN_TO_SCREEN`: the capture is pinned.
     Pinned {
         id: TaskId,
@@ -219,6 +223,7 @@ impl TaskEvent {
             | TaskEvent::SaveSkipped { id, .. }
             | TaskEvent::StepFailed { id, .. }
             | TaskEvent::Pinned { id }
+            | TaskEvent::BackgroundRemoved { id }
             | TaskEvent::Printed { id, .. }
             | TaskEvent::TextFound { id, .. }
             | TaskEvent::UploadStarted { id, .. }

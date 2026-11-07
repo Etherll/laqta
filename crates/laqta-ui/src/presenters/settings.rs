@@ -40,8 +40,8 @@ pub fn after_capture_options() -> Vec<TaskOption> {
         o(AfterCaptureTasks::DO_OCR, "Recognize text (OCR)", true),
         o(AfterCaptureTasks::SHOW_BEFORE_UPLOAD_WINDOW, "Show before upload window", true),
         o(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST, "Upload image to host", true),
-        o(AfterCaptureTasks::ANALYZE_IMAGE, "Analyze image", false),
-        o(AfterCaptureTasks::REMOVE_BACKGROUND, "Remove background", false),
+        o(AfterCaptureTasks::ANALYZE_IMAGE, "Analyze image", true),
+        o(AfterCaptureTasks::REMOVE_BACKGROUND, "Remove background", true),
     ]
 }
 

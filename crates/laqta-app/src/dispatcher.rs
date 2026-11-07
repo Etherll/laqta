@@ -177,7 +177,7 @@ impl App {
         self.ports.screen.capture(CaptureRequest { show_cursor: ts.capture.show_cursor }).await.map_err(AppError::from)
     }
 
-    fn submit(&self, image: CaptureImage, settings: TaskSettings, target: Option<&HoverTarget>) -> Dispatched {
+    pub(crate) fn submit(&self, image: CaptureImage, settings: TaskSettings, target: Option<&HoverTarget>) -> Dispatched {
         let info = target.map(|t| CaptureInfo { window_title: t.title.clone(), process_name: t.process.clone() }).unwrap_or_default();
         Dispatched::Task(self.task.submit(TaskJob::Capture { image, settings, info }))
     }

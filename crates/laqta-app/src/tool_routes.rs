@@ -101,6 +101,8 @@ impl App {
                 }
                 Err(e) => Err(e),
             },
+            Action::AnalyzeImage => self.analyze_region(ts).await,
+            Action::RemoveBackground => self.remove_background_region(ts).await,
             Action::MouseHighlighter => {
                 let on = !self.ports.highlighter.is_enabled();
                 self.ports.highlighter.set_enabled(on).map(|()| Dispatched::Done).map_err(AppError::from)
@@ -167,6 +169,23 @@ impl App {
             let _ = self.ports.clipboard.set_text(&text);
         }
         self.show("Recognised text (copied)", if text.is_empty() { "No text found." } else { &text })
+    }
+
+    /// Analyze image: a region, then the analyzer's answer in a text window (copied).
+    async fn analyze_region(&self, ts: &TaskSettings) -> Result<Dispatched, AppError> {
+        let sel = self.select_on_screen(ts).await?;
+        let prompt = self.settings.get().cloud.analyzer.prompt.clone();
+        let answer = self.ports.analyzer.analyze(sel.image, prompt).await.map_err(AppError::from)?;
+        let _ = self.ports.clipboard.set_text(&answer);
+        self.show("Image analysis (copied)", &answer)
+    }
+
+    /// Remove background: a region captured with `REMOVE_BACKGROUND` added to the workflow's steps.
+    async fn remove_background_region(&self, ts: &TaskSettings) -> Result<Dispatched, AppError> {
+        let sel = self.select_on_screen(ts).await?;
+        let mut ts = ts.clone();
+        ts.after_capture.insert(laqta_domain::workflow::AfterCaptureTasks::REMOVE_BACKGROUND);
+        Ok(self.submit(crate::task::CaptureImage::Image(sel.image), ts, sel.target.as_ref()))
     }
 
     async fn qr_region(&self, ts: &TaskSettings) -> Result<Dispatched, AppError> {

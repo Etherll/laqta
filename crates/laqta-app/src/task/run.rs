@@ -135,6 +135,9 @@ impl Job {
         if flags.contains(AfterCaptureTasks::DO_OCR) {
             self.ocr(&image).await?;
         }
+        if flags.contains(AfterCaptureTasks::ANALYZE_IMAGE) {
+            self.analyze(&image).await?;
+        }
 
         // The upload phase. A failure or a stop keeps the saved file: nothing is deleted on that path.
         let url = match for_upload {
@@ -174,6 +177,11 @@ impl Job {
     async fn edit(&mut self, mut image: Bitmap) -> Step<Bitmap> {
         if self.settings.after_capture.contains(AfterCaptureTasks::SHOW_AFTER_CAPTURE_WINDOW) {
             self.after_capture_window(&image).await?;
+        }
+        // Background removal comes first, so annotation, effects and the beautifier see the cut-out.
+        if self.settings.after_capture.contains(AfterCaptureTasks::REMOVE_BACKGROUND) {
+            self.checkpoint()?;
+            image = self.remove_background(image).await;
         }
         if self.settings.after_capture.contains(AfterCaptureTasks::ANNOTATE_IMAGE) {
             self.checkpoint()?;
@@ -592,6 +600,32 @@ impl Job {
         Ok(())
     }
 
+    /// `REMOVE_BACKGROUND` (M7): the `BackgroundRemover` port. A failure is a step failure and the
+    /// image is kept.
+    async fn remove_background(&self, image: Bitmap) -> Bitmap {
+        match self.cx.ports.background.remove(image.clone()).await {
+            Ok(cut) => {
+                self.emit(TaskEvent::BackgroundRemoved { id: self.id });
+                cut
+            }
+            Err(error) => {
+                self.step_failed("remove_background", error);
+                image
+            }
+        }
+    }
+
+    /// `ANALYZE_IMAGE` (M7): the configured analyzer's answer to the configured prompt.
+    async fn analyze(&self, image: &Bitmap) -> Step {
+        self.checkpoint()?;
+        let prompt = self.cx.settings.get().cloud.analyzer.prompt.clone();
+        match self.cx.ports.analyzer.analyze(image.clone(), prompt).await {
+            Ok(answer) => self.found("analyze", "Image analysis (copied)", answer),
+            Err(error) => self.step_failed("analyze", error),
+        }
+        Ok(())
+    }
+
     /// `DO_OCR`: the capture's text through the OCR port (ADR 023).
     async fn ocr(&self, image: &Bitmap) -> Step {
         self.checkpoint()?;
@@ -717,7 +751,8 @@ fn needs_pixels(flags: AfterCaptureTasks) -> bool {
         AfterCaptureTasks::SHOW_AFTER_CAPTURE_WINDOW
             | AfterCaptureTasks::ANNOTATE_IMAGE
             | AfterCaptureTasks::ADD_IMAGE_EFFECTS
-            | AfterCaptureTasks::BEAUTIFY_IMAGE,
+            | AfterCaptureTasks::BEAUTIFY_IMAGE
+            | AfterCaptureTasks::REMOVE_BACKGROUND,
     )
 }
 

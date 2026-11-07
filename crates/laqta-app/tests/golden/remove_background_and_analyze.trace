@@ -1,0 +1,8 @@
+status InQueue
+status Preparing
+status Working
+background_removed
+copied
+text_found analyze "a test card"
+notified
+status Completed

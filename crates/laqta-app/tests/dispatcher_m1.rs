@@ -313,6 +313,8 @@ fn every_action_routes() {
         Action::PinToScreenFromScreen,
         Action::Ocr,
         Action::QrCodeScanRegion,
+        Action::AnalyzeImage,
+        Action::RemoveBackground,
     ];
     for &a in Action::ALL.iter().filter(|a| !waits.contains(a)) {
         let tmp = TempDir::new().unwrap();

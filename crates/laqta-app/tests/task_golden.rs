@@ -58,6 +58,8 @@ struct Rig {
     prompt: Arc<FakePrompt>,
     editor: Arc<FakeEditorHost>,
     clock: Arc<ManualClock>,
+    analyzer: Arc<laqta_ports::fakes::FakeAnalyzer>,
+    background: Arc<laqta_ports::fakes::FakeBackgroundRemover>,
     tools: Arc<laqta_ports::fakes::FakeToolHost>,
     ocr: Arc<laqta_ports::fakes::FakeOcr>,
 }
@@ -71,6 +73,8 @@ fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Set
     let editor = Arc::new(FakeEditorHost::default());
     let clock = Arc::new(ManualClock::new(jiff::civil::date(2026, 11, 7).at(14, 3, 22, 0)));
     let tools = Arc::new(laqta_ports::fakes::FakeToolHost::default());
+    let analyzer = Arc::new(laqta_ports::fakes::FakeAnalyzer::default());
+    let background = Arc::new(laqta_ports::fakes::FakeBackgroundRemover::default());
     let ocr = Arc::new(laqta_ports::fakes::FakeOcr::default());
     let ports = Ports {
         screen: Arc::new(FakeScreen::new(two_frames())),
@@ -88,8 +92,8 @@ fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Set
         window_ops: Arc::new(laqta_ports::fakes::FakeWindowOps::default()),
         input: Arc::new(laqta_ports::fakes::FakeInputSynth::default()),
         highlighter: Arc::new(laqta_ports::fakes::FakeHighlighter::default()),
-        background: Arc::new(laqta_ports::fakes::FakeBackgroundRemover::default()),
-        analyzer: Arc::new(laqta_ports::fakes::FakeAnalyzer::default()),
+        background: background.clone(),
+        analyzer: analyzer.clone(),
         inpainter: Arc::new(laqta_ports::fakes::FakeInpainter),
         watcher: Arc::new(laqta_ports::fakes::FakeFileWatcher::default()),
         uploaders: uploaders.clone(),
@@ -99,7 +103,7 @@ fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Set
         host: laqta_ports::HostInfo::default(),
         codecs: laqta_imaging::Codecs::builtin(),
     };
-    Rig { app: App::new(ports, settings), clipboard, shell, notifier, uploaders, prompt, editor, clock, tools, ocr }
+    Rig { app: App::new(ports, settings), clipboard, shell, notifier, uploaders, prompt, editor, clock, analyzer, background, tools, ocr }
 }
 
 /// M0 settings with the screenshots folder in `dir`.
@@ -160,6 +164,7 @@ fn describe(event: &TaskEvent, dir: &Path) -> (u64, String) {
         TaskEvent::Deleted { id, path } => (id.0, format!("deleted {}", relative(dir, path))),
         TaskEvent::StepFailed { id, step, .. } => (id.0, format!("step_failed {step}")),
         TaskEvent::Pinned { id } => (id.0, "pinned".to_owned()),
+        TaskEvent::BackgroundRemoved { id } => (id.0, "background_removed".to_owned()),
         TaskEvent::Printed { id, path } => (id.0, format!("printed {}", relative(dir, path))),
         TaskEvent::TextFound { id, step, text } => (id.0, format!("text_found {step} {text:?}")),
         TaskEvent::Failed { id, error } => (id.0, format!("failed {}", error_kind(error))),
@@ -1205,5 +1210,27 @@ fn folder_path_and_print() {
         assert_eq!(rig.shell.printed.lock().unwrap().as_slice(), &[saved_png(tmp.path())]);
         let folder = saved_png(tmp.path()).parent().unwrap().display().to_string();
         assert_eq!(rig.clipboard.texts.lock().unwrap().last(), Some(&folder));
+    });
+}
+
+/// `REMOVE_BACKGROUND` and `ANALYZE_IMAGE` (M7): the cut-out is what gets copied; the analysis is shown,
+/// copied and traced.
+#[test]
+fn remove_background_and_analyze() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let flags = AfterCaptureTasks::REMOVE_BACKGROUND | AfterCaptureTasks::ANALYZE_IMAGE | AfterCaptureTasks::COPY_IMAGE_TO_CLIPBOARD;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), with_flags(tmp.path(), flags));
+        *rig.analyzer.answer.lock().unwrap() = "a test card".into();
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/remove_background_and_analyze.trace"));
+        assert_eq!(*rig.background.calls.lock().unwrap(), 1);
+        assert_eq!(rig.analyzer.prompts.lock().unwrap().len(), 1);
+        // The first frame's pixel has red 30 (< 128), so the fake made it transparent.
+        assert_eq!(rig.clipboard.images.lock().unwrap()[0].pixels()[3], 0);
     });
 }
