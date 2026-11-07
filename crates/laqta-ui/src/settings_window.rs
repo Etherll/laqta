@@ -121,6 +121,8 @@ struct SettingsWindow {
     model_status: std::collections::HashMap<String, String>,
     custom_family: usize,
     custom_name: Entity<InputState>,
+    /// Analyzer base URL, model, prompt, key; remove.bg key (keys go to the secret store on save).
+    cloud: [Entity<InputState>; 5],
     /// The last update check's message, and whether it can be installed from here.
     update: Option<(String, bool)>,
 }
@@ -204,6 +206,13 @@ impl SettingsWindow {
             model_status: Default::default(),
             custom_family: 0,
             custom_name: text_input("My model", window, cx),
+            cloud: {
+                let a = &draft.cloud.analyzer;
+                let (url, model, prompt) = (a.base_url.clone(), a.model.clone(), a.prompt.clone());
+                let mut key = || cx.new(|cx| InputState::new(window, cx).placeholder("(stored in the system keyring; type to replace)"));
+                let (k1, k2) = (key(), key());
+                [text_input(url, window, cx), text_input(model, window, cx), text_input(prompt, window, cx), k1, k2]
+            },
             draft,
             page: Page::General,
             message: None,
@@ -294,6 +303,18 @@ impl SettingsWindow {
             o.scroll_amount = num(&self.scroll[3], "Scroll amount")?.clamp(1, 50);
             o.ignore_top = num(&self.scroll[4], "Fixed rows at the top")?;
             o.ignore_bottom = num(&self.scroll[5], "Fixed rows at the bottom")?;
+        }
+        self.draft.cloud.analyzer.base_url = Self::value(&self.cloud[0], cx);
+        self.draft.cloud.analyzer.model = Self::value(&self.cloud[1], cx);
+        self.draft.cloud.analyzer.prompt = Self::value(&self.cloud[2], cx);
+        {
+            let secrets = cx.global::<UiState>().services.secrets.clone();
+            for (input, key) in [(&self.cloud[3], "cloud:analyzer"), (&self.cloud[4], "cloud:remove.bg")] {
+                let v = Self::value(input, cx);
+                if !v.is_empty() {
+                    secrets.set(key, &v).map_err(|e| format!("Couldn't store the key: {e}"))?;
+                }
+            }
         }
         self.draft.auto_capture.interval_ms = num(&self.auto_interval, "Auto-capture interval")?.max(1) * 1000;
         self.draft.auto_capture.count = num(&self.auto_count, "Auto-capture count")?;
@@ -894,6 +915,37 @@ impl SettingsWindow {
             .child(
                 Button::new("custom-add").label("Choose ONNX file…").on_click(cx.listener(move |this, _, _, cx| this.add_custom_model(cx))),
             )
+            .child(div().h(px(12.)))
+            .child(widgets::section("Cloud", cx))
+            .child(widgets::muted("Background removal can use remove.bg instead of a local model (needs an API key).", cx))
+            .child(widgets::row("Remove backgrounds with", self.bg_provider_buttons(cx), cx))
+            .child(widgets::row("remove.bg API key", Input::new(&self.cloud[4]), cx))
+            .child(widgets::muted(
+                "Analyze image sends the capture to an OpenAI-compatible endpoint: OpenAI, Gemini (https://generativelanguage.googleapis.com/v1beta/openai), OpenRouter (https://openrouter.ai/api/v1), Ollama or LM Studio (http://localhost:…/v1).",
+                cx,
+            ))
+            .child(widgets::row("Endpoint (base URL)", Input::new(&self.cloud[0]), cx))
+            .child(widgets::row("Model", Input::new(&self.cloud[1]), cx))
+            .child(widgets::row("Prompt", Input::new(&self.cloud[2]), cx))
+            .child(widgets::row("API key (empty for local servers)", Input::new(&self.cloud[3]), cx))
+    }
+
+    fn bg_provider_buttons(&self, cx: &mut Context<Self>) -> gpui::Div {
+        use laqta_domain::settings::BackgroundProvider as B;
+        let mut row = div().flex().gap(px(4.));
+        for (b, label) in [(B::Local, "Local model"), (B::RemoveBg, "remove.bg")] {
+            row = row.child(
+                Button::new(SharedString::from(format!("bgp-{b:?}")))
+                    .label(label)
+                    .small()
+                    .selected(self.draft.cloud.background == b)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.draft.cloud.background = b;
+                        cx.notify();
+                    })),
+            );
+        }
+        row
     }
 
     fn download_model(&mut self, id: String, cx: &mut Context<Self>) {
