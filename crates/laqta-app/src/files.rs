@@ -34,6 +34,11 @@ pub(crate) async fn first_free(spawner: &dyn Spawner, candidates: Vec<PathBuf>) 
     .await
 }
 
+/// Whether `path` exists.
+pub(crate) async fn exists(spawner: &dyn Spawner, path: PathBuf) -> bool {
+    blocking(spawner, move || path.exists()).await
+}
+
 /// Creates the parent folders, writes `<path>.part`, then renames it to `path`. A failed attempt
 /// removes the `.part` file and returns the original error.
 pub(crate) async fn save_atomic(spawner: &dyn Spawner, path: PathBuf, bytes: Vec<u8>) -> io::Result<()> {

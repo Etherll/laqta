@@ -1,9 +1,14 @@
-//! The Task module owns the task lifecycle (ADR 011). Submitting a job emits `InQueue` and returns;
-//! the job waits for a capture slot, runs, and reports through `TaskEvent`s. A panic in the job
-//! body becomes a `Failed` event (ADR 020).
+//! The Task module owns the task lifecycle (ADR 011). Submitting a job emits `InQueue` and returns; the job
+//! waits for a capture slot, runs its after-capture steps, and reports through `TaskEvent`s. A panic in the
+//! job body becomes a `Failed` event (ADR 020). A stop request ends a queued job at once, and a running job
+//! at its next checkpoint.
 
+mod encode;
 mod run;
+mod save;
 mod status;
+#[cfg(test)]
+mod tests;
 
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
@@ -11,22 +16,52 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_broadcast::Sender;
+use futures_channel::oneshot;
 use futures_lite::FutureExt;
-use laqta_domain::Frame;
-use laqta_ports::{AppError, BoxFuture, TaskEvent, TaskId, TaskStatus};
+use laqta_domain::workflow::TaskSettings;
+use laqta_domain::{Bitmap, Frame};
+use laqta_ports::{AppError, BoxFuture, Spawner, TaskEvent, TaskId, TaskStatus};
 
 use crate::dispatcher::{Ports, SettingsCell};
-use status::{Queue, Reporter};
+use status::{Jobs, Queue, Reporter, Stop};
 
 /// Capture jobs that may run at once. Further jobs wait in `InQueue`.
 const CAPTURE_SLOTS: usize = 2;
 /// Choosing a file name and writing it happen one at a time, so two jobs never pick the same name.
 const SAVE_SLOTS: usize = 1;
 
+/// The image a Capture job works on.
+#[derive(Clone, Debug)]
+pub enum CaptureImage {
+    /// One frame per monitor. Task composes them.
+    Frames(Vec<Frame>),
+    /// Already cropped, for example a region.
+    Image(Bitmap),
+}
+
+/// Facts about the capture that the name patterns read (`%t`, `%pn`).
+#[derive(Clone, Debug, Default)]
+pub struct CaptureInfo {
+    pub window_title: String,
+    pub process_name: String,
+}
+
 /// Work the dispatcher hands to Task.
 #[derive(Clone, Debug)]
 pub enum TaskJob {
-    Capture { frames: Vec<Frame> },
+    /// `settings` are the effective task settings. A `None` `screenshots_dir` means the application's folder.
+    Capture { image: CaptureImage, settings: TaskSettings, info: CaptureInfo },
+}
+
+/// What the steps of every job share. Each job gets a clone.
+#[derive(Clone)]
+struct Context {
+    ports: Arc<Ports>,
+    reporter: Reporter,
+    /// The save slots: choosing a name and writing happen one at a time.
+    saves: Arc<Queue>,
+    /// The value of `%i` for the next saved file. Starts at 1 and advances once per file written.
+    counter: Arc<AtomicU64>,
 }
 
 pub(crate) struct Task {
@@ -35,6 +70,8 @@ pub(crate) struct Task {
     reporter: Reporter,
     capture_slots: Arc<Queue>,
     save_slots: Arc<Queue>,
+    jobs: Arc<Jobs>,
+    counter: Arc<AtomicU64>,
     next_id: AtomicU64,
 }
 
@@ -46,33 +83,94 @@ impl Task {
             reporter: Reporter::new(events),
             capture_slots: Arc::new(Queue::new(CAPTURE_SLOTS)),
             save_slots: Arc::new(Queue::new(SAVE_SLOTS)),
+            jobs: Arc::new(Jobs::default()),
+            counter: Arc::new(AtomicU64::new(1)),
             next_id: AtomicU64::new(1),
         }
     }
 
-    /// Emits `InQueue` and hands the job to the spawner. The job runs later.
+    /// Emits `InQueue` and hands the job to the spawner. The job runs later, unless it is stopped first.
     pub(crate) fn submit(&self, job: TaskJob) -> TaskId {
         let id = TaskId(self.next_id.fetch_add(1, Ordering::Relaxed));
+        let job = self.resolve(job);
+        self.jobs.add(id);
         self.reporter.status(id, TaskStatus::InQueue);
         self.ports.spawner.spawn(self.job(id, job));
         id
     }
 
+    /// Stops a job. A queued job is reported `Stopped` now and never runs. A running job stops at its next
+    /// checkpoint and keeps any file it has already saved. False when the job is unknown or has finished.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn stop(&self, id: TaskId) -> bool {
+        match self.jobs.request_stop(id) {
+            Stop::Unknown => false,
+            Stop::Queued => {
+                self.reporter.status(id, TaskStatus::Stopped);
+                true
+            }
+            Stop::Running => true,
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn stop_all(&self) {
+        for id in self.jobs.ids() {
+            self.stop(id);
+        }
+    }
+
+    /// The folder is resolved here, so the job runs with the folder it was submitted with.
+    fn resolve(&self, job: TaskJob) -> TaskJob {
+        let TaskJob::Capture { image, mut settings, info } = job;
+        settings.screenshots_dir.get_or_insert_with(|| self.settings.get().screenshots_dir.clone());
+        TaskJob::Capture { image, settings, info }
+    }
+
     fn job(&self, id: TaskId, job: TaskJob) -> BoxFuture<'static, ()> {
         let capture_slots = Arc::clone(&self.capture_slots);
-        let save_slots = Arc::clone(&self.save_slots);
-        let ports = Arc::clone(&self.ports);
-        let settings = self.settings.get();
-        let reporter = self.reporter.clone();
+        let jobs = Arc::clone(&self.jobs);
+        let cx = Context {
+            ports: Arc::clone(&self.ports),
+            reporter: self.reporter.clone(),
+            saves: Arc::clone(&self.save_slots),
+            counter: Arc::clone(&self.counter),
+        };
         Box::pin(async move {
+            // Stopped while queued: `stop` has already reported it, so it takes no slot and runs nothing.
+            if !jobs.contains(id) {
+                return;
+            }
             // The slot is taken and released outside the guarded body (ADR 020).
             let _slot = capture_slots.acquire().await;
-            let TaskJob::Capture { frames } = job;
-            let body = run::capture(ports, settings, save_slots, reporter.clone(), id, frames);
+            let Some(stop) = jobs.start(id) else { return };
+            let TaskJob::Capture { image, settings, info } = job;
+            let body = run::capture(cx.clone(), id, image, settings, info, stop);
             if let Err(payload) = AssertUnwindSafe(body).catch_unwind().await {
-                reporter.fail(id, AppError::Panic(panic_message(&*payload)));
+                cx.reporter.fail(id, AppError::Panic(panic_message(&*payload)));
             }
+            jobs.finish(id);
         })
+    }
+}
+
+/// Runs `work` on the compute pool and returns its result. A panic comes back as `AppError::Panic`,
+/// because the pool may drop the work instead of reporting it (ADR 020).
+async fn compute<T: Send + 'static>(
+    spawner: &dyn Spawner,
+    work: impl FnOnce() -> Result<T, AppError> + Send + 'static,
+) -> Result<T, AppError> {
+    let (tx, rx) = oneshot::channel();
+    spawner
+        .run_compute(Box::new(move || {
+            let outcome = std::panic::catch_unwind(AssertUnwindSafe(work));
+            let _ = tx.send(outcome);
+        }))
+        .await;
+    match rx.await {
+        Ok(Ok(result)) => result,
+        Ok(Err(payload)) => Err(AppError::Panic(panic_message(&*payload))),
+        Err(oneshot::Canceled) => Err(AppError::Cancelled),
     }
 }
 
