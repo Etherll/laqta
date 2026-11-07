@@ -24,6 +24,7 @@ laqta-library = { path = "crates/laqta-library" }
 
 # UI (ADR 002: move together)
 gpui = { package = "gpui-pre", version = "=0.3.11" }
+gpui-component = { version = "=0.9.0" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
 
 # core
@@ -40,6 +41,8 @@ gif = "0.14.2"
 tiff = "0.11.3"
 fast_image_resize = { version = "6.1.0", default-features = false, features = ["std"] }
 serde_json = "1.0.154"
+image = { version = "0.25", default-features = false }
+smallvec = "1"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 fastrand = "2.5.0"
 swayipc = "4.0.0"

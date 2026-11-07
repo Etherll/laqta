@@ -340,3 +340,15 @@ impl Rng for CountingRng {
         v
     }
 }
+
+#[derive(Debug, Default)]
+pub struct FakeToolHost {
+    pub opened: Mutex<Vec<crate::ToolWindow>>,
+}
+
+impl crate::ToolHost for FakeToolHost {
+    fn open(&self, window: crate::ToolWindow) -> Result<(), PortError> {
+        self.opened.lock().unwrap().push(window);
+        Ok(())
+    }
+}

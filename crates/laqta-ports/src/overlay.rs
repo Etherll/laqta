@@ -44,3 +44,17 @@ pub trait HoverSource: Send + Sync {
     /// The focused top-level window, if the platform can tell.
     fn active_window(&self) -> crate::BoxFuture<'_, Result<Option<HoverTarget>, PortError>>;
 }
+
+/// A window the dispatcher can open (ARCHITECTURE §2.2, windowed tools). Tools join in M5.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ToolWindow {
+    Main,
+    Settings,
+    History,
+    ImageHistory,
+}
+
+pub trait ToolHost: Send + Sync {
+    fn open(&self, window: ToolWindow) -> Result<(), PortError>;
+}

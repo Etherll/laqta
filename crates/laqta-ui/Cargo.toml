@@ -13,3 +13,16 @@ workspace = true
 laqta-domain.workspace = true
 laqta-ports.workspace = true
 laqta-app.workspace = true
+laqta-library.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+tracing.workspace = true
+image.workspace = true
+smallvec.workspace = true
+futures-channel.workspace = true
+futures-lite.workspace = true
+jiff.workspace = true
+laqta-imaging.workspace = true
+
+[dev-dependencies]
+laqta-ports = { workspace = true, features = ["fakes"] }

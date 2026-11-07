@@ -325,7 +325,8 @@ apps/laqta        ──▶ every crate below (composition root)
 apps/laqta-nmh    ──▶ laqta-ipc
 
 laqta-ui          ──▶ laqta-app (dispatch, application handle), laqta-ports, laqta-domain,
-                       laqta-editor (paints its output), laqta-library (reads, domain types only)
+                       laqta-editor (paints its output), laqta-library (reads, domain types only),
+                       laqta-imaging (thumbnails and the overlay magnifier; added in M1, D9)
 laqta-platform-*  ──▶ laqta-ports, laqta-domain
 laqta-upload      ──▶ laqta-ports, laqta-domain, laqta-http
 laqta-cloud       ──▶ laqta-ports, laqta-domain, laqta-http
