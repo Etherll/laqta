@@ -1,0 +1,219 @@
+{
+  "Hotkeys": [
+    {
+      "HotkeyInfo": {
+        "Hotkey": "PrintScreen",
+        "Win": false
+      },
+      "TaskSettings": {
+        "Description": "Capture entire screen",
+        "Job": "PrintScreen",
+        "UseDefaultAfterCaptureJob": true,
+        "AfterCaptureJob": "CopyImageToClipboard, SaveImageToFile, UploadImageToHost",
+        "UseDefaultAfterUploadJob": true,
+        "AfterUploadJob": "CopyURLToClipboard",
+        "UseDefaultDestinations": true,
+        "ImageDestination": "Imgur",
+        "TextDestination": "Pastebin",
+        "FileDestination": "Dropbox",
+        "URLShortenerDestination": "BITLY",
+        "UseDefaultGeneralSettings": true,
+        "GeneralSettings": {
+          "PlaySoundAfterCapture": false,
+          "PlaySoundAfterUpload": false
+        },
+        "UseDefaultImageSettings": true,
+        "ImageSettings": {
+          "ImageFormat": "PNG",
+          "ImageJPEGQuality": 90,
+          "ImageAutoUseJPEG": true,
+          "ImageAutoUseJPEGSize": 2048,
+          "FileExistAction": "UniqueName"
+        },
+        "UseDefaultCaptureSettings": true,
+        "CaptureSettings": {
+          "ShowCursor": true,
+          "ScreenshotDelay": 0.0,
+          "CaptureTransparent": false
+        },
+        "UseDefaultUploadSettings": true,
+        "UploadSettings": {
+          "NameFormatPattern": "%y-%mo-%d_%h-%mi-%s",
+          "NameFormatPatternActiveWindow": "%pn_%y-%mo-%d_%h-%mi-%s"
+        }
+      }
+    },
+    {
+      "HotkeyInfo": {
+        "Hotkey": "PrintScreen, Control",
+        "Win": false
+      },
+      "TaskSettings": {
+        "Description": "Capture region",
+        "Job": "RectangleRegion",
+        "UseDefaultAfterCaptureJob": true,
+        "AfterCaptureJob": "CopyImageToClipboard, SaveImageToFile, UploadImageToHost",
+        "UseDefaultAfterUploadJob": true,
+        "AfterUploadJob": "CopyURLToClipboard",
+        "UseDefaultDestinations": true,
+        "ImageDestination": "Imgur",
+        "TextDestination": "Pastebin",
+        "FileDestination": "Dropbox",
+        "URLShortenerDestination": "BITLY",
+        "UseDefaultGeneralSettings": true,
+        "GeneralSettings": {
+          "PlaySoundAfterCapture": false,
+          "PlaySoundAfterUpload": false
+        },
+        "UseDefaultImageSettings": true,
+        "ImageSettings": {
+          "ImageFormat": "PNG",
+          "ImageJPEGQuality": 90,
+          "ImageAutoUseJPEG": true,
+          "ImageAutoUseJPEGSize": 2048,
+          "FileExistAction": "UniqueName"
+        },
+        "UseDefaultCaptureSettings": true,
+        "CaptureSettings": {
+          "ShowCursor": true,
+          "ScreenshotDelay": 0.0,
+          "CaptureTransparent": false
+        },
+        "UseDefaultUploadSettings": true,
+        "UploadSettings": {
+          "NameFormatPattern": "%y-%mo-%d_%h-%mi-%s",
+          "NameFormatPatternActiveWindow": "%pn_%y-%mo-%d_%h-%mi-%s"
+        }
+      }
+    },
+    {
+      "HotkeyInfo": {
+        "Hotkey": "PrintScreen, Alt",
+        "Win": false
+      },
+      "TaskSettings": {
+        "Description": "Capture active window to my host",
+        "Job": "ActiveWindow",
+        "UseDefaultAfterCaptureJob": false,
+        "AfterCaptureJob": "CopyImageToClipboard, ShowBeforeUploadWindow, UploadImageToHost",
+        "UseDefaultAfterUploadJob": true,
+        "AfterUploadJob": "CopyURLToClipboard",
+        "UseDefaultDestinations": false,
+        "ImageDestination": "CustomImageUploader",
+        "TextDestination": "Pastebin",
+        "FileDestination": "FTP",
+        "URLShortenerDestination": "ISGD",
+        "UseDefaultGeneralSettings": true,
+        "GeneralSettings": {
+          "PlaySoundAfterCapture": false,
+          "PlaySoundAfterUpload": false
+        },
+        "UseDefaultImageSettings": false,
+        "ImageSettings": {
+          "ImageFormat": "JPG",
+          "ImageJPEGQuality": 75,
+          "ImageAutoUseJPEG": false,
+          "ImageAutoUseJPEGSize": 0,
+          "FileExistAction": "Overwrite"
+        },
+        "UseDefaultCaptureSettings": true,
+        "CaptureSettings": {
+          "ShowCursor": true,
+          "ScreenshotDelay": 0.0,
+          "CaptureTransparent": false
+        },
+        "UseDefaultUploadSettings": false,
+        "UploadSettings": {
+          "NameFormatPattern": "%y%mo%d_%h%mi%s",
+          "NameFormatPatternActiveWindow": "%pn_%y%mo%d_%h%mi%s"
+        }
+      }
+    },
+    {
+      "HotkeyInfo": {
+        "Hotkey": "D5, Control, Shift",
+        "Win": false
+      },
+      "TaskSettings": {
+        "Description": "GIF recording of a region",
+        "Job": "ScreenRecorderGIF",
+        "UseDefaultAfterCaptureJob": true,
+        "AfterCaptureJob": "CopyImageToClipboard",
+        "UseDefaultAfterUploadJob": true,
+        "AfterUploadJob": "CopyURLToClipboard",
+        "UseDefaultDestinations": true,
+        "ImageDestination": "Imgur",
+        "TextDestination": "Pastebin",
+        "FileDestination": "Dropbox",
+        "URLShortenerDestination": "BITLY",
+        "UseDefaultGeneralSettings": true,
+        "GeneralSettings": {
+          "PlaySoundAfterCapture": false,
+          "PlaySoundAfterUpload": false
+        },
+        "UseDefaultImageSettings": true,
+        "ImageSettings": {
+          "ImageFormat": "PNG",
+          "ImageJPEGQuality": 90,
+          "ImageAutoUseJPEG": true,
+          "ImageAutoUseJPEGSize": 2048,
+          "FileExistAction": "UniqueName"
+        },
+        "UseDefaultCaptureSettings": true,
+        "CaptureSettings": {
+          "ShowCursor": true,
+          "ScreenshotDelay": 0.0,
+          "CaptureTransparent": false
+        },
+        "UseDefaultUploadSettings": true,
+        "UploadSettings": {
+          "NameFormatPattern": "%y-%mo-%d_%h-%mi-%s",
+          "NameFormatPatternActiveWindow": "%pn_%y-%mo-%d_%h-%mi-%s"
+        }
+      }
+    },
+    {
+      "HotkeyInfo": {
+        "Hotkey": "S, Control, Shift",
+        "Win": true
+      },
+      "TaskSettings": {
+        "Description": "Text capture",
+        "Job": "OCR",
+        "UseDefaultAfterCaptureJob": true,
+        "AfterCaptureJob": "DoOCR",
+        "UseDefaultAfterUploadJob": true,
+        "AfterUploadJob": "CopyURLToClipboard",
+        "UseDefaultDestinations": true,
+        "ImageDestination": "Imgur",
+        "TextDestination": "Pastebin",
+        "FileDestination": "Dropbox",
+        "URLShortenerDestination": "BITLY",
+        "UseDefaultGeneralSettings": true,
+        "GeneralSettings": {
+          "PlaySoundAfterCapture": false,
+          "PlaySoundAfterUpload": false
+        },
+        "UseDefaultImageSettings": true,
+        "ImageSettings": {
+          "ImageFormat": "PNG",
+          "ImageJPEGQuality": 90,
+          "ImageAutoUseJPEG": true,
+          "ImageAutoUseJPEGSize": 2048,
+          "FileExistAction": "UniqueName"
+        },
+        "UseDefaultCaptureSettings": true,
+        "CaptureSettings": {
+          "ShowCursor": true,
+          "ScreenshotDelay": 0.0,
+          "CaptureTransparent": false
+        },
+        "UseDefaultUploadSettings": true,
+        "UploadSettings": {
+          "NameFormatPattern": "%y-%mo-%d_%h-%mi-%s",
+          "NameFormatPatternActiveWindow": "%pn_%y-%mo-%d_%h-%mi-%s"
+        }
+      }
+    }
+  ]
+}

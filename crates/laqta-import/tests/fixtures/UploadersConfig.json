@@ -1,0 +1,57 @@
+{
+  "CustomUploadersList": [
+    {
+      "Version": "15.0.0",
+      "Name": "My host",
+      "DestinationType": "ImageUploader, TextUploader, FileUploader",
+      "RequestMethod": "POST",
+      "RequestURL": "https://uploads.example.test/api/upload",
+      "Body": "MultipartFormData",
+      "FileFormName": "file",
+      "URL": "{json:data.url}"
+    }
+  ],
+  "CustomImageUploaderSelected": 0,
+  "ImgurAccountType": "Anonymous",
+  "ImgurClientID": "",
+  "FTPAccountList": [
+    {
+      "Name": "Home server",
+      "Protocol": "FTP",
+      "Host": "ftp.example.test",
+      "Port": 21,
+      "Username": "alice",
+      "Password": "ftp-pass-plain",
+      "SubFolderPath": "shots",
+      "HttpHomePath": "https://files.example.test/shots",
+      "Keypath": ""
+    },
+    {
+      "Name": "Backup",
+      "Protocol": "FTPS",
+      "Host": "backup.example.test",
+      "Port": 990,
+      "FTPSEncryption": "Implicit",
+      "Username": "bob",
+      "Password": "AQAAANCMnd8BFdERjHoAwE/Cl+sHBwcHBwcHBwcHBwc=",
+      "SubFolderPath": "",
+      "HttpHomePath": "",
+      "Keypath": ""
+    }
+  ],
+  "AmazonS3Settings": {
+    "AccessKeyID": "AKIAEXAMPLE",
+    "SecretAccessKey": "AQAAANCMnd8BFdERjHoAwE/Cl+sHBwcHBwcHBwcHBwc=",
+    "Endpoint": "s3.example.test",
+    "Region": "eu-west-1",
+    "Bucket": "shots",
+    "ObjectPrefix": "laqta/",
+    "CustomDomain": "https://cdn.example.test",
+    "UsePathStyle": false,
+    "SetPublicACL": true
+  },
+  "BitlyOAuth2Info": {
+    "AccessToken": "bitly-token-plain"
+  },
+  "LocalhostAccountList": []
+}
