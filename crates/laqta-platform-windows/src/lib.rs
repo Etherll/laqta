@@ -32,6 +32,8 @@ mod keys;
 #[cfg(windows)]
 mod loopback;
 #[cfg(any(windows, test))]
+mod ocr;
+#[cfg(any(windows, test))]
 mod patch;
 #[cfg(any(windows, test))]
 mod secrets;
@@ -69,7 +71,7 @@ mod imp {
     use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 
     use crate::{
-        autostart, capture_dxgi, capture_gdi, clipboard, cursor, hover, input, integration, secrets, shell, shell_thread, stream,
+        autostart, capture_dxgi, capture_gdi, clipboard, cursor, hover, input, integration, ocr, secrets, shell, shell_thread, stream,
         transparent, window_ops,
     };
 
@@ -87,6 +89,7 @@ mod imp {
         pub autostart: Arc<dyn laqta_ports::Autostart>,
         pub integration: Arc<dyn laqta_ports::ShellIntegration>,
         pub input: Arc<dyn laqta_ports::InputSynth>,
+        pub ocr: Arc<dyn laqta_ports::Ocr>,
     }
 
     impl std::fmt::Debug for WindowsPorts {
@@ -109,6 +112,7 @@ mod imp {
             autostart: Arc::new(autostart::WindowsAutostart::default()),
             integration: Arc::new(integration::WindowsShellIntegration::default()),
             input: Arc::new(input::WindowsInput),
+            ocr: Arc::new(ocr::WindowsOcr),
         }
     }
 

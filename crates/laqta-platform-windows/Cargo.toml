@@ -17,6 +17,11 @@ arboard.workspace = true
 wasapi.workspace = true
 tracing.workspace = true
 windows = { workspace = true, features = [
+    "Foundation",
+    "Globalization",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
     "Win32_Devices_Display",
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
