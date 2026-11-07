@@ -104,6 +104,8 @@ pub struct App {
     pub(crate) auto_capture: std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
     /// Live watch-folder handles (M6 D6); replaced by `start_watch_folders`.
     pub(crate) watches: std::sync::Mutex<Vec<laqta_ports::WatchHandle>>,
+    /// What the borderless and top-most toggles switched on (M5 D7).
+    pub(crate) window_toggles: crate::tools::WindowToggles,
     /// Keeps the event channel open while nobody listens, so sends never fail.
     idle: InactiveReceiver<TaskEvent>,
 }
@@ -130,6 +132,7 @@ impl App {
             last_recording_area: std::sync::Mutex::new(None),
             auto_capture: std::sync::Mutex::new(None),
             watches: std::sync::Mutex::new(Vec::new()),
+            window_toggles: Default::default(),
             idle: active.deactivate(),
         })
     }
@@ -466,6 +469,7 @@ impl App {
                 Ok(Dispatched::Done)
             }
             Action::ExitLaqta => Ok(Dispatched::Exit),
+            a if let Some(r) = self.tool_route(a, &ts).await => r,
             Action::ScrollingCapture => self.scrolling_capture(ts, workflow).await,
             Action::AutoCapture => self.auto_capture(None),
             Action::StartAutoCapture => self.auto_capture(Some(true)),

@@ -9,6 +9,7 @@ mod recording;
 mod region;
 mod scrolling;
 mod task;
+mod tool_routes;
 mod tools;
 mod watch;
 

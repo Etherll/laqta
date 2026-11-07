@@ -302,6 +302,13 @@ fn every_action_routes() {
         Action::ScrollingCapture,
         Action::AutoCapture,
         Action::StartAutoCapture,
+        // Tools that select a region first.
+        Action::ScreenColorPicker,
+        Action::Ruler,
+        Action::PinToScreen,
+        Action::PinToScreenFromScreen,
+        Action::Ocr,
+        Action::QrCodeScanRegion,
     ];
     for &a in Action::ALL.iter().filter(|a| !waits.contains(a)) {
         let tmp = TempDir::new().unwrap();
@@ -317,4 +324,32 @@ fn every_action_routes() {
             }
         }
     }
+}
+
+#[test]
+fn tool_actions_open_their_windows() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path(), |_| {});
+    for (action, kind) in [
+        (Action::ColorPicker, laqta_ports::ToolKind::ColorPicker),
+        (Action::HashCheck, laqta_ports::ToolKind::HashCheck),
+        (Action::IndexFolder, laqta_ports::ToolKind::IndexFolder),
+        (Action::NetworkMonitor, laqta_ports::ToolKind::NetworkMonitor),
+    ] {
+        assert_eq!(run(&h, h.app.dispatch(action, None)).unwrap(), Dispatched::Done);
+        assert_eq!(h.tools.opened.lock().unwrap().last(), Some(&ToolWindow::Tool(kind)));
+    }
+}
+
+#[test]
+fn pins_and_highlighter() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path(), |_| {});
+    h.tools.pins.lock().unwrap().push((4, 4));
+    run(&h, h.app.dispatch(Action::PinToScreenCloseAll, None)).unwrap();
+    assert!(h.tools.pins.lock().unwrap().is_empty());
+    run(&h, h.app.dispatch(Action::MouseHighlighter, None)).unwrap();
+    assert!(*h.tools.highlighter.lock().unwrap());
+    run(&h, h.app.dispatch(Action::MouseHighlighter, None)).unwrap();
+    assert!(!*h.tools.highlighter.lock().unwrap());
 }

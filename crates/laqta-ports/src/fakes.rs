@@ -375,12 +375,33 @@ impl Rng for CountingRng {
 #[derive(Debug, Default)]
 pub struct FakeToolHost {
     pub opened: Mutex<Vec<crate::ToolWindow>>,
+    /// Sizes of pinned images.
+    pub pins: Mutex<Vec<(u32, u32)>>,
+    pub texts: Mutex<Vec<(String, String)>>,
+    pub highlighter: Mutex<bool>,
 }
 
 impl crate::ToolHost for FakeToolHost {
     fn open(&self, window: crate::ToolWindow) -> Result<(), PortError> {
         self.opened.lock().unwrap().push(window);
         Ok(())
+    }
+    fn pin(&self, image: Bitmap) -> Result<(), PortError> {
+        self.pins.lock().unwrap().push((image.width(), image.height()));
+        Ok(())
+    }
+    fn close_pins(&self) -> Result<(), PortError> {
+        self.pins.lock().unwrap().clear();
+        Ok(())
+    }
+    fn show_text(&self, title: &str, text: &str) -> Result<(), PortError> {
+        self.texts.lock().unwrap().push((title.to_owned(), text.to_owned()));
+        Ok(())
+    }
+    fn toggle_mouse_highlighter(&self) -> Result<bool, PortError> {
+        let mut on = self.highlighter.lock().unwrap();
+        *on = !*on;
+        Ok(*on)
     }
 }
 

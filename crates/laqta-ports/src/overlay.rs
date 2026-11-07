@@ -63,10 +63,63 @@ pub enum ToolWindow {
     Effects(Option<std::path::PathBuf>),
     /// The image editor on a file (`Action::ImageEditor` with no capture).
     Editor(Option<std::path::PathBuf>),
+    /// A windowed tool (M5).
+    Tool(ToolKind),
+}
+
+/// The windowed tools (M5 D1). Each opens its own panel in the tools window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ToolKind {
+    ColorPicker,
+    ImageViewer,
+    ImageComparer,
+    IconConverter,
+    ImageCombiner,
+    ImageSplitter,
+    ImageResizer,
+    ImageConverter,
+    ImageWatermark,
+    ImageThumbnailer,
+    VideoConverter,
+    VideoTrimmer,
+    VideoThumbnailer,
+    GifMaker,
+    GifTrimmer,
+    QrCode,
+    HashCheck,
+    Metadata,
+    StripMetadata,
+    IndexFolder,
+    ClipboardViewer,
+    BorderlessWindow,
+    MonitorTest,
+    NetworkMonitor,
 }
 
 pub trait ToolHost: Send + Sync {
     fn open(&self, window: ToolWindow) -> Result<(), PortError>;
+
+    /// Pins an image to the screen: a borderless, always-on-top window (M5).
+    fn pin(&self, image: laqta_domain::Bitmap) -> Result<(), PortError> {
+        let _ = image;
+        Err(PortError::Unsupported("pin to screen".into()))
+    }
+
+    /// Closes every pinned image.
+    fn close_pins(&self) -> Result<(), PortError> {
+        Ok(())
+    }
+
+    /// Shows a tool's text result (OCR, QR decode, ruler, inspector) with a copy button.
+    fn show_text(&self, title: &str, text: &str) -> Result<(), PortError> {
+        let _ = (title, text);
+        Err(PortError::Unsupported("text results".into()))
+    }
+
+    /// Turns the mouse highlighter on or off (M5 D9); returns whether it is now on.
+    fn toggle_mouse_highlighter(&self) -> Result<bool, PortError> {
+        Err(PortError::Unsupported("mouse highlighter".into()))
+    }
 }
 
 /// The annotation editor window (`AfterCaptureTasks::ANNOTATE_IMAGE`): returns the edited image when
