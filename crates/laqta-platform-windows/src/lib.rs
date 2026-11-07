@@ -51,6 +51,8 @@ mod sound;
 mod stream;
 #[cfg(windows)]
 mod transparent;
+#[cfg(any(windows, test))]
+mod wgc;
 #[cfg(windows)]
 mod window_ops;
 #[cfg(any(windows, test))]
@@ -81,6 +83,8 @@ mod imp {
     pub struct WindowsPorts {
         pub screen: Arc<dyn ScreenSource>,
         pub stream: Arc<dyn ScreenStream>,
+        /// The native recorder (Windows.Graphics.Capture + Media Foundation), a second `Media` backend beside FFmpeg.
+        pub native_recorder: Arc<dyn laqta_ports::Media>,
         pub clipboard: Arc<dyn Clipboard>,
         pub shell: Arc<dyn Shell>,
         pub hotkeys: Arc<dyn HotkeyRegistrar>,
@@ -105,6 +109,7 @@ mod imp {
         WindowsPorts {
             screen: Arc::new(WindowsScreen),
             stream: Arc::new(stream::WindowsStream),
+            native_recorder: Arc::new(crate::wgc::NativeRecorder),
             clipboard: Arc::new(clipboard::WindowsClipboard),
             shell: Arc::new(shell::WindowsShell),
             hotkeys: Arc::new(shell_thread::WindowsHotkeys),
