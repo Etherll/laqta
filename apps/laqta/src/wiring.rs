@@ -106,6 +106,8 @@ pub fn run(server: laqta_ipc::Server, startup_actions: Vec<Action>) -> Result<()
     };
 
     let (ui, ui_rx) = UiHandle::channel();
+    let rng = stubs::system_rng();
+    let uploaders = crate::uploads::registry(&data, Arc::new(ui.clone()), rng.clone());
     let ports = Ports {
         screen: platform.screen,
         clipboard: platform.clipboard,
@@ -115,10 +117,10 @@ pub fn run(server: laqta_ipc::Server, startup_actions: Vec<Action>) -> Result<()
         overlay: Arc::new(ui.clone()),
         tools: Arc::new(ui.clone()),
         prompt: Arc::new(ui.clone()),
-        uploaders: Arc::new(stubs::NoUploaders),
+        uploaders: uploaders.clone(),
         hover: platform.hover,
         notifier: Arc::new(crate::notifier::AppNotifier { ui: ui.clone() }),
-        rng: stubs::system_rng(),
+        rng,
         host: stubs::host_info(),
         codecs: laqta_imaging::Codecs::builtin(),
     };

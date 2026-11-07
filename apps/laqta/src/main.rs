@@ -7,6 +7,7 @@ mod logging;
 mod notifier;
 mod spawner;
 mod stubs;
+mod uploads;
 mod wiring;
 
 use std::process::ExitCode;
