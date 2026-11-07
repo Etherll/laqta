@@ -6,7 +6,10 @@ Status: accepted (2026-11-07, M7 plan D1).
 The photo editor needs the same text shaping (the injected `Fonts` handle, ADR 024) and the same
 `tiny-skia` brush and shape rasterizing that `laqta-editor` already has, with snapshot tests.
 
-**Decision.** `laqta-photo` depends on `laqta-editor`. Both are pure core, so the edge points inward
+**Decision.** `laqta-photo` depends on `laqta-editor`. As built (M7), it reuses the `Fonts` handle and
+`FontStyle`; shapes, frames, gradients and brushes are drawn with `tiny-skia` directly in `laqta-photo`,
+because the Editor engine's rasterizer is private. Making that rasterizer public is the follow-up
+that would let both share it. Both are pure core, so the edge points inward
 and the purity rules (no I/O, threads, environment or clock) still hold for both. `laqta-ui` gains an
 edge to `laqta-photo` for the photo editor window.
 

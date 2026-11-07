@@ -567,7 +567,7 @@ Full records are in [`adr/`](adr/).
 | [024](adr/024-ports-crate-and-core-purity.md) | A `laqta-ports` crate; injected pool, fonts and codecs; neutral port vocabulary; CI allow-lists; `laqta-app` file access confined to `files`; `cosmic-text` on a caret requirement | ports inside `laqta-app`; deny-list only |
 | [025](adr/025-windows-tls-and-sftp.md) | Windows uses SChannel for HTTP TLS and the system OpenSSH `sftp.exe` for SFTP; Linux keeps rustls and `russh` | `cargo-xwin` with the Windows SDK; GNU-only Windows checks |
 | [026](adr/026-windows-sqlite.md) | Linux bundles SQLite; Windows links a static vcpkg SQLite with FTS5 | bundling SQLite on Windows (needs the MSVC C runtime headers on the checking machine) |
-| [027](adr/027-photo-uses-editor.md) | `laqta-photo` depends on `laqta-editor` for fonts, text layout and the brush rasterizer | a copy of those parts in `laqta-photo`; a shared third crate |
+| [027](adr/027-photo-uses-editor.md) | `laqta-photo` depends on `laqta-editor` for fonts and text layout (its rasterizer is private, so shapes and brushes use tiny-skia directly) | a copy of those parts in `laqta-photo`; a shared third crate |
 
 ---
 
