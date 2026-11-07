@@ -116,6 +116,11 @@ impl Fonts {
     }
 
     /// Renders text by itself (for the drawing effects' text callback).
+    /// Renders `text` (e.g. an emoji for the Emoji tool) to a tight Rgba8 bitmap; `None` without fonts.
+    pub fn render_text(&self, text: &str, font: &FontStyle) -> Option<laqta_domain::Bitmap> {
+        self.render_spans_bitmap(text, font)
+    }
+
     pub(crate) fn render_spans_bitmap(&self, text: &str, font: &FontStyle) -> Option<laqta_domain::Bitmap> {
         let (spans, w, h) = self.layout(text, font, None);
         let (w, h) = (w.ceil().max(1.0) as u32, h.ceil().max(1.0) as u32);
