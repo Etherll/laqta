@@ -15,6 +15,7 @@ mod rank;
 mod shift;
 mod tone;
 // ---- X2 ----
+mod x2;
 // ---- end X2 ----
 // ---- X3 ----
 // ---- end X3 ----
@@ -77,6 +78,49 @@ pub(super) fn apply(image: &Bitmap, effect: &Filter, _cx: &EffectContext<'_>) ->
         Filter::Median { radius } => rank::median(&src, radius.min(MAX_WINDOW_RADIUS)),
         Filter::OilPaint { radius, levels } => rank::oil_paint(&src, radius.min(MAX_WINDOW_RADIUS), levels),
         // ---- X2 ----
+        Filter::Anaglyph3D { parallax } => x2::anaglyph(&src, parallax),
+        Filter::AnamorphicLensFlare { threshold, length, strength, color } => {
+            x2::anamorphic_flare(&src, threshold, length, strength, color)
+        }
+        Filter::AnimeSpeedLines { lines, inner, strength, color, seed } => x2::anime_speed_lines(&src, lines, inner, strength, color, seed),
+        Filter::ArtDecoBorder { width, color, accent } => x2::art_deco_border(&src, width, color, accent)?,
+        Filter::ASCIIArt { cell, color } => x2::ascii_art(&src, cell, color),
+        Filter::Bevel { size, strength } => x2::bevel(&src, size, strength),
+        Filter::BlockGlitch { count, max_shift, seed } => x2::block_glitch(&src, count, max_shift, seed),
+        Filter::BloodSplash { count, size, color, seed } => x2::blood_splash(&src, count, size, color, seed),
+        Filter::Bloom { threshold, radius, strength } => x2::bloom(&src, threshold, radius, strength),
+        Filter::BlueprintDrawing { background, line } => x2::blueprint_drawing(&src, background, line),
+        Filter::BrickWallBorder { width, brick, mortar } => x2::brick_wall_border(&src, width, brick, mortar)?,
+        Filter::CandyCaneBorder { width, color, accent } => x2::candy_cane_border(&src, width, color, accent)?,
+        Filter::CartoonStickerCutout { levels, outline, color } => x2::cartoon_sticker(&src, levels, outline, color)?,
+        Filter::CelticKnotBorder { width, color, accent } => x2::celtic_knot_border(&src, width, color, accent)?,
+        Filter::ChainLinkBorder { width, color, accent } => x2::chain_link_border(&src, width, color, accent)?,
+        Filter::ChalkDrawing { threshold, board, chalk, seed } => x2::chalk_drawing(&src, threshold, board, chalk, seed),
+        Filter::ChromaticAberration { amount } => x2::chromatic_aberration(&src, amount),
+        Filter::ChromeMetallicBorder { width, color } => x2::chrome_border(&src, width, color)?,
+        Filter::CircuitBoardBorder { width, board, trace } => x2::circuit_border(&src, width, board, trace)?,
+        Filter::ClaymationTexture { radius, depth } => x2::claymation(&src, radius, depth),
+        Filter::Clouds { scale, opacity, color, seed } => x2::clouds(&src, scale, opacity, color, seed),
+        Filter::ColorHalftone { cell } => x2::color_halftone(&src, cell),
+        Filter::ColorSplash { target, tolerance } => x2::color_splash(&src, target, tolerance),
+        Filter::CrimsonBorder { width, color, accent } => x2::crimson_border(&src, width, color, accent)?,
+        Filter::Crosshatch { spacing } => x2::crosshatch(&src, spacing),
+        Filter::CRT { scanlines, mask, vignette } => x2::crt(&src, scanlines, mask, vignette),
+        Filter::CrystalizeShards { size, seed } => x2::shards(&src, size, seed),
+        Filter::CrystalPrism { size, dispersion, seed } => x2::prism(&src, size, dispersion, seed),
+        Filter::Cyanotype { shadow, highlight } => x2::cyanotype(&src, shadow, highlight),
+        Filter::DatamoshSmear { block, max_shift, seed } => x2::datamosh(&src, block, max_shift, seed),
+        Filter::DiamondPixelate { size } => x2::diamond_pixelate(&src, size),
+        Filter::DisposableCamera { warmth, grain, vignette, seed } => x2::disposable_camera(&src, warmth, grain, vignette, seed),
+        Filter::DotMatrix { cell, background } => x2::dot_matrix(&src, cell, background),
+        Filter::DoubleExposure { offset_x, offset_y, opacity } => x2::double_exposure(&src, (offset_x, offset_y), opacity),
+        Filter::DreamGlow { radius, strength } => x2::dream_glow(&src, radius, strength),
+        Filter::EdgeFeather { size } => x2::edge_feather(&src, size),
+        Filter::Embroidery { cell, cloth } => x2::embroidery(&src, cell, cloth),
+        Filter::Engraving { spacing, paper, ink } => x2::engraving(&src, spacing, paper, ink),
+        Filter::EtchedGlass { radius, seed } => x2::etched_glass(&src, radius, seed),
+        Filter::FakeHair { strands, length, color, seed } => x2::fake_hair(&src, strands, length, color, seed),
+        Filter::FilmGrain { amount, seed } => x2::film_grain(&src, amount, seed),
         // ---- end X2 ----
         // ---- X3 ----
         // ---- end X3 ----

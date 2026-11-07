@@ -161,6 +161,238 @@ pub enum Filter {
         levels: u8,
     },
     // ---- X2 ----
+    /// Red from a view shifted `parallax` px right, and green and blue from one shifted left, for red and cyan glasses.
+    Anaglyph3D {
+        parallax: u32,
+    },
+    /// Horizontal streaks from pixels brighter than `threshold` (0..=1 luma), up to `length` px long (capped at 128),
+    /// tinted `color` and added at `strength`.
+    AnamorphicLensFlare {
+        threshold: f32,
+        length: u32,
+        strength: f32,
+        color: Rgba,
+    },
+    /// `lines` thin rays from the centre, starting `inner` (0..=1 of the half-diagonal) out. Each ray's width comes
+    /// from `seed`. The rays mix the image toward `color` by `strength`.
+    AnimeSpeedLines {
+        lines: u32,
+        inner: f32,
+        strength: f32,
+        color: Rgba,
+        seed: u64,
+    },
+    /// Concentric bands of `color` and `accent`, `width` px deep, with diamonds on the odd bands. The canvas grows by
+    /// `width` on every side.
+    ArtDecoBorder {
+        width: u32,
+        color: Rgba,
+        accent: Rgba,
+    },
+    /// One glyph per `cell` px square, chosen by brightness, in `color` on black.
+    ASCIIArt {
+        cell: u32,
+        color: Rgba,
+    },
+    /// Light on the top and left, shade on the bottom and right, over the outer `size` px. `strength` 0..=1.
+    Bevel {
+        size: u32,
+        strength: f32,
+    },
+    /// Copies `count` random blocks to a place up to `max_shift` px to the side.
+    BlockGlitch {
+        count: u32,
+        max_shift: u32,
+        seed: u64,
+    },
+    /// `count` blood splats in `color`, each `size` (0..=1 of the shorter side) across, with drips.
+    BloodSplash {
+        count: u32,
+        size: f32,
+        color: Rgba,
+        seed: u64,
+    },
+    /// Blurred copy of the parts brighter than `threshold`, `radius` px, added back at `strength`.
+    Bloom {
+        threshold: f32,
+        radius: u32,
+        strength: f32,
+    },
+    /// Edges drawn in `line` over a `background` with a faint grid.
+    BlueprintDrawing {
+        background: Rgba,
+        line: Rgba,
+    },
+    /// Running-bond brick frame in `brick` with `mortar` lines, `width` px deep.
+    BrickWallBorder {
+        width: u32,
+        brick: Rgba,
+        mortar: Rgba,
+    },
+    /// Diagonal stripes of `color` and `accent`, `width` px deep.
+    CandyCaneBorder {
+        width: u32,
+        color: Rgba,
+        accent: Rgba,
+    },
+    /// Posterised to `levels`, with dark edge lines, on a `color` sticker outline `outline` px wide.
+    CartoonStickerCutout {
+        levels: u8,
+        outline: u32,
+        color: Rgba,
+    },
+    /// Interlaced ribbon frame in `color` and `accent`, `width` px deep.
+    CelticKnotBorder {
+        width: u32,
+        color: Rgba,
+        accent: Rgba,
+    },
+    /// Interlocking links in `color` on an `accent` ground, `width` px deep.
+    ChainLinkBorder {
+        width: u32,
+        color: Rgba,
+        accent: Rgba,
+    },
+    /// Edges as chalk strokes on a `board`. Chalk lies where an edge is stronger than `threshold` (0..=1).
+    ChalkDrawing {
+        threshold: f32,
+        board: Rgba,
+        chalk: Rgba,
+        seed: u64,
+    },
+    /// Red pushed outward and blue pulled inward, growing toward the edges. `amount` 0..=1.
+    ChromaticAberration {
+        amount: f32,
+    },
+    /// Brushed metal frame in `color`, `width` px deep.
+    ChromeMetallicBorder {
+        width: u32,
+        color: Rgba,
+    },
+    /// Circuit board frame on a `board` ground, with `trace` lines and pads, `width` px deep.
+    CircuitBoardBorder {
+        width: u32,
+        board: Rgba,
+        trace: Rgba,
+    },
+    /// Soft, blurred colour lit from the top left. `radius` px of softness, `depth` the relief.
+    ClaymationTexture {
+        radius: u32,
+        depth: f32,
+    },
+    /// Fractal noise clouds on a `scale` px lattice, mixed toward `color` by `opacity` (0..=1).
+    Clouds {
+        scale: u32,
+        opacity: f32,
+        color: Rgba,
+        seed: u64,
+    },
+    /// Three rotated dot screens (cyan, magenta, yellow) of `cell` px.
+    ColorHalftone {
+        cell: u32,
+    },
+    /// Keeps colours within `tolerance` (0..=1 of the RGB distance) of `target`; the rest goes grey.
+    ColorSplash {
+        target: Rgba,
+        tolerance: f32,
+    },
+    /// Crimson double-rule frame with a dotted middle line, `width` px deep.
+    CrimsonBorder {
+        width: u32,
+        color: Rgba,
+        accent: Rgba,
+    },
+    /// Pen hatching on white. Darker areas get more layers; the lines are `spacing` px apart.
+    Crosshatch {
+        spacing: u32,
+    },
+    /// Scanlines, a phosphor sub-pixel mask and corner vignetting, each 0..=1.
+    CRT {
+        scanlines: f32,
+        mask: f32,
+        vignette: f32,
+    },
+    /// Faceted triangles over a jittered grid of `size` px cells, each lit at a seeded brightness.
+    CrystalizeShards {
+        size: u32,
+        seed: u64,
+    },
+    /// The shards with red and blue slid apart along each facet by `dispersion` (0..=1).
+    CrystalPrism {
+        size: u32,
+        dispersion: f32,
+        seed: u64,
+    },
+    /// Two-colour blue print, from `shadow` to `highlight`.
+    Cyanotype {
+        shadow: Rgba,
+        highlight: Rgba,
+    },
+    /// About half of the `block` px cells drag their pixels sideways by up to `max_shift` px.
+    DatamoshSmear {
+        block: u32,
+        max_shift: u32,
+        seed: u64,
+    },
+    /// Average colour in diamond-shaped cells about `size` px across.
+    DiamondPixelate {
+        size: u32,
+    },
+    /// Warm cast, grain and vignetting, each 0..=1.
+    DisposableCamera {
+        warmth: f32,
+        grain: f32,
+        vignette: f32,
+        seed: u64,
+    },
+    /// LED panel: a dot of average colour in each `cell` px square, the gaps in `background`.
+    DotMatrix {
+        cell: u32,
+        background: Rgba,
+    },
+    /// A copy mirrored left to right and moved by the offset, screened over the image at `opacity` (0..=1).
+    DoubleExposure {
+        offset_x: i32,
+        offset_y: i32,
+        opacity: f32,
+    },
+    /// A box-blurred copy, `radius` px, screened over the image at `strength`.
+    DreamGlow {
+        radius: u32,
+        strength: f32,
+    },
+    /// Alpha fades to nothing over the outer `size` px.
+    EdgeFeather {
+        size: u32,
+    },
+    /// Cross stitches `cell` px across, each in the cell's average colour, on `cloth`.
+    Embroidery {
+        cell: u32,
+        cloth: Rgba,
+    },
+    /// Horizontal lines `spacing` px apart, drawn in `ink` on `paper`, swelling with darkness.
+    Engraving {
+        spacing: u32,
+        paper: Rgba,
+        ink: Rgba,
+    },
+    /// Each pixel takes a neighbour's colour from within `radius` px, lifted toward white.
+    EtchedGlass {
+        radius: u32,
+        seed: u64,
+    },
+    /// `strands` curling strands of `length` px in `color`, drawn over the image.
+    FakeHair {
+        strands: u32,
+        length: u32,
+        color: Rgba,
+        seed: u64,
+    },
+    /// Monochrome grain of up to `amount` (0..=1), strongest in the midtones.
+    FilmGrain {
+        amount: f32,
+        seed: u64,
+    },
     // ---- end X2 ----
     // ---- X3 ----
     // ---- end X3 ----
@@ -199,6 +431,47 @@ impl Filter {
             Filter::Median { .. } => "Median",
             Filter::OilPaint { .. } => "Oil paint",
             // ---- X2 ----
+            Filter::Anaglyph3D { .. } => "Anaglyph 3D",
+            Filter::AnamorphicLensFlare { .. } => "Anamorphic lens flare",
+            Filter::AnimeSpeedLines { .. } => "Anime speed lines",
+            Filter::ArtDecoBorder { .. } => "Art deco border",
+            Filter::ASCIIArt { .. } => "ASCII art",
+            Filter::Bevel { .. } => "Bevel",
+            Filter::BlockGlitch { .. } => "Block glitch",
+            Filter::BloodSplash { .. } => "Blood splash",
+            Filter::Bloom { .. } => "Bloom",
+            Filter::BlueprintDrawing { .. } => "Blueprint drawing",
+            Filter::BrickWallBorder { .. } => "Brick wall border",
+            Filter::CandyCaneBorder { .. } => "Candy cane border",
+            Filter::CartoonStickerCutout { .. } => "Cartoon sticker cutout",
+            Filter::CelticKnotBorder { .. } => "Celtic knot border",
+            Filter::ChainLinkBorder { .. } => "Chain link border",
+            Filter::ChalkDrawing { .. } => "Chalk drawing",
+            Filter::ChromaticAberration { .. } => "Chromatic aberration",
+            Filter::ChromeMetallicBorder { .. } => "Chrome metallic border",
+            Filter::CircuitBoardBorder { .. } => "Circuit board border",
+            Filter::ClaymationTexture { .. } => "Claymation texture",
+            Filter::Clouds { .. } => "Clouds",
+            Filter::ColorHalftone { .. } => "Color halftone",
+            Filter::ColorSplash { .. } => "Color splash",
+            Filter::CrimsonBorder { .. } => "Crimson border",
+            Filter::Crosshatch { .. } => "Crosshatch",
+            Filter::CRT { .. } => "CRT",
+            Filter::CrystalizeShards { .. } => "Crystalize shards",
+            Filter::CrystalPrism { .. } => "Crystal prism",
+            Filter::Cyanotype { .. } => "Cyanotype",
+            Filter::DatamoshSmear { .. } => "Datamosh smear",
+            Filter::DiamondPixelate { .. } => "Diamond pixelate",
+            Filter::DisposableCamera { .. } => "Disposable camera",
+            Filter::DotMatrix { .. } => "Dot matrix",
+            Filter::DoubleExposure { .. } => "Double exposure",
+            Filter::DreamGlow { .. } => "Dream glow",
+            Filter::EdgeFeather { .. } => "Edge feather",
+            Filter::Embroidery { .. } => "Embroidery",
+            Filter::Engraving { .. } => "Engraving",
+            Filter::EtchedGlass { .. } => "Etched glass",
+            Filter::FakeHair { .. } => "Fake hair",
+            Filter::FilmGrain { .. } => "Film grain",
             // ---- end X2 ----
             // ---- X3 ----
             // ---- end X3 ----
@@ -238,6 +511,47 @@ impl Filter {
             Filter::Median { radius: 2 },
             Filter::OilPaint { radius: 3, levels: 16 },
             // ---- X2 ----
+            Filter::Anaglyph3D { parallax: 3 },
+            Filter::AnamorphicLensFlare { threshold: 0.8, length: 40, strength: 0.6, color: Rgba::rgb(120, 180, 255) },
+            Filter::AnimeSpeedLines { lines: 72, inner: 0.35, strength: 0.6, color: Rgba::WHITE, seed: 1 },
+            Filter::ArtDecoBorder { width: 24, color: Rgba::rgb(212, 175, 55), accent: Rgba::rgb(20, 20, 20) },
+            Filter::ASCIIArt { cell: 8, color: Rgba::rgb(120, 255, 120) },
+            Filter::Bevel { size: 8, strength: 0.5 },
+            Filter::BlockGlitch { count: 6, max_shift: 12, seed: 1 },
+            Filter::BloodSplash { count: 4, size: 0.2, color: Rgba::rgb(138, 3, 3), seed: 1 },
+            Filter::Bloom { threshold: 0.7, radius: 6, strength: 0.8 },
+            Filter::BlueprintDrawing { background: Rgba::rgb(20, 60, 130), line: Rgba::rgb(230, 240, 255) },
+            Filter::BrickWallBorder { width: 24, brick: Rgba::rgb(170, 70, 50), mortar: Rgba::rgb(200, 195, 185) },
+            Filter::CandyCaneBorder { width: 16, color: Rgba::rgb(200, 30, 40), accent: Rgba::WHITE },
+            Filter::CartoonStickerCutout { levels: 5, outline: 8, color: Rgba::WHITE },
+            Filter::CelticKnotBorder { width: 24, color: Rgba::rgb(40, 110, 70), accent: Rgba::rgb(230, 200, 90) },
+            Filter::ChainLinkBorder { width: 24, color: Rgba::rgb(170, 175, 180), accent: Rgba::rgb(60, 60, 65) },
+            Filter::ChalkDrawing { threshold: 0.25, board: Rgba::rgb(40, 66, 56), chalk: Rgba::rgb(240, 240, 232), seed: 1 },
+            Filter::ChromaticAberration { amount: 0.5 },
+            Filter::ChromeMetallicBorder { width: 16, color: Rgba::rgb(210, 215, 225) },
+            Filter::CircuitBoardBorder { width: 20, board: Rgba::rgb(10, 60, 30), trace: Rgba::rgb(200, 160, 60) },
+            Filter::ClaymationTexture { radius: 2, depth: 2.0 },
+            Filter::Clouds { scale: 16, opacity: 0.6, color: Rgba::WHITE, seed: 1 },
+            Filter::ColorHalftone { cell: 6 },
+            Filter::ColorSplash { target: Rgba::rgb(220, 40, 40), tolerance: 0.25 },
+            Filter::CrimsonBorder { width: 20, color: Rgba::rgb(140, 20, 40), accent: Rgba::rgb(220, 180, 120) },
+            Filter::Crosshatch { spacing: 4 },
+            Filter::CRT { scanlines: 0.35, mask: 0.3, vignette: 0.5 },
+            Filter::CrystalizeShards { size: 8, seed: 1 },
+            Filter::CrystalPrism { size: 8, dispersion: 0.5, seed: 1 },
+            Filter::Cyanotype { shadow: Rgba::rgb(12, 45, 94), highlight: Rgba::rgb(240, 246, 255) },
+            Filter::DatamoshSmear { block: 16, max_shift: 8, seed: 1 },
+            Filter::DiamondPixelate { size: 8 },
+            Filter::DisposableCamera { warmth: 0.5, grain: 0.3, vignette: 0.5, seed: 1 },
+            Filter::DotMatrix { cell: 6, background: Rgba::rgb(10, 10, 10) },
+            Filter::DoubleExposure { offset_x: 6, offset_y: 0, opacity: 0.5 },
+            Filter::DreamGlow { radius: 6, strength: 0.6 },
+            Filter::EdgeFeather { size: 6 },
+            Filter::Embroidery { cell: 6, cloth: Rgba::rgb(235, 225, 205) },
+            Filter::Engraving { spacing: 3, paper: Rgba::rgb(245, 238, 220), ink: Rgba::rgb(30, 25, 20) },
+            Filter::EtchedGlass { radius: 2, seed: 1 },
+            Filter::FakeHair { strands: 40, length: 30, color: Rgba::rgb(40, 25, 15), seed: 1 },
+            Filter::FilmGrain { amount: 0.25, seed: 1 },
             // ---- end X2 ----
             // ---- X3 ----
             // ---- end X3 ----
