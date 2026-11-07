@@ -1,0 +1,11 @@
+{
+  "Version": "15.0.0",
+  "Name": "Plik",
+  "DestinationType": "ImageUploader, TextUploader, FileUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "{inputbox:Plik server URL|https://plik.root.gg}/file",
+  "Body": "MultipartFormData",
+  "FileFormName": "file",
+  "URL": "{json:url}",
+  "ErrorMessage": "{json:message}"
+}

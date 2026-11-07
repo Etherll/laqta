@@ -1,0 +1,14 @@
+{
+  "Version": "15.0.0",
+  "Name": "Streamable",
+  "DestinationType": "FileUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "https://api.streamable.com/upload",
+  "Headers": {
+    "Authorization": "Basic {base64:{inputbox:Streamable email}:{inputbox:Streamable password}}"
+  },
+  "Body": "MultipartFormData",
+  "FileFormName": "file",
+  "URL": "https://streamable.com/{json:shortcode}",
+  "ErrorMessage": "{json:message}"
+}

@@ -1,0 +1,11 @@
+{
+  "Version": "15.0.0",
+  "Name": "nlcm",
+  "DestinationType": "UrlShortener",
+  "RequestMethod": "GET",
+  "RequestURL": "https://nlcm.ca/api/shorten",
+  "Parameters": {
+    "url": "{input}"
+  },
+  "URL": "{json:url}"
+}

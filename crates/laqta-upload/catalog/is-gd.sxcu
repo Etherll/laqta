@@ -1,0 +1,12 @@
+{
+  "Version": "15.0.0",
+  "Name": "is.gd",
+  "DestinationType": "UrlShortener",
+  "RequestMethod": "GET",
+  "RequestURL": "https://is.gd/create.php",
+  "Parameters": {
+    "format": "simple",
+    "url": "{input}"
+  },
+  "URL": "{regex:^(https://is\\.gd/[A-Za-z0-9]+)|1}"
+}

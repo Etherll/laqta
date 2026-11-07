@@ -1,0 +1,11 @@
+{
+  "Version": "15.0.0",
+  "Name": "qr.net",
+  "DestinationType": "UrlShortener",
+  "RequestMethod": "GET",
+  "RequestURL": "https://qr.net/api/shorten",
+  "Parameters": {
+    "url": "{input}"
+  },
+  "URL": "{json:short_url}"
+}

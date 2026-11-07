@@ -1,0 +1,13 @@
+{
+  "Version": "15.0.0",
+  "Name": "Seafile",
+  "DestinationType": "ImageUploader, TextUploader, FileUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "{inputbox:Seafile upload link}?ret-json=1",
+  "Body": "MultipartFormData",
+  "Arguments": {
+    "parent_dir": "/"
+  },
+  "FileFormName": "file",
+  "URL": "{inputbox:Seafile file URL prefix}{json:[0].name}"
+}

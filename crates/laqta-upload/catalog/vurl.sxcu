@@ -1,0 +1,11 @@
+{
+  "Version": "15.0.0",
+  "Name": "vurl",
+  "DestinationType": "UrlShortener",
+  "RequestMethod": "GET",
+  "RequestURL": "https://vurl.com/api.php",
+  "Parameters": {
+    "url": "{input}"
+  },
+  "URL": "{regex:^(https://vurl\\.com/[A-Za-z0-9]+)|1}"
+}

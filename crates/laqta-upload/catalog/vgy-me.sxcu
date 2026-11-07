@@ -1,0 +1,11 @@
+{
+  "Version": "15.0.0",
+  "Name": "vgy.me",
+  "DestinationType": "ImageUploader, TextUploader, FileUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "https://vgy.me/upload",
+  "Body": "MultipartFormData",
+  "FileFormName": "file",
+  "URL": "{json:image}",
+  "ErrorMessage": "{json:error}"
+}

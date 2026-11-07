@@ -1,0 +1,11 @@
+{
+  "Version": "15.0.0",
+  "Name": "Uguu",
+  "DestinationType": "ImageUploader, TextUploader, FileUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "https://uguu.se/upload",
+  "Body": "MultipartFormData",
+  "FileFormName": "files[]",
+  "URL": "{json:files[0].url}",
+  "ErrorMessage": "{json:description}"
+}

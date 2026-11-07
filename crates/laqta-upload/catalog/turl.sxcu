@@ -1,0 +1,11 @@
+{
+  "Version": "15.0.0",
+  "Name": "TURL",
+  "DestinationType": "UrlShortener",
+  "RequestMethod": "GET",
+  "RequestURL": "https://turl.ink/api/shorten",
+  "Parameters": {
+    "url": "{input}"
+  },
+  "URL": "{json:shorturl}"
+}

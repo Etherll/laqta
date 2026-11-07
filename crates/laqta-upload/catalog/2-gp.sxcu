@@ -1,0 +1,11 @@
+{
+  "Version": "15.0.0",
+  "Name": "2.gp",
+  "DestinationType": "UrlShortener",
+  "RequestMethod": "GET",
+  "RequestURL": "https://2.gp/api/",
+  "Parameters": {
+    "url": "{input}"
+  },
+  "URL": "{regex:^(https://2\\.gp/[A-Za-z0-9]+)|1}"
+}

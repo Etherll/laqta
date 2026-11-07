@@ -1,0 +1,11 @@
+{
+  "Version": "15.0.0",
+  "Name": "Zero Width",
+  "DestinationType": "UrlShortener",
+  "RequestMethod": "POST",
+  "RequestURL": "https://zws.im/api/",
+  "Body": "FormUrlEncoded",
+  "Arguments": {
+    "url": "{input}"
+  }
+}
