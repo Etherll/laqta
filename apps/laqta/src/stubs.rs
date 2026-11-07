@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use laqta_app::Ports;
-use laqta_domain::region::HoverTarget;
 use laqta_ports::{BoxFuture, Clipboard, Clock, HostInfo, HoverSource, InputCallback, Notifier, Overlay, PortError, RegionView, Rng, ScreenSource, Shell, Spawner, Toast};
 
 #[derive(Debug)]
@@ -14,17 +13,6 @@ impl Overlay for NoOverlay {
     }
     fn update(&self, _: RegionView) {}
     fn close(&self) {}
-}
-
-#[derive(Debug)]
-pub struct NoHover;
-impl HoverSource for NoHover {
-    fn targets(&self) -> BoxFuture<'_, Result<Vec<HoverTarget>, PortError>> {
-        Box::pin(async { Err(PortError::Unsupported("hover targets".into())) })
-    }
-    fn active_window(&self) -> BoxFuture<'_, Result<Option<HoverTarget>, PortError>> {
-        Box::pin(async { Ok(None) })
-    }
 }
 
 /// Logs toasts until the GPUI toast adapter replaces it.
