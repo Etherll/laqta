@@ -9,6 +9,7 @@ mod history;
 mod legacy;
 mod paths;
 mod settings_store;
+mod watch;
 
 pub use archive::{export_archive, import_archive};
 pub use error::LibraryError;
@@ -16,3 +17,4 @@ pub use history::{History, record_task_events};
 pub use legacy::{ImportReport, import_sharex_history, import_sharex_history_file};
 pub use paths::data_dir;
 pub use settings_store::{Migration, SettingsStore};
+pub use watch::NotifyWatcher;
