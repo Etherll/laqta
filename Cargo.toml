@@ -49,6 +49,7 @@ cosmic-text = { version = "0.19", default-features = false, features = ["std", "
 image = { version = "0.25", default-features = false }
 smallvec = "1"
 qrcode = { version = "0.14.1", default-features = false }
+getrandom = "0.4.3"
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 rusqlite = "0.41.1"  # bundled on Linux, vcpkg SQLite on Windows (ADR 026)
 fastrand = "2.5.0"

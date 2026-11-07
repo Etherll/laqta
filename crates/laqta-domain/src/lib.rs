@@ -7,6 +7,7 @@ pub mod color;
 pub mod effects;
 pub mod geometry;
 pub mod history;
+pub mod hosts;
 pub mod hotkey;
 pub mod image;
 pub mod naming;

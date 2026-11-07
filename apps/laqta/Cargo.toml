@@ -40,6 +40,7 @@ tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 dirs.workspace = true
 fastrand.workspace = true
+getrandom.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 laqta-platform-linux.workspace = true

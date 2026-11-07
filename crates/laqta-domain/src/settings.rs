@@ -11,6 +11,8 @@ pub const SETTINGS_VERSION: u32 = 1;
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Native upload host accounts (secrets live in the OS secret store).
+    pub hosts: Vec<crate::hosts::HostAccount>,
     pub version: u32,
     pub screenshots_dir: PathBuf,
     pub defaults: TaskSettings,
@@ -53,6 +55,7 @@ impl Settings {
     /// screenshots_dir = `<pictures>/Laqta`, with ShareX's five default hotkey workflows.
     pub fn default_for(pictures_dir: PathBuf) -> Settings {
         Settings {
+            hosts: Vec::new(),
             version: SETTINGS_VERSION,
             screenshots_dir: pictures_dir.join("Laqta"),
             defaults: TaskSettings::default(),

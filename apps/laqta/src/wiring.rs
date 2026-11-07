@@ -23,6 +23,7 @@ struct Platform {
     hover: Arc<dyn HoverSource>,
     hotkeys: Arc<dyn HotkeyRegistrar>,
     tray: Arc<dyn Tray>,
+    secrets: Arc<dyn laqta_ports::SecretStore>,
 }
 
 #[cfg(target_os = "linux")]
@@ -31,14 +32,14 @@ fn platform() -> Result<Platform, String> {
     let session = Session::detect().ok_or("no display: neither WAYLAND_DISPLAY nor DISPLAY is set")?;
     tracing::info!("session: {session:?}");
     let p = laqta_platform_linux::ports(session);
-    Ok(Platform { screen: p.screen, clipboard: p.clipboard, shell: p.shell, hover: p.hover, hotkeys: p.hotkeys, tray: p.tray })
+    Ok(Platform { screen: p.screen, clipboard: p.clipboard, shell: p.shell, hover: p.hover, hotkeys: p.hotkeys, tray: p.tray, secrets: p.secrets })
 }
 
 #[cfg(windows)]
 fn platform() -> Result<Platform, String> {
     laqta_platform_windows::set_dpi_awareness();
     let p = laqta_platform_windows::ports();
-    Ok(Platform { screen: p.screen, clipboard: p.clipboard, shell: p.shell, hover: p.hover, hotkeys: p.hotkeys, tray: p.tray })
+    Ok(Platform { screen: p.screen, clipboard: p.clipboard, shell: p.shell, hover: p.hover, hotkeys: p.hotkeys, tray: p.tray, secrets: p.secrets })
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -108,6 +109,8 @@ pub fn run(server: laqta_ipc::Server, startup_actions: Vec<Action>) -> Result<()
     let (ui, ui_rx) = UiHandle::channel();
     let rng = stubs::system_rng();
     let uploaders = crate::uploads::registry(&data, Arc::new(ui.clone()), rng.clone());
+    let host_deps = crate::uploads::host_deps(platform.secrets.clone(), platform.shell.clone());
+    crate::uploads::apply_accounts(&uploaders, &settings.hosts, &host_deps);
     let ports = Ports {
         screen: platform.screen,
         clipboard: platform.clipboard,
@@ -225,8 +228,11 @@ pub fn run(server: laqta_ipc::Server, startup_actions: Vec<Action>) -> Result<()
             let clock = clock.clone();
             let hotkeys = hotkeys.clone();
             let dispatch = dispatch.clone();
+            let uploaders = uploaders.clone();
+            let host_deps = host_deps.clone();
             Arc::new(move |s: Settings| {
                 store.save(&s, SETTINGS_VERSION, clock.now()).map_err(|e| e.to_string())?;
+                crate::uploads::apply_accounts(&uploaders, &s.hosts, &host_deps);
                 app.set_settings(s.clone());
                 register_hotkeys(hotkeys.as_ref(), &s, dispatch.clone());
                 Ok(())

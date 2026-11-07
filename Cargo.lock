@@ -4378,6 +4378,7 @@ dependencies = [
  "fastrand",
  "futures-channel",
  "futures-lite",
+ "getrandom 0.4.3",
  "gpui-pre",
  "gpui-pre-platform",
  "jiff",
