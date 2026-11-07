@@ -16,7 +16,7 @@ host-dropbox = []
 host-google-drive = []
 host-onedrive = []
 host-s3 = ["dep:rusty-s3"]
-host-ftp = ["dep:suppaftp"]
+host-ftp = ["dep:suppaftp", "dep:rustls", "dep:rustls-platform-verifier", "dep:native-tls"]
 host-sftp = ["dep:russh", "dep:russh-sftp"]
 host-shared-folder = []
 host-bitly = []
@@ -39,11 +39,17 @@ tracing.workspace = true
 jiff.workspace = true
 futures-lite.workspace = true
 rusty-s3 = { workspace = true, optional = true }
-suppaftp = { workspace = true, optional = true }
 
 [target.'cfg(not(windows))'.dependencies]
+suppaftp = { workspace = true, optional = true, features = ["rustls-aws-lc-rs"] }
+rustls = { workspace = true, optional = true }
+rustls-platform-verifier = { workspace = true, optional = true }
 russh = { workspace = true, optional = true }
 russh-sftp = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+suppaftp = { workspace = true, optional = true, features = ["native-tls"] }
+native-tls = { workspace = true, optional = true }
 
 [dev-dependencies]
 laqta-ports = { workspace = true, features = ["fakes"] }

@@ -4578,10 +4578,13 @@ dependencies = [
  "laqta-domain",
  "laqta-http",
  "laqta-ports",
+ "native-tls",
  "percent-encoding",
  "roxmltree 0.21.2",
  "russh",
  "russh-sftp",
+ "rustls",
+ "rustls-platform-verifier",
  "rusty-s3",
  "serde",
  "serde_json",
@@ -7360,6 +7363,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -8267,6 +8271,8 @@ dependencies = [
  "chrono",
  "lazy-regex",
  "log",
+ "native-tls",
+ "rustls",
  "thiserror 2.0.21",
 ]
 
