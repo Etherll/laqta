@@ -29,6 +29,11 @@ pub mod sftp;
 #[cfg(feature = "host-shared-folder")]
 pub mod shared_folder;
 
+// ---- HO-a ----
+// ---- end HO-a ----
+// ---- HO-b ----
+// ---- end HO-b ----
+
 use laqta_http::{Body, HttpError, Request, Response};
 use laqta_ports::{PortError, ProgressCallback, UploadData, UploadError};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC};

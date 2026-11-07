@@ -14,6 +14,20 @@ pub enum HostKind {
     Ftp,
     Sftp,
     SharedFolder,
+    // M7 hosts (D12)
+    Gist,
+    PrivateBin,
+    Pushbullet,
+    Nextcloud,
+    SendSpace,
+    MediaFire,
+    Smtp,
+    Flickr,
+    Box,
+    YouTube,
+    GoogleCloudStorage,
+    AzureBlob,
+    BackblazeB2,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,7 +47,7 @@ macro_rules! f {
 }
 
 impl HostKind {
-    pub const ALL: [HostKind; 9] = [
+    pub const ALL: [HostKind; 22] = [
         HostKind::Imgur,
         HostKind::Dropbox,
         HostKind::GoogleDrive,
@@ -43,6 +57,19 @@ impl HostKind {
         HostKind::Ftp,
         HostKind::Sftp,
         HostKind::SharedFolder,
+        HostKind::Gist,
+        HostKind::PrivateBin,
+        HostKind::Pushbullet,
+        HostKind::Nextcloud,
+        HostKind::SendSpace,
+        HostKind::MediaFire,
+        HostKind::Smtp,
+        HostKind::Flickr,
+        HostKind::Box,
+        HostKind::YouTube,
+        HostKind::GoogleCloudStorage,
+        HostKind::AzureBlob,
+        HostKind::BackblazeB2,
     ];
 
     /// The destination id in the upload registry.
@@ -57,6 +84,19 @@ impl HostKind {
             HostKind::Ftp => "ftp",
             HostKind::Sftp => "sftp",
             HostKind::SharedFolder => "shared-folder",
+            HostKind::Gist => "gist",
+            HostKind::PrivateBin => "privatebin",
+            HostKind::Pushbullet => "pushbullet",
+            HostKind::Nextcloud => "nextcloud",
+            HostKind::SendSpace => "sendspace",
+            HostKind::MediaFire => "mediafire",
+            HostKind::Smtp => "email",
+            HostKind::Flickr => "flickr",
+            HostKind::Box => "box",
+            HostKind::YouTube => "youtube",
+            HostKind::GoogleCloudStorage => "google-cloud-storage",
+            HostKind::AzureBlob => "azure-blob",
+            HostKind::BackblazeB2 => "backblaze-b2",
         }
     }
 
@@ -71,6 +111,19 @@ impl HostKind {
             HostKind::Ftp => "FTP / FTPS",
             HostKind::Sftp => "SFTP",
             HostKind::SharedFolder => "Shared folder",
+            HostKind::Gist => "GitHub Gist",
+            HostKind::PrivateBin => "PrivateBin",
+            HostKind::Pushbullet => "Pushbullet",
+            HostKind::Nextcloud => "Nextcloud / ownCloud",
+            HostKind::SendSpace => "SendSpace",
+            HostKind::MediaFire => "MediaFire",
+            HostKind::Smtp => "E-mail (SMTP)",
+            HostKind::Flickr => "Flickr",
+            HostKind::Box => "Box",
+            HostKind::YouTube => "YouTube",
+            HostKind::GoogleCloudStorage => "Google Cloud Storage",
+            HostKind::AzureBlob => "Azure Blob Storage",
+            HostKind::BackblazeB2 => "Backblaze B2",
         }
     }
 
@@ -118,6 +171,86 @@ impl HostKind {
                 f!("url_base", "URL base", false, ""),
             ],
             HostKind::SharedFolder => &[f!("directory", "Folder", false, ""), f!("url_base", "URL base (optional)", false, "")],
+            HostKind::Gist => {
+                &[f!("token", "Personal access token (gist scope)", true, ""), f!("public", "Public gist (true/false)", false, "false")]
+            }
+            HostKind::PrivateBin => &[
+                f!("url", "Server URL", false, "https://privatebin.net"),
+                f!("expire", "Expires (5min/10min/1hour/1day/1week/1month/1year/never)", false, "1week"),
+                f!("burn_after_reading", "Burn after reading (true/false)", false, "false"),
+                f!("password", "Paste password (optional)", true, ""),
+            ],
+            HostKind::Pushbullet => {
+                &[f!("access_token", "Access token", true, ""), f!("device_iden", "Device (empty = all devices)", false, "")]
+            }
+            HostKind::Nextcloud => &[
+                f!("url", "Server URL", false, ""),
+                f!("username", "User name", false, ""),
+                f!("app_password", "App password", true, ""),
+                f!("directory", "Folder", false, "/Laqta"),
+                f!("share", "Create a public share link (true/false)", false, "true"),
+                f!("direct_link", "Direct download link (true/false)", false, "false"),
+            ],
+            HostKind::SendSpace => &[
+                f!("api_key", "API key", true, ""),
+                f!("username", "User name (optional)", false, ""),
+                f!("password", "Password (optional)", true, ""),
+            ],
+            HostKind::MediaFire => &[
+                f!("app_id", "Application ID", false, ""),
+                f!("api_key", "API key", true, ""),
+                f!("email", "E-mail", false, ""),
+                f!("password", "Password", true, ""),
+                f!("folder", "Folder key (empty = root)", false, ""),
+            ],
+            HostKind::Smtp => &[
+                f!("host", "SMTP server", false, ""),
+                f!("port", "Port", false, "587"),
+                f!("tls", "Security (starttls/tls/none)", false, "starttls"),
+                f!("username", "User name", false, ""),
+                f!("password", "Password", true, ""),
+                f!("from", "From", false, ""),
+                f!("to", "To", false, ""),
+                f!("subject", "Subject", false, "Laqta: %filename%"),
+            ],
+            HostKind::Flickr => &[
+                f!("api_key", "API key", false, ""),
+                f!("api_secret", "API secret", true, ""),
+                f!("public", "Public (true/false)", false, "false"),
+            ],
+            HostKind::Box => &[
+                f!("client_id", "OAuth client ID", false, ""),
+                f!("client_secret", "OAuth client secret", true, ""),
+                f!("folder_id", "Folder ID", false, "0"),
+                f!("share", "Create a shared link (true/false)", false, "true"),
+            ],
+            HostKind::YouTube => &[
+                f!("client_id", "OAuth client ID", false, ""),
+                f!("client_secret", "OAuth client secret", true, ""),
+                f!("privacy", "Privacy (public/unlisted/private)", false, "unlisted"),
+            ],
+            HostKind::GoogleCloudStorage => &[
+                f!("bucket", "Bucket", false, ""),
+                f!("path_prefix", "Path prefix", false, ""),
+                f!("access_key_id", "HMAC access ID", false, ""),
+                f!("secret_access_key", "HMAC secret", true, ""),
+                f!("public_url_base", "Public URL base (optional)", false, ""),
+            ],
+            HostKind::AzureBlob => &[
+                f!("account", "Storage account", false, ""),
+                f!("container", "Container", false, ""),
+                f!("sas_token", "SAS token (or use the account key)", true, ""),
+                f!("account_key", "Account key (optional)", true, ""),
+                f!("path_prefix", "Path prefix", false, ""),
+                f!("public_url_base", "Public URL base (optional)", false, ""),
+            ],
+            HostKind::BackblazeB2 => &[
+                f!("key_id", "Application key ID", false, ""),
+                f!("application_key", "Application key", true, ""),
+                f!("bucket", "Bucket name", false, ""),
+                f!("path_prefix", "Path prefix", false, ""),
+                f!("public_url_base", "Public URL base (optional)", false, ""),
+            ],
         }
     }
 }

@@ -168,6 +168,10 @@ pub fn native_hosts(accounts: &[HostAccount], deps: &HostDeps) -> NativeHosts {
                 let cfg = sf::SharedFolderConfig { directory: a.get("directory").into(), url_base: (!url.is_empty()).then(|| url.into()) };
                 out.destinations.push(Arc::new(sf::SharedFolder::new(cfg)));
             }
+            // ---- HO-a ----
+            // ---- end HO-a ----
+            // ---- HO-b ----
+            // ---- end HO-b ----
             #[allow(unreachable_patterns)]
             _ => tracing::warn!(kind = ?a.kind, "host not built into this binary"),
         }
