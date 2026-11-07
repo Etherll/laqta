@@ -8,4 +8,5 @@ mod region;
 mod task;
 
 pub use dispatcher::{App, Dispatched, Ports};
+pub use region::Selection;
 pub use task::TaskJob;
