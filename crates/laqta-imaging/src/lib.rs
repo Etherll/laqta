@@ -9,6 +9,7 @@ pub mod effects;
 pub mod qr;
 mod ops;
 pub mod png;
+pub mod tools;
 
 pub use codecs::{CodecError, CodecExtension, Codecs, EncodeOptions, sniff};
 pub use compose::compose_monitors;
