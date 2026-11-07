@@ -213,6 +213,80 @@ impl Default for TaskSettings {
     }
 }
 
+/// An external program run after capture (ShareX "Actions", `AfterCaptureTasks::PERFORM_ACTIONS`).
+/// In `args`, `%input` is the saved file and `%output` the output file (input with `output_extension`).
+#[derive(Clone, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ExternalAction {
+    pub name: String,
+    pub program: std::path::PathBuf,
+    pub args: String,
+    /// Empty: the program changes the input in place (or produces nothing).
+    pub output_extension: String,
+    /// Run only for these extensions (empty = all).
+    pub extensions: Vec<String>,
+    pub enabled: bool,
+    /// Hide the program's console window (Windows).
+    pub hidden: bool,
+}
+
+impl ExternalAction {
+    /// The argument list for `input`, split like a shell would (quotes group words) after
+    /// substituting `%input` and `%output`.
+    pub fn argv(&self, input: &std::path::Path) -> (Vec<String>, Option<std::path::PathBuf>) {
+        let output = (!self.output_extension.is_empty()).then(|| input.with_extension(self.output_extension.trim_start_matches('.')));
+        let mut out = Vec::new();
+        let mut cur = String::new();
+        let mut quoted = false;
+        let mut started = false;
+        for ch in self.args.chars() {
+            match ch {
+                '"' => {
+                    quoted = !quoted;
+                    started = true;
+                }
+                c if c.is_whitespace() && !quoted => {
+                    if started {
+                        out.push(std::mem::take(&mut cur));
+                        started = false;
+                    }
+                }
+                c => {
+                    cur.push(c);
+                    started = true;
+                }
+            }
+        }
+        if started {
+            out.push(cur);
+        }
+        let inp = input.display().to_string();
+        let outp = output.as_ref().map(|o| o.display().to_string()).unwrap_or_default();
+        let argv = out.into_iter().map(|a| a.replace("%input", &inp).replace("%output", &outp)).collect();
+        (argv, output)
+    }
+
+    pub fn applies_to(&self, path: &std::path::Path) -> bool {
+        self.enabled
+            && (self.extensions.is_empty()
+                || path.extension().and_then(|e| e.to_str()).is_some_and(|e| self.extensions.iter().any(|x| x.trim_start_matches('.').eq_ignore_ascii_case(e))))
+    }
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+
+    #[test]
+    fn argv_substitutes_and_quotes() {
+        let a = ExternalAction { args: r#"-i "%input" -o %output --flag"#.into(), output_extension: "webp".into(), enabled: true, ..Default::default() };
+        let (argv, out) = a.argv(std::path::Path::new("/s/a b.png"));
+        assert_eq!(argv, vec!["-i", "/s/a b.png", "-o", "/s/a b.webp", "--flag"]);
+        assert_eq!(out, Some(std::path::PathBuf::from("/s/a b.webp")));
+        assert!(a.applies_to(std::path::Path::new("x.png")));
+    }
+}
+
 /// Where uploads go and how results are reported (ShareX's destinations and upload settings).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]

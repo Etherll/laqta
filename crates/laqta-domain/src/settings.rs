@@ -13,6 +13,8 @@ pub const SETTINGS_VERSION: u32 = 1;
 pub struct Settings {
     /// Native upload host accounts (secrets live in the OS secret store).
     pub hosts: Vec<crate::hosts::HostAccount>,
+    /// External programs for `PERFORM_ACTIONS`.
+    pub actions: Vec<crate::workflow::ExternalAction>,
     pub version: u32,
     pub screenshots_dir: PathBuf,
     pub defaults: TaskSettings,
@@ -56,6 +58,7 @@ impl Settings {
     pub fn default_for(pictures_dir: PathBuf) -> Settings {
         Settings {
             hosts: Vec::new(),
+            actions: Vec::new(),
             version: SETTINGS_VERSION,
             screenshots_dir: pictures_dir.join("Laqta"),
             defaults: TaskSettings::default(),

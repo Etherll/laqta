@@ -35,6 +35,11 @@ pub trait Shell: Send + Sync {
         let _ = url;
         Err(PortError::Unsupported("open url".into()))
     }
+    /// Runs a program with an argument list (never through a shell) and returns its exit code.
+    fn run(&self, program: &Path, args: &[String], hidden: bool) -> crate::BoxFuture<'_, Result<i32, PortError>> {
+        let _ = (program, args, hidden);
+        Box::pin(async { Err(PortError::Unsupported("running programs".into())) })
+    }
 }
 
 /// Clipboard contents, in the order Laqta prefers them.
