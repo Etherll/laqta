@@ -55,6 +55,8 @@ pub enum ToolWindow {
     ImageHistory,
     /// The tray menu as a popup (`Action::ToggleTrayMenu`).
     TrayMenu,
+    /// The floating actions toolbar (`Action::ToggleActionsToolbar`).
+    ActionsToolbar,
 }
 
 pub trait ToolHost: Send + Sync {

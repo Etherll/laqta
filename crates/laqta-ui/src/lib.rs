@@ -5,6 +5,7 @@
 
 pub mod presenters;
 
+mod actions_toolbar;
 mod history_window;
 mod main_window;
 mod overlay;

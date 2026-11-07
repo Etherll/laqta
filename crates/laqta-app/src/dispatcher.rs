@@ -264,6 +264,7 @@ impl App {
             Action::OpenHistory => self.open(ToolWindow::History),
             Action::OpenImageHistory => self.open(ToolWindow::ImageHistory),
             Action::ToggleTrayMenu => self.open(ToolWindow::TrayMenu),
+            Action::ToggleActionsToolbar => self.open(ToolWindow::ActionsToolbar),
             Action::DisableHotkeys => {
                 let mut next = settings.as_ref().clone();
                 next.disable_hotkeys = !next.disable_hotkeys;

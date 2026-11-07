@@ -169,6 +169,7 @@ pub(crate) struct UiState {
     pub settings: Option<gpui::AnyWindowHandle>,
     pub history: Option<gpui::AnyWindowHandle>,
     pub tray_popup: Option<gpui::AnyWindowHandle>,
+    pub actions_toolbar: Option<gpui::AnyWindowHandle>,
 }
 
 impl gpui::Global for UiState {}
@@ -188,6 +189,7 @@ pub fn run(services: UiServices, rx: UiReceiver) {
             settings: None,
             history: None,
             tray_popup: None,
+            actions_toolbar: None,
         });
 
         // Task events feed the task list; this task sleeps until an event arrives.
@@ -234,6 +236,7 @@ fn handle(cmd: UiCommand, cx: &mut App) {
         UiCommand::Open(ToolWindow::History) => history_window::open(false, cx),
         UiCommand::Open(ToolWindow::ImageHistory) => history_window::open(true, cx),
         UiCommand::Open(ToolWindow::TrayMenu) => tray_popup::toggle(cx),
+        UiCommand::Open(ToolWindow::ActionsToolbar) => crate::actions_toolbar::toggle(cx),
         UiCommand::Prompt { title, kind, reply } => crate::prompt_window::open(title, kind, reply, cx),
         UiCommand::Open(other) => tracing::warn!(?other, "no window for this tool yet"),
         UiCommand::Quit => {
