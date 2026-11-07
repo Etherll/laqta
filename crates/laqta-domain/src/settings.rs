@@ -33,6 +33,40 @@ pub struct Settings {
     pub watch_folders: Vec<WatchFolder>,
     /// Auto capture (M6 D5).
     pub auto_capture: AutoCaptureOptions,
+    /// Local models (ADR 023): the model per task, custom models, CPU or GPU.
+    pub models: ModelOptions,
+}
+
+/// Where local models run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ModelProvider {
+    /// The GPU when one is usable (DirectML, CUDA), else the CPU.
+    #[default]
+    Auto,
+    Cpu,
+    Gpu,
+}
+
+/// A model file the user added for a supported family.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CustomModel {
+    /// `custom-…`; the file is `<models>/<id>.onnx`.
+    pub id: String,
+    pub name: String,
+    /// The catalog task name (`ocr-det`, `ocr-rec`, `background`).
+    pub task: String,
+    pub family: String,
+}
+
+/// The model chosen per task (catalog or custom id; `None` = the catalog default).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ModelOptions {
+    pub provider: ModelProvider,
+    pub ocr_det: Option<String>,
+    pub ocr_rec: Option<String>,
+    pub background: Option<String>,
+    pub custom: Vec<CustomModel>,
 }
 
 /// A folder whose new files run a workflow.
@@ -126,6 +160,7 @@ impl Settings {
             language: None,
             watch_folders: Vec::new(),
             auto_capture: AutoCaptureOptions::default(),
+            models: ModelOptions::default(),
         }
     }
 

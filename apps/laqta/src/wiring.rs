@@ -185,6 +185,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let uploaders = crate::uploads::registry(&data, Arc::new(ui.clone()), rng.clone());
     let host_deps = crate::uploads::host_deps(platform.secrets.clone(), platform.shell.clone());
     crate::uploads::apply_accounts(&uploaders, &settings.hosts, &host_deps);
+    let model_options: crate::models::SharedModelOptions = Arc::new(std::sync::RwLock::new(settings.models.clone()));
     let ports = Ports {
         screen: platform.screen,
         clipboard: platform.clipboard,
@@ -204,7 +205,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             Arc::new(ui.clone()),
         )),
         stream: platform.stream.clone(),
-        ocr: Arc::new(crate::ocr::LazyOcr::new(data.clone(), Arc::new(ui.clone()))),
+        ocr: Arc::new(crate::ocr::LazyOcr::new(data.clone(), Arc::new(ui.clone()), model_options.clone())),
         window_ops: platform.window_ops.clone(),
         input: platform.input.clone(),
         highlighter: Arc::new(stubs::NoHighlighter),
@@ -272,6 +273,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     // Sandbox mode writes no settings (M6 D8); `-NoHotkeys` registers none.
     let use_hotkeys = !args.no_hotkeys;
     let save_settings: crate::imports::SaveSettings = {
+        let model_options = model_options.clone();
         let app = app.clone();
         let store = store.clone();
         let clock = clock.clone();
@@ -286,6 +288,9 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             }
             crate::uploads::apply_accounts(&uploaders, &s.hosts, &host_deps);
             laqta_ui::i18n::set_language(s.language.as_deref());
+            if let Ok(mut m) = model_options.write() {
+                *m = s.models.clone();
+            }
             app.set_settings(s.clone());
             if use_hotkeys {
                 register_hotkeys(hotkeys.as_ref(), &s, dispatch.clone());
@@ -409,6 +414,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                 let importer = importer.clone();
                 Arc::new(move |path: std::path::PathBuf| importer.sharex(&path))
             },
+            models: Arc::new(crate::models::Models { data: data.clone(), options: model_options.clone() }),
             check_update: {
                 let last = last_release.clone();
                 Arc::new(move || {

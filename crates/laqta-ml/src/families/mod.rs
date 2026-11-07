@@ -25,6 +25,9 @@ pub struct Signature {
 }
 
 impl Family {
+    /// Every family in this build, for the model manager's custom-model choice.
+    pub const ALL: &'static [Family] = &[Family::O1Det, Family::O1Rec];
+
     pub fn parse(name: &str) -> Option<Family> {
         match name {
             "o1-det" => Some(Family::O1Det),

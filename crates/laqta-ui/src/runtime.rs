@@ -245,6 +245,36 @@ impl ToolHost for UiHandle {
 /// Checks for an update: the message to show and whether `install_update` can apply it here.
 pub type UpdateCheck = Arc<dyn Fn() -> laqta_ports::BoxFuture<'static, Result<(String, bool), String>> + Send + Sync>;
 pub type UpdateInstall = Arc<dyn Fn() -> laqta_ports::BoxFuture<'static, Result<(), String>> + Send + Sync>;
+/// One model in the model manager (catalog or custom).
+#[derive(Clone, Debug)]
+pub struct ModelRow {
+    pub id: String,
+    /// The catalog task name (`ocr-det`, `ocr-rec`, `background`).
+    pub task: String,
+    pub name: String,
+    pub description: String,
+    pub size_bytes: u64,
+    pub licence: String,
+    pub commercial: bool,
+    pub installed: bool,
+    pub custom: bool,
+    /// False while the catalog has no pinned hash for it.
+    pub available: bool,
+}
+
+pub type ModelProgress = Arc<dyn Fn(u64, Option<u64>) + Send + Sync>;
+
+/// The model manager's view of `laqta-ml` (ADR 023), built by `main`.
+pub trait ModelService: Send + Sync {
+    fn rows(&self) -> Vec<ModelRow>;
+    /// (task, family) pairs a custom model can use.
+    fn families(&self) -> Vec<(String, String)>;
+    fn install(&self, id: String, progress: ModelProgress) -> laqta_ports::BoxFuture<'static, Result<(), String>>;
+    fn remove(&self, id: &str) -> Result<(), String>;
+    /// Checks the file against the family and copies it into the models folder.
+    fn add_custom(&self, path: PathBuf, family: String, name: String) -> laqta_ports::BoxFuture<'static, Result<laqta_domain::settings::CustomModel, String>>;
+}
+
 pub type SxieRead = Arc<dyn Fn(&[u8]) -> Result<laqta_domain::effects::Preset, String> + Send + Sync>;
 pub type SxieWrite = Arc<dyn Fn(&laqta_domain::effects::Preset) -> Result<Vec<u8>, String> + Send + Sync>;
 
@@ -272,6 +302,8 @@ pub struct UiServices {
     /// Reads and writes ShareX `.sxie` effect packages (`laqta-import`).
     pub sxie_read: SxieRead,
     pub sxie_write: SxieWrite,
+    /// The model manager (ADR 023).
+    pub models: Arc<dyn ModelService>,
     /// Update check and install (M6 D12).
     pub check_update: UpdateCheck,
     pub install_update: UpdateInstall,

@@ -24,4 +24,4 @@ mod tray_popup;
 mod url_window;
 mod widgets;
 
-pub use runtime::{UiHandle, UiReceiver, UiServices, run};
+pub use runtime::{ModelProgress, ModelRow, ModelService, UiHandle, UiReceiver, UiServices, run};

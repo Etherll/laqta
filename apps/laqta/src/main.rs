@@ -7,6 +7,7 @@ mod fonts;
 mod imports;
 mod logging;
 mod media;
+mod models;
 mod notifier;
 mod ocr;
 mod requests;
