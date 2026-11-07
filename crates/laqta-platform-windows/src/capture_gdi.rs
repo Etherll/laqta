@@ -65,7 +65,8 @@ pub(crate) fn capture() -> Result<Vec<Frame>, PortError> {
     Ok(frames)
 }
 
-fn capture_rect(rect: PhysRect) -> Result<Bitmap, PortError> {
+/// The pixels of `rect` on the virtual desktop, with alpha forced to 255.
+pub(crate) fn capture_rect(rect: PhysRect) -> Result<Bitmap, PortError> {
     let (w, h) = (rect.width as i32, rect.height as i32);
     let fail = |what: &str| PortError::Failed(format!("GDI capture: {what}"));
     // SAFETY: standard GDI sequence; every handle created here is released on every path.
