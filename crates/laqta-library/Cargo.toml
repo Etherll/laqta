@@ -19,6 +19,7 @@ tracing.workspace = true
 jiff.workspace = true
 async-broadcast.workspace = true
 png.workspace = true
+zip.workspace = true
 
 [target.'cfg(not(windows))'.dependencies]
 rusqlite = { workspace = true, features = ["bundled"] }

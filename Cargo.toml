@@ -48,6 +48,7 @@ smallvec = "1"
 rusqlite = "0.41.1"  # bundled on Linux, vcpkg SQLite on Windows (ADR 026)
 fastrand = "2.5.0"
 swayipc = "4.0.0"
+atspi = "0.30.0"
 
 # application
 async-broadcast = "0.7.2"
