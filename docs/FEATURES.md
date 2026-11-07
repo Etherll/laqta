@@ -22,7 +22,7 @@ Areas the survey did not cover in depth need a second pass:
 | Overlay: window and UI-element detection, multi-region, dim, magnifier, crosshairs, info text, toolbar, mouse-button actions, keyboard nudge | M1 | done |
 | Scrolling capture (wheel, arrow, page down, scroll message; stitching) | M6 | done |
 | Auto capture (start / stop / interval) | M6 | done |
-| Text capture (OCR) | M5 | planned |
+| Text capture (OCR) | M5 | done |
 
 ## Recording
 
@@ -88,7 +88,7 @@ Hosts in the catalog are `.sxcu` files (ADR 004); hosts written in Rust are mark
 | Custom uploaders: `.sxcu` with all body types and all 13 syntax functions, old `$…$` syntax migration | `laqta-upload` | M2 | done |
 | **M7 native:** Flickr (OAuth1), Box, YouTube, Google Cloud Storage, Azure Blob, Backblaze B2, MEGA (deferred: kept only if a maintained option exists when the M7 plan is written), GitHub Gist, PrivateBin (client-side crypto), SMTP email, Pushbullet (file), Nextcloud / ownCloud, SendSpace, MediaFire | native | M7 | planned |
 | Remote storage browser: S3, FTP, SFTP (list, upload, download, rename, delete) | native | M7 | planned |
-| Dropped: Copy, Drop.io, FileSonic, Photobucket, ImageShack, Hostr, StumbleUpon, Delicious, Firebase Dynamic Links, Immio | services shut down; re-checked when M7 starts | — | dropped |
+| Dropped: Copy, Drop.io, FileSonic, Photobucket, ImageShack, Hostr, StumbleUpon, Delicious, Firebase Dynamic Links, Immio | services shut down; re-checked when M7 starts | — | pending (owner): services shut down; re-add if one returns |
 
 ## Editor and effects
 
@@ -107,16 +107,16 @@ Hosts in the catalog are `.sxcu` files (ADR 004); hosts written in Rust are mark
 
 | Tool | Milestone | Status |
 | - | - | - |
-| Color picker, screen color picker, ruler | M5 | planned |
-| Pin to screen (from screen, clipboard, file; close all) | M5 | planned |
-| Image viewer, image comparer, icon converter | M5 | planned |
-| Image combiner, splitter, resizer, converter, watermark, thumbnailer | M5 | planned |
-| Video converter, trimmer, thumbnailer; animated GIF maker and trimmer | M5 | planned |
-| OCR, QR generate, QR decode from screen, QR scan region | M5 | planned |
-| Hash checker, directory indexer (HTML, JSON, text, XML), clipboard viewer | M5 | planned |
-| Metadata viewer and stripper (EXIF, ISO BMFF, Matroska, ASF, RIFF) | M5 | planned |
-| Borderless window, active window borderless / topmost, inspect window | M5 (Windows and X11; Wayland where the compositor allows) | planned |
-| Monitor test, network monitor | M5 | planned |
+| Color picker, screen color picker, ruler | M5 | done |
+| Pin to screen (from screen, clipboard, file; close all) | M5 | done |
+| Image viewer, image comparer, icon converter | M5 | done |
+| Image combiner, splitter, resizer, converter, watermark, thumbnailer | M5 | done |
+| Video converter, trimmer, thumbnailer; animated GIF maker and trimmer | M5 | done |
+| OCR, QR generate, QR decode from screen, QR scan region | M5 | done |
+| Hash checker, directory indexer (HTML, JSON, text, XML), clipboard viewer | M5 | done |
+| Metadata viewer and stripper (EXIF, ISO BMFF, Matroska, ASF, RIFF) | M5 | done |
+| Borderless window, active window borderless / topmost, inspect window | M5 (Windows and X11; Wayland where the compositor allows) | done |
+| Monitor test, network monitor | M5 | done |
 | Background remover: local model families (BiRefNet, BEN2 and others, ADR 023), custom models, and a remove.bg cloud option | M7 | planned |
 | Model manager: per-task model choice, downloads with progress, custom ONNX models of a supported family, CPU or GPU execution | M5 (OCR) / M7 (background removal) | planned |
 | Analyze image (OpenAI, Gemini, OpenRouter) | M7 | planned |
@@ -125,7 +125,7 @@ Hosts in the catalog are `.sxcu` files (ADR 004); hosts written in Rust are mark
 
 | Feature | Milestone | Status |
 | - | - | - |
-| About 80 hotkey actions, defaults on PrintScreen combos, disable hotkeys | M1 | planned |
+| About 80 hotkey actions, defaults on PrintScreen combos, disable hotkeys | M1 | done |
 | Tray icon and menu, main window, toggle tray menu | M0–M1 | done |
 | History (list, image grid, stats, tags), legacy History.json migration | M1 | done |
 | Settings files, rotating and weekly backups, export / import archive, portable mode | M1 | done |
@@ -137,4 +137,4 @@ Hosts in the catalog are `.sxcu` files (ADR 004); hosts written in Rust are mark
 | Run at startup, shell context menu, Send To, file-type registration | M6 | planned |
 | About 30 languages | M6 | done |
 | Auto-update | M6 | done |
-| Steam build | dropped unless requested | dropped |
+| Steam build | dropped unless requested | pending (owner): dropped unless the owner asks for a Steam build |
