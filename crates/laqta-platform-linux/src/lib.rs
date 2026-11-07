@@ -8,6 +8,7 @@ use laqta_ports::{Clipboard, HotkeyRegistrar, HoverSource, ScreenSource, Shell, 
 
 mod atspi_elements;
 mod clipboard;
+mod secrets;
 pub mod session;
 mod shell;
 mod sound;
@@ -15,6 +16,7 @@ mod tray;
 mod wayland;
 mod x11;
 
+pub use secrets::SecretServiceStore;
 pub use session::Session;
 pub use sound::play_sound;
 
@@ -27,6 +29,7 @@ pub struct LinuxPorts {
     pub hotkeys: Arc<dyn HotkeyRegistrar>,
     pub tray: Arc<dyn Tray>,
     pub hover: Arc<dyn HoverSource>,
+    pub secrets: Arc<dyn laqta_ports::SecretStore>,
 }
 
 pub fn ports(session: Session) -> LinuxPorts {
@@ -45,5 +48,6 @@ pub fn ports(session: Session) -> LinuxPorts {
         hotkeys,
         tray: Arc::new(tray::SniTray::default()),
         hover: Arc::new(atspi_elements::WithElements::new(hover)),
+        secrets: Arc::new(secrets::SecretServiceStore),
     }
 }

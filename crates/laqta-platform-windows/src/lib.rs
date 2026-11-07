@@ -19,6 +19,8 @@ mod hover;
 mod keys;
 #[cfg(any(windows, test))]
 mod patch;
+#[cfg(any(windows, test))]
+mod secrets;
 #[cfg(windows)]
 mod shell;
 #[cfg(windows)]
@@ -34,10 +36,10 @@ mod imp {
     use std::sync::Arc;
 
     use laqta_domain::Frame;
-    use laqta_ports::{BoxFuture, CaptureRequest, Clipboard, HotkeyRegistrar, PortError, ScreenSource, Shell, Tray};
+    use laqta_ports::{BoxFuture, CaptureRequest, Clipboard, HotkeyRegistrar, PortError, ScreenSource, SecretStore, Shell, Tray};
     use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 
-    use crate::{capture_dxgi, capture_gdi, clipboard, cursor, hover, shell, shell_thread};
+    use crate::{capture_dxgi, capture_gdi, clipboard, cursor, hover, secrets, shell, shell_thread};
 
     /// The Windows adapters, ready to hand to `laqta_app::Ports`.
     pub struct WindowsPorts {
@@ -47,6 +49,7 @@ mod imp {
         pub hotkeys: Arc<dyn HotkeyRegistrar>,
         pub tray: Arc<dyn Tray>,
         pub hover: Arc<dyn laqta_ports::HoverSource>,
+        pub secrets: Arc<dyn SecretStore>,
     }
 
     impl std::fmt::Debug for WindowsPorts {
@@ -63,6 +66,7 @@ mod imp {
             hotkeys: Arc::new(shell_thread::WindowsHotkeys),
             tray: Arc::new(shell_thread::WindowsTray),
             hover: Arc::new(hover::WindowsHover),
+            secrets: Arc::new(secrets::CredentialStore),
         }
     }
 
