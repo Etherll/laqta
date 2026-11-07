@@ -20,6 +20,7 @@ gpui-component.workspace = true
 tracing.workspace = true
 image.workspace = true
 smallvec.workspace = true
+rfd.workspace = true
 futures-channel.workspace = true
 futures-lite.workspace = true
 jiff.workspace = true

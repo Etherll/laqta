@@ -10,7 +10,9 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::ScrollableElement as _;
-use gpui_component::{ActiveTheme as _, Disableable as _, Root, Selectable as _};
+use gpui_component::{ActiveTheme as _, Disableable as _, Root, Selectable as _, Sizable as _};
+use laqta_domain::capture::RegionMouseAction;
+use laqta_domain::geometry::PhysRect;
 use laqta_domain::hotkey::KeyChord;
 use laqta_domain::settings::Theme;
 use laqta_domain::workflow::{AfterCaptureTasks, FileExistsAction, ToastPlacement, Workflow};
@@ -47,15 +49,17 @@ enum Page {
     Naming,
     Capture,
     Workflows,
+    Data,
 }
 
-const PAGES: [(Page, &str); 6] = [
+const PAGES: [(Page, &str); 7] = [
     (Page::General, "General"),
     (Page::AfterCapture, "After capture"),
     (Page::Image, "Image"),
     (Page::Naming, "File naming"),
     (Page::Capture, "Capture"),
     (Page::Workflows, "Hotkeys and workflows"),
+    (Page::Data, "Data"),
 ];
 
 struct WorkflowInputs {
@@ -77,6 +81,11 @@ struct SettingsWindow {
     thumb_h: Entity<InputState>,
     delay: Entity<InputState>,
     toast_ms: Entity<InputState>,
+    custom_region: Entity<InputState>,
+    window_title: Entity<InputState>,
+    sound_capture: Entity<InputState>,
+    sound_task: Entity<InputState>,
+    sound_error: Entity<InputState>,
     workflows: Vec<WorkflowInputs>,
 }
 
@@ -100,6 +109,15 @@ impl SettingsWindow {
             thumb_h: text_input(d.image.thumbnail_height.to_string(), window, cx),
             delay: text_input(d.capture.delay_ms.to_string(), window, cx),
             toast_ms: text_input(d.general.toast.duration_ms.to_string(), window, cx),
+            custom_region: text_input(
+                d.capture.custom_region.map(|r| format!("{}, {}, {}, {}", r.x, r.y, r.width, r.height)).unwrap_or_default(),
+                window,
+                cx,
+            ),
+            window_title: text_input(d.capture.custom_window_title.clone(), window, cx),
+            sound_capture: text_input(path_text(&d.general.custom_capture_sound), window, cx),
+            sound_task: text_input(path_text(&d.general.custom_task_sound), window, cx),
+            sound_error: text_input(path_text(&d.general.custom_error_sound), window, cx),
             workflows: Vec::new(),
             draft,
             page: Page::General,
@@ -152,6 +170,15 @@ impl SettingsWindow {
         d.image.thumbnail_width = num(&self.thumb_w, "Thumbnail width")?;
         d.image.thumbnail_height = num(&self.thumb_h, "Thumbnail height")?;
         d.capture.delay_ms = num(&self.delay, "Capture delay")?;
+        d.capture.custom_window_title = Self::value(&self.window_title, cx);
+        d.capture.custom_region = parse_region(&Self::value(&self.custom_region, cx))?;
+        let path = |input: &Entity<InputState>| {
+            let v = Self::value(input, cx);
+            (!v.is_empty()).then(|| std::path::PathBuf::from(v))
+        };
+        d.general.custom_capture_sound = path(&self.sound_capture);
+        d.general.custom_task_sound = path(&self.sound_task);
+        d.general.custom_error_sound = path(&self.sound_error);
         d.general.toast.duration_ms = num(&self.toast_ms, "Toast duration")?.max(500);
         for (w, inputs) in self.draft.workflows.iter_mut().zip(&self.workflows) {
             w.name = Self::value(&inputs.name, cx);
@@ -267,6 +294,108 @@ impl SettingsWindow {
                 },
             )))
             .child(widgets::muted(format!("Data folder: {data_dir}"), cx))
+            .child(Checkbox::new("snd-capture").label("Play a sound after capture").checked(self.draft.defaults.general.play_sound_after_capture).on_click(
+                cx.listener(|this, c: &bool, _, cx| {
+                    this.draft.defaults.general.play_sound_after_capture = *c;
+                    cx.notify();
+                }),
+            ))
+            .child(Checkbox::new("snd-task").label("Play a sound when a task finishes or fails").checked(self.draft.defaults.general.play_sound_after_task).on_click(
+                cx.listener(|this, c: &bool, _, cx| {
+                    this.draft.defaults.general.play_sound_after_task = *c;
+                    cx.notify();
+                }),
+            ))
+            .child(widgets::row("Custom capture sound (file)", Input::new(&self.sound_capture), cx))
+            .child(widgets::row("Custom task sound (file)", Input::new(&self.sound_task), cx))
+            .child(widgets::row("Custom error sound (file)", Input::new(&self.sound_error), cx))
+    }
+
+    fn data(&self, cx: &mut Context<Self>) -> gpui::Div {
+        widgets::section("Data", cx)
+            .child(widgets::muted("Back up or move your settings, history and custom uploaders as one archive.", cx))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .child(Button::new("export").label("Export settings…").on_click(cx.listener(|this, _, _, cx| this.export_archive(cx))))
+                    .child(Button::new("import").label("Import settings…").on_click(cx.listener(|this, _, _, cx| this.import_archive(cx)))),
+            )
+            .child(widgets::muted("Bring in the capture history of an existing ShareX install (History.json).", cx))
+            .child(Button::new("sharex-history").label("Import ShareX history…").on_click(cx.listener(|this, _, _, cx| this.import_sharex(cx))))
+    }
+
+    fn report(&mut self, result: Result<String, String>, cx: &mut Context<Self>) {
+        self.message = Some(match result {
+            Ok(m) => (true, m),
+            Err(e) => (false, e),
+        });
+        cx.notify();
+    }
+
+    fn export_archive(&mut self, cx: &mut Context<Self>) {
+        let services = cx.global::<UiState>().services.clone();
+        let task = cx.background_spawn(async move {
+            let Some(file) = rfd::AsyncFileDialog::new().set_file_name("Laqta-backup.zip").add_filter("Zip", &["zip"]).save_file().await else {
+                return Ok(None);
+            };
+            laqta_library::export_archive(&services.data_dir, file.path(), services.history.as_deref())
+                .map(|_| Some(file.path().display().to_string()))
+                .map_err(|e| e.to_string())
+        });
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |this, cx| match r {
+                Ok(Some(p)) => this.report(Ok(format!("Exported to {p}.")), cx),
+                Ok(None) => {}
+                Err(e) => this.report(Err(format!("Export failed: {e}")), cx),
+            });
+        })
+        .detach();
+    }
+
+    fn import_archive(&mut self, cx: &mut Context<Self>) {
+        let services = cx.global::<UiState>().services.clone();
+        let task = cx.background_spawn(async move {
+            let Some(file) = rfd::AsyncFileDialog::new().add_filter("Zip", &["zip"]).pick_file().await else {
+                return Ok(None);
+            };
+            laqta_library::import_archive(file.path(), &services.data_dir).map(|written| Some(written.len())).map_err(|e| e.to_string())
+        });
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |this, cx| match r {
+                Ok(Some(n)) => this.report(Ok(format!("Imported {n} files. Restart Laqta to use them.")), cx),
+                Ok(None) => {}
+                Err(e) => this.report(Err(format!("Import failed: {e}")), cx),
+            });
+        })
+        .detach();
+    }
+
+    fn import_sharex(&mut self, cx: &mut Context<Self>) {
+        let Some(history) = cx.global::<UiState>().services.history.clone() else {
+            self.report(Err("History is turned off.".into()), cx);
+            return;
+        };
+        let task = cx.background_spawn(async move {
+            let Some(file) = rfd::AsyncFileDialog::new().add_filter("ShareX history", &["json"]).pick_file().await else {
+                return Ok(None);
+            };
+            laqta_library::import_sharex_history_file(&history, file.path()).map(Some).map_err(|e| e.to_string())
+        });
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |this, cx| match r {
+                Ok(Some(rep)) => this.report(
+                    Ok(format!("Imported {} items ({} already there, {} unreadable).", rep.imported, rep.skipped, rep.failed)),
+                    cx,
+                ),
+                Ok(None) => {}
+                Err(e) => this.report(Err(format!("Import failed: {e}")), cx),
+            });
+        })
+        .detach();
     }
 
     fn image(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -340,6 +469,44 @@ impl SettingsWindow {
             .child(check("magnifier", "Show the magnifier", r.show_magnifier, |s, v| s.defaults.capture.region.show_magnifier = v, cx))
             .child(check("crosshair", "Show crosshair lines", r.show_crosshair, |s, v| s.defaults.capture.region.show_crosshair = v, cx))
             .child(check("info", "Show position and colour", r.show_info, |s, v| s.defaults.capture.region.show_info = v, cx))
+            .child(check(
+                "transparent",
+                "Capture windows with transparency (rounded corners, shadows)",
+                c.transparent_window,
+                |s, v| s.defaults.capture.transparent_window = v,
+                cx,
+            ))
+            .child(widgets::row("Right click in the overlay", self.mouse_actions("rc", r.right_click, |s, a| s.defaults.capture.region.right_click = a, cx), cx))
+            .child(widgets::row("Middle click in the overlay", self.mouse_actions("mc", r.middle_click, |s, a| s.defaults.capture.region.middle_click = a, cx), cx))
+            .child(widgets::row("Custom region (x, y, width, height)", Input::new(&self.custom_region), cx))
+            .child(widgets::row("Window title for \"Capture window by title\"", Input::new(&self.window_title), cx))
+    }
+
+    fn mouse_actions(
+        &self,
+        id: &str,
+        current: RegionMouseAction,
+        set: fn(&mut Settings, RegionMouseAction),
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let mut row = div().flex().flex_wrap().gap(px(6.));
+        for (a, label) in [
+            (RegionMouseAction::None, "Nothing"),
+            (RegionMouseAction::CancelCapture, "Cancel"),
+            (RegionMouseAction::RemoveShapeOrCancel, "Remove region or cancel"),
+            (RegionMouseAction::RemoveShape, "Remove region"),
+            (RegionMouseAction::CaptureFullscreen, "Capture fullscreen"),
+            (RegionMouseAction::CaptureActiveMonitor, "Capture monitor"),
+            (RegionMouseAction::ConfirmSelection, "Confirm"),
+        ] {
+            row = row.child(Button::new(SharedString::from(format!("{id}-{a:?}"))).label(label).small().selected(current == a).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    set(&mut this.draft, a);
+                    cx.notify();
+                },
+            )));
+        }
+        row
     }
 
     fn workflows_page(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -489,6 +656,7 @@ impl Render for SettingsWindow {
             Page::Naming => self.naming(cx),
             Page::Capture => self.capture(cx),
             Page::Workflows => self.workflows_page(cx),
+            Page::Data => self.data(cx),
         };
         let mut footer = div().flex().flex_row().items_center().gap(px(8.)).p(px(12.)).border_t_1().border_color(cx.theme().border);
         if let Some((ok, msg)) = &self.message {
@@ -510,4 +678,28 @@ impl Render for SettingsWindow {
             )
             .child(footer)
     }
+}
+
+fn path_text(p: &Option<std::path::PathBuf>) -> String {
+    p.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
+}
+
+/// "x, y, width, height" → a rect; empty → None.
+fn parse_region(text: &str) -> Result<Option<PhysRect>, String> {
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    let parts: Vec<&str> = text.split(',').map(str::trim).collect();
+    let bad = || "Custom region must be four numbers: x, y, width, height".to_string();
+    if parts.len() != 4 {
+        return Err(bad());
+    }
+    let x = parts[0].parse::<i32>().map_err(|_| bad())?;
+    let y = parts[1].parse::<i32>().map_err(|_| bad())?;
+    let width = parts[2].parse::<u32>().map_err(|_| bad())?;
+    let height = parts[3].parse::<u32>().map_err(|_| bad())?;
+    if width == 0 || height == 0 {
+        return Err(bad());
+    }
+    Ok(Some(PhysRect { x, y, width, height }))
 }

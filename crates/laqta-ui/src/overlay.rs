@@ -5,12 +5,12 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Context, Div, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
+    AnyWindowHandle, App, AppContext as _, Bounds, StatefulInteractiveElement as _, Context, Div, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage, Styled as _,
     Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, img, point, px, size,
 };
 use laqta_domain::geometry::PhysRect;
-use laqta_domain::region::{Button, KeyMods, RegionInput, RegionKey};
+use laqta_domain::region::{Button, KeyMods, RegionCommand, RegionInput, RegionKey};
 use laqta_domain::{Bitmap, Frame, PixelFormat};
 use laqta_ports::{InputCallback, RegionView};
 use smallvec::SmallVec;
@@ -334,6 +334,50 @@ impl Render for OverlayView {
                     .child(div().absolute().left(px(lx)).top_0().w(px(1.)).h(px(win_h)).bg(line));
             }
             root = root.child(magnifier_and_info(view, mon, lx, ly, win_w, win_h, s));
+        }
+
+        // The toolbar sits at the top centre of the first monitor; its clicks don't reach the canvas.
+        if self.index == 0 {
+            let mut bar = div()
+                .id("laqta-overlay-toolbar")
+                .absolute()
+                .top(px(12.))
+                .left(px(win_w / 2.0 - 190.0))
+                .w(px(380.))
+                .flex()
+                .flex_row()
+                .gap(px(4.))
+                .p(px(4.))
+                .rounded(px(8.))
+                .bg(color(0x1f1f1f, 0.92))
+                .text_color(gpui::white())
+                .text_sm()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+            for (i, (label, cmd)) in [
+                ("Capture", RegionCommand::Confirm),
+                ("Fullscreen", RegionCommand::Fullscreen),
+                ("Monitor", RegionCommand::ActiveMonitor),
+                ("Cancel", RegionCommand::Cancel),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                bar = bar.child(
+                    div()
+                        .id(("tb", i))
+                        .flex_1()
+                        .flex()
+                        .justify_center()
+                        .py(px(6.))
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(color(0xffffff, 0.15)))
+                        .child(label)
+                        .on_click(cx.listener(move |this, _, _, cx| this.send(RegionInput::Command(cmd), cx))),
+                );
+            }
+            root = root.child(bar);
         }
 
         root.on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
