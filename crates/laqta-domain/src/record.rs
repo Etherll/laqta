@@ -113,6 +113,8 @@ pub struct RecordingSettings {
     pub custom_args: String,
     /// Path to FFmpeg; empty = PATH or the downloaded copy.
     pub ffmpeg_path: String,
+    /// Turn the mouse highlighter on while recording (M5 D9).
+    pub highlight_mouse: bool,
 }
 
 impl Default for RecordingSettings {
@@ -131,6 +133,7 @@ impl Default for RecordingSettings {
             show_border: true,
             custom_args: String::new(),
             ffmpeg_path: String::new(),
+            highlight_mouse: false,
         }
     }
 }

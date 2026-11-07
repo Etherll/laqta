@@ -58,7 +58,9 @@ impl LinuxShellIntegration {
     /// Refreshes the MIME and desktop databases so the file types take effect. Best effort: the
     /// tools are optional and a missing one only delays the change until the next login.
     fn refresh_databases(&self) {
-        for (tool, dir) in [("update-mime-database", self.data_home.join("mime")), ("update-desktop-database", self.data_home.join("applications"))] {
+        for (tool, dir) in
+            [("update-mime-database", self.data_home.join("mime")), ("update-desktop-database", self.data_home.join("applications"))]
+        {
             let _ = std::process::Command::new(tool)
                 .arg(&dir)
                 .stdin(std::process::Stdio::null())

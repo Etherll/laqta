@@ -476,3 +476,22 @@ fn control_actions_with_nothing_running_are_done() {
         assert!(calls(&h).is_empty());
     });
 }
+
+#[test]
+fn highlighter_is_on_only_while_recording() {
+    use laqta_ports::PointerHighlighter as _;
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let mut h = harness(tmp.path(), |s| {
+            custom_region(s);
+            s.defaults.recording.highlight_mouse = true;
+        });
+        start(&h, Action::ScreenRecorderCustomRegion).unwrap();
+        recording_id(&mut h);
+        step(&mut h);
+        assert!(h.app.ports().highlighter.is_enabled());
+        h.app.recording_stop();
+        settle(&mut h);
+        assert!(!h.app.ports().highlighter.is_enabled());
+    });
+}

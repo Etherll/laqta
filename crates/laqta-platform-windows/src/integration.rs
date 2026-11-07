@@ -61,11 +61,8 @@ fn env_dir(var: &str, rest: &str) -> PathBuf {
 
 /// The verb key for `target`: `*` for files, `Directory` for folders.
 /// ShareX's file types that open in Laqta (imported): (extension, ProgID, description).
-pub(crate) const FILE_TYPES: [(&str, &str, &str); 3] = [
-    (".sxcu", "Laqta.sxcu", "Custom uploader"),
-    (".sxie", "Laqta.sxie", "Image effect"),
-    (".sxb", "Laqta.sxb", "ShareX backup"),
-];
+pub(crate) const FILE_TYPES: [(&str, &str, &str); 3] =
+    [(".sxcu", "Laqta.sxcu", "Custom uploader"), (".sxie", "Laqta.sxie", "Image effect"), (".sxb", "Laqta.sxb", "ShareX backup")];
 
 /// `HKCU\Software\Classes\<name>`.
 fn class_key(software: &str, name: &str) -> String {

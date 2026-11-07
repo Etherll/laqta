@@ -19,7 +19,19 @@ enum Next {
 
 /// Runs one recording until it ends. Pause and resume toggle the encoder, and each second of running emits a
 /// tick. A failed encoder keeps its partial file (M4 D4).
-pub(super) async fn run(app: Arc<App>, id: TaskId, mut live: Live) {
+pub(super) async fn run(app: Arc<App>, id: TaskId, live: Live) {
+    // "Highlight the mouse while recording": on for this recording only, unless it was already on.
+    let highlight = app.settings.get().defaults.recording.highlight_mouse && !app.ports.highlighter.is_enabled();
+    if highlight && let Err(error) = app.ports.highlighter.set_enabled(true) {
+        tracing::warn!("mouse highlighter unavailable: {error}");
+    }
+    drive(&app, id, live).await;
+    if highlight {
+        let _ = app.ports.highlighter.set_enabled(false);
+    }
+}
+
+async fn drive(app: &Arc<App>, id: TaskId, mut live: Live) {
     let mut elapsed = 0u32;
     let mut paused = false;
     loop {
@@ -33,8 +45,8 @@ pub(super) async fn run(app: Arc<App>, id: TaskId, mut live: Live) {
             .await
         };
         match next {
-            Next::Command(None | Some(Control::Abort)) => return abort_recording(&app, id, live.handle).await,
-            Next::Command(Some(Control::Stop)) => return stop_recording(&app, id, live).await,
+            Next::Command(None | Some(Control::Abort)) => return abort_recording(app, id, live.handle).await,
+            Next::Command(Some(Control::Stop)) => return stop_recording(app, id, live).await,
             Next::Command(Some(control)) => {
                 let want_pause = match control {
                     Control::Pause => true,
@@ -53,17 +65,17 @@ pub(super) async fn run(app: Arc<App>, id: TaskId, mut live: Live) {
                         let event = if want_pause { TaskEvent::RecordingPaused { id } } else { TaskEvent::RecordingResumed { id } };
                         app.emit(event);
                     }
-                    Err(error) => return fail_recording(&app, id, live, AppError::from(error)).await,
+                    Err(error) => return fail_recording(app, id, live, AppError::from(error)).await,
                 }
             }
             Next::Second => {
                 if !live.handle.is_alive() {
-                    return fail_recording(&app, id, live, AppError::Io("the recorder stopped unexpectedly".to_owned())).await;
+                    return fail_recording(app, id, live, AppError::Io("the recorder stopped unexpectedly".to_owned())).await;
                 }
                 elapsed += 1;
                 app.emit(TaskEvent::RecordingTick { id, elapsed_secs: elapsed });
                 if live.fixed_secs > 0 && elapsed >= live.fixed_secs {
-                    return stop_recording(&app, id, live).await;
+                    return stop_recording(app, id, live).await;
                 }
                 future::yield_now().await;
             }

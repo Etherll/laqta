@@ -567,6 +567,13 @@ impl SettingsWindow {
             .child(widgets::row("Quality (CRF, empty = codec default)", Input::new(&self.rec.crf), cx))
             .child(check("rec-cursor", "Record the mouse cursor", r.show_cursor, |r, c| r.show_cursor = c, cx))
             .child(check("rec-border", "Show a border around the recorded area", r.show_border, |r, c| r.show_border = c, cx))
+            .child(check(
+                "rec-highlight",
+                "Highlight the mouse while recording (X11, Windows)",
+                r.highlight_mouse,
+                |r, c| r.highlight_mouse = c,
+                cx,
+            ))
             .child(check("rec-system-audio", "Record system audio", r.record_system_audio, |r, c| r.record_system_audio = c, cx))
             .child(widgets::row("Microphone (device name, empty = none)", Input::new(&self.rec.microphone), cx))
             .child(widgets::row("Countdown before start (s)", Input::new(&self.rec.countdown), cx))
