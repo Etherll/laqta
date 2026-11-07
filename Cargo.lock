@@ -3855,6 +3855,7 @@ dependencies = [
  "futures-lite",
  "gpui-component",
  "gpui-pre",
+ "gpui-pre-platform",
  "image",
  "jiff",
  "laqta-app",

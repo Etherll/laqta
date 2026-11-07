@@ -15,6 +15,7 @@ laqta-ports.workspace = true
 laqta-app.workspace = true
 laqta-library.workspace = true
 gpui.workspace = true
+gpui_platform.workspace = true
 gpui-component.workspace = true
 tracing.workspace = true
 image.workspace = true
