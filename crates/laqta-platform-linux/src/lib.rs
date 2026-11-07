@@ -9,11 +9,13 @@ use laqta_ports::{Clipboard, HotkeyRegistrar, HoverSource, ScreenSource, Shell, 
 mod clipboard;
 pub mod session;
 mod shell;
+mod sound;
 mod tray;
 mod wayland;
 mod x11;
 
 pub use session::Session;
+pub use sound::play_sound;
 
 /// Every port Linux provides in M0, for the session `main` detected.
 #[allow(missing_debug_implementations)]

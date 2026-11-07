@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use laqta_domain::region::HoverTarget;
 use laqta_domain::{Bitmap, Frame, Monitor, MonitorId, PhysRect, PixelFormat};
 use laqta_ports::{BoxFuture, CaptureRequest, PortError, ScreenSource};
 use x11rb::connection::Connection;
@@ -26,6 +27,11 @@ impl ScreenSource for X11Screen {
 
     fn capture(&self, request: CaptureRequest) -> BoxFuture<'_, Result<Vec<Frame>, PortError>> {
         Box::pin(blocking::unblock(move || capture_frames(request.show_cursor)))
+    }
+
+    fn capture_window(&self, target: &HoverTarget, request: CaptureRequest) -> BoxFuture<'_, Result<Bitmap, PortError>> {
+        let handle = target.handle;
+        Box::pin(blocking::unblock(move || capture_window_bitmap(handle, request.show_cursor)))
     }
 }
 
@@ -96,6 +102,77 @@ pub(crate) fn capture_frames(show_cursor: bool) -> Result<Vec<Frame>, PortError>
             Ok(Frame { monitor, image })
         })
         .collect()
+}
+
+/// Captures one window's client area with `GetImage` on the window itself, so the frame is the
+/// window's geometry and not the frame the window manager draws around it. A 32-bit window's pixels
+/// are premultiplied and come out straight; a 24-bit window has no alpha and comes out opaque.
+pub(crate) fn capture_window_bitmap(handle: u64, show_cursor: bool) -> Result<Bitmap, PortError> {
+    let window =
+        u32::try_from(handle).ok().filter(|id| *id != 0).ok_or_else(|| PortError::Unsupported("x11: target has no window id".into()))?;
+    let (conn, screen_num) = x11rb::connect(None).map_err(fail)?;
+    let setup = conn.setup();
+    let root = setup.roots[screen_num].root;
+    let geometry = conn.get_geometry(window).map_err(fail)?.reply().map_err(fail)?;
+    let (width, height, depth) = (geometry.width, geometry.height, geometry.depth);
+    let has_alpha = match depth {
+        32 => true,
+        24 => false,
+        _ => return Err(PortError::Unsupported(format!("x11: window depth {depth}"))),
+    };
+    let bpp = setup.pixmap_formats.iter().find(|f| f.depth == depth).map(|f| f.bits_per_pixel).unwrap_or(0);
+    if bpp != 32 {
+        return Err(PortError::Unsupported(format!("x11: window depth {depth} with {bpp} bpp")));
+    }
+    let reply = conn.get_image(ImageFormat::Z_PIXMAP, window, 0, 0, width, height, !0).map_err(fail)?.reply().map_err(fail)?;
+    let mut pixels = reply.data;
+    if pixels.len() != usize::from(width) * usize::from(height) * 4 {
+        return Err(fail(format!("unexpected image size {} for {width}x{height}", pixels.len())));
+    }
+    if has_alpha {
+        unpremultiply(&mut pixels);
+    } else {
+        for px in pixels.as_chunks_mut::<4>().0 {
+            px[3] = 255;
+        }
+    }
+    if show_cursor {
+        match fetch_cursor(&conn) {
+            Ok(cursor) => {
+                let origin = conn.translate_coordinates(window, root, 0, 0).map_err(fail)?.reply().map_err(fail)?;
+                // The hotspot is in root coordinates; the image starts at the window's own origin.
+                let left = i32::from(cursor.x) - i32::from(cursor.xhot) - i32::from(origin.dst_x);
+                let top = i32::from(cursor.y) - i32::from(cursor.yhot) - i32::from(origin.dst_y);
+                blend_cursor(
+                    &mut pixels,
+                    u32::from(width),
+                    u32::from(height),
+                    &cursor.cursor_image,
+                    u32::from(cursor.width),
+                    u32::from(cursor.height),
+                    left,
+                    top,
+                );
+            }
+            Err(e) => tracing::debug!("x11: cursor not drawn: {e}"),
+        }
+    }
+    Bitmap::new(u32::from(width), u32::from(height), PixelFormat::Bgra8, Arc::from(pixels)).map_err(fail)
+}
+
+/// Turns premultiplied BGRA into straight alpha, in place. A fully transparent pixel becomes zero,
+/// and a colour above its alpha (a source that was not truly premultiplied) is clamped to 255.
+pub(crate) fn unpremultiply(pixels: &mut [u8]) {
+    for px in pixels.as_chunks_mut::<4>().0 {
+        let alpha = u32::from(px[3]);
+        if alpha == 0 {
+            *px = [0; 4];
+            continue;
+        }
+        for channel in &mut px[..3] {
+            *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
+        }
+    }
 }
 
 /// Draws the cursor onto every frame it overlaps; each frame clips it to its own bounds. A cursor
@@ -189,7 +266,7 @@ fn over(src: u32, dst: u8, inverse_alpha: u32) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::blend_cursor;
+    use super::{blend_cursor, unpremultiply};
 
     const BLACK: [u8; 4] = [0, 0, 0, 255];
     const WHITE: [u8; 4] = [255, 255, 255, 255];
@@ -264,5 +341,34 @@ mod tests {
         let mut px = before.clone();
         blend_cursor(&mut px, 2, 2, &[0xffff_ffff; 3], 2, 2, 0, 0);
         assert_eq!(px, before);
+    }
+
+    #[test]
+    fn opaque_pixel_is_unchanged_by_unpremultiply() {
+        let mut px: Vec<u8> = vec![10, 200, 30, 255];
+        unpremultiply(&mut px);
+        assert_eq!(px, vec![10, 200, 30, 255]);
+    }
+
+    #[test]
+    fn transparent_pixel_becomes_zero() {
+        let mut px: Vec<u8> = vec![0, 0, 0, 0, 9, 8, 7, 0];
+        unpremultiply(&mut px);
+        assert_eq!(px, vec![0; 8]);
+    }
+
+    #[test]
+    fn half_alpha_channel_is_restored() {
+        // 128 straight at alpha 128 premultiplies to 64, so the round trip is exact.
+        let mut px: Vec<u8> = vec![64, 64, 64, 128];
+        unpremultiply(&mut px);
+        assert_eq!(px, vec![128, 128, 128, 128]);
+    }
+
+    #[test]
+    fn colour_above_alpha_is_clamped() {
+        let mut px: Vec<u8> = vec![200, 100, 0, 100];
+        unpremultiply(&mut px);
+        assert_eq!(px, vec![255, 255, 0, 100]);
     }
 }
