@@ -69,6 +69,7 @@ fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
         ocr: Arc::new(laqta_ports::fakes::FakeOcr::default()),
         window_ops: Arc::new(laqta_ports::fakes::FakeWindowOps::default()),
         input: Arc::new(laqta_ports::fakes::FakeInputSynth::default()),
+        highlighter: Arc::new(laqta_ports::fakes::FakeHighlighter::default()),
         watcher: Arc::new(laqta_ports::fakes::FakeFileWatcher::default()),
         uploaders: Arc::new(laqta_ports::fakes::FakeUploaders::default()),
         hover: Arc::new(hover),
@@ -349,7 +350,7 @@ fn pins_and_highlighter() {
     run(&h, h.app.dispatch(Action::PinToScreenCloseAll, None)).unwrap();
     assert!(h.tools.pins.lock().unwrap().is_empty());
     run(&h, h.app.dispatch(Action::MouseHighlighter, None)).unwrap();
-    assert!(*h.tools.highlighter.lock().unwrap());
+    assert!(h.app.ports().highlighter.is_enabled());
     run(&h, h.app.dispatch(Action::MouseHighlighter, None)).unwrap();
-    assert!(!*h.tools.highlighter.lock().unwrap());
+    assert!(!h.app.ports().highlighter.is_enabled());
 }

@@ -52,3 +52,16 @@ impl laqta_ports::SecretStore for MemorySecrets {
         Ok(())
     }
 }
+
+/// Until the platform highlighters land.
+#[derive(Debug)]
+pub struct NoHighlighter;
+
+impl laqta_ports::PointerHighlighter for NoHighlighter {
+    fn set_enabled(&self, _on: bool) -> Result<(), laqta_ports::PortError> {
+        Err(laqta_ports::PortError::Unsupported("the mouse highlighter".into()))
+    }
+    fn is_enabled(&self) -> bool {
+        false
+    }
+}

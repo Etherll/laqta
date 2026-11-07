@@ -132,6 +132,7 @@ fn harness(dir: &Path, page: Arc<Page>, input: Arc<dyn InputSynth>, edit: impl F
         ocr: Arc::new(laqta_ports::fakes::FakeOcr::default()),
         window_ops: Arc::new(laqta_ports::fakes::FakeWindowOps::default()),
         input,
+        highlighter: Arc::new(laqta_ports::fakes::FakeHighlighter::default()),
         watcher: Arc::new(laqta_ports::fakes::FakeFileWatcher::default()),
         uploaders: Arc::new(laqta_ports::fakes::FakeUploaders::default()),
         hover: Arc::new(FakeHoverSource::new(Vec::new())),

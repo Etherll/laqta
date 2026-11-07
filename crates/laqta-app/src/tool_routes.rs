@@ -101,7 +101,10 @@ impl App {
                 }
                 Err(e) => Err(e),
             },
-            Action::MouseHighlighter => self.ports.tools.toggle_mouse_highlighter().map(|_| Dispatched::Done).map_err(AppError::from),
+            Action::MouseHighlighter => {
+                let on = !self.ports.highlighter.is_enabled();
+                self.ports.highlighter.set_enabled(on).map(|()| Dispatched::Done).map_err(AppError::from)
+            }
             _ => return None,
         };
         Some(r)

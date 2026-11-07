@@ -109,9 +109,15 @@ pub enum TaskEvent {
         path: PathBuf,
     },
     /// `PIN_TO_SCREEN`: the capture is pinned.
-    Pinned { id: TaskId },
+    Pinned {
+        id: TaskId,
+    },
     /// `SCAN_QR_CODE` or `DO_OCR` finished; `text` is empty when nothing was found.
-    TextFound { id: TaskId, step: &'static str, text: String },
+    TextFound {
+        id: TaskId,
+        step: &'static str,
+        text: String,
+    },
     /// A step that failed without failing the task (reveal, toast, thumbnail, …).
     StepFailed {
         id: TaskId,

@@ -378,7 +378,6 @@ pub struct FakeToolHost {
     /// Sizes of pinned images.
     pub pins: Mutex<Vec<(u32, u32)>>,
     pub texts: Mutex<Vec<(String, String)>>,
-    pub highlighter: Mutex<bool>,
 }
 
 impl crate::ToolHost for FakeToolHost {
@@ -397,11 +396,6 @@ impl crate::ToolHost for FakeToolHost {
     fn show_text(&self, title: &str, text: &str) -> Result<(), PortError> {
         self.texts.lock().unwrap().push((title.to_owned(), text.to_owned()));
         Ok(())
-    }
-    fn toggle_mouse_highlighter(&self) -> Result<bool, PortError> {
-        let mut on = self.highlighter.lock().unwrap();
-        *on = !*on;
-        Ok(*on)
     }
 }
 
@@ -818,5 +812,19 @@ impl crate::FileWatcher for FakeFileWatcher {
         let alive = Arc::new(());
         self.watches.lock().unwrap().push((folder.to_path_buf(), recursive, on_file, alive.clone()));
         Ok(crate::WatchHandle(Box::new(alive)))
+    }
+}
+
+/// Remembers whether the highlighter is on.
+#[derive(Debug, Default)]
+pub struct FakeHighlighter(pub Mutex<bool>);
+
+impl crate::PointerHighlighter for FakeHighlighter {
+    fn set_enabled(&self, on: bool) -> Result<(), PortError> {
+        *self.0.lock().unwrap() = on;
+        Ok(())
+    }
+    fn is_enabled(&self) -> bool {
+        *self.0.lock().unwrap()
     }
 }

@@ -41,6 +41,14 @@ pub trait WindowOps: Send + Sync {
     fn inspect(&self, window: &HoverTarget) -> Result<Vec<(String, String)>, PortError>;
 }
 
+/// The mouse highlighter (M5 D9): a click-through, always-on-top circle that follows the pointer.
+/// Windows: a layered `WS_EX_TRANSPARENT` window; X11: an override-redirect window with an empty
+/// input shape; Wayland returns `Unsupported` (no global pointer position).
+pub trait PointerHighlighter: Send + Sync {
+    fn set_enabled(&self, on: bool) -> Result<(), PortError>;
+    fn is_enabled(&self) -> bool;
+}
+
 /// Synthetic input for scrolling capture (M6 D4): Windows `SendInput`, X11 XTEST; Wayland returns
 /// `Unsupported` (no portal grants input injection without the RemoteDesktop portal).
 pub trait InputSynth: Send + Sync {

@@ -40,6 +40,8 @@ pub struct Ports {
     pub window_ops: Arc<dyn laqta_ports::WindowOps>,
     /// Scrolling capture's synthetic scroll (M6 D4).
     pub input: Arc<dyn laqta_ports::InputSynth>,
+    /// The mouse highlighter (M5 D9).
+    pub highlighter: Arc<dyn laqta_ports::PointerHighlighter>,
     /// Watch folders (M6 D6).
     pub watcher: Arc<dyn laqta_ports::FileWatcher>,
     pub uploaders: Arc<dyn laqta_ports::Uploaders>,

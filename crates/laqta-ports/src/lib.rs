@@ -25,7 +25,10 @@ pub use recording::{
 pub use runtime::{Clock, Spawner};
 pub use screen::{CaptureRequest, ScreenSource};
 pub use task::{AppError, TaskEvent, TaskId, TaskStatus};
-pub use tools::{Autostart, FileWatcher, InputSynth, Ocr, OcrLine, OcrResult, ShellIntegration, WatchCallback, WatchHandle, WindowOps};
+pub use tools::{
+    Autostart, FileWatcher, InputSynth, Ocr, OcrLine, OcrResult, PointerHighlighter, ShellIntegration, WatchCallback, WatchHandle,
+    WindowOps,
+};
 pub use upload::{
     Destination, ProgressCallback, Prompt, SecretStore, Sharer, Shortener, UploadData, UploadError, UploadKind, UploadRequest,
     UploadResult, Uploaders,

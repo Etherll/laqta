@@ -50,6 +50,7 @@ fn harness_with(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
         ocr: Arc::new(laqta_ports::fakes::FakeOcr::default()),
         window_ops: Arc::new(laqta_ports::fakes::FakeWindowOps::default()),
         input: Arc::new(laqta_ports::fakes::FakeInputSynth::default()),
+        highlighter: Arc::new(laqta_ports::fakes::FakeHighlighter::default()),
         watcher: Arc::new(laqta_ports::fakes::FakeFileWatcher::default()),
         uploaders: uploaders.clone(),
         hover: Arc::new(FakeHoverSource::new(Vec::new())),

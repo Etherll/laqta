@@ -115,11 +115,6 @@ pub trait ToolHost: Send + Sync {
         let _ = (title, text);
         Err(PortError::Unsupported("text results".into()))
     }
-
-    /// Turns the mouse highlighter on or off (M5 D9); returns whether it is now on.
-    fn toggle_mouse_highlighter(&self) -> Result<bool, PortError> {
-        Err(PortError::Unsupported("mouse highlighter".into()))
-    }
 }
 
 /// The annotation editor window (`AfterCaptureTasks::ANNOTATE_IMAGE`): returns the edited image when

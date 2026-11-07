@@ -207,6 +207,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         ocr: Arc::new(crate::ocr::LazyOcr::new(data.clone(), Arc::new(ui.clone()))),
         window_ops: platform.window_ops.clone(),
         input: platform.input.clone(),
+        highlighter: Arc::new(stubs::NoHighlighter),
         watcher: Arc::new(laqta_library::NotifyWatcher::default()),
         uploaders: uploaders.clone(),
         hover: platform.hover,

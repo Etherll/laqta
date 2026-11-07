@@ -110,6 +110,7 @@ fn harness(frames: Vec<Frame>) -> Harness {
         ocr: ocr.clone(),
         window_ops: window_ops.clone(),
         input: Arc::new(laqta_ports::fakes::FakeInputSynth::default()),
+        highlighter: Arc::new(laqta_ports::fakes::FakeHighlighter::default()),
         watcher: Arc::new(laqta_ports::fakes::FakeFileWatcher::default()),
         uploaders: Arc::new(FakeUploaders::default()),
         hover: hover.clone(),

@@ -52,6 +52,7 @@ fn harness_with_watcher(
         ocr: Arc::new(laqta_ports::fakes::FakeOcr::default()),
         window_ops: Arc::new(laqta_ports::fakes::FakeWindowOps::default()),
         input: Arc::new(laqta_ports::fakes::FakeInputSynth::default()),
+        highlighter: Arc::new(laqta_ports::fakes::FakeHighlighter::default()),
         watcher: wrap(fake.clone()),
         uploaders: uploaders.clone(),
         hover: Arc::new(FakeHoverSource::new(Vec::new())),
