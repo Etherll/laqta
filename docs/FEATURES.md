@@ -34,7 +34,7 @@ Areas the survey did not cover in depth need a second pass:
 | Audio: system loopback, microphone, gain, mix | M4 | done |
 | Pause, stop, abort, start delay, fixed duration, timer, recording bar, border | M4 | done |
 | Custom FFmpeg args, custom command line, FFmpeg path override and download | M4 | done |
-| Camera overlay (shape, position, size) | M7 | planned |
+| Camera overlay (shape, position, size) | M7 | done |
 | Native GPU path (WGC + Media Foundation) | M7 | planned |
 | Mouse highlighter (while recording and as a tool) | M5 | done |
 
@@ -42,7 +42,7 @@ Areas the survey did not cover in depth need a second pass:
 
 | Feature | Milestone | Status |
 | - | - | - |
-| 23 after-capture tasks (listed below) | M1–M7: each flag ships with the feature it needs (M1 local steps, M2 upload and windows, M3 editor and effects, M5 OCR, QR and pin, M7 AI and photo editor) | planned |
+| 23 after-capture tasks (listed below) | M1–M7: each flag ships with the feature it needs (M1 local steps, M2 upload and windows, M3 editor and effects, M5 OCR, QR and pin, M7 AI and photo editor) | done |
 | 6 after-upload tasks (listed below) | M2 | done |
 | Per-workflow overrides of every settings section | M1 | done |
 | Destinations per type (image, text, file, shortener, sharing; FTP and custom-uploader index) | M2 | done |
@@ -86,8 +86,8 @@ Hosts in the catalog are `.sxcu` files (ADR 004); hosts written in Rust are mark
 | **M2 catalog, shorteners:** YOURLS, Polr, Kutt, Zero Width, is.gd, v.gd, TinyURL, TURL, 2.gp, qr.net, vurl, nlcm | `.sxcu` | M2 | done |
 | **M2 URL sharing:** Email, Pushbullet, Facebook, Reddit, Pinterest, Tumblr, LinkedIn, VK, Google Lens, Bing Visual Search | URL templates (email via the user's mail client until SMTP lands in M7) | M2 | done |
 | Custom uploaders: `.sxcu` with all body types and all 13 syntax functions, old `$…$` syntax migration | `laqta-upload` | M2 | done |
-| **M7 native:** Flickr (OAuth1), Box, YouTube, Google Cloud Storage, Azure Blob, Backblaze B2, MEGA (deferred: kept only if a maintained option exists when the M7 plan is written), GitHub Gist, PrivateBin (client-side crypto), SMTP email, Pushbullet (file), Nextcloud / ownCloud, SendSpace, MediaFire | native | M7 | planned |
-| Remote storage browser: S3, FTP, SFTP (list, upload, download, rename, delete) | native | M7 | planned |
+| **M7 native:** Flickr (OAuth1), Box, YouTube, Google Cloud Storage, Azure Blob, Backblaze B2, MEGA (deferred: kept only if a maintained option exists when the M7 plan is written), GitHub Gist, PrivateBin (client-side crypto), SMTP email, Pushbullet (file), Nextcloud / ownCloud, SendSpace, MediaFire | native | M7 | done |
+| Remote storage browser: S3, FTP, SFTP (list, upload, download, rename, delete) | native | M7 | done |
 | Dropped: Copy, Drop.io, FileSonic, Photobucket, ImageShack, Hostr, StumbleUpon, Delicious, Firebase Dynamic Links, Immio | services shut down; re-checked when M7 starts | — | pending (owner): services shut down; re-add if one returns |
 
 ## Editor and effects
@@ -98,10 +98,10 @@ Hosts in the catalog are `.sxcu` files (ADR 004); hosts written in Rust are mark
 | Undo / redo, clipboard, nudge, toolbar customization and hotkeys | M3 | done |
 | Annotate inside the region overlay | M3 | done |
 | The 60 classic image effects (15 adjustments, 8 drawings, 27 filters, 10 manipulations) | M3 | done |
-| About 240 newer effects (adjustments, drawings, filters, borders, film, glitch) | M7 | planned |
+| About 240 newer effects (adjustments, drawings, filters, borders, film, glitch) | M7 | done |
 | Effect presets, `.sxie` packages, random effect | M3 | done |
 | Image beautifier | M3 | done |
-| Photo editor: layers (raster, shape, text, adjustment, fill, frame, group, smart object), styles, blend modes, masks, selection tools, brushes, retouch, inpainting | M7 | planned |
+| Photo editor: layers (raster, shape, text, adjustment, fill, frame, group, smart object), styles, blend modes, masks, selection tools, brushes, retouch, inpainting | M7 | done |
 
 ## Tools
 
@@ -117,9 +117,9 @@ Hosts in the catalog are `.sxcu` files (ADR 004); hosts written in Rust are mark
 | Metadata viewer and stripper (EXIF, ISO BMFF, Matroska, ASF, RIFF) | M5 | done |
 | Borderless window, active window borderless / topmost, inspect window | M5 (Windows and X11; Wayland where the compositor allows) | done |
 | Monitor test, network monitor | M5 | done |
-| Background remover: local model families (BiRefNet, BEN2 and others, ADR 023), custom models, and a remove.bg cloud option | M7 | planned |
+| Background remover: local model families (BiRefNet, BEN2 and others, ADR 023), custom models, and a remove.bg cloud option | M7 | done |
 | Model manager: per-task model choice, downloads with progress, custom ONNX models of a supported family, CPU or GPU execution | M5 (OCR) / M7 (background removal) | done |
-| Analyze image (OpenAI, Gemini, OpenRouter) | M7 | planned |
+| Analyze image (OpenAI, Gemini, OpenRouter) | M7 | done |
 
 ## Application
 
