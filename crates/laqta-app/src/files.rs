@@ -58,6 +58,13 @@ pub(crate) async fn remove(spawner: &dyn Spawner, path: PathBuf) -> io::Result<(
     blocking(spawner, move || std::fs::remove_file(&path)).await
 }
 
+/// Moves the file at `from` into `dir` under its own name, or `name (n).ext` for the first free `n`, and returns the new
+/// path. A file already in `dir` stays where it is. The new name is claimed with an empty file before the move, so a
+/// concurrent move cannot take it. Across volumes the bytes are copied and the original removed.
+pub(crate) async fn move_to_free_name(spawner: &dyn Spawner, from: PathBuf, dir: PathBuf) -> io::Result<PathBuf> {
+    blocking(spawner, move || move_into(&from, &dir)).await
+}
+
 /// The size of the file at `path`, in bytes.
 pub(crate) async fn size(spawner: &dyn Spawner, path: PathBuf) -> io::Result<u64> {
     blocking(spawner, move || std::fs::metadata(&path).map(|metadata| metadata.len())).await
@@ -230,6 +237,60 @@ fn write_then_rename(path: &Path, part: &Path, bytes: &[u8]) -> io::Result<()> {
     }
     std::fs::write(part, bytes)?;
     std::fs::rename(part, path)
+}
+
+/// The most names `move_into` tries before it gives up.
+const MAX_FREE_NAMES: u32 = 10_000;
+
+fn move_into(from: &Path, dir: &Path) -> io::Result<PathBuf> {
+    if from.parent() == Some(dir) {
+        return Ok(from.to_path_buf());
+    }
+    std::fs::create_dir_all(dir)?;
+    let to = reserve_free_name(from, dir)?;
+    match rename_or_copy(from, &to) {
+        Ok(()) => Ok(to),
+        Err(error) => {
+            let _ = std::fs::remove_file(&to);
+            Err(error)
+        }
+    }
+}
+
+/// Creates an empty file at the first free name in `dir` (the file's own name, then `name (1).ext`, `name (2).ext`, …)
+/// and returns its path.
+fn reserve_free_name(from: &Path, dir: &Path) -> io::Result<PathBuf> {
+    let name = from.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?;
+    let base = Path::new(name);
+    let stem = base.file_stem().unwrap_or(name);
+    for n in 0..MAX_FREE_NAMES {
+        let candidate = if n == 0 {
+            dir.join(name)
+        } else {
+            let mut numbered = stem.to_os_string();
+            numbered.push(format!(" ({n})"));
+            if let Some(ext) = base.extension() {
+                numbered.push(".");
+                numbered.push(ext);
+            }
+            dir.join(numbered)
+        };
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
+            Ok(_) => return Ok(candidate),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "no free file name"))
+}
+
+/// Renames `from` to `to`. A rename fails across volumes, so the bytes are copied and the original removed then.
+fn rename_or_copy(from: &Path, to: &Path) -> io::Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(from, to)?;
+    std::fs::remove_file(from)
 }
 
 #[cfg(test)]

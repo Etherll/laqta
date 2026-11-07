@@ -298,6 +298,10 @@ fn every_action_routes() {
         Action::ScreenRecorderGif,
         Action::ScreenRecorderGifActiveWindow,
         Action::StartScreenRecorderGif,
+        // Scrolling capture waits on the overlay; auto capture keeps a timer loop running.
+        Action::ScrollingCapture,
+        Action::AutoCapture,
+        Action::StartAutoCapture,
     ];
     for &a in Action::ALL.iter().filter(|a| !waits.contains(a)) {
         let tmp = TempDir::new().unwrap();
