@@ -7,9 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use laqta_domain::history::{
-    HistoryItem, HistoryKind, HistoryQuery, HistoryStats, NewHistoryItem, kind_for_path,
-};
+use laqta_domain::history::{HistoryItem, HistoryKind, HistoryQuery, HistoryStats, NewHistoryItem, kind_for_path};
 use laqta_ports::{Clock, TaskEvent};
 use rusqlite::types::{Type, Value};
 use rusqlite::{Connection, OptionalExtension, Row, params_from_iter};
@@ -17,8 +15,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params_from_iter};
 use crate::LibraryError;
 
 /// `MIGRATIONS[i]` moves `PRAGMA user_version` from `i` to `i + 1`. Never edit a shipped entry.
-const MIGRATIONS: [&str; 1] = [
-    "
+const MIGRATIONS: [&str; 1] = ["
 CREATE TABLE history (
     id             INTEGER PRIMARY KEY,
     time           TEXT NOT NULL,
@@ -55,19 +52,13 @@ CREATE TRIGGER history_fts_update AFTER UPDATE OF file_name ON history BEGIN
     INSERT INTO history_fts (history_fts, rowid, file_name) VALUES ('delete', old.id, old.file_name);
     INSERT INTO history_fts (rowid, file_name) VALUES (new.id, new.file_name);
 END;
-",
-];
+"];
 
 /// Every column `map_row` reads, in its order.
 const COLUMNS: &str = "id, time, kind, file_name, path, url, thumbnail_url, deletion_url, host, width, height, \
                        size_bytes, thumbnail_path";
 
-const KINDS: [HistoryKind; 4] = [
-    HistoryKind::Image,
-    HistoryKind::Text,
-    HistoryKind::File,
-    HistoryKind::Url,
-];
+const KINDS: [HistoryKind; 4] = [HistoryKind::Image, HistoryKind::Text, HistoryKind::File, HistoryKind::Url];
 
 /// The history database. The connection sits behind a mutex, so the value is `Send + Sync`.
 #[derive(Debug)]
@@ -78,10 +69,7 @@ pub struct History {
 impl History {
     /// Opens or creates the database at `path` in WAL mode and migrates its schema.
     pub fn open(path: &Path) -> Result<History, LibraryError> {
-        if let Some(parent) = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
+        if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
             fs::create_dir_all(parent)?;
         }
         Self::setup(Connection::open(path)?)
@@ -98,9 +86,7 @@ impl History {
         conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         migrate(&mut conn)?;
-        Ok(History {
-            conn: Mutex::new(conn),
-        })
+        Ok(History { conn: Mutex::new(conn) })
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {
@@ -143,13 +129,7 @@ impl History {
 
     pub fn get(&self, id: i64) -> Result<Option<HistoryItem>, LibraryError> {
         let conn = self.lock();
-        let item = conn
-            .query_row(
-                &format!("SELECT {COLUMNS} FROM history WHERE id = ?1"),
-                [id],
-                map_row,
-            )
-            .optional()?;
+        let item = conn.query_row(&format!("SELECT {COLUMNS} FROM history WHERE id = ?1"), [id], map_row).optional()?;
         match item {
             Some(mut item) => {
                 item.tags = load_tags(&conn, item.id)?;
@@ -193,18 +173,12 @@ impl History {
         }
         sql.push_str(" ORDER BY h.time DESC, h.id DESC LIMIT ? OFFSET ?");
         // LIMIT -1 means no limit in SQLite.
-        params.push(Value::Integer(if q.limit == 0 {
-            -1
-        } else {
-            i64::from(q.limit)
-        }));
+        params.push(Value::Integer(if q.limit == 0 { -1 } else { i64::from(q.limit) }));
         params.push(Value::Integer(i64::from(q.offset)));
 
         let conn = self.lock();
         let mut stmt = conn.prepare(&sql)?;
-        let mut items = stmt
-            .query_map(params_from_iter(params.iter()), map_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut items = stmt.query_map(params_from_iter(params.iter()), map_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
         drop(stmt);
         for item in &mut items {
             item.tags = load_tags(&conn, item.id)?;
@@ -214,8 +188,7 @@ impl History {
 
     /// Deletes an entry and its tags. An unknown id is not an error.
     pub fn delete(&self, id: i64) -> Result<(), LibraryError> {
-        self.lock()
-            .execute("DELETE FROM history WHERE id = ?1", [id])?;
+        self.lock().execute("DELETE FROM history WHERE id = ?1", [id])?;
         Ok(())
     }
 
@@ -223,11 +196,7 @@ impl History {
     pub fn set_tags(&self, id: i64, tags: &[String]) -> Result<(), LibraryError> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
-        let exists = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM history WHERE id = ?1)",
-            [id],
-            |row| row.get::<_, bool>(0),
-        )?;
+        let exists = tx.query_row("SELECT EXISTS (SELECT 1 FROM history WHERE id = ?1)", [id], |row| row.get::<_, bool>(0))?;
         if exists {
             tx.execute("DELETE FROM history_tags WHERE item_id = ?1", [id])?;
             insert_tags(&tx, id, tags)?;
@@ -239,39 +208,26 @@ impl History {
     /// Sets the thumbnail path of an entry. An unknown id is not an error.
     pub fn set_thumbnail(&self, id: i64, path: &Path) -> Result<(), LibraryError> {
         let path = text_of(path)?;
-        self.lock().execute(
-            "UPDATE history SET thumbnail_path = ?1 WHERE id = ?2",
-            rusqlite::params![path, id],
-        )?;
+        self.lock().execute("UPDATE history SET thumbnail_path = ?1 WHERE id = ?2", rusqlite::params![path, id])?;
         Ok(())
     }
 
     pub fn stats(&self) -> Result<HistoryStats, LibraryError> {
         let conn = self.lock();
-        let (total, total_bytes): (u64, u64) = conn.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM history",
-            [],
-            |row| Ok((unsigned(row.get(0)?, 0)?, unsigned(row.get(1)?, 1)?)),
-        )?;
+        let (total, total_bytes): (u64, u64) = conn.query_row("SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM history", [], |row| {
+            Ok((unsigned(row.get(0)?, 0)?, unsigned(row.get(1)?, 1)?))
+        })?;
 
         let mut by_kind: Vec<(HistoryKind, u64)> = KINDS.iter().map(|&kind| (kind, 0)).collect();
         let mut stmt = conn.prepare("SELECT kind, COUNT(*) FROM history GROUP BY kind")?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, unsigned(row.get(1)?, 1)?))
-        })?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, unsigned(row.get(1)?, 1)?)))?;
         for row in rows {
             let (kind, count) = row?;
-            if let Some(entry) =
-                parse_kind(&kind).and_then(|kind| by_kind.iter_mut().find(|(k, _)| *k == kind))
-            {
+            if let Some(entry) = parse_kind(&kind).and_then(|kind| by_kind.iter_mut().find(|(k, _)| *k == kind)) {
                 entry.1 = count;
             }
         }
-        Ok(HistoryStats {
-            total,
-            by_kind,
-            total_bytes,
-        })
+        Ok(HistoryStats { total, by_kind, total_bytes })
     }
 
     /// Deletes the oldest entries beyond `max_items`. Returns how many were deleted. 0 keeps everything.
@@ -289,11 +245,7 @@ impl History {
 
 /// Writes a history entry for each `TaskEvent::Saved` until the channel closes. A failure is logged
 /// and that event is skipped. Each entry is timestamped with `clock.now()`.
-pub async fn record_task_events(
-    history: Arc<History>,
-    mut events: async_broadcast::Receiver<TaskEvent>,
-    clock: Arc<dyn Clock>,
-) {
+pub async fn record_task_events(history: Arc<History>, mut events: async_broadcast::Receiver<TaskEvent>, clock: Arc<dyn Clock>) {
     loop {
         match events.recv().await {
             Ok(TaskEvent::Saved { path, .. }) => {
@@ -310,11 +262,7 @@ pub async fn record_task_events(
     }
 }
 
-fn record_saved(
-    history: &History,
-    path: &Path,
-    now: jiff::civil::DateTime,
-) -> Result<(), LibraryError> {
+fn record_saved(history: &History, path: &Path, now: jiff::civil::DateTime) -> Result<(), LibraryError> {
     let size_bytes = match fs::metadata(path) {
         Ok(metadata) => Some(metadata.len()),
         Err(error) => {
@@ -326,12 +274,7 @@ fn record_saved(
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "saved path has no UTF-8 file name",
-            )
-        })?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "saved path has no UTF-8 file name"))?;
     let kind = kind_for_path(path);
     let (width, height) = match png_dimensions(path) {
         Some((width, height)) if kind == HistoryKind::Image => (Some(width), Some(height)),
@@ -358,10 +301,7 @@ fn record_saved(
 /// Width and height from the IHDR chunk of a PNG file. `None` for other files, or when the header
 /// does not read. Only the header is decoded.
 fn png_dimensions(path: &Path) -> Option<(u32, u32)> {
-    if !path
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
-    {
+    if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("png")) {
         return None;
     }
     let file = fs::File::open(path).ok()?;
@@ -381,11 +321,7 @@ fn migrate(conn: &mut Connection) -> Result<(), LibraryError> {
     let found = conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?;
     let supported = i64::try_from(MIGRATIONS.len()).unwrap_or(i64::MAX);
     if found > supported {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("history database schema {found} is newer than {supported}"),
-        )
-        .into());
+        return Err(io::Error::new(io::ErrorKind::Unsupported, format!("history database schema {found} is newer than {supported}")).into());
     }
     for (index, sql) in MIGRATIONS.iter().enumerate() {
         let version = i64::try_from(index + 1).unwrap_or(i64::MAX);
@@ -401,24 +337,16 @@ fn migrate(conn: &mut Connection) -> Result<(), LibraryError> {
 }
 
 fn insert_tags(conn: &Connection, id: i64, tags: &[String]) -> rusqlite::Result<()> {
-    let mut stmt =
-        conn.prepare_cached("INSERT INTO history_tags (item_id, pos, tag) VALUES (?1, ?2, ?3)")?;
+    let mut stmt = conn.prepare_cached("INSERT INTO history_tags (item_id, pos, tag) VALUES (?1, ?2, ?3)")?;
     for (pos, tag) in tags.iter().enumerate() {
-        stmt.execute(rusqlite::params![
-            id,
-            i64::try_from(pos).unwrap_or(i64::MAX),
-            tag
-        ])?;
+        stmt.execute(rusqlite::params![id, i64::try_from(pos).unwrap_or(i64::MAX), tag])?;
     }
     Ok(())
 }
 
 fn load_tags(conn: &Connection, id: i64) -> rusqlite::Result<Vec<String>> {
-    let mut stmt =
-        conn.prepare_cached("SELECT tag FROM history_tags WHERE item_id = ?1 ORDER BY pos")?;
-    let tags = stmt
-        .query_map([id], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut stmt = conn.prepare_cached("SELECT tag FROM history_tags WHERE item_id = ?1 ORDER BY pos")?;
+    let tags = stmt.query_map([id], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(tags)
 }
 
@@ -427,16 +355,11 @@ fn map_row(row: &Row<'_>) -> rusqlite::Result<HistoryItem> {
     let kind: String = row.get(2)?;
     Ok(HistoryItem {
         id: row.get(0)?,
-        time: time.parse::<jiff::civil::DateTime>().map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(1, Type::Text, Box::new(error))
-        })?,
-        kind: parse_kind(&kind).ok_or_else(|| {
-            rusqlite::Error::FromSqlConversionFailure(
-                2,
-                Type::Text,
-                format!("unknown kind {kind:?}").into(),
-            )
-        })?,
+        time: time
+            .parse::<jiff::civil::DateTime>()
+            .map_err(|error| rusqlite::Error::FromSqlConversionFailure(1, Type::Text, Box::new(error)))?,
+        kind: parse_kind(&kind)
+            .ok_or_else(|| rusqlite::Error::FromSqlConversionFailure(2, Type::Text, format!("unknown kind {kind:?}").into()))?,
         file_name: row.get(3)?,
         path: row.get::<_, Option<String>>(4)?.map(PathBuf::from),
         url: row.get(5)?,
@@ -445,10 +368,7 @@ fn map_row(row: &Row<'_>) -> rusqlite::Result<HistoryItem> {
         host: row.get(8)?,
         width: row.get(9)?,
         height: row.get(10)?,
-        size_bytes: row
-            .get::<_, Option<i64>>(11)?
-            .map(|size| unsigned(size, 11))
-            .transpose()?,
+        size_bytes: row.get::<_, Option<i64>>(11)?.map(|size| unsigned(size, 11)).transpose()?,
         thumbnail_path: row.get::<_, Option<String>>(12)?.map(PathBuf::from),
         tags: Vec::new(),
     })
@@ -456,20 +376,12 @@ fn map_row(row: &Row<'_>) -> rusqlite::Result<HistoryItem> {
 
 /// SQLite integers are signed; counts and sizes never go negative, so a negative value is a bad row.
 fn unsigned(value: i64, column: usize) -> rusqlite::Result<u64> {
-    u64::try_from(value).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(column, Type::Integer, Box::new(error))
-    })
+    u64::try_from(value).map_err(|error| rusqlite::Error::FromSqlConversionFailure(column, Type::Integer, Box::new(error)))
 }
 
 /// A size for storage. Fails only beyond `i64::MAX`, which no file reaches.
 fn signed(value: u64) -> Result<i64, LibraryError> {
-    i64::try_from(value).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "size exceeds the SQLite integer range",
-        )
-        .into()
-    })
+    i64::try_from(value).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "size exceeds the SQLite integer range").into())
 }
 
 /// Times are stored with whole-second precision, so the text sorts in time order.
@@ -498,13 +410,7 @@ fn parse_kind(text: &str) -> Option<HistoryKind> {
 
 /// SQL needs UTF-8 text, so a path that is not UTF-8 is refused rather than stored lossily.
 fn text_of(path: &Path) -> Result<&str, LibraryError> {
-    path.to_str().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("path is not UTF-8: {}", path.display()),
-        )
-        .into()
-    })
+    path.to_str().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("path is not UTF-8: {}", path.display())).into())
 }
 
 /// One FTS5 phrase for a word: quoted so that FTS operators in file names are literal, with a

@@ -1,48 +1,48 @@
-//! Builds the ports for this platform and session, starts every entry point, and runs the loop.
+//! Builds the ports for this platform and session, loads settings and history, starts every entry
+//! point, and runs the UI loop (ARCHITECTURE §2.5).
 
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 
 use laqta_app::{App, Dispatched, Ports};
+use laqta_domain::settings::SETTINGS_VERSION;
 use laqta_domain::{Action, Settings};
-use laqta_ports::{ActionCallback, Clock, HotkeyRegistrar, PortError, Spawner, Tray, TrayMenu};
-
-use crate::stubs;
+use laqta_library::{History, SettingsStore};
+use laqta_ports::{
+    ActionCallback, Clipboard, Clock, HotkeyRegistrar, HoverSource, PortError, ScreenSource, Shell, Spawner, Tray, TrayMenu,
+};
+use laqta_ui::{UiHandle, UiServices};
 
 use crate::spawner::{AppSpawner, SystemClock};
+use crate::stubs;
 
 struct Platform {
-    ports: Ports,
+    screen: Arc<dyn ScreenSource>,
+    clipboard: Arc<dyn Clipboard>,
+    shell: Arc<dyn Shell>,
+    hover: Arc<dyn HoverSource>,
     hotkeys: Arc<dyn HotkeyRegistrar>,
     tray: Arc<dyn Tray>,
 }
 
 #[cfg(target_os = "linux")]
-fn platform(clock: Arc<dyn Clock>, spawner: Arc<dyn Spawner>) -> Result<Platform, String> {
+fn platform() -> Result<Platform, String> {
     use laqta_platform_linux::Session;
     let session = Session::detect().ok_or("no display: neither WAYLAND_DISPLAY nor DISPLAY is set")?;
     tracing::info!("session: {session:?}");
     let p = laqta_platform_linux::ports(session);
-    Ok(Platform {
-        ports: stubs::ports(p.screen, p.clipboard, p.shell, p.hover, clock, spawner),
-        hotkeys: p.hotkeys,
-        tray: p.tray,
-    })
+    Ok(Platform { screen: p.screen, clipboard: p.clipboard, shell: p.shell, hover: p.hover, hotkeys: p.hotkeys, tray: p.tray })
 }
 
 #[cfg(windows)]
-fn platform(clock: Arc<dyn Clock>, spawner: Arc<dyn Spawner>) -> Result<Platform, String> {
+fn platform() -> Result<Platform, String> {
     laqta_platform_windows::set_dpi_awareness();
     let p = laqta_platform_windows::ports();
-    Ok(Platform {
-        ports: stubs::ports(p.screen, p.clipboard, p.shell, p.hover, clock, spawner),
-        hotkeys: p.hotkeys,
-        tray: p.tray,
-    })
+    Ok(Platform { screen: p.screen, clipboard: p.clipboard, shell: p.shell, hover: p.hover, hotkeys: p.hotkeys, tray: p.tray })
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
-fn platform(_clock: Arc<dyn Clock>, _spawner: Arc<dyn Spawner>) -> Result<Platform, String> {
+fn platform() -> Result<Platform, String> {
     Err("this platform is not supported (ADR 001)".into())
 }
 
@@ -50,40 +50,128 @@ fn pictures_dir() -> std::path::PathBuf {
     dirs::picture_dir().or_else(|| dirs::home_dir().map(|h| h.join("Pictures"))).unwrap_or_else(|| "Pictures".into())
 }
 
+fn data_dir() -> std::path::PathBuf {
+    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let default = dirs::data_local_dir().unwrap_or_else(|| ".".into()).join("Laqta");
+    laqta_library::data_dir(exe_dir.as_deref(), default)
+}
+
+fn load_settings(store: &SettingsStore) -> Settings {
+    if !store.path().exists() {
+        return Settings::default_for(pictures_dir());
+    }
+    match store.load::<Settings>(SETTINGS_VERSION, &[]) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("settings could not be loaded ({e}); using defaults");
+            Settings::default_for(pictures_dir())
+        }
+    }
+}
+
+/// Registers the enabled workflows' hotkeys and adjusts the tray tooltip when they're unsupported.
+fn register_hotkeys(hotkeys: &dyn HotkeyRegistrar, settings: &Settings, on_fire: ActionCallback) -> bool {
+    hotkeys.unregister_all();
+    let mut unsupported = false;
+    for (chord, result) in hotkeys.register(&settings.hotkey_bindings(), on_fire) {
+        match result {
+            Ok(()) => tracing::info!(%chord, "hotkey registered"),
+            Err(PortError::Unsupported(why)) => {
+                unsupported = true;
+                tracing::warn!(%chord, "global hotkeys unsupported here ({why}); bind `laqta --action <name>` in your desktop's keyboard settings");
+            }
+            Err(e) => tracing::warn!(%chord, "hotkey registration failed: {e}"),
+        }
+    }
+    unsupported
+}
+
 pub fn run(server: laqta_ipc::Server, startup_actions: Vec<Action>) -> Result<(), String> {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let spawner = AppSpawner::start(clock.clone()).map_err(|e| format!("cannot start the app worker: {e}"))?;
-    let platform = platform(clock, spawner.clone())?;
-    let app = App::new(platform.ports, Settings::m0_default(pictures_dir()));
-    let (quit_tx, quit_rx) = mpsc::channel::<()>();
+    let platform = platform()?;
+    let data = data_dir();
+    let store = Arc::new(SettingsStore::new(data.clone()));
+    let settings = load_settings(&store);
+    let history = if settings.history.enabled {
+        match History::open(&data.join("history.db")) {
+            Ok(h) => Some(Arc::new(h)),
+            Err(e) => {
+                tracing::error!("history unavailable: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
-    // Task-event logger.
+    let (ui, ui_rx) = UiHandle::channel();
+    let ports = Ports {
+        screen: platform.screen,
+        clipboard: platform.clipboard,
+        shell: platform.shell.clone(),
+        clock: clock.clone(),
+        spawner: spawner.clone(),
+        overlay: Arc::new(ui.clone()),
+        tools: Arc::new(ui.clone()),
+        hover: platform.hover,
+        notifier: Arc::new(ui.clone()),
+        rng: stubs::system_rng(),
+        host: stubs::host_info(),
+        codecs: laqta_imaging::Codecs::builtin(),
+    };
+    let app = App::new(ports, settings);
+    let (quit_tx, quit_rx) = mpsc::channel::<()>();
+    let hotkeys = platform.hotkeys;
+
+    // Task events: the log and the history writer.
     let mut events = app.events();
     spawner.spawn(Box::pin(async move {
         while let Ok(event) = events.recv().await {
             tracing::info!(?event, "task event");
         }
     }));
+    if let Some(h) = &history {
+        spawner.spawn(Box::pin(laqta_library::record_task_events(h.clone(), app.events(), clock.clone())));
+    }
 
-    // Every entry point goes through `dispatch` (ADR 015).
+    // Every entry point goes through `dispatch` (ADR 015). A hotkey runs the first enabled workflow
+    // bound to its action, so that workflow's settings apply.
+    let dispatch_slot: Arc<Mutex<Option<ActionCallback>>> = Arc::new(Mutex::new(None));
     let dispatch: ActionCallback = {
         let app = app.clone();
         let spawner = spawner.clone();
         let quit_tx = quit_tx.clone();
+        let hotkeys = hotkeys.clone();
+        let slot = dispatch_slot.clone();
         Arc::new(move |action: Action| {
             let app = app.clone();
             let quit_tx = quit_tx.clone();
+            let hotkeys = hotkeys.clone();
+            let slot = slot.clone();
             spawner.spawn(Box::pin(async move {
-                match app.dispatch(action, None).await {
+                let workflow = app.settings().workflows.iter().find(|w| w.enabled && w.action == action).map(|w| w.id);
+                match app.dispatch(action, workflow).await {
                     Ok(Dispatched::Exit) => {
                         let _ = quit_tx.send(());
                     }
+                    Ok(Dispatched::HotkeysToggled(off)) => {
+                        let cb = slot.lock().ok().and_then(|s| s.clone());
+                        if let Some(cb) = cb {
+                            register_hotkeys(hotkeys.as_ref(), &app.settings(), cb);
+                        }
+                        tracing::info!(off, "hotkeys toggled");
+                    }
                     Ok(d) => tracing::debug!(?action, ?d, "dispatched"),
+                    Err(laqta_ports::AppError::Cancelled) => tracing::debug!(?action, "cancelled"),
                     Err(e) => tracing::warn!(?action, "action failed: {e}"),
                 }
             }));
         })
     };
+    if let Ok(mut s) = dispatch_slot.lock() {
+        *s = Some(dispatch.clone());
+    }
 
     // IPC: replies after the dispatch returns.
     {
@@ -99,18 +187,10 @@ pub fn run(server: laqta_ipc::Server, startup_actions: Vec<Action>) -> Result<()
         });
     }
 
-    // Hotkeys, then the tray (its tooltip depends on whether hotkeys work).
     let settings = app.settings();
     let mut menu: TrayMenu = laqta_ui::presenters::tray::tray_menu(&settings);
-    for (chord, result) in platform.hotkeys.register(&settings.hotkey_bindings(), dispatch.clone()) {
-        match result {
-            Ok(()) => tracing::info!(?chord, "hotkey registered"),
-            Err(PortError::Unsupported(why)) => {
-                tracing::warn!(?chord, "global hotkeys unsupported here ({why}); bind `laqta --action print-screen` in your desktop's keyboard settings");
-                menu.tooltip = laqta_ui::presenters::tray::TOOLTIP_NO_HOTKEY.to_string();
-            }
-            Err(e) => tracing::warn!(?chord, "hotkey registration failed: {e}"),
-        }
+    if register_hotkeys(hotkeys.as_ref(), &settings, dispatch.clone()) {
+        menu.tooltip = laqta_ui::presenters::tray::TOOLTIP_NO_HOTKEY.to_string();
     }
     match platform.tray.show(menu, dispatch.clone()) {
         Ok(()) => tracing::info!("tray icon shown"),
@@ -123,23 +203,45 @@ pub fn run(server: laqta_ipc::Server, startup_actions: Vec<Action>) -> Result<()
     }
 
     if std::env::var_os("LAQTA_NO_GPUI").is_some_and(|v| v == "1") {
+        drop(ui_rx);
         let _ = quit_rx.recv();
     } else {
-        run_gpui(quit_rx);
+        // Quit from any source (tray, IPC, hotkey) reaches the GPUI loop.
+        let ui_quit = ui.clone();
+        std::thread::Builder::new()
+            .name("laqta-quit".into())
+            .spawn(move || {
+                let _ = quit_rx.recv();
+                ui_quit.quit();
+            })
+            .map_err(|e| e.to_string())?;
+        let save_settings: Arc<dyn Fn(Settings) -> Result<(), String> + Send + Sync> = {
+            let app = app.clone();
+            let store = store.clone();
+            let clock = clock.clone();
+            let hotkeys = hotkeys.clone();
+            let dispatch = dispatch.clone();
+            Arc::new(move |s: Settings| {
+                store.save(&s, SETTINGS_VERSION, clock.now()).map_err(|e| e.to_string())?;
+                app.set_settings(s.clone());
+                register_hotkeys(hotkeys.as_ref(), &s, dispatch.clone());
+                Ok(())
+            })
+        };
+        let services = UiServices {
+            app: app.clone(),
+            history: history.clone(),
+            shell: platform.shell.clone(),
+            clock: clock.clone(),
+            host: stubs::host_info(),
+            dispatch: dispatch.clone(),
+            save_settings,
+            data_dir: data.clone(),
+        };
+        laqta_ui::run(services, ui_rx);
     }
     tracing::info!("Laqta exiting");
     #[cfg(windows)]
     laqta_platform_windows::shutdown(); // removes the tray icon, so Explorer leaves no ghost
     Ok(())
-}
-
-/// GPUI on the main thread with no windows. A future waits on the quit channel and quits the app.
-fn run_gpui(quit_rx: mpsc::Receiver<()>) {
-    gpui_platform::application().run(move |cx: &mut gpui::App| {
-        cx.spawn(async move |cx: &mut gpui::AsyncApp| {
-            let _ = crate::blocking_pool::unblock(move || quit_rx.recv()).await;
-            cx.update(|cx| cx.quit());
-        })
-        .detach();
-    });
 }

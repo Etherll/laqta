@@ -48,7 +48,9 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("check-deps") if args.get(1).map(String::as_str) == Some("--self-test") => self_test(&root),
         Some("check-deps") => report(check_deps(&root, false)),
-        Some("bench-png") => run(Command::new("cargo").current_dir(&root).args(["run", "--release", "-p", "laqta-imaging", "--example", "png_bench"])),
+        Some("bench-png") => {
+            run(Command::new("cargo").current_dir(&root).args(["run", "--release", "-p", "laqta-imaging", "--example", "png_bench"]))
+        }
         Some("measure-idle") => measure::measure_idle(&root),
         _ => {
             eprintln!("usage: cargo xtask <check-deps [--self-test] | bench-png | measure-idle>");
@@ -143,7 +145,10 @@ fn check_deps(root: &Path, offline: bool) -> Result<Vec<Violation>, String> {
             if let Some(places) = policy.placement.get(&d.name)
                 && !places.contains(&name)
             {
-                out.insert(Violation { kind: "placement", message: format!("{name} -> {}: {} is allowed only in {places:?}", d.name, d.name) });
+                out.insert(Violation {
+                    kind: "placement",
+                    message: format!("{name} -> {}: {} is allowed only in {places:?}", d.name, d.name),
+                });
             }
         }
     }
@@ -180,7 +185,10 @@ fn check_deps(root: &Path, offline: bool) -> Result<Vec<Violation>, String> {
                             }
                         }
                         path.reverse();
-                        out.insert(Violation { kind: "deny", message: format!("[{target}] {} reaches forbidden {dep_name}: {}", start.name, path.join(" -> ")) });
+                        out.insert(Violation {
+                            kind: "deny",
+                            message: format!("[{target}] {} reaches forbidden {dep_name}: {}", start.name, path.join(" -> ")),
+                        });
                         continue;
                     }
                     queue.push_back(&dep.pkg);
@@ -284,7 +292,11 @@ fn self_test(root: &Path) -> Result<(), String> {
             add_dep(&r.join("crates/laqta-ports/Cargo.toml"), "interprocess.workspace = true")?;
             let p = r.join("deps-policy.toml");
             let t = std::fs::read_to_string(&p).map_err(|e| e.to_string())?;
-            std::fs::write(&p, t.replace(r#""laqta-ports"   = ["thiserror", "jiff"]"#, r#""laqta-ports"   = ["thiserror", "jiff", "interprocess"]"#)).map_err(|e| e.to_string())
+            std::fs::write(
+                &p,
+                t.replace(r#""laqta-ports"   = ["thiserror", "jiff"]"#, r#""laqta-ports"   = ["thiserror", "jiff", "interprocess"]"#),
+            )
+            .map_err(|e| e.to_string())
         }),
         ("placement", |r| add_dep(&r.join("crates/laqta-ipc/Cargo.toml"), "gpui.workspace = true")),
         ("source_rule", |r| {

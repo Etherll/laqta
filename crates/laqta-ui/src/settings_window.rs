@@ -174,7 +174,11 @@ impl SettingsWindow {
                 match save(self.draft.clone()) {
                     Ok(()) => {
                         crate::theme::apply(self.draft.theme, cx);
-                        if conflicts.is_empty() { (true, "Settings saved.".into()) } else { (true, format!("Saved. {}", conflicts.join("; "))) }
+                        if conflicts.is_empty() {
+                            (true, "Settings saved.".into())
+                        } else {
+                            (true, format!("Saved. {}", conflicts.join("; ")))
+                        }
                     }
                     Err(e) => (false, format!("Couldn't save settings: {e}")),
                 }
@@ -217,10 +221,12 @@ impl SettingsWindow {
             }))
         };
         let placement_button = |id: &'static str, label: &'static str, p: ToastPlacement, this: &Self, cx: &mut Context<Self>| {
-            Button::new(id).label(label).selected(this.draft.defaults.general.toast.placement == p).on_click(cx.listener(move |this, _, _, cx| {
-                this.draft.defaults.general.toast.placement = p;
-                cx.notify();
-            }))
+            Button::new(id).label(label).selected(this.draft.defaults.general.toast.placement == p).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.draft.defaults.general.toast.placement = p;
+                    cx.notify();
+                },
+            ))
         };
         widgets::section("General", cx)
             .child(widgets::row("Screenshots folder", Input::new(&self.dir), cx))
@@ -234,12 +240,14 @@ impl SettingsWindow {
                     .child(theme_button("theme-dark", "Dark", Theme::Dark, self, cx)),
                 cx,
             ))
-            .child(Checkbox::new("show-toast").label("Show a toast after capture").checked(self.draft.defaults.general.show_toast).on_click(
-                cx.listener(|this, c: &bool, _, cx| {
-                    this.draft.defaults.general.show_toast = *c;
-                    cx.notify();
-                }),
-            ))
+            .child(
+                Checkbox::new("show-toast").label("Show a toast after capture").checked(self.draft.defaults.general.show_toast).on_click(
+                    cx.listener(|this, c: &bool, _, cx| {
+                        this.draft.defaults.general.show_toast = *c;
+                        cx.notify();
+                    }),
+                ),
+            )
             .child(widgets::row("Toast duration (ms)", Input::new(&self.toast_ms), cx))
             .child(widgets::row(
                 "Toast position",
@@ -275,11 +283,9 @@ impl SettingsWindow {
             );
         }
         let mut exists = div().flex().gap(px(6.));
-        for (a, label) in [
-            (FileExistsAction::AppendNumber, "Add a number"),
-            (FileExistsAction::Overwrite, "Overwrite"),
-            (FileExistsAction::Skip, "Skip"),
-        ] {
+        for (a, label) in
+            [(FileExistsAction::AppendNumber, "Add a number"), (FileExistsAction::Overwrite, "Overwrite"), (FileExistsAction::Skip, "Skip")]
+        {
             exists = exists.child(
                 Button::new(SharedString::from(format!("exists-{label}")))
                     .label(label)
@@ -370,14 +376,14 @@ impl SettingsWindow {
                         .gap(px(8.))
                         .child(div().w(px(220.)).child(Input::new(&inputs.name)))
                         .child(div().w(px(200.)).child(Input::new(&inputs.hotkey)))
-                        .child(Checkbox::new(SharedString::from(format!("wf-en-{i}"))).label("On").checked(w.enabled).on_click(cx.listener(
-                            move |this, v: &bool, _, cx| {
+                        .child(Checkbox::new(SharedString::from(format!("wf-en-{i}"))).label("On").checked(w.enabled).on_click(
+                            cx.listener(move |this, v: &bool, _, cx| {
                                 if let Some(w) = this.draft.workflows.get_mut(i) {
                                     w.enabled = *v;
                                 }
                                 cx.notify();
-                            },
-                        )))
+                            }),
+                        ))
                         .child(div().flex_1())
                         .child(Button::new(SharedString::from(format!("wf-rm-{i}"))).label("Remove").ghost().on_click(cx.listener(
                             move |this, _, window, cx| {
@@ -425,10 +431,16 @@ impl SettingsWindow {
             page = page.child(card);
         }
         let mut add = div().flex().flex_wrap().gap(px(6.)).child(widgets::muted("Add:", cx));
-        for action in [Action::RectangleRegion, Action::PrintScreen, Action::ActiveWindow, Action::ActiveMonitor, Action::LastRegion, Action::CustomRegion]
-        {
-            add = add.child(Button::new(SharedString::from(format!("add-{action:?}"))).label(action.label()).ghost().on_click(cx.listener(
-                move |this, _, window, cx| {
+        for action in [
+            Action::RectangleRegion,
+            Action::PrintScreen,
+            Action::ActiveWindow,
+            Action::ActiveMonitor,
+            Action::LastRegion,
+            Action::CustomRegion,
+        ] {
+            add = add.child(Button::new(SharedString::from(format!("add-{action:?}"))).label(action.label()).ghost().on_click(
+                cx.listener(move |this, _, window, cx| {
                     if this.collect(cx).is_ok() {
                         let id = this.draft.workflows.iter().map(|w| w.id.0).max().unwrap_or(0) + 1;
                         this.draft.workflows.push(Workflow {
@@ -442,8 +454,8 @@ impl SettingsWindow {
                         this.rebuild_workflow_inputs(window, cx);
                     }
                     cx.notify();
-                },
-            )));
+                }),
+            ));
         }
         page.child(add)
     }
@@ -453,18 +465,25 @@ impl Render for SettingsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut nav = div().w(px(200.)).flex().flex_col().gap(px(4.)).p(px(12.)).border_r_1().border_color(cx.theme().border);
         for (page, label) in PAGES {
-            nav = nav.child(Button::new(SharedString::from(format!("nav-{label}"))).label(label).ghost().selected(self.page == page).on_click(
-                cx.listener(move |this, _, _, cx| {
-                    this.page = page;
-                    cx.notify();
-                }),
-            ));
+            nav = nav.child(
+                Button::new(SharedString::from(format!("nav-{label}"))).label(label).ghost().selected(self.page == page).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.page = page;
+                        cx.notify();
+                    }),
+                ),
+            );
         }
         let content = match self.page {
             Page::General => self.general(cx),
             Page::AfterCapture => {
                 let flags = self.draft.defaults.after_capture;
-                widgets::section("After capture (defaults)", cx).child(self.after_capture_list("ac", flags, |this, f, on| this.draft.defaults.after_capture.set(f, on), cx))
+                widgets::section("After capture (defaults)", cx).child(self.after_capture_list(
+                    "ac",
+                    flags,
+                    |this, f, on| this.draft.defaults.after_capture.set(f, on),
+                    cx,
+                ))
             }
             Page::Image => self.image(cx),
             Page::Naming => self.naming(cx),
@@ -480,7 +499,15 @@ impl Render for SettingsWindow {
             .child(Button::new("close").label("Close").on_click(|_, window, _| window.remove_window()))
             .child(Button::new("save").label("Save").primary().on_click(cx.listener(|this, _, _, cx| this.save(cx))));
         widgets::page(cx)
-            .child(div().flex_1().flex().flex_row().overflow_hidden().child(nav).child(div().flex_1().p(px(12.)).overflow_y_scrollbar().child(content)))
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_row()
+                    .overflow_hidden()
+                    .child(nav)
+                    .child(div().flex_1().p(px(12.)).overflow_y_scrollbar().child(content)),
+            )
             .child(footer)
     }
 }

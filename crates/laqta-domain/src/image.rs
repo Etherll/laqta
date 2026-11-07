@@ -89,7 +89,8 @@ pub enum ImageFormat {
 }
 
 impl ImageFormat {
-    pub const ALL: [ImageFormat; 6] = [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::Gif, ImageFormat::Bmp, ImageFormat::Tiff, ImageFormat::WebP];
+    pub const ALL: [ImageFormat; 6] =
+        [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::Gif, ImageFormat::Bmp, ImageFormat::Tiff, ImageFormat::WebP];
 
     /// File extension without the dot.
     pub fn extension(self) -> &'static str {

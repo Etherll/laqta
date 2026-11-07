@@ -51,11 +51,7 @@ pub fn capture_all() -> Result<Vec<Frame>, PortError> {
         let rect = to_physical(layout.logical, s_max);
         let (w, h) = (img.width(), img.height());
         let raw = img.into_raw();
-        let rgba = if (w, h) == (rect.width, rect.height) {
-            raw
-        } else {
-            scale_nearest(&raw, w, h, rect.width, rect.height)
-        };
+        let rgba = if (w, h) == (rect.width, rect.height) { raw } else { scale_nearest(&raw, w, h, rect.width, rect.height) };
         let image = Bitmap::new(rect.width, rect.height, PixelFormat::Rgba8, Arc::from(rgba)).map_err(fail)?;
         frames.push(Frame {
             monitor: Monitor {

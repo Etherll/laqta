@@ -66,6 +66,7 @@ fn test_ports(overlay: Arc<FakeOverlay>, hover: Arc<dyn HoverSource>) -> Ports {
         clock: Arc::new(ManualClock::new(jiff::civil::date(2026, 11, 7).at(14, 3, 22, 0))),
         spawner: Arc::new(InlineSpawner::default()),
         overlay,
+        tools: Arc::new(laqta_ports::fakes::FakeToolHost::default()),
         hover,
         notifier: Arc::new(FakeNotifier::default()),
         rng: Arc::new(CountingRng::default()),

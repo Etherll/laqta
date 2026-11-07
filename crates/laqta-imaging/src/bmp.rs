@@ -99,10 +99,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Bitmap, CodecError> {
 
     let stride = (w * bpp as usize).div_ceil(32) * 4;
     let needed = stride.checked_mul(h).ok_or_else(|| bad("size overflow"))?;
-    let pixels = pixel_offset
-        .checked_add(needed)
-        .and_then(|end| bytes.get(pixel_offset..end))
-        .ok_or_else(|| bad("pixel data is truncated"))?;
+    let pixels =
+        pixel_offset.checked_add(needed).and_then(|end| bytes.get(pixel_offset..end)).ok_or_else(|| bad("pixel data is truncated"))?;
 
     let mut out = vec![0u8; w * h * 4];
     for row in 0..h {

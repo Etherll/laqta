@@ -3914,6 +3914,7 @@ dependencies = [
  "laqta-domain",
  "laqta-imaging",
  "laqta-ipc",
+ "laqta-library",
  "laqta-platform-linux",
  "laqta-platform-windows",
  "laqta-ports",

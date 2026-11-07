@@ -96,7 +96,8 @@ const LETTERS: [Key; 26] = [
     Key::Y,
     Key::Z,
 ];
-const DIGITS: [Key; 10] = [Key::Digit0, Key::Digit1, Key::Digit2, Key::Digit3, Key::Digit4, Key::Digit5, Key::Digit6, Key::Digit7, Key::Digit8, Key::Digit9];
+const DIGITS: [Key; 10] =
+    [Key::Digit0, Key::Digit1, Key::Digit2, Key::Digit3, Key::Digit4, Key::Digit5, Key::Digit6, Key::Digit7, Key::Digit8, Key::Digit9];
 const FUNCTION_KEYS: [Key; 24] = [
     Key::F1,
     Key::F2,

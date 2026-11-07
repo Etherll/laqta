@@ -16,13 +16,25 @@ fn main() {
             let v = match panel {
                 0 => [0x33, 0x66, 0x99],
                 1 => [(x % 256) as u8, (y % 256) as u8, 0x80],
-                _ => if (y % 18) < 12 && ((x * 7919 + y * 104729) % 5) < 2 { [20, 20, 20] } else { [240, 240, 240] },
+                _ => {
+                    if (y % 18) < 12 && ((x * 7919 + y * 104729) % 5) < 2 {
+                        [20, 20, 20]
+                    } else {
+                        [240, 240, 240]
+                    }
+                }
             };
             px[i..i + 4].copy_from_slice(&[v[2], v[1], v[0], 255]);
         }
     }
     let frame = Frame {
-        monitor: Monitor { id: MonitorId("bench".into()), name: "bench".into(), rect: PhysRect { x: 0, y: 0, width: w, height: h }, scale: 1.0, primary: true },
+        monitor: Monitor {
+            id: MonitorId("bench".into()),
+            name: "bench".into(),
+            rect: PhysRect { x: 0, y: 0, width: w, height: h },
+            scale: 1.0,
+            primary: true,
+        },
         image: Bitmap::new(w, h, PixelFormat::Bgra8, px.into()).unwrap(),
     };
     let pool = rayon::ThreadPoolBuilder::new().build().unwrap();

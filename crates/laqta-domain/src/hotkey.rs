@@ -65,12 +65,8 @@ keys! {
 }
 
 /// Modifier names in the order `Display` prints them.
-const MODIFIER_NAMES: [(Modifiers, &str); 4] = [
-    (Modifiers::CTRL, "Ctrl"),
-    (Modifiers::ALT, "Alt"),
-    (Modifiers::SHIFT, "Shift"),
-    (Modifiers::SUPER, "Super"),
-];
+const MODIFIER_NAMES: [(Modifiers, &str); 4] =
+    [(Modifiers::CTRL, "Ctrl"), (Modifiers::ALT, "Alt"), (Modifiers::SHIFT, "Shift"), (Modifiers::SUPER, "Super")];
 
 const MODIFIER_ALIASES: &[(&str, Modifiers)] = &[
     ("ctrl", Modifiers::CTRL),
@@ -165,8 +161,7 @@ impl FromStr for KeyChord {
                 modifiers |= modifier;
                 continue;
             }
-            let found =
-                lookup_key(part).ok_or_else(|| HotkeyParseError::UnknownKey(part.to_owned()))?;
+            let found = lookup_key(part).ok_or_else(|| HotkeyParseError::UnknownKey(part.to_owned()))?;
             if key.is_some() {
                 return Err(HotkeyParseError::DuplicateKey);
             }
@@ -195,18 +190,11 @@ pub fn find_conflicts<T>(bindings: &[(KeyChord, T)]) -> Vec<(KeyChord, Vec<usize
 }
 
 fn lookup<T: Copy>(table: &[(&str, T)], token: &str) -> Option<T> {
-    table
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case(token))
-        .map(|(_, value)| *value)
+    table.iter().find(|(name, _)| name.eq_ignore_ascii_case(token)).map(|(_, value)| *value)
 }
 
 fn lookup_key(token: &str) -> Option<Key> {
-    Key::ALL
-        .iter()
-        .copied()
-        .find(|key| key.name().eq_ignore_ascii_case(token))
-        .or_else(|| lookup(KEY_ALIASES, token))
+    Key::ALL.iter().copied().find(|key| key.name().eq_ignore_ascii_case(token)).or_else(|| lookup(KEY_ALIASES, token))
 }
 
 #[cfg(test)]
@@ -214,13 +202,7 @@ mod tests {
     use super::*;
 
     fn combos() -> [Modifiers; 5] {
-        [
-            Modifiers::empty(),
-            Modifiers::CTRL,
-            Modifiers::CTRL | Modifiers::SHIFT,
-            Modifiers::ALT | Modifiers::SUPER,
-            Modifiers::all(),
-        ]
+        [Modifiers::empty(), Modifiers::CTRL, Modifiers::CTRL | Modifiers::SHIFT, Modifiers::ALT | Modifiers::SUPER, Modifiers::all()]
     }
 
     #[test]
@@ -236,28 +218,16 @@ mod tests {
 
     #[test]
     fn displays_modifiers_in_fixed_order() {
-        assert_eq!(
-            KeyChord::new(Modifiers::all(), Key::A).to_string(),
-            "Ctrl+Alt+Shift+Super+A"
-        );
-        assert_eq!(
-            KeyChord::new(Modifiers::SHIFT | Modifiers::CTRL, Key::PrintScreen).to_string(),
-            "Ctrl+Shift+PrintScreen"
-        );
-        assert_eq!(
-            KeyChord::new(Modifiers::empty(), Key::PrintScreen).to_string(),
-            "PrintScreen"
-        );
+        assert_eq!(KeyChord::new(Modifiers::all(), Key::A).to_string(), "Ctrl+Alt+Shift+Super+A");
+        assert_eq!(KeyChord::new(Modifiers::SHIFT | Modifiers::CTRL, Key::PrintScreen).to_string(), "Ctrl+Shift+PrintScreen");
+        assert_eq!(KeyChord::new(Modifiers::empty(), Key::PrintScreen).to_string(), "PrintScreen");
     }
 
     #[test]
     fn parses_any_case_with_spaces_around_parts() {
         assert_eq!(
             " ctrl + SHIFT +printscreen ".parse::<KeyChord>(),
-            Ok(KeyChord::new(
-                Modifiers::CTRL | Modifiers::SHIFT,
-                Key::PrintScreen
-            ))
+            Ok(KeyChord::new(Modifiers::CTRL | Modifiers::SHIFT, Key::PrintScreen))
         );
     }
 
@@ -277,11 +247,7 @@ mod tests {
         ];
         for (alias, modifier) in cases {
             let text = format!("{alias}+A");
-            assert_eq!(
-                text.parse::<KeyChord>(),
-                Ok(KeyChord::new(modifier, Key::A)),
-                "{text}"
-            );
+            assert_eq!(text.parse::<KeyChord>(), Ok(KeyChord::new(modifier, Key::A)), "{text}");
         }
     }
 
@@ -304,11 +270,7 @@ mod tests {
             ("9", Key::Digit9),
         ];
         for (text, key) in cases {
-            assert_eq!(
-                text.parse::<KeyChord>(),
-                Ok(KeyChord::new(Modifiers::empty(), key)),
-                "{text}"
-            );
+            assert_eq!(text.parse::<KeyChord>(), Ok(KeyChord::new(Modifiers::empty(), key)), "{text}");
         }
     }
 
@@ -317,37 +279,18 @@ mod tests {
         assert_eq!("".parse::<KeyChord>(), Err(HotkeyParseError::Empty));
         assert_eq!("   ".parse::<KeyChord>(), Err(HotkeyParseError::Empty));
         assert_eq!("Ctrl".parse::<KeyChord>(), Err(HotkeyParseError::NoKey));
-        assert_eq!(
-            "Ctrl+Shift".parse::<KeyChord>(),
-            Err(HotkeyParseError::NoKey)
-        );
-        assert_eq!(
-            "A+B".parse::<KeyChord>(),
-            Err(HotkeyParseError::DuplicateKey)
-        );
-        assert_eq!(
-            "Ctrl+A+A".parse::<KeyChord>(),
-            Err(HotkeyParseError::DuplicateKey)
-        );
-        assert_eq!(
-            "Ctrl+Foo".parse::<KeyChord>(),
-            Err(HotkeyParseError::UnknownKey("Foo".into()))
-        );
-        assert_eq!(
-            "+A".parse::<KeyChord>(),
-            Err(HotkeyParseError::UnknownKey(String::new()))
-        );
+        assert_eq!("Ctrl+Shift".parse::<KeyChord>(), Err(HotkeyParseError::NoKey));
+        assert_eq!("A+B".parse::<KeyChord>(), Err(HotkeyParseError::DuplicateKey));
+        assert_eq!("Ctrl+A+A".parse::<KeyChord>(), Err(HotkeyParseError::DuplicateKey));
+        assert_eq!("Ctrl+Foo".parse::<KeyChord>(), Err(HotkeyParseError::UnknownKey("Foo".into())));
+        assert_eq!("+A".parse::<KeyChord>(), Err(HotkeyParseError::UnknownKey(String::new())));
     }
 
     #[test]
     fn key_names_are_unique_ignoring_case() {
         let mut seen = std::collections::HashSet::new();
         for key in Key::ALL {
-            assert!(
-                seen.insert(key.name().to_ascii_lowercase()),
-                "duplicate name {}",
-                key.name()
-            );
+            assert!(seen.insert(key.name().to_ascii_lowercase()), "duplicate name {}", key.name());
         }
     }
 
@@ -367,31 +310,16 @@ mod tests {
         let bare_a = KeyChord::new(Modifiers::empty(), Key::A);
         let bare_b = KeyChord::new(Modifiers::empty(), Key::B);
 
-        let bindings = [
-            (ctrl_a, "open"),
-            (bare_b, "save"),
-            (bare_a, "copy"),
-            (ctrl_a, "capture"),
-            (bare_b, "print"),
-        ];
-        assert_eq!(
-            find_conflicts(&bindings),
-            vec![(ctrl_a, vec![0, 3]), (bare_b, vec![1, 4])]
-        );
+        let bindings = [(ctrl_a, "open"), (bare_b, "save"), (bare_a, "copy"), (ctrl_a, "capture"), (bare_b, "print")];
+        assert_eq!(find_conflicts(&bindings), vec![(ctrl_a, vec![0, 3]), (bare_b, vec![1, 4])]);
 
         let bindings = [(bare_b, 0), (ctrl_a, 1), (bare_b, 2), (ctrl_a, 3)];
-        assert_eq!(
-            find_conflicts(&bindings),
-            vec![(bare_b, vec![0, 2]), (ctrl_a, vec![1, 3])]
-        );
+        assert_eq!(find_conflicts(&bindings), vec![(bare_b, vec![0, 2]), (ctrl_a, vec![1, 3])]);
     }
 
     #[test]
     fn no_conflicts_when_every_chord_is_unique() {
-        let bindings = [
-            (KeyChord::new(Modifiers::CTRL, Key::A), 0),
-            (KeyChord::new(Modifiers::empty(), Key::A), 1),
-        ];
+        let bindings = [(KeyChord::new(Modifiers::CTRL, Key::A), 0), (KeyChord::new(Modifiers::empty(), Key::A), 1)];
         assert!(find_conflicts(&bindings).is_empty());
         assert!(find_conflicts::<u8>(&[]).is_empty());
     }

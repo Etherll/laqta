@@ -7,13 +7,13 @@ use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use laqta_domain::workflow::{AfterCaptureTasks, TaskSettings};
 use laqta_domain::Bitmap;
+use laqta_domain::workflow::{AfterCaptureTasks, TaskSettings};
 use laqta_ports::{AppError, TaskEvent, TaskId, TaskStatus, Toast};
 
 use super::encode::{self, Encoded, Plan, Prepared};
 use super::save::{self, Outcome, SavedFile};
-use super::{compute, CaptureImage, CaptureInfo, Context};
+use super::{CaptureImage, CaptureInfo, Context, compute};
 use crate::files;
 
 /// `Err` means the rest of the job does not run. Its stop or failure is already reported.
@@ -59,9 +59,7 @@ impl Job {
         let size = (image.width(), image.height());
 
         let saved_file = match encoded {
-            Some(encoded) if flags.contains(AfterCaptureTasks::SAVE_IMAGE_TO_FILE) => {
-                self.save_image(size, encoded).await?
-            }
+            Some(encoded) if flags.contains(AfterCaptureTasks::SAVE_IMAGE_TO_FILE) => self.save_image(size, encoded).await?,
             _ => None,
         };
         let saved = saved_file.as_ref();
@@ -174,14 +172,8 @@ impl Job {
             Some(saved) => ("Screenshot saved", saved.path.display().to_string(), Some(saved.path.clone())),
             None => ("Screenshot copied", String::new(), None),
         };
-        let toast = Toast {
-            title: title.to_owned(),
-            body,
-            image: Some(preview),
-            path,
-            url: None,
-            options: self.settings.general.toast.clone(),
-        };
+        let toast =
+            Toast { title: title.to_owned(), body, image: Some(preview), path, url: None, options: self.settings.general.toast.clone() };
         match self.cx.ports.notifier.toast(toast) {
             Ok(()) => self.emit(TaskEvent::Notified { id: self.id }),
             Err(error) => self.step_failed("toast", error),

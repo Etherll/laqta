@@ -8,18 +8,9 @@ use std::path::{Path, PathBuf};
 /// before `.png` (up to 999). Pure: it never checks the file system.
 pub fn capture_candidates(dir: &Path, now: &jiff::civil::DateTime) -> impl Iterator<Item = PathBuf> {
     let folder = dir.join(format!("{:04}-{:02}", now.year(), now.month()));
-    let stem = format!(
-        "Laqta_{:04}-{:02}-{:02}_{:02}-{:02}-{:02}",
-        now.year(),
-        now.month(),
-        now.day(),
-        now.hour(),
-        now.minute(),
-        now.second()
-    );
-    (1u32..=999).map(move |n| {
-        if n == 1 { folder.join(format!("{stem}.png")) } else { folder.join(format!("{stem}_{n}.png")) }
-    })
+    let stem =
+        format!("Laqta_{:04}-{:02}-{:02}_{:02}-{:02}-{:02}", now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
+    (1u32..=999).map(move |n| if n == 1 { folder.join(format!("{stem}.png")) } else { folder.join(format!("{stem}_{n}.png")) })
 }
 
 /// Default screenshot file name, without the extension.
@@ -93,11 +84,8 @@ pub fn expand(pattern: &str, ctx: &mut NameContext<'_>) -> String {
 /// result becomes `Laqta`.
 pub fn file_name(pattern: &str, ctx: &mut NameContext<'_>) -> String {
     let expanded = expand(pattern, ctx);
-    let safe: String = expanded
-        .chars()
-        .map(|c| if c.is_control() || "\\/:*?\"<>|".contains(c) { '_' } else { c })
-        .take(MAX_NAME_CHARS)
-        .collect();
+    let safe: String =
+        expanded.chars().map(|c| if c.is_control() || "\\/:*?\"<>|".contains(c) { '_' } else { c }).take(MAX_NAME_CHARS).collect();
     let trimmed = safe.trim_end_matches(['.', ' ']);
     if trimmed.is_empty() { "Laqta".to_owned() } else { trimmed.to_owned() }
 }
@@ -108,9 +96,7 @@ pub fn candidates(dir: &Path, sub: &str, stem: &str, ext: &str) -> impl Iterator
     let folder = if sub.is_empty() { dir.to_path_buf() } else { dir.join(sub) };
     let stem = stem.to_owned();
     let ext = ext.to_owned();
-    (1u32..=999).map(move |n| {
-        if n == 1 { folder.join(format!("{stem}.{ext}")) } else { folder.join(format!("{stem}_{n}.{ext}")) }
-    })
+    (1u32..=999).map(move |n| if n == 1 { folder.join(format!("{stem}.{ext}")) } else { folder.join(format!("{stem}_{n}.{ext}")) })
 }
 
 #[derive(Clone, Copy)]
@@ -195,41 +181,27 @@ const TOKENS: &[(&str, Token)] = &[
     ("n", Token::Newline),
 ];
 
-const MONTHS: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
+const MONTHS: [&str; 12] =
+    ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 const WEEKDAYS: [&str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
 const ADJECTIVES: &[&str] = &[
-    "Brave", "Calm", "Clever", "Cosmic", "Curious", "Daring", "Eager", "Fancy", "Gentle", "Golden",
-    "Happy", "Jolly", "Kind", "Lively", "Lucky", "Mighty", "Modest", "Nimble", "Noble", "Patient",
-    "Peaceful", "Playful", "Proud", "Quick", "Quiet", "Radiant", "Rapid", "Rustic", "Serene", "Shiny",
-    "Silent", "Smooth", "Snappy", "Solid", "Sunny", "Swift", "Tidy", "Tranquil", "Vivid", "Warm",
-    "Wise", "Witty", "Zesty",
+    "Brave", "Calm", "Clever", "Cosmic", "Curious", "Daring", "Eager", "Fancy", "Gentle", "Golden", "Happy", "Jolly", "Kind", "Lively",
+    "Lucky", "Mighty", "Modest", "Nimble", "Noble", "Patient", "Peaceful", "Playful", "Proud", "Quick", "Quiet", "Radiant", "Rapid",
+    "Rustic", "Serene", "Shiny", "Silent", "Smooth", "Snappy", "Solid", "Sunny", "Swift", "Tidy", "Tranquil", "Vivid", "Warm", "Wise",
+    "Witty", "Zesty",
 ];
 
 const ANIMALS: &[&str] = &[
-    "Otter", "Falcon", "Badger", "Heron", "Lynx", "Panda", "Koala", "Gecko", "Ibex", "Marmot",
-    "Narwhal", "Ocelot", "Penguin", "Quokka", "Raven", "Salmon", "Tiger", "Walrus", "Yak", "Zebra",
-    "Bison", "Camel", "Dolphin", "Eagle", "Ferret", "Gazelle", "Hedgehog", "Iguana", "Jaguar", "Kiwi",
-    "Lemur", "Moose", "Newt", "Owl", "Puffin", "Rhino", "Seal", "Toucan", "Vulture", "Wombat",
+    "Otter", "Falcon", "Badger", "Heron", "Lynx", "Panda", "Koala", "Gecko", "Ibex", "Marmot", "Narwhal", "Ocelot", "Penguin", "Quokka",
+    "Raven", "Salmon", "Tiger", "Walrus", "Yak", "Zebra", "Bison", "Camel", "Dolphin", "Eagle", "Ferret", "Gazelle", "Hedgehog", "Iguana",
+    "Jaguar", "Kiwi", "Lemur", "Moose", "Newt", "Owl", "Puffin", "Rhino", "Seal", "Toucan", "Vulture", "Wombat",
 ];
 
 const EMOJI: &[&str] = &[
-    "😀", "😃", "😄", "😁", "😎", "🤓", "🙂", "😺", "🐶", "🐱", "🦊", "🐻", "🐼", "🐨", "🐸", "🐵", "🦉",
-    "🐧", "🐢", "🌟", "🌈", "🍀", "🌸", "🌻", "🍎", "🍋", "🍕", "🚀", "🎈", "🎉", "🎯", "🎲", "🎵",
+    "😀", "😃", "😄", "😁", "😎", "🤓", "🙂", "😺", "🐶", "🐱", "🦊", "🐻", "🐼", "🐨", "🐸", "🐵", "🦉", "🐧", "🐢", "🌟", "🌈", "🍀",
+    "🌸", "🌻", "🍎", "🍋", "🍕", "🚀", "🎈", "🎉", "🎯", "🎲", "🎵",
 ];
 
 const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -257,11 +229,7 @@ fn argument_range(token: Token) -> Option<RangeInclusive<u32>> {
 
 /// The longest token name that `body` (the text after a `%`) starts with.
 fn longest_token(body: &str) -> Option<(&'static str, Token)> {
-    TOKENS
-        .iter()
-        .copied()
-        .filter(|&(name, _)| body.starts_with(name))
-        .max_by_key(|&(name, _)| name.len())
+    TOKENS.iter().copied().filter(|&(name, _)| body.starts_with(name)).max_by_key(|&(name, _)| name.len())
 }
 
 /// The `{N}` at the start of `s`, when `token` takes an argument and N is digits in range: the
@@ -377,11 +345,7 @@ fn guid(ctx: &mut NameContext<'_>) -> String {
     second.copy_from_slice(&(ctx.rng)().to_be_bytes());
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: String = bytes
-        .iter()
-        .flat_map(|&b| [HEX[usize::from(b >> 4)], HEX[usize::from(b & 0x0f)]])
-        .map(char::from)
-        .collect();
+    let hex: String = bytes.iter().flat_map(|&b| [HEX[usize::from(b >> 4)], HEX[usize::from(b & 0x0f)]]).map(char::from).collect();
     format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..])
 }
 
@@ -416,11 +380,7 @@ mod tests {
         }
     }
 
-    fn fixture<'a>(
-        now: jiff::civil::DateTime,
-        lines: &'a [String],
-        rng: &'a mut dyn FnMut() -> u64,
-    ) -> NameContext<'a> {
+    fn fixture<'a>(now: jiff::civil::DateTime, lines: &'a [String], rng: &'a mut dyn FnMut() -> u64) -> NameContext<'a> {
         NameContext {
             now,
             unix_seconds: 1_794_060_202,
@@ -649,8 +609,7 @@ mod tests {
     fn candidates_match_capture_candidates() {
         let dir = Path::new("/shots");
         let expected: Vec<PathBuf> = capture_candidates(dir, &instant()).collect();
-        let actual: Vec<PathBuf> =
-            candidates(dir, &run(DEFAULT_SUBFOLDER_PATTERN), &run(DEFAULT_PATTERN), "png").collect();
+        let actual: Vec<PathBuf> = candidates(dir, &run(DEFAULT_SUBFOLDER_PATTERN), &run(DEFAULT_PATTERN), "png").collect();
         assert_eq!(actual, expected);
     }
 

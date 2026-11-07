@@ -45,7 +45,10 @@ mod tests {
 
     #[test]
     fn parses_actions_in_order() {
-        assert_eq!(p(&["--action", "print-screen", "--action=exit"]), Ok(Command::Run(Args { actions: vec![Action::PrintScreen, Action::ExitLaqta] })));
+        assert_eq!(
+            p(&["--action", "print-screen", "--action=exit"]),
+            Ok(Command::Run(Args { actions: vec![Action::PrintScreen, Action::ExitLaqta] }))
+        );
         assert_eq!(p(&["--version"]), Ok(Command::Version));
         assert!(p(&["--bogus"]).is_err());
         assert!(p(&["--action", "nope"]).is_err());

@@ -24,15 +24,12 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, UnregisterHotKey,
 };
-use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW,
-};
+use windows::Win32::UI::Shell::{NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
-    GetCursorPos, GetMessageW, IDI_APPLICATION, LoadIconW, MF_STRING, MSG, PostMessageW, PostQuitMessage,
-    RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetMenuDefaultItem, TPM_NONOTIFY, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP,
-    WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
+    IDI_APPLICATION, LoadIconW, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
+    SetMenuDefaultItem, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_DESTROY,
+    WM_HOTKEY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 use windows::core::{HSTRING, w};
 
@@ -135,27 +132,10 @@ fn run(ready: mpsc::Sender<Result<isize, String>>) {
     unsafe {
         let instance = GetModuleHandleW(None).ok().map(|m| HINSTANCE(m.0));
         let class = w!("LaqtaShellWindow");
-        let wc = WNDCLASSW {
-            lpfnWndProc: Some(wndproc),
-            hInstance: instance.unwrap_or_default(),
-            lpszClassName: class,
-            ..Default::default()
-        };
+        let wc =
+            WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: instance.unwrap_or_default(), lpszClassName: class, ..Default::default() };
         RegisterClassW(&wc);
-        let hwnd = match CreateWindowExW(
-            WS_EX_TOOLWINDOW,
-            class,
-            w!("Laqta"),
-            WS_OVERLAPPED,
-            0,
-            0,
-            0,
-            0,
-            None,
-            None,
-            instance,
-            None,
-        ) {
+        let hwnd = match CreateWindowExW(WS_EX_TOOLWINDOW, class, w!("Laqta"), WS_OVERLAPPED, 0, 0, 0, 0, None, None, instance, None) {
             Ok(h) => h,
             Err(e) => {
                 let _ = ready.send(Err(format!("CreateWindowExW: {e}")));
@@ -259,7 +239,8 @@ fn handle(hwnd: HWND, command: Command) {
             // SAFETY: plain Win32 calls on this thread's window.
             unsafe {
                 if icon {
-                    let data = NOTIFYICONDATAW { cbSize: size_of::<NOTIFYICONDATAW>() as u32, hWnd: hwnd, uID: TRAY_ID, ..Default::default() };
+                    let data =
+                        NOTIFYICONDATAW { cbSize: size_of::<NOTIFYICONDATAW>() as u32, hWnd: hwnd, uID: TRAY_ID, ..Default::default() };
                     let _ = Shell_NotifyIconW(NIM_DELETE, &data);
                 }
                 let _ = DestroyWindow(hwnd);
@@ -309,7 +290,9 @@ fn register_hotkeys(hwnd: HWND, bindings: &[(KeyChord, Action)], on_fire: Action
 
 fn modifiers(m: Modifiers) -> HOT_KEY_MODIFIERS {
     let mut out = HOT_KEY_MODIFIERS(0);
-    for (flag, win) in [(Modifiers::CTRL, MOD_CONTROL), (Modifiers::ALT, MOD_ALT), (Modifiers::SHIFT, MOD_SHIFT), (Modifiers::SUPER, MOD_WIN)] {
+    for (flag, win) in
+        [(Modifiers::CTRL, MOD_CONTROL), (Modifiers::ALT, MOD_ALT), (Modifiers::SHIFT, MOD_SHIFT), (Modifiers::SUPER, MOD_WIN)]
+    {
         if m.contains(flag) {
             out |= win;
         }

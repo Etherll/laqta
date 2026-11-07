@@ -69,7 +69,13 @@ mod tests {
     fn frame(x: i32, y: i32, w: u32, h: u32, scale: f32, px: [u8; 4], format: PixelFormat) -> Frame {
         let pixels: Vec<u8> = std::iter::repeat_n(px, (w * h) as usize).flatten().collect();
         Frame {
-            monitor: Monitor { id: MonitorId(format!("{x}")), name: String::new(), rect: PhysRect { x, y, width: w, height: h }, scale, primary: x == 0 },
+            monitor: Monitor {
+                id: MonitorId(format!("{x}")),
+                name: String::new(),
+                rect: PhysRect { x, y, width: w, height: h },
+                scale,
+                primary: x == 0,
+            },
             image: Bitmap::new(w, h, format, pixels.into()).unwrap(),
         }
     }
@@ -95,10 +101,8 @@ mod tests {
 
     #[test]
     fn bgra_to_rgba_and_transparent_gaps() {
-        let frames = [
-            frame(0, 0, 4, 4, 1.0, [10, 20, 30, 255], PixelFormat::Bgra8),
-            frame(4, 2, 4, 4, 1.0, [10, 20, 30, 255], PixelFormat::Rgba8),
-        ];
+        let frames =
+            [frame(0, 0, 4, 4, 1.0, [10, 20, 30, 255], PixelFormat::Bgra8), frame(4, 2, 4, 4, 1.0, [10, 20, 30, 255], PixelFormat::Rgba8)];
         let out = pool().install(|| compose_monitors(&frames));
         assert_eq!((out.width(), out.height()), (8, 6));
         assert_eq!(at(&out, 0, 0), [30, 20, 10, 255]);
@@ -109,10 +113,8 @@ mod tests {
     #[test]
     fn negative_origin_monitor_left_of_primary() {
         // A monitor left of the primary sits at negative x, so the union starts at its left edge.
-        let frames = [
-            frame(-4, -2, 4, 4, 1.0, [5, 5, 5, 255], PixelFormat::Rgba8),
-            frame(0, 0, 4, 4, 1.0, [7, 7, 7, 255], PixelFormat::Rgba8),
-        ];
+        let frames =
+            [frame(-4, -2, 4, 4, 1.0, [5, 5, 5, 255], PixelFormat::Rgba8), frame(0, 0, 4, 4, 1.0, [7, 7, 7, 255], PixelFormat::Rgba8)];
         let out = pool().install(|| compose_monitors(&frames));
         assert_eq!((out.width(), out.height()), (8, 6));
         assert_eq!(at(&out, 0, 0), [5, 5, 5, 255]);

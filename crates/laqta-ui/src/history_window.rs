@@ -81,10 +81,10 @@ impl HistoryWindow {
     }
 
     fn delete(&mut self, id: i64, cx: &mut Context<Self>) {
-        if let Some(store) = cx.global::<UiState>().services.history.clone() {
-            if let Err(e) = store.delete(id) {
-                self.error = Some(e.to_string());
-            }
+        if let Some(store) = cx.global::<UiState>().services.history.clone()
+            && let Err(e) = store.delete(id)
+        {
+            self.error = Some(e.to_string());
         }
         self.reload(cx);
     }
@@ -145,9 +145,10 @@ impl Render for HistoryWindow {
             }
             if let Some(url) = r.url.clone() {
                 let s = shell.clone();
-                line = line.child(Button::new(SharedString::from(format!("url-{id}"))).label("Open URL").ghost().on_click(move |_, _, _| {
-                    let _ = s.open_url(&url);
-                }));
+                line =
+                    line.child(Button::new(SharedString::from(format!("url-{id}"))).label("Open URL").ghost().on_click(move |_, _, _| {
+                        let _ = s.open_url(&url);
+                    }));
             }
             line = line.child(
                 Button::new(SharedString::from(format!("del-{id}")))

@@ -18,22 +18,13 @@ const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 /// The endpoint for this user: a named pipe on Windows, a socket file on Unix.
 pub fn endpoint_name() -> String {
     if cfg!(windows) {
-        let user = std::env::var("USERNAME")
-            .ok()
-            .filter(|user| !user.is_empty())
-            .unwrap_or_else(|| "user".to_owned());
+        let user = std::env::var("USERNAME").ok().filter(|user| !user.is_empty()).unwrap_or_else(|| "user".to_owned());
         return format!(r"\\.\pipe\laqta-{user}");
     }
     match std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
-        Some(dir) => std::path::Path::new(&dir)
-            .join("laqta.sock")
-            .to_string_lossy()
-            .into_owned(),
+        Some(dir) => std::path::Path::new(&dir).join("laqta.sock").to_string_lossy().into_owned(),
         None => {
-            let user = std::env::var("USER")
-                .ok()
-                .filter(|user| !user.is_empty())
-                .unwrap_or_else(|| "user".to_owned());
+            let user = std::env::var("USER").ok().filter(|user| !user.is_empty()).unwrap_or_else(|| "user".to_owned());
             format!("/tmp/laqta-{user}.sock")
         }
     }
@@ -62,9 +53,7 @@ pub fn claim_at(endpoint: &str) -> io::Result<Claim> {
         Err(error) => error,
     };
     if let Ok(stream) = LocalSocketStream::connect(name.borrow()) {
-        return Ok(Claim::Secondary(Client {
-            reader: BufReader::new(stream),
-        }));
+        return Ok(Claim::Secondary(Client { reader: BufReader::new(stream) }));
     }
     if cfg!(unix) && bind_error.kind() == io::ErrorKind::AddrInUse {
         match std::fs::remove_file(endpoint) {
@@ -88,19 +77,17 @@ impl Server {
     /// Answers requests on a thread named `laqta-ipc`, one connection at a time. `on_action` runs
     /// once per request and returns the reply: `Ok` or an error message.
     pub fn serve(self, on_action: impl Fn(Action) -> Result<(), String> + Send + 'static) {
-        let spawned = std::thread::Builder::new()
-            .name("laqta-ipc".to_owned())
-            .spawn(move || {
-                for connection in self.listener {
-                    match connection {
-                        Ok(stream) => serve_connection(stream, &on_action),
-                        Err(error) => {
-                            tracing::warn!(%error, "ipc accept failed");
-                            std::thread::sleep(ACCEPT_RETRY_DELAY);
-                        }
+        let spawned = std::thread::Builder::new().name("laqta-ipc".to_owned()).spawn(move || {
+            for connection in self.listener {
+                match connection {
+                    Ok(stream) => serve_connection(stream, &on_action),
+                    Err(error) => {
+                        tracing::warn!(%error, "ipc accept failed");
+                        std::thread::sleep(ACCEPT_RETRY_DELAY);
                     }
                 }
-            });
+            }
+        });
         if let Err(error) = spawned {
             tracing::error!(%error, "cannot start the ipc thread; other instances cannot forward actions");
         }
@@ -133,10 +120,7 @@ fn serve_connection(stream: LocalSocketStream, on_action: &impl Fn(Action) -> Re
 }
 
 /// Runs one request. A panic in `on_action` is contained, as in the dispatcher (ADR 020).
-fn handle_request(
-    line: &str,
-    on_action: &impl Fn(Action) -> Result<(), String>,
-) -> Result<(), String> {
+fn handle_request(line: &str, on_action: &impl Fn(Action) -> Result<(), String>) -> Result<(), String> {
     let action = protocol::parse_request(line)?;
     match panic::catch_unwind(AssertUnwindSafe(|| on_action(action))) {
         Ok(result) => result,
@@ -159,10 +143,7 @@ impl Client {
     /// the text of an I/O error.
     pub fn send(&mut self, action: Action) -> Result<(), String> {
         let request = protocol::encode_request(action);
-        self.reader
-            .get_mut()
-            .write_all(request.as_bytes())
-            .map_err(|error| error.to_string())?;
+        self.reader.get_mut().write_all(request.as_bytes()).map_err(|error| error.to_string())?;
         match protocol::read_line(&mut self.reader).map_err(|error| error.to_string())? {
             Some(line) => protocol::parse_reply(&line),
             None => Err("connection closed before a reply".to_owned()),

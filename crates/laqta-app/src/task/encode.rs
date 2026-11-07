@@ -74,7 +74,5 @@ fn encode_thumbnail(codecs: &Codecs, image: &Bitmap, settings: &ImageSettings, f
 }
 
 fn encode_as(codecs: &Codecs, image: &Bitmap, format: ImageFormat, jpeg_quality: u8) -> Result<Vec<u8>, AppError> {
-    codecs
-        .encode(image, &EncodeOptions { format, jpeg_quality })
-        .map_err(|error| AppError::Io(error.to_string()))
+    codecs.encode(image, &EncodeOptions { format, jpeg_quality }).map_err(|error| AppError::Io(error.to_string()))
 }

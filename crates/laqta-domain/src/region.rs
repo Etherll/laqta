@@ -199,12 +199,7 @@ impl RegionState {
         let centre_y = r.y.saturating_add_unsigned(r.height / 2);
         let bottom = r.bottom().saturating_sub(1);
         let at = |handle: Handle, x: i32, y: i32| {
-            let rect = PhysRect {
-                x: x.saturating_sub(half),
-                y: y.saturating_sub(half),
-                width: HANDLE_SIZE,
-                height: HANDLE_SIZE,
-            };
+            let rect = PhysRect { x: x.saturating_sub(half), y: y.saturating_sub(half), width: HANDLE_SIZE, height: HANDLE_SIZE };
             (handle, rect)
         };
         vec![
@@ -273,13 +268,7 @@ impl RegionState {
     }
 
     fn view(&self) -> View {
-        View {
-            cursor: self.cursor,
-            phase: self.phase.clone(),
-            regions: self.regions.clone(),
-            active: self.active,
-            hover: self.hover,
-        }
+        View { cursor: self.cursor, phase: self.phase.clone(), regions: self.regions.clone(), active: self.active, hover: self.hover }
     }
 
     fn step(&mut self, input: RegionInput) {
@@ -311,11 +300,7 @@ impl RegionState {
     }
 
     fn update_hover(&mut self) {
-        self.hover = if self.config.snap_to_targets {
-            self.targets.iter().position(|t| contains(t.rect, self.cursor))
-        } else {
-            None
-        };
+        self.hover = if self.config.snap_to_targets { self.targets.iter().position(|t| contains(t.rect, self.cursor)) } else { None };
     }
 
     fn set_active(&mut self, rect: PhysRect) {
@@ -339,11 +324,7 @@ impl RegionState {
             Phase::Moving { grab, original } => {
                 let dx = self.cursor.0.saturating_sub(grab.0);
                 let dy = self.cursor.1.saturating_sub(grab.1);
-                let moved = PhysRect {
-                    x: original.x.saturating_add(dx),
-                    y: original.y.saturating_add(dy),
-                    ..original
-                };
+                let moved = PhysRect { x: original.x.saturating_add(dx), y: original.y.saturating_add(dy), ..original };
                 self.set_active(clamp_rect(moved, self.config.bounds));
             }
             Phase::Resizing { handle, original } => {
@@ -385,10 +366,7 @@ impl RegionState {
     }
 
     fn handle_at(&self, at: (i32, i32)) -> Option<Handle> {
-        self.handle_rects()
-            .into_iter()
-            .find(|(_, rect)| contains(*rect, at))
-            .map(|(handle, _)| handle)
+        self.handle_rects().into_iter().find(|(_, rect)| contains(*rect, at)).map(|(handle, _)| handle)
     }
 
     fn pointer_up(&mut self, at: (i32, i32), button: Button) {
@@ -514,10 +492,7 @@ impl RegionState {
                 RegionOutcome::Confirmed { rects: self.regions.clone(), target: None }
             } else {
                 let i = self.active.unwrap_or(0);
-                RegionOutcome::Confirmed {
-                    rects: vec![self.regions[i]],
-                    target: self.region_targets[i].clone(),
-                }
+                RegionOutcome::Confirmed { rects: vec![self.regions[i]], target: self.region_targets[i].clone() }
             };
             self.finish(outcome);
         } else if let Some(target) = self.hovered_target().cloned() {
@@ -552,15 +527,7 @@ fn resize(original: PhysRect, handle: Handle, cursor: (i32, i32), bounds: PhysRe
     let a_y = if moves_top { cursor.1 } else { original.y };
     let b_y = if moves_bottom { cursor.1.saturating_add(1) } else { original.bottom() };
 
-    clamp_rect(
-        PhysRect {
-            x: a_x.min(b_x),
-            y: a_y.min(b_y),
-            width: a_x.abs_diff(b_x).max(1),
-            height: a_y.abs_diff(b_y).max(1),
-        },
-        bounds,
-    )
+    clamp_rect(PhysRect { x: a_x.min(b_x), y: a_y.min(b_y), width: a_x.abs_diff(b_x).max(1), height: a_y.abs_diff(b_y).max(1) }, bounds)
 }
 
 /// The magnifier side: odd, at least 1, and no bigger than the bounds.
@@ -571,10 +538,7 @@ fn magnifier_side(pixels: u32, bounds: PhysRect) -> u32 {
 }
 
 fn centre(bounds: PhysRect) -> (i32, i32) {
-    let at = (
-        bounds.x.saturating_add_unsigned(bounds.width / 2),
-        bounds.y.saturating_add_unsigned(bounds.height / 2),
-    );
+    let at = (bounds.x.saturating_add_unsigned(bounds.width / 2), bounds.y.saturating_add_unsigned(bounds.height / 2));
     clamp_point(at, bounds)
 }
 
@@ -605,12 +569,7 @@ fn to_i32(v: u32) -> i32 {
 
 /// The rect spanned by two corner points, inclusive of both. Never smaller than 1x1.
 pub fn rect_from_points(a: (i32, i32), b: (i32, i32)) -> PhysRect {
-    PhysRect {
-        x: a.0.min(b.0),
-        y: a.1.min(b.1),
-        width: a.0.abs_diff(b.0).saturating_add(1),
-        height: a.1.abs_diff(b.1).saturating_add(1),
-    }
+    PhysRect { x: a.0.min(b.0), y: a.1.min(b.1), width: a.0.abs_diff(b.0).saturating_add(1), height: a.1.abs_diff(b.1).saturating_add(1) }
 }
 
 /// Moves and shrinks `r` so that it lies fully inside `bounds`, keeping it at least 1x1.
@@ -648,12 +607,7 @@ mod tests {
     }
 
     fn window(title: &str, area: PhysRect) -> HoverTarget {
-        HoverTarget {
-            rect: area,
-            title: title.to_owned(),
-            process: "app.exe".to_owned(),
-            kind: TargetKind::Window,
-        }
+        HoverTarget { rect: area, title: title.to_owned(), process: "app.exe".to_owned(), kind: TargetKind::Window }
     }
 
     fn move_to(x: i32, y: i32) -> RegionInput {
@@ -697,13 +651,7 @@ mod tests {
         assert_eq!(state.hovered_target(), Some(&front));
         state.handle(press(400, 300));
         state.handle(release(400, 300));
-        assert_eq!(
-            state.outcome(),
-            Some(&RegionOutcome::Confirmed {
-                rects: vec![front.rect],
-                target: Some(front.clone()),
-            })
-        );
+        assert_eq!(state.outcome(), Some(&RegionOutcome::Confirmed { rects: vec![front.rect], target: Some(front.clone()) }));
     }
 
     #[test]
@@ -713,10 +661,7 @@ mod tests {
         state.handle(RegionInput::TargetsLoaded(vec![win.clone()]));
         state.handle(press(350, 250));
         state.handle(release(350, 250));
-        assert_eq!(
-            state.outcome(),
-            Some(&RegionOutcome::Confirmed { rects: vec![win.rect], target: Some(win) })
-        );
+        assert_eq!(state.outcome(), Some(&RegionOutcome::Confirmed { rects: vec![win.rect], target: Some(win) }));
     }
 
     #[test]
@@ -726,10 +671,7 @@ mod tests {
         assert!(state.handle(move_to(200, 150)));
         assert_eq!(state.drawing_rect(), Some(rect(100, 100, 101, 51)));
         state.handle(release(200, 150));
-        assert_eq!(
-            state.outcome(),
-            Some(&RegionOutcome::Confirmed { rects: vec![rect(100, 100, 101, 51)], target: None })
-        );
+        assert_eq!(state.outcome(), Some(&RegionOutcome::Confirmed { rects: vec![rect(100, 100, 101, 51)], target: None }));
 
         let mut backwards = RegionState::new(config());
         drag(&mut backwards, (200, 150), (100, 100));
@@ -758,10 +700,7 @@ mod tests {
         state.handle(tap(RegionKey::Enter));
         assert_eq!(
             state.outcome(),
-            Some(&RegionOutcome::Confirmed {
-                rects: vec![rect(10, 10, 51, 51), rect(100, 100, 51, 51)],
-                target: None,
-            })
+            Some(&RegionOutcome::Confirmed { rects: vec![rect(10, 10, 51, 51), rect(100, 100, 51, 51)], target: None })
         );
     }
 
@@ -813,10 +752,7 @@ mod tests {
         let mut state = RegionState::new(multi());
         drag(&mut state, (100, 100), (199, 199));
         state.handle(press(150, 150));
-        assert_eq!(
-            state.phase(),
-            &Phase::Moving { grab: (150, 150), original: rect(100, 100, 100, 100) }
-        );
+        assert_eq!(state.phase(), &Phase::Moving { grab: (150, 150), original: rect(100, 100, 100, 100) });
         state.handle(move_to(-500, 150));
         assert_eq!(state.active_region(), Some(rect(0, 100, 100, 100)));
         state.handle(move_to(5000, 5000));
@@ -844,19 +780,13 @@ mod tests {
         drag(&mut state, (100, 100), (199, 199));
 
         state.handle(press(199, 199));
-        assert_eq!(
-            state.phase(),
-            &Phase::Resizing { handle: Handle::SE, original: rect(100, 100, 100, 100) }
-        );
+        assert_eq!(state.phase(), &Phase::Resizing { handle: Handle::SE, original: rect(100, 100, 100, 100) });
         state.handle(move_to(249, 259));
         assert_eq!(state.active_region(), Some(rect(100, 100, 150, 160)));
         state.handle(release(249, 259));
 
         state.handle(press(100, 100));
-        assert_eq!(
-            state.phase(),
-            &Phase::Resizing { handle: Handle::NW, original: rect(100, 100, 150, 160) }
-        );
+        assert_eq!(state.phase(), &Phase::Resizing { handle: Handle::NW, original: rect(100, 100, 150, 160) });
         state.handle(move_to(60, 70));
         assert_eq!(state.active_region(), Some(rect(60, 70, 190, 190)));
         state.handle(move_to(300, 320));

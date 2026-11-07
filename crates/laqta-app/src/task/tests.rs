@@ -12,8 +12,8 @@ use futures_lite::future::{block_on, poll_once, yield_now};
 use laqta_domain::{Bitmap, Frame, Monitor, MonitorId, PhysRect, PixelFormat, Settings};
 use laqta_imaging::Codecs;
 use laqta_ports::fakes::{
-    ClipboardBehaviour, CountingRng, FakeClipboard, FakeHoverSource, FakeNotifier, FakeOverlay, FakeScreen, FakeShell,
-    InlineSpawner, ManualClock,
+    ClipboardBehaviour, CountingRng, FakeClipboard, FakeHoverSource, FakeNotifier, FakeOverlay, FakeScreen, FakeShell, InlineSpawner,
+    ManualClock,
 };
 use laqta_ports::{AppError, BoxFuture, HostInfo, Spawner, TaskEvent, TaskId};
 use tempfile::TempDir;
@@ -51,6 +51,7 @@ fn ports(spawner: Arc<dyn Spawner>) -> Arc<Ports> {
         clock: Arc::new(ManualClock::new(jiff::civil::date(2026, 11, 7).at(14, 3, 22, 0))),
         spawner,
         overlay: Arc::new(FakeOverlay::default()),
+        tools: Arc::new(laqta_ports::fakes::FakeToolHost::default()),
         hover: Arc::new(FakeHoverSource::new(Vec::new())),
         notifier: Arc::new(FakeNotifier::default()),
         rng: Arc::new(CountingRng::default()),

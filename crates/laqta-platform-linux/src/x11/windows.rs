@@ -97,7 +97,12 @@ impl Scan {
             width: u32::from(geometry.width),
             height: u32::from(geometry.height),
         };
-        Ok(Some(HoverTarget { rect: expand(client, extents), title: self.title(win)?, process: self.process(win)?, kind: TargetKind::Window }))
+        Ok(Some(HoverTarget {
+            rect: expand(client, extents),
+            title: self.title(win)?,
+            process: self.process(win)?,
+            kind: TargetKind::Window,
+        }))
     }
 
     /// `_NET_WM_NAME` (UTF-8), else `WM_NAME`. Empty when neither is set.
@@ -165,8 +170,17 @@ impl Atoms {
             b"_NET_WM_PID",
             b"_NET_ACTIVE_WINDOW",
         ];
-        let [client_list_stacking, client_list, wm_state, wm_state_hidden, frame_extents, net_wm_name, utf8_string, net_wm_pid, active_window] =
-            intern_all(conn, names)?;
+        let [
+            client_list_stacking,
+            client_list,
+            wm_state,
+            wm_state_hidden,
+            frame_extents,
+            net_wm_name,
+            utf8_string,
+            net_wm_pid,
+            active_window,
+        ] = intern_all(conn, names)?;
         Ok(Self {
             client_list_stacking,
             client_list,

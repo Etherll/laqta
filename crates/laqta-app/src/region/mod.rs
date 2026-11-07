@@ -172,11 +172,7 @@ fn crop_rects(composed: &Bitmap, bounds: PhysRect, rects: &[PhysRect]) -> Result
     let Some(boxed) = rects.iter().copied().reduce(PhysRect::union) else {
         return bitmap(0, 0, composed.format(), Vec::new());
     };
-    let in_composed = PhysRect {
-        x: boxed.x.saturating_sub(bounds.x),
-        y: boxed.y.saturating_sub(bounds.y),
-        ..boxed
-    };
+    let in_composed = PhysRect { x: boxed.x.saturating_sub(bounds.x), y: boxed.y.saturating_sub(bounds.y), ..boxed };
     let cropped = laqta_imaging::crop(composed, in_composed);
     if rects.len() == 1 {
         return Ok(cropped);

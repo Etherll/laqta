@@ -181,10 +181,7 @@ fn decode_gif(bytes: &[u8]) -> Result<Bitmap, CodecError> {
     if screen_w == 0 || screen_h == 0 {
         return Err(CodecError::Decode("gif logical screen is empty".into()));
     }
-    let frame = decoder
-        .read_next_frame()
-        .map_err(dec_err)?
-        .ok_or_else(|| CodecError::Decode("gif has no frames".into()))?;
+    let frame = decoder.read_next_frame().map_err(dec_err)?.ok_or_else(|| CodecError::Decode("gif has no frames".into()))?;
     let (left, top) = (usize::from(frame.left), usize::from(frame.top));
     let (frame_w, frame_h) = (usize::from(frame.width), usize::from(frame.height));
     if frame.buffer.len() != frame_w * frame_h * 4 {
@@ -213,9 +210,7 @@ fn encode_tiff(img: &Bitmap) -> Result<Vec<u8>, CodecError> {
     let rgba = rgba_bytes(img);
     let mut buf = Cursor::new(Vec::new());
     {
-        let mut encoder = TiffEncoder::new(&mut buf)
-            .map_err(enc_err)?
-            .with_compression(Compression::Deflate(DeflateLevel::Balanced));
+        let mut encoder = TiffEncoder::new(&mut buf).map_err(enc_err)?.with_compression(Compression::Deflate(DeflateLevel::Balanced));
         encoder.write_image::<RGBA8>(w, h, &rgba).map_err(enc_err)?;
     }
     Ok(buf.into_inner())
@@ -245,9 +240,7 @@ fn encode_webp(img: &Bitmap) -> Result<Vec<u8>, CodecError> {
     }
     let rgba = rgba_bytes(img);
     let mut out = Vec::new();
-    ::image_webp::WebPEncoder::new(&mut out)
-        .encode(&rgba, w, h, ::image_webp::ColorType::Rgba8)
-        .map_err(enc_err)?;
+    ::image_webp::WebPEncoder::new(&mut out).encode(&rgba, w, h, ::image_webp::ColorType::Rgba8).map_err(enc_err)?;
     Ok(out)
 }
 
@@ -411,7 +404,9 @@ mod tests {
                 if quality == 90 {
                     let worst = out
                         .pixels()
-                        .as_chunks::<4>().0.iter()
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
                         .zip(img.pixels().as_chunks::<4>().0.iter())
                         .flat_map(|(a, b)| (0..3).map(move |c| a[c].abs_diff(b[c])))
                         .max()

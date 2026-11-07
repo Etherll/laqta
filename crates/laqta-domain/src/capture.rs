@@ -25,6 +25,10 @@ pub struct CaptureOptions {
     pub transparent_window: bool,
     pub hdr_tonemap: bool,
     pub region: RegionCaptureOptions,
+    /// For `Action::CustomRegion` (physical desktop pixels).
+    pub custom_region: Option<PhysRect>,
+    /// For `Action::CustomWindow`: the first window whose title contains this text.
+    pub custom_window_title: String,
 }
 
 impl Default for CaptureOptions {
@@ -35,6 +39,8 @@ impl Default for CaptureOptions {
             transparent_window: false,
             hdr_tonemap: true,
             region: RegionCaptureOptions::default(),
+            custom_region: None,
+            custom_window_title: String::new(),
         }
     }
 }

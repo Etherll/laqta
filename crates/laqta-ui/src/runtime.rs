@@ -132,10 +132,12 @@ pub fn run(services: UiServices, rx: UiReceiver) {
         cx.spawn(async move |cx: &mut AsyncApp| {
             while let Ok(event) = events.recv().await {
                 let event: TaskEvent = event;
-                cx.update(|cx| tasks.update(cx, |list, cx| {
-                    list.apply(&event);
-                    cx.notify();
-                }));
+                cx.update(|cx| {
+                    tasks.update(cx, |list, cx| {
+                        list.apply(&event);
+                        cx.notify();
+                    })
+                });
             }
         })
         .detach();

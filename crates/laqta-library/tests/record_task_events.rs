@@ -19,9 +19,7 @@ fn write_png(path: &Path, width: u32, height: u32) {
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().unwrap();
-    writer
-        .write_image_data(&vec![0x80_u8; (width * height * 4) as usize])
-        .unwrap();
+    writer.write_image_data(&vec![0x80_u8; (width * height * 4) as usize]).unwrap();
     writer.finish().unwrap();
 }
 
@@ -42,35 +40,11 @@ fn saved_files_become_history_entries_until_the_channel_closes() {
 
     block_on(async {
         let id = TaskId(1);
-        sender
-            .broadcast(TaskEvent::StatusChanged {
-                id,
-                status: TaskStatus::Working,
-            })
-            .await
-            .unwrap();
-        sender
-            .broadcast(TaskEvent::Saved {
-                id,
-                path: png_path.clone(),
-            })
-            .await
-            .unwrap();
-        sender
-            .broadcast(TaskEvent::Saved {
-                id: TaskId(2),
-                path: notes_path.clone(),
-            })
-            .await
-            .unwrap();
+        sender.broadcast(TaskEvent::StatusChanged { id, status: TaskStatus::Working }).await.unwrap();
+        sender.broadcast(TaskEvent::Saved { id, path: png_path.clone() }).await.unwrap();
+        sender.broadcast(TaskEvent::Saved { id: TaskId(2), path: notes_path.clone() }).await.unwrap();
         // The file is gone: the entry is still recorded, just without a size.
-        sender
-            .broadcast(TaskEvent::Saved {
-                id: TaskId(3),
-                path: missing_path.clone(),
-            })
-            .await
-            .unwrap();
+        sender.broadcast(TaskEvent::Saved { id: TaskId(3), path: missing_path.clone() }).await.unwrap();
         drop(sender);
     });
 
@@ -100,10 +74,7 @@ fn saved_files_become_history_entries_until_the_channel_closes() {
     assert_eq!(shot.file_name, "Laqta_2026-11-07_14-03-22.png");
     assert_eq!(shot.path.as_deref(), Some(png_path.as_path()));
     assert_eq!((shot.width, shot.height), (Some(64), Some(32)));
-    assert_eq!(
-        shot.size_bytes,
-        Some(fs::metadata(&png_path).unwrap().len())
-    );
+    assert_eq!(shot.size_bytes, Some(fs::metadata(&png_path).unwrap().len()));
     assert!(shot.tags.is_empty() && shot.url.is_none());
 }
 
@@ -117,13 +88,7 @@ fn a_non_png_image_name_gets_no_dimensions() {
     let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(date(2026, 11, 7).at(9, 0, 0, 0)));
     let (sender, receiver) = async_broadcast::broadcast::<TaskEvent>(4);
     block_on(async {
-        sender
-            .broadcast(TaskEvent::Saved {
-                id: TaskId(1),
-                path: jpg_path.clone(),
-            })
-            .await
-            .unwrap();
+        sender.broadcast(TaskEvent::Saved { id: TaskId(1), path: jpg_path.clone() }).await.unwrap();
         drop(sender);
     });
     block_on(record_task_events(Arc::clone(&history), receiver, clock));

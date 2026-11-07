@@ -7,12 +7,7 @@ use std::io::{BufRead, BufReader, Write};
 /// A unique endpoint inside `dir`. Windows gets a pipe name derived from the directory's name.
 fn endpoint(dir: &tempfile::TempDir) -> String {
     if cfg!(windows) {
-        let id = dir
-            .path()
-            .file_name()
-            .expect("temp dir has a name")
-            .to_string_lossy()
-            .into_owned();
+        let id = dir.path().file_name().expect("temp dir has a name").to_string_lossy().into_owned();
         format!(r"\\.\pipe\laqta-test-{id}")
     } else {
         dir.path().join("laqta.sock").to_string_lossy().into_owned()
@@ -56,10 +51,7 @@ fn handler_panic_becomes_an_error_reply() {
     let Claim::Secondary(mut client) = claim_at(&endpoint).expect("second claim") else {
         panic!("second claim should be secondary");
     };
-    assert_eq!(
-        client.send(Action::OpenScreenshotsFolder),
-        Err("internal error".to_owned())
-    );
+    assert_eq!(client.send(Action::OpenScreenshotsFolder), Err("internal error".to_owned()));
     assert_eq!(client.send(Action::PrintScreen), Ok(()));
 }
 
@@ -88,10 +80,7 @@ fn raw_requests_get_protocol_replies() {
         panic!("claim should be primary");
     };
     server.serve(handler);
-    let name = endpoint
-        .as_str()
-        .to_fs_name::<GenericFilePath>()
-        .expect("endpoint name");
+    let name = endpoint.as_str().to_fs_name::<GenericFilePath>().expect("endpoint name");
     let mut stream = BufReader::new(LocalSocketStream::connect(name).expect("connect"));
     for (request, reply) in [
         ("action bogus\n", "err unknown action bogus\n"),
@@ -99,10 +88,7 @@ fn raw_requests_get_protocol_replies() {
         ("action\n", "err malformed request\n"),
         ("action print-screen\r\n", "ok\n"),
     ] {
-        stream
-            .get_mut()
-            .write_all(request.as_bytes())
-            .expect("write request");
+        stream.get_mut().write_all(request.as_bytes()).expect("write request");
         let mut line = String::new();
         stream.read_line(&mut line).expect("read reply");
         assert_eq!(line, reply, "reply to {request:?}");
@@ -123,14 +109,8 @@ fn long_error_message_is_cut_to_one_line() {
     let Claim::Secondary(mut client) = claim_at(&endpoint).expect("second claim") else {
         panic!("second claim should be secondary");
     };
-    let error = client
-        .send(Action::OpenScreenshotsFolder)
-        .expect_err("error reply");
-    assert!(
-        error.len() < 5000,
-        "message should be cut, got {} bytes",
-        error.len()
-    );
+    let error = client.send(Action::OpenScreenshotsFolder).expect_err("error reply");
+    assert!(error.len() < 5000, "message should be cut, got {} bytes", error.len());
     assert_eq!(client.send(Action::PrintScreen), Ok(()));
 }
 
@@ -143,16 +123,10 @@ fn overlong_request_gets_malformed_reply_and_hangs_up() {
         panic!("claim should be primary");
     };
     server.serve(handler);
-    let name = endpoint
-        .as_str()
-        .to_fs_name::<GenericFilePath>()
-        .expect("endpoint name");
+    let name = endpoint.as_str().to_fs_name::<GenericFilePath>().expect("endpoint name");
     let mut stream = BufReader::new(LocalSocketStream::connect(name).expect("connect"));
     let request = format!("action {}\n", "x".repeat(8192));
-    stream
-        .get_mut()
-        .write_all(request.as_bytes())
-        .expect("write request");
+    stream.get_mut().write_all(request.as_bytes()).expect("write request");
     let mut line = String::new();
     stream.read_line(&mut line).expect("read reply");
     assert_eq!(line, "err malformed request\n");
@@ -184,32 +158,20 @@ fn action_names_round_trip() {
     for &action in Action::ALL {
         let name = action_name(action);
         assert_eq!(parse_action(name), Some(action), "round trip of {name}");
-        assert_eq!(
-            parse_action(&name.to_uppercase()),
-            Some(action),
-            "case-insensitive {name}"
-        );
+        assert_eq!(parse_action(&name.to_uppercase()), Some(action), "case-insensitive {name}");
         assert!(seen.insert(name), "duplicate name {name}");
         assert!(
-            name.bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            name.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
                 && !name.starts_with('-')
                 && !name.ends_with('-')
                 && !name.contains("--"),
             "{name} is not lowercase kebab-case"
         );
-        let expected = if action == Action::ExitLaqta {
-            "exit".to_owned()
-        } else {
-            kebab(&format!("{action:?}"))
-        };
+        let expected = if action == Action::ExitLaqta { "exit".to_owned() } else { kebab(&format!("{action:?}")) };
         assert_eq!(name, expected, "name of {action:?}");
     }
     assert_eq!(action_name(Action::PrintScreen), "print-screen");
-    assert_eq!(
-        action_name(Action::OpenScreenshotsFolder),
-        "open-screenshots-folder"
-    );
+    assert_eq!(action_name(Action::OpenScreenshotsFolder), "open-screenshots-folder");
     assert_eq!(action_name(Action::ExitLaqta), "exit");
     assert_eq!(parse_action("PRINT-SCREEN"), Some(Action::PrintScreen));
     assert_eq!(parse_action("bogus"), None);

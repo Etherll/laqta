@@ -23,6 +23,7 @@ laqta-app.workspace = true
 laqta-imaging.workspace = true
 laqta-ipc.workspace = true
 laqta-ui.workspace = true
+laqta-library.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 jiff = { version = "0.2.39" }

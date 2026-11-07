@@ -51,9 +51,7 @@ pub(super) async fn image(
             }
             first
         }
-        FileExistsAction::AppendNumber | FileExistsAction::Ask => {
-            files::first_free(spawner, candidates).await.map_err(io_error)?
-        }
+        FileExistsAction::AppendNumber | FileExistsAction::Ask => files::first_free(spawner, candidates).await.map_err(io_error)?,
     };
     files::save_atomic(spawner, path.clone(), encoded.bytes).await.map_err(io_error)?;
     cx.counter.fetch_add(1, Ordering::SeqCst);
@@ -61,12 +59,7 @@ pub(super) async fn image(
 }
 
 /// Writes the thumbnail beside `saved`, as `<stem><suffix>.<ext>`, under the first free name.
-pub(super) async fn thumbnail(
-    cx: &Context,
-    saved: &SavedFile,
-    suffix: &str,
-    encoded: Encoded,
-) -> Result<PathBuf, AppError> {
+pub(super) async fn thumbnail(cx: &Context, saved: &SavedFile, suffix: &str, encoded: Encoded) -> Result<PathBuf, AppError> {
     let (Some(dir), Some(stem)) = (saved.path.parent(), saved.path.file_stem()) else {
         return Err(AppError::Io("saved file has no folder".to_owned()));
     };
@@ -82,14 +75,7 @@ pub(super) async fn thumbnail(
 /// The candidate paths for the image, in order. The name and subfolder patterns are expanded here, reading
 /// the clock, the counter and the random source once. Nothing awaits in here, so the random source never
 /// lives across an await point.
-fn image_candidates(
-    cx: &Context,
-    settings: &TaskSettings,
-    info: &CaptureInfo,
-    dir: &Path,
-    size: (u32, u32),
-    ext: &str,
-) -> Vec<PathBuf> {
+fn image_candidates(cx: &Context, settings: &TaskSettings, info: &CaptureInfo, dir: &Path, size: (u32, u32), ext: &str) -> Vec<PathBuf> {
     let ports = cx.ports.as_ref();
     let now = ports.clock.now();
     let unix_seconds = now.to_zoned(TimeZone::UTC).map_or(0, |zoned| zoned.timestamp().as_second());
@@ -119,12 +105,7 @@ fn image_candidates(
 fn subfolder(expanded: &str) -> String {
     expanded
         .split(['/', '\\'])
-        .map(|segment| {
-            segment
-                .chars()
-                .map(|c| if c.is_control() || ":*?\"<>|".contains(c) { '_' } else { c })
-                .collect::<String>()
-        })
+        .map(|segment| segment.chars().map(|c| if c.is_control() || ":*?\"<>|".contains(c) { '_' } else { c }).collect::<String>())
         .map(|segment| segment.trim_end_matches(['.', ' ']).to_owned())
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>()

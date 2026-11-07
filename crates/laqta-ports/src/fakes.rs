@@ -10,7 +10,10 @@ use laqta_domain::{Action, Bitmap, Frame, KeyChord};
 
 use laqta_domain::region::{HoverTarget, RegionInput};
 
-use crate::{ActionCallback, BoxFuture, Clipboard, Clock, HotkeyRegistrar, HoverSource, InputCallback, Notifier, Overlay, PortError, RegionView, Rng, ScreenSource, Shell, Spawner, Toast, Tray, TrayMenu};
+use crate::{
+    ActionCallback, BoxFuture, Clipboard, Clock, HotkeyRegistrar, HoverSource, InputCallback, Notifier, Overlay, PortError, RegionView,
+    Rng, ScreenSource, Shell, Spawner, Toast, Tray, TrayMenu,
+};
 
 /// Returns the configured frames (or error) on every call.
 #[derive(Debug)]
@@ -54,7 +57,12 @@ pub struct FakeClipboard {
 
 impl FakeClipboard {
     pub fn new(behaviour: ClipboardBehaviour) -> Self {
-        FakeClipboard { behaviour: Mutex::new(behaviour), images: Mutex::new(Vec::new()), texts: Mutex::new(Vec::new()), files: Mutex::new(Vec::new()) }
+        FakeClipboard {
+            behaviour: Mutex::new(behaviour),
+            images: Mutex::new(Vec::new()),
+            texts: Mutex::new(Vec::new()),
+            files: Mutex::new(Vec::new()),
+        }
     }
 }
 
@@ -202,10 +210,7 @@ pub struct InlineSpawner {
 
 impl std::fmt::Debug for InlineSpawner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InlineSpawner")
-            .field("blocking_calls", &self.blocking_calls)
-            .field("compute_calls", &self.compute_calls)
-            .finish()
+        f.debug_struct("InlineSpawner").field("blocking_calls", &self.blocking_calls).field("compute_calls", &self.compute_calls).finish()
     }
 }
 
@@ -426,7 +431,11 @@ impl crate::Destination for FakeDestination {
     fn name(&self) -> &str {
         &self.id
     }
-    fn upload(&self, request: crate::UploadRequest, _progress: crate::ProgressCallback) -> BoxFuture<'_, Result<crate::UploadResult, crate::UploadError>> {
+    fn upload(
+        &self,
+        request: crate::UploadRequest,
+        _progress: crate::ProgressCallback,
+    ) -> BoxFuture<'_, Result<crate::UploadResult, crate::UploadError>> {
         self.requests.lock().unwrap().push(request);
         let r = self.results.lock().unwrap().pop_front().unwrap_or_else(|| Err(crate::UploadError::Network("no scripted result".into())));
         Box::pin(async move { r })

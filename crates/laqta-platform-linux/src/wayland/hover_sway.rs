@@ -89,7 +89,10 @@ pub fn collect_views(root: &Node, comm: &dyn Fn(i32) -> Option<String>) -> Vec<V
 }
 
 fn push_visible(node: &Node, comm: &dyn Fn(i32) -> Option<String>, out: &mut Vec<View>) {
-    if node.visible == Some(true) && is_view(node) && let Some(found) = view(node, comm) {
+    if node.visible == Some(true)
+        && is_view(node)
+        && let Some(found) = view(node, comm)
+    {
         out.push(found);
     }
     for child in node.nodes.iter().chain(&node.floating_nodes) {
@@ -131,12 +134,7 @@ fn with_title_bar(rect: PhysRect, deco: PhysRect) -> PhysRect {
 
 /// The app id, else the X11 class, else the executable name.
 fn process_name(app_id: Option<&str>, class: Option<&str>, comm: impl FnOnce() -> Option<String>) -> String {
-    app_id
-        .filter(|s| !s.is_empty())
-        .or(class.filter(|s| !s.is_empty()))
-        .map(str::to_owned)
-        .or_else(comm)
-        .unwrap_or_default()
+    app_id.filter(|s| !s.is_empty()).or(class.filter(|s| !s.is_empty())).map(str::to_owned).or_else(comm).unwrap_or_default()
 }
 
 /// The executable name of process `pid`, from `/proc/<pid>/comm`.

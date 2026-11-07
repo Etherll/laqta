@@ -29,7 +29,7 @@ pub(crate) fn open(cx: &mut App) {
         ..Default::default()
     };
     match cx.open_window(options, |window, cx| {
-        let view = cx.new(|cx| MainWindow::new(cx));
+        let view = cx.new(MainWindow::new);
         cx.new(|cx| Root::new(view, window, cx))
     }) {
         Ok(handle) => cx.global_mut::<UiState>().main = Some(handle.into()),
@@ -78,7 +78,10 @@ fn dispatch_button(id: &'static str, label: &'static str, action: Action, cx: &A
     let dispatch = cx.global::<UiState>().services.dispatch.clone();
     Button::new(id).label(label).on_click(move |_, window, _| {
         // Keep the main window out of the capture.
-        if matches!(action, Action::PrintScreen | Action::RectangleRegion | Action::ActiveWindow | Action::ActiveMonitor | Action::LastRegion) {
+        if matches!(
+            action,
+            Action::PrintScreen | Action::RectangleRegion | Action::ActiveWindow | Action::ActiveMonitor | Action::LastRegion
+        ) {
             window.minimize_window();
         }
         dispatch(action);
@@ -121,22 +124,14 @@ impl Render for MainWindow {
             task_list = task_list.child(widgets::muted("No captures yet. Press PrintScreen or use the buttons above.", cx));
         }
         for (i, r) in rows.iter().enumerate() {
-            let mut line = div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(8.))
-                .p(px(8.))
-                .rounded(px(6.))
-                .bg(cx.theme().secondary)
-                .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .flex_col()
-                        .child(div().truncate().child(r.title.clone()))
-                        .child(widgets::muted(format!("{} · {}", status_label(r.status), r.detail), cx)),
-                );
+            let mut line = div().flex().flex_row().items_center().gap(px(8.)).p(px(8.)).rounded(px(6.)).bg(cx.theme().secondary).child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .child(div().truncate().child(r.title.clone()))
+                    .child(widgets::muted(format!("{} · {}", status_label(r.status), r.detail), cx)),
+            );
             if let Some(path) = &r.path {
                 line = line
                     .child(open_path_button(format!("task-open-{i}").into(), "Open", path.clone(), false, cx))
@@ -150,9 +145,11 @@ impl Render for MainWindow {
             recent = recent.child(widgets::muted("History is empty.", cx));
         }
         for (i, r) in self.recent.iter().enumerate() {
-            let mut card = div().w(px(150.)).flex().flex_col().gap(px(4.)).p(px(6.)).rounded(px(6.)).border_1().border_color(cx.theme().border);
+            let mut card =
+                div().w(px(150.)).flex().flex_col().gap(px(4.)).p(px(6.)).rounded(px(6.)).border_1().border_color(cx.theme().border);
             if let Some(thumb) = &r.thumbnail {
-                card = card.child(div().h(px(90.)).flex().justify_center().overflow_hidden().child(img(thumb.clone()).max_h_full().max_w_full()));
+                card = card
+                    .child(div().h(px(90.)).flex().justify_center().overflow_hidden().child(img(thumb.clone()).max_h_full().max_w_full()));
             }
             card = card.child(div().text_xs().truncate().child(r.title.clone())).child(widgets::muted(r.when.clone(), cx));
             if let Some(path) = &r.path {
@@ -174,4 +171,3 @@ impl Render for MainWindow {
         )
     }
 }
-

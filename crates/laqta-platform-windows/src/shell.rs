@@ -15,10 +15,6 @@ impl Shell for WindowsShell {
         let result = unsafe { ShellExecuteW(None, w!("open"), &file, PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL) };
         // ShellExecuteW returns a value greater than 32 on success.
         let code = result.0 as isize;
-        if code > 32 {
-            Ok(())
-        } else {
-            Err(PortError::Failed(format!("could not open {} (code {code})", path.display())))
-        }
+        if code > 32 { Ok(()) } else { Err(PortError::Failed(format!("could not open {} (code {code})", path.display()))) }
     }
 }

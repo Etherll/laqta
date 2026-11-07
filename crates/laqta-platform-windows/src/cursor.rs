@@ -9,8 +9,8 @@ use std::ptr::null_mut;
 use laqta_domain::{Bitmap, Frame, PhysRect, PixelFormat};
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection,
-    DIB_RGB_COLORS, DeleteDC, DeleteObject, GetObjectW, SelectObject,
+    BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetObjectW,
+    SelectObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CURSOR_SHOWING, CURSORINFO, DI_NORMAL, DrawIconEx, GetCursorInfo, GetIconInfo, HICON, ICONINFO,
@@ -31,10 +31,7 @@ pub(crate) fn draw_onto(frames: &mut [Frame]) {
 }
 
 fn draw(frames: &mut [Frame]) -> Result<()> {
-    let mut info = CURSORINFO {
-        cbSize: size_of::<CURSORINFO>() as u32,
-        ..Default::default()
-    };
+    let mut info = CURSORINFO { cbSize: size_of::<CURSORINFO>() as u32, ..Default::default() };
     // SAFETY: `info` is sized as GetCursorInfo requires.
     unsafe { GetCursorInfo(&raw mut info) }?;
     if info.flags.0 & CURSOR_SHOWING.0 == 0 {
@@ -78,20 +75,10 @@ impl Drop for IconBitmaps {
 /// The cursor's pixel size. A colour cursor's size is its colour bitmap. A monochrome cursor has
 /// no colour bitmap, and its mask stacks the AND bitmap over the XOR bitmap, so half its height.
 fn cursor_size(info: &ICONINFO) -> Option<(i32, i32)> {
-    let (bitmap, stacked) = if info.hbmColor.is_invalid() {
-        (info.hbmMask, 2)
-    } else {
-        (info.hbmColor, 1)
-    };
+    let (bitmap, stacked) = if info.hbmColor.is_invalid() { (info.hbmMask, 2) } else { (info.hbmColor, 1) };
     let mut bm = BITMAP::default();
     // SAFETY: `bm` is a BITMAP, and the size passed is its size.
-    let copied = unsafe {
-        GetObjectW(
-            bitmap.into(),
-            size_of::<BITMAP>() as i32,
-            Some((&raw mut bm).cast()),
-        )
-    };
+    let copied = unsafe { GetObjectW(bitmap.into(), size_of::<BITMAP>() as i32, Some((&raw mut bm).cast())) };
     if copied == 0 {
         return None;
     }
@@ -106,22 +93,8 @@ fn draw_on_frame(frame: &mut Frame, icon: HICON, cursor: PhysRect) -> Result<()>
     }
     let (width, height) = (frame.image.width(), frame.image.height());
     let origin = frame.monitor.rect;
-    let local = PhysRect {
-        x: cursor.x.saturating_sub(origin.x),
-        y: cursor.y.saturating_sub(origin.y),
-        ..cursor
-    };
-    if overlap(
-        local,
-        PhysRect {
-            x: 0,
-            y: 0,
-            width,
-            height,
-        },
-    )
-    .is_none()
-    {
+    let local = PhysRect { x: cursor.x.saturating_sub(origin.x), y: cursor.y.saturating_sub(origin.y), ..cursor };
+    if overlap(local, PhysRect { x: 0, y: 0, width, height }).is_none() {
         return Ok(());
     }
     let mut patch = extract(frame.image.pixels(), width, height, local);

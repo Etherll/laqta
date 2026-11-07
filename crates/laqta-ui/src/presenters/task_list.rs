@@ -41,7 +41,9 @@ impl TaskList {
     }
 
     pub fn is_running(&self) -> bool {
-        self.rows.iter().any(|r| matches!(r.status, TaskStatus::InQueue | TaskStatus::Preparing | TaskStatus::Working | TaskStatus::Stopping))
+        self.rows
+            .iter()
+            .any(|r| matches!(r.status, TaskStatus::InQueue | TaskStatus::Preparing | TaskStatus::Working | TaskStatus::Stopping))
     }
 
     fn row(&mut self, id: TaskId) -> &mut TaskRow {
@@ -50,7 +52,14 @@ impl TaskList {
             None => {
                 self.rows.insert(
                     0,
-                    TaskRow { id, status: TaskStatus::InQueue, title: format!("Task {}", id.0), detail: String::new(), path: None, error: None },
+                    TaskRow {
+                        id,
+                        status: TaskStatus::InQueue,
+                        title: format!("Task {}", id.0),
+                        detail: String::new(),
+                        path: None,
+                        error: None,
+                    },
                 );
                 self.rows.truncate(MAX_ROWS);
                 0
@@ -64,10 +73,9 @@ impl TaskList {
         match event {
             TaskEvent::StatusChanged { status, .. } => {
                 row.status = *status;
-                if row.detail.is_empty() || matches!(status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Stopped) {
-                    if row.error.is_none() || *status != TaskStatus::Failed {
-                        row.detail = status_label(*status).to_string();
-                    }
+                let settled = matches!(status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Stopped);
+                if (row.detail.is_empty() || settled) && (row.error.is_none() || *status != TaskStatus::Failed) {
+                    row.detail = status_label(*status).to_string();
                 }
             }
             TaskEvent::Saved { path, .. } => {

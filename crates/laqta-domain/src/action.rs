@@ -407,12 +407,7 @@ mod tests {
             ActionCategory::Other,
         ];
         for category in order {
-            assert!(
-                Action::ALL
-                    .iter()
-                    .any(|action| action.category() == category),
-                "{category:?} has no actions"
-            );
+            assert!(Action::ALL.iter().any(|action| action.category() == category), "{category:?} has no actions");
         }
         let mut runs: Vec<ActionCategory> = Vec::new();
         for action in Action::ALL {

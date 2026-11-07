@@ -45,9 +45,8 @@ struct Sample {
 #[cfg(target_os = "linux")]
 fn sample(pid: u32) -> Option<Sample> {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    let field = |text: &str, key: &str| -> Option<u64> {
-        text.lines().find(|l| l.starts_with(key))?.split_whitespace().nth(1)?.parse().ok()
-    };
+    let field =
+        |text: &str, key: &str| -> Option<u64> { text.lines().find(|l| l.starts_with(key))?.split_whitespace().nth(1)?.parse().ok() };
     let rss_kb = field(&status, "VmRSS:")?;
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let rest = stat.rsplit_once(')')?.1;

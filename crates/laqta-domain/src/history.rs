@@ -5,9 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-const IMAGE_EXTENSIONS: [&str; 10] = [
-    "png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp", "avif", "jxl",
-];
+const IMAGE_EXTENSIONS: [&str; 10] = ["png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp", "avif", "jxl"];
 const TEXT_EXTENSIONS: [&str; 3] = ["txt", "md", "log"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -87,15 +85,9 @@ pub fn kind_for_path(path: &Path) -> HistoryKind {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
         return HistoryKind::File;
     };
-    if IMAGE_EXTENSIONS
-        .iter()
-        .any(|known| ext.eq_ignore_ascii_case(known))
-    {
+    if IMAGE_EXTENSIONS.iter().any(|known| ext.eq_ignore_ascii_case(known)) {
         HistoryKind::Image
-    } else if TEXT_EXTENSIONS
-        .iter()
-        .any(|known| ext.eq_ignore_ascii_case(known))
-    {
+    } else if TEXT_EXTENSIONS.iter().any(|known| ext.eq_ignore_ascii_case(known)) {
         HistoryKind::Text
     } else {
         HistoryKind::File
@@ -107,19 +99,13 @@ mod civil_datetime {
     use serde::de::Error as _;
     use serde::{Deserialize, Deserializer, Serializer};
 
-    pub fn serialize<S: Serializer>(
-        value: &jiff::civil::DateTime,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(value: &jiff::civil::DateTime, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(value)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<jiff::civil::DateTime, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<jiff::civil::DateTime, D::Error> {
         let text = String::deserialize(deserializer)?;
-        text.parse::<jiff::civil::DateTime>()
-            .map_err(D::Error::custom)
+        text.parse::<jiff::civil::DateTime>().map_err(D::Error::custom)
     }
 }
 
@@ -127,25 +113,15 @@ mod optional_civil_datetime {
     use serde::de::Error as _;
     use serde::{Deserialize, Deserializer, Serializer};
 
-    pub fn serialize<S: Serializer>(
-        value: &Option<jiff::civil::DateTime>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(value: &Option<jiff::civil::DateTime>, serializer: S) -> Result<S::Ok, S::Error> {
         match value {
             Some(value) => serializer.collect_str(value),
             None => serializer.serialize_none(),
         }
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<jiff::civil::DateTime>, D::Error> {
-        Option::<String>::deserialize(deserializer)?
-            .map(|text| {
-                text.parse::<jiff::civil::DateTime>()
-                    .map_err(D::Error::custom)
-            })
-            .transpose()
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<jiff::civil::DateTime>, D::Error> {
+        Option::<String>::deserialize(deserializer)?.map(|text| text.parse::<jiff::civil::DateTime>().map_err(D::Error::custom)).transpose()
     }
 }
 

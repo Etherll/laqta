@@ -43,7 +43,12 @@ pub(crate) fn capture_frames(show_cursor: bool) -> Result<Vec<Frame>, PortError>
             .monitors
             .iter()
             .map(|m| {
-                let name = conn.get_atom_name(m.name).ok().and_then(|c| c.reply().ok()).map(|r| String::from_utf8_lossy(&r.name).into_owned()).unwrap_or_default();
+                let name = conn
+                    .get_atom_name(m.name)
+                    .ok()
+                    .and_then(|c| c.reply().ok())
+                    .map(|r| String::from_utf8_lossy(&r.name).into_owned())
+                    .unwrap_or_default();
                 Monitor {
                     id: MonitorId(if name.is_empty() { format!("{}", m.name) } else { name.clone() }),
                     name,
@@ -132,7 +137,16 @@ fn fetch_cursor(conn: &RustConnection) -> Result<GetCursorImageReply, ReplyError
 /// top-left corner in frame pixels, and parts outside the frame are clipped. The frame's alpha is
 /// left alone (captured frames are opaque).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn blend_cursor(frame_pixels_bgra: &mut [u8], frame_w: u32, frame_h: u32, cursor_argb: &[u32], cw: u32, ch: u32, dx: i32, dy: i32) {
+pub(crate) fn blend_cursor(
+    frame_pixels_bgra: &mut [u8],
+    frame_w: u32,
+    frame_h: u32,
+    cursor_argb: &[u32],
+    cw: u32,
+    ch: u32,
+    dx: i32,
+    dy: i32,
+) {
     let (fw, fh) = (i64::from(frame_w), i64::from(frame_h));
     let (cols, rows) = (cw as usize, ch as usize);
     if cursor_argb.len() != cols * rows || frame_pixels_bgra.len() != (fw * fh * 4) as usize {

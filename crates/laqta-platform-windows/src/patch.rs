@@ -11,30 +11,16 @@ pub(crate) fn overlap(a: PhysRect, b: PhysRect) -> Option<PhysRect> {
     let y0 = a.y.max(b.y);
     let x1 = a.right().min(b.right());
     let y1 = a.bottom().min(b.bottom());
-    let width = u32::try_from(i64::from(x1) - i64::from(x0))
-        .ok()
-        .filter(|&w| w > 0)?;
-    let height = u32::try_from(i64::from(y1) - i64::from(y0))
-        .ok()
-        .filter(|&h| h > 0)?;
-    Some(PhysRect {
-        x: x0,
-        y: y0,
-        width,
-        height,
-    })
+    let width = u32::try_from(i64::from(x1) - i64::from(x0)).ok().filter(|&w| w > 0)?;
+    let height = u32::try_from(i64::from(y1) - i64::from(y0)).ok().filter(|&h| h > 0)?;
+    Some(PhysRect { x: x0, y: y0, width, height })
 }
 
 /// Copies the pixels of `rect` out of `src` (a `src_width` x `src_height` frame). Pixels of `rect`
 /// outside the frame come back as zeros.
 pub(crate) fn extract(src: &[u8], src_width: u32, src_height: u32, rect: PhysRect) -> Vec<u8> {
     let mut out = vec![0; rect.width as usize * rect.height as usize * BYTES_PER_PIXEL];
-    let frame = PhysRect {
-        x: 0,
-        y: 0,
-        width: src_width,
-        height: src_height,
-    };
+    let frame = PhysRect { x: 0, y: 0, width: src_width, height: src_height };
     let Some(hit) = overlap(rect, frame) else {
         return out;
     };
@@ -51,19 +37,8 @@ pub(crate) fn extract(src: &[u8], src_width: u32, src_height: u32, rect: PhysRec
 
 /// Writes `patch` (the pixels of `rect`, as `extract` returns them) back into `dst`, clipped to the
 /// frame. Only the colour bytes are written; each destination pixel keeps its alpha.
-pub(crate) fn write_back(
-    dst: &mut [u8],
-    dst_width: u32,
-    dst_height: u32,
-    rect: PhysRect,
-    patch: &[u8],
-) {
-    let frame = PhysRect {
-        x: 0,
-        y: 0,
-        width: dst_width,
-        height: dst_height,
-    };
+pub(crate) fn write_back(dst: &mut [u8], dst_width: u32, dst_height: u32, rect: PhysRect, patch: &[u8]) {
+    let frame = PhysRect { x: 0, y: 0, width: dst_width, height: dst_height };
     let Some(hit) = overlap(rect, frame) else {
         return;
     };
@@ -83,12 +58,7 @@ mod tests {
     use super::*;
 
     fn rect(x: i32, y: i32, width: u32, height: u32) -> PhysRect {
-        PhysRect {
-            x,
-            y,
-            width,
-            height,
-        }
+        PhysRect { x, y, width, height }
     }
 
     /// A `width` x `height` frame whose pixel (x, y) has blue = x and green = y, red = 0, alpha 255.
@@ -107,11 +77,7 @@ mod tests {
         let frame = rect(0, 0, 4, 4);
         assert_eq!(overlap(rect(-2, 3, 4, 4), frame), Some(rect(0, 3, 2, 1)));
         assert_eq!(overlap(rect(1, 1, 2, 2), frame), Some(rect(1, 1, 2, 2)));
-        assert_eq!(
-            overlap(rect(4, 0, 2, 2), frame),
-            None,
-            "touching edges do not overlap"
-        );
+        assert_eq!(overlap(rect(4, 0, 2, 2), frame), None, "touching edges do not overlap");
         assert_eq!(overlap(rect(-10, -10, 3, 3), frame), None);
     }
 
@@ -157,11 +123,7 @@ mod tests {
             [dst[i], dst[i + 1], dst[i + 2], dst[i + 3]]
         };
         assert_eq!(pixel(2, 2), [50, 60, 70, 255]);
-        assert_eq!(
-            pixel(1, 1),
-            [1, 1, 0, 255],
-            "pixels outside the patch are untouched"
-        );
+        assert_eq!(pixel(1, 1), [1, 1, 0, 255], "pixels outside the patch are untouched");
         assert_eq!(pixel(2, 1), [2, 1, 0, 255]);
     }
 

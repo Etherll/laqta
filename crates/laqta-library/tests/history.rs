@@ -37,49 +37,29 @@ fn seeded() -> (History, Vec<i64>) {
     let db = History::open_in_memory().unwrap();
     let mut ids = Vec::new();
 
-    let mut a = new_item(
-        date(2026, 11, 1).at(9, 0, 0, 0),
-        HistoryKind::Image,
-        "Laqta_2026-11-01_09-00-00.png",
-    );
+    let mut a = new_item(date(2026, 11, 1).at(9, 0, 0, 0), HistoryKind::Image, "Laqta_2026-11-01_09-00-00.png");
     a.size_bytes = Some(1000);
     a.tags = vec!["work".into()];
     ids.push(db.add(&a).unwrap());
 
-    let mut b = new_item(
-        date(2026, 11, 3).at(10, 0, 0, 0),
-        HistoryKind::Image,
-        "holiday-beach.png",
-    );
+    let mut b = new_item(date(2026, 11, 3).at(10, 0, 0, 0), HistoryKind::Image, "holiday-beach.png");
     b.url = Some("https://imgur.example/abc".into());
     b.host = Some("imgur.example".into());
     b.size_bytes = Some(2000);
     b.tags = vec!["fun".into()];
     ids.push(db.add(&b).unwrap());
 
-    let mut c = new_item(
-        date(2026, 11, 5).at(11, 0, 0, 0),
-        HistoryKind::Text,
-        "notes-2026.txt",
-    );
+    let mut c = new_item(date(2026, 11, 5).at(11, 0, 0, 0), HistoryKind::Text, "notes-2026.txt");
     c.size_bytes = Some(300);
     c.tags = vec!["work".into()];
     ids.push(db.add(&c).unwrap());
 
-    let mut d = new_item(
-        date(2026, 11, 7).at(14, 3, 22, 0),
-        HistoryKind::Url,
-        "https://short.example/q",
-    );
+    let mut d = new_item(date(2026, 11, 7).at(14, 3, 22, 0), HistoryKind::Url, "https://short.example/q");
     d.url = Some("https://short.example/q".into());
     d.host = Some("short.example".into());
     ids.push(db.add(&d).unwrap());
 
-    let mut e = new_item(
-        date(2026, 11, 7).at(14, 3, 22, 0),
-        HistoryKind::Image,
-        "Laqta_same-second.png",
-    );
+    let mut e = new_item(date(2026, 11, 7).at(14, 3, 22, 0), HistoryKind::Image, "Laqta_same-second.png");
     e.size_bytes = Some(500);
     ids.push(db.add(&e).unwrap());
 
@@ -133,71 +113,31 @@ fn add_then_get_returns_the_same_entry() {
 #[test]
 fn times_are_stored_to_the_second() {
     let db = History::open_in_memory().unwrap();
-    let id = db
-        .add(&new_item(
-            date(2026, 11, 7).at(14, 3, 22, 750_000_000),
-            HistoryKind::File,
-            "a.bin",
-        ))
-        .unwrap();
-    assert_eq!(
-        db.get(id).unwrap().unwrap().time,
-        date(2026, 11, 7).at(14, 3, 22, 0)
-    );
+    let id = db.add(&new_item(date(2026, 11, 7).at(14, 3, 22, 750_000_000), HistoryKind::File, "a.bin")).unwrap();
+    assert_eq!(db.get(id).unwrap().unwrap().time, date(2026, 11, 7).at(14, 3, 22, 0));
 }
 
 #[test]
 fn text_matches_file_name_prefix_url_and_host() {
     let (db, ids) = seeded();
-    let text = |text: &str| HistoryQuery {
-        text: Some(text.into()),
-        ..Default::default()
-    };
+    let text = |text: &str| HistoryQuery { text: Some(text.into()), ..Default::default() };
 
-    assert_eq!(
-        names(&db.query(&text("holiday")).unwrap()),
-        ["holiday-beach.png"]
-    );
-    assert_eq!(
-        names(&db.query(&text("hol")).unwrap()),
-        ["holiday-beach.png"]
-    );
-    assert_eq!(
-        names(&db.query(&text("imgur")).unwrap()),
-        ["holiday-beach.png"]
-    );
-    assert_eq!(
-        names(&db.query(&text("short.example")).unwrap()),
-        ["https://short.example/q"]
-    );
+    assert_eq!(names(&db.query(&text("holiday")).unwrap()), ["holiday-beach.png"]);
+    assert_eq!(names(&db.query(&text("hol")).unwrap()), ["holiday-beach.png"]);
+    assert_eq!(names(&db.query(&text("imgur")).unwrap()), ["holiday-beach.png"]);
+    assert_eq!(names(&db.query(&text("short.example")).unwrap()), ["https://short.example/q"]);
     // Every word must match: this one is in the file name only.
-    assert_eq!(
-        names(&db.query(&text("laqta same")).unwrap()),
-        ["Laqta_same-second.png"]
-    );
+    assert_eq!(names(&db.query(&text("laqta same")).unwrap()), ["Laqta_same-second.png"]);
     assert!(db.query(&text("laqta holiday")).unwrap().is_empty());
-    assert_eq!(
-        db.query(&text("laqta"))
-            .unwrap()
-            .iter()
-            .map(|i| i.id)
-            .collect::<Vec<_>>(),
-        [ids[4], ids[0]]
-    );
+    assert_eq!(db.query(&text("laqta")).unwrap().iter().map(|i| i.id).collect::<Vec<_>>(), [ids[4], ids[0]]);
 }
 
 #[test]
 fn text_with_fts_syntax_characters_does_not_error() {
     let (db, _) = seeded();
-    let text = |text: &str| HistoryQuery {
-        text: Some(text.into()),
-        ..Default::default()
-    };
+    let text = |text: &str| HistoryQuery { text: Some(text.into()), ..Default::default() };
 
-    assert_eq!(
-        names(&db.query(&text("laqta-2026")).unwrap()),
-        ["Laqta_2026-11-01_09-00-00.png"]
-    );
+    assert_eq!(names(&db.query(&text("laqta-2026")).unwrap()), ["Laqta_2026-11-01_09-00-00.png"]);
     assert!(db.query(&text("\"")).unwrap().is_empty());
     assert!(db.query(&text("NEAR OR (")).unwrap().is_empty());
     // Blank text is no filter at all.
@@ -207,25 +147,14 @@ fn text_with_fts_syntax_characters_does_not_error() {
 #[test]
 fn like_wildcards_in_text_are_literal() {
     let db = History::open_in_memory().unwrap();
-    let mut encoded = new_item(
-        date(2026, 11, 7).at(9, 0, 0, 0),
-        HistoryKind::Url,
-        "a-b.png",
-    );
+    let mut encoded = new_item(date(2026, 11, 7).at(9, 0, 0, 0), HistoryKind::Url, "a-b.png");
     encoded.url = Some("https://x.example/a%20b".into());
     db.add(&encoded).unwrap();
-    let mut other = new_item(
-        date(2026, 11, 7).at(9, 1, 0, 0),
-        HistoryKind::Url,
-        "other.png",
-    );
+    let mut other = new_item(date(2026, 11, 7).at(9, 1, 0, 0), HistoryKind::Url, "other.png");
     other.url = Some("https://x.example/a20b".into());
     db.add(&other).unwrap();
 
-    let query = HistoryQuery {
-        text: Some("%20".into()),
-        ..Default::default()
-    };
+    let query = HistoryQuery { text: Some("%20".into()), ..Default::default() };
     assert_eq!(names(&db.query(&query).unwrap()), ["a-b.png"]);
 }
 
@@ -233,40 +162,21 @@ fn like_wildcards_in_text_are_literal() {
 fn filters_by_kind_tag_and_date_range() {
     let (db, ids) = seeded();
 
-    let images = HistoryQuery {
-        kind: Some(HistoryKind::Image),
-        ..Default::default()
-    };
+    let images = HistoryQuery { kind: Some(HistoryKind::Image), ..Default::default() };
     let image_ids: Vec<i64> = db.query(&images).unwrap().iter().map(|i| i.id).collect();
     assert_eq!(image_ids, [ids[4], ids[1], ids[0]]);
 
-    let work = HistoryQuery {
-        tag: Some("work".into()),
-        ..Default::default()
-    };
+    let work = HistoryQuery { tag: Some("work".into()), ..Default::default() };
     let work_ids: Vec<i64> = db.query(&work).unwrap().iter().map(|i| i.id).collect();
     assert_eq!(work_ids, [ids[2], ids[0]]);
 
     // Both bounds are inclusive.
-    let range = HistoryQuery {
-        from: Some(date(2026, 11, 3).at(10, 0, 0, 0)),
-        to: Some(date(2026, 11, 5).at(11, 0, 0, 0)),
-        ..Default::default()
-    };
-    assert_eq!(
-        names(&db.query(&range).unwrap()),
-        ["notes-2026.txt", "holiday-beach.png"]
-    );
+    let range =
+        HistoryQuery { from: Some(date(2026, 11, 3).at(10, 0, 0, 0)), to: Some(date(2026, 11, 5).at(11, 0, 0, 0)), ..Default::default() };
+    assert_eq!(names(&db.query(&range).unwrap()), ["notes-2026.txt", "holiday-beach.png"]);
 
-    let combined = HistoryQuery {
-        kind: Some(HistoryKind::Image),
-        tag: Some("work".into()),
-        ..Default::default()
-    };
-    assert_eq!(
-        names(&db.query(&combined).unwrap()),
-        ["Laqta_2026-11-01_09-00-00.png"]
-    );
+    let combined = HistoryQuery { kind: Some(HistoryKind::Image), tag: Some("work".into()), ..Default::default() };
+    assert_eq!(names(&db.query(&combined).unwrap()), ["Laqta_2026-11-01_09-00-00.png"]);
 }
 
 #[test]
@@ -278,19 +188,11 @@ fn query_is_newest_first_and_pages() {
     // Entries 4 and 5 share a time, so the later insert comes first.
     assert_eq!(all_ids, [ids[4], ids[3], ids[2], ids[1], ids[0]]);
 
-    let page = HistoryQuery {
-        offset: 1,
-        limit: 2,
-        ..Default::default()
-    };
+    let page = HistoryQuery { offset: 1, limit: 2, ..Default::default() };
     let page_ids: Vec<i64> = db.query(&page).unwrap().iter().map(|i| i.id).collect();
     assert_eq!(page_ids, [ids[3], ids[2]]);
 
-    let past_end = HistoryQuery {
-        offset: 10,
-        limit: 2,
-        ..Default::default()
-    };
+    let past_end = HistoryQuery { offset: 10, limit: 2, ..Default::default() };
     assert!(db.query(&past_end).unwrap().is_empty());
 }
 
@@ -302,12 +204,7 @@ fn stats_count_entries_kinds_and_bytes() {
         stats,
         HistoryStats {
             total: 5,
-            by_kind: vec![
-                (HistoryKind::Image, 3),
-                (HistoryKind::Text, 1),
-                (HistoryKind::File, 0),
-                (HistoryKind::Url, 1),
-            ],
+            by_kind: vec![(HistoryKind::Image, 3), (HistoryKind::Text, 1), (HistoryKind::File, 0), (HistoryKind::Url, 1),],
             total_bytes: 3800,
         }
     );
@@ -330,19 +227,11 @@ fn trim_keeps_the_newest_and_reports_the_count() {
     assert_eq!(db.trim(10).unwrap(), 0);
     assert_eq!(db.trim(3).unwrap(), 2);
 
-    let kept: Vec<i64> = db
-        .query(&HistoryQuery::default())
-        .unwrap()
-        .iter()
-        .map(|i| i.id)
-        .collect();
+    let kept: Vec<i64> = db.query(&HistoryQuery::default()).unwrap().iter().map(|i| i.id).collect();
     assert_eq!(kept, [ids[4], ids[3], ids[2]]);
     assert!(db.get(ids[0]).unwrap().is_none());
     // The tag query no longer sees the trimmed entries.
-    let work = HistoryQuery {
-        tag: Some("work".into()),
-        ..Default::default()
-    };
+    let work = HistoryQuery { tag: Some("work".into()), ..Default::default() };
     assert_eq!(names(&db.query(&work).unwrap()), ["notes-2026.txt"]);
 }
 
@@ -351,14 +240,8 @@ fn delete_removes_the_entry_and_its_tags() {
     let (db, ids) = seeded();
     db.delete(ids[2]).unwrap();
     assert!(db.get(ids[2]).unwrap().is_none());
-    let work = HistoryQuery {
-        tag: Some("work".into()),
-        ..Default::default()
-    };
-    assert_eq!(
-        names(&db.query(&work).unwrap()),
-        ["Laqta_2026-11-01_09-00-00.png"]
-    );
+    let work = HistoryQuery { tag: Some("work".into()), ..Default::default() };
+    assert_eq!(names(&db.query(&work).unwrap()), ["Laqta_2026-11-01_09-00-00.png"]);
 
     db.delete(ids[2] + 100).unwrap();
     assert_eq!(db.stats().unwrap().total, 4);
@@ -367,8 +250,7 @@ fn delete_removes_the_entry_and_its_tags() {
 #[test]
 fn set_tags_replaces_them_in_order() {
     let (db, ids) = seeded();
-    db.set_tags(ids[1], &["b".into(), "a".into(), "b".into()])
-        .unwrap();
+    db.set_tags(ids[1], &["b".into(), "a".into(), "b".into()]).unwrap();
     assert_eq!(db.get(ids[1]).unwrap().unwrap().tags, ["b", "a", "b"]);
 
     db.set_tags(ids[1], &[]).unwrap();
@@ -376,24 +258,16 @@ fn set_tags_replaces_them_in_order() {
 
     // An unknown id is not an error and adds nothing.
     db.set_tags(ids[4] + 100, &["ghost".into()]).unwrap();
-    let ghost = HistoryQuery {
-        tag: Some("ghost".into()),
-        ..Default::default()
-    };
+    let ghost = HistoryQuery { tag: Some("ghost".into()), ..Default::default() };
     assert!(db.query(&ghost).unwrap().is_empty());
 }
 
 #[test]
 fn set_thumbnail_stores_the_path() {
     let (db, ids) = seeded();
-    db.set_thumbnail(ids[3], Path::new("/data/thumbs/4.png"))
-        .unwrap();
-    assert_eq!(
-        db.get(ids[3]).unwrap().unwrap().thumbnail_path,
-        Some(PathBuf::from("/data/thumbs/4.png"))
-    );
-    db.set_thumbnail(ids[4] + 100, Path::new("/data/thumbs/x.png"))
-        .unwrap();
+    db.set_thumbnail(ids[3], Path::new("/data/thumbs/4.png")).unwrap();
+    assert_eq!(db.get(ids[3]).unwrap().unwrap().thumbnail_path, Some(PathBuf::from("/data/thumbs/4.png")));
+    db.set_thumbnail(ids[4] + 100, Path::new("/data/thumbs/x.png")).unwrap();
 }
 
 #[test]
@@ -402,12 +276,7 @@ fn data_survives_reopening_the_file() {
     let path = dir.path().join("nested/history.db");
     let id = {
         let db = History::open(&path).unwrap();
-        db.add(&new_item(
-            date(2026, 11, 7).at(14, 3, 22, 0),
-            HistoryKind::Text,
-            "kept.txt",
-        ))
-        .unwrap()
+        db.add(&new_item(date(2026, 11, 7).at(14, 3, 22, 0), HistoryKind::Text, "kept.txt")).unwrap()
     };
     let db = History::open(&path).unwrap();
     assert_eq!(db.get(id).unwrap().unwrap().file_name, "kept.txt");
@@ -455,12 +324,7 @@ fn domain_types_serialize_times_as_iso_text() {
     let back: HistoryItem = serde_json::from_value(json).unwrap();
     assert_eq!(back, item);
 
-    let query = HistoryQuery {
-        from: Some(date(2026, 11, 1).at(0, 0, 0, 0)),
-        to: None,
-        limit: 20,
-        ..Default::default()
-    };
+    let query = HistoryQuery { from: Some(date(2026, 11, 1).at(0, 0, 0, 0)), to: None, limit: 20, ..Default::default() };
     let json = serde_json::to_value(&query).unwrap();
     assert_eq!(json["from"], "2026-11-01T00:00:00");
     assert!(json["to"].is_null());
@@ -468,7 +332,6 @@ fn domain_types_serialize_times_as_iso_text() {
     assert_eq!(back, query);
 
     // A query written without the optional bounds still reads.
-    let bare: HistoryQuery =
-        serde_json::from_value(serde_json::json!({ "offset": 0, "limit": 0 })).unwrap();
+    let bare: HistoryQuery = serde_json::from_value(serde_json::json!({ "offset": 0, "limit": 0 })).unwrap();
     assert_eq!(bare, HistoryQuery::default());
 }

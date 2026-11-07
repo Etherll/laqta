@@ -73,11 +73,7 @@ impl Settings {
         if self.disable_hotkeys {
             return Vec::new();
         }
-        self.workflows
-            .iter()
-            .filter(|w| w.enabled)
-            .filter_map(|w| w.hotkey.map(|chord| (chord, w.action)))
-            .collect()
+        self.workflows.iter().filter(|w| w.enabled).filter_map(|w| w.hotkey.map(|chord| (chord, w.action))).collect()
     }
 
     pub fn workflow(&self, id: WorkflowId) -> Option<&Workflow> {
@@ -92,10 +88,7 @@ impl Settings {
     /// Defaults merged with the workflow's patch (defaults alone if `workflow` is `None` or unknown).
     /// `screenshots_dir` is always `Some` in the result.
     pub fn task_settings(&self, workflow: Option<WorkflowId>) -> TaskSettings {
-        let patch = workflow
-            .and_then(|id| self.workflow(id))
-            .map(|w| w.patch.clone())
-            .unwrap_or_default();
+        let patch = workflow.and_then(|id| self.workflow(id)).map(|w| w.patch.clone()).unwrap_or_default();
         let mut ts = TaskSettings::effective(&self.defaults, &patch);
         ts.screenshots_dir = Some(self.screenshots_dir_for(&ts));
         ts
@@ -202,9 +195,7 @@ mod tests {
 
     #[test]
     fn empty_object_loads_defaults() {
-        let empty = serde::de::value::MapDeserializer::<_, serde::de::value::Error>::new(
-            std::iter::empty::<(&str, &str)>(),
-        );
+        let empty = serde::de::value::MapDeserializer::<_, serde::de::value::Error>::new(std::iter::empty::<(&str, &str)>());
         let loaded = Settings::deserialize(empty).expect("an empty object is valid settings");
         assert_eq!(loaded, Settings::default());
     }

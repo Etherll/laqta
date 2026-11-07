@@ -283,11 +283,8 @@ mod tests {
     fn effective_patch_wins_per_section() {
         let defaults = TaskSettings::default();
         let image = ImageSettings { format: ImageFormat::Jpeg, jpeg_quality: 70, ..ImageSettings::default() };
-        let patch = TaskSettingsPatch {
-            image: Some(image.clone()),
-            after_upload: Some(AfterUploadTasks::empty()),
-            ..TaskSettingsPatch::default()
-        };
+        let patch =
+            TaskSettingsPatch { image: Some(image.clone()), after_upload: Some(AfterUploadTasks::empty()), ..TaskSettingsPatch::default() };
 
         let eff = TaskSettings::effective(&defaults, &patch);
 

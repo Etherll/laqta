@@ -15,10 +15,7 @@ struct Prefs {
 }
 
 fn prefs(name: &str, count: u32) -> Prefs {
-    Prefs {
-        name: name.to_owned(),
-        count,
-    }
+    Prefs { name: name.to_owned(), count }
 }
 
 /// Times on 2026-11-07 at the given hour.
@@ -45,10 +42,7 @@ fn backup_names(dir: &tempfile::TempDir) -> Vec<String> {
 }
 
 fn v1_to_v2(mut value: Value) -> Value {
-    if let Some(label) = value
-        .as_object_mut()
-        .and_then(|object| object.remove("label"))
-    {
+    if let Some(label) = value.as_object_mut().and_then(|object| object.remove("label")) {
         value["name"] = label;
     }
     value
@@ -111,23 +105,10 @@ fn file_without_version_counts_as_version_one() {
 fn newer_version_is_an_error_and_is_left_alone() {
     let dir = tempfile::tempdir().unwrap();
     let store = store_in(&dir);
-    fs::write(
-        store.path(),
-        r#"{"version": 9, "name": "future", "count": 1}"#,
-    )
-    .unwrap();
+    fs::write(store.path(), r#"{"version": 9, "name": "future", "count": 1}"#).unwrap();
 
     let error = store.load::<Prefs>(3, &MIGRATIONS).unwrap_err();
-    assert!(
-        matches!(
-            error,
-            LibraryError::TooNew {
-                found: 9,
-                supported: 3
-            }
-        ),
-        "{error}"
-    );
+    assert!(matches!(error, LibraryError::TooNew { found: 9, supported: 3 }), "{error}");
     assert!(store.path().exists());
     assert!(!dir.path().join("settings.json.corrupt-1").exists());
 }
@@ -155,10 +136,7 @@ fn corrupt_file_with_no_usable_backup_becomes_default() {
     let loaded: Prefs = store.load(1, &[]).unwrap();
     assert_eq!(loaded, Prefs::default());
     assert!(!store.path().exists());
-    assert_eq!(
-        fs::read_to_string(dir.path().join("settings.json.corrupt-1")).unwrap(),
-        "not json at all"
-    );
+    assert_eq!(fs::read_to_string(dir.path().join("settings.json.corrupt-1")).unwrap(), "not json at all");
 
     // The next free number is used when the same thing happens again.
     fs::write(store.path(), "broken again").unwrap();
@@ -183,9 +161,7 @@ fn backups_rotate_to_the_newest_five() {
     let store = store_in(&dir);
     // Saves at hours 0 to 6. Hour 0 has no file to back up, so six backups are made.
     for hour in 0..7 {
-        store
-            .save(&prefs("rotating", hour as u32), 1, at(hour))
-            .unwrap();
+        store.save(&prefs("rotating", hour as u32), 1, at(hour)).unwrap();
     }
 
     assert_eq!(
@@ -210,28 +186,14 @@ fn weekly_backup_is_written_once_per_iso_week() {
     let weekly = dir.path().join("backups/weekly");
 
     // 2026-11-02 is a Monday and 2026-11-08 a Sunday, so both are in ISO week 45.
-    store
-        .save(&prefs("v0", 0), 1, date(2026, 11, 2).at(10, 0, 0, 0))
-        .unwrap();
-    store
-        .save(&prefs("v1", 1), 1, date(2026, 11, 2).at(11, 0, 0, 0))
-        .unwrap();
-    store
-        .save(&prefs("v2", 2), 1, date(2026, 11, 8).at(9, 0, 0, 0))
-        .unwrap();
+    store.save(&prefs("v0", 0), 1, date(2026, 11, 2).at(10, 0, 0, 0)).unwrap();
+    store.save(&prefs("v1", 1), 1, date(2026, 11, 2).at(11, 0, 0, 0)).unwrap();
+    store.save(&prefs("v2", 2), 1, date(2026, 11, 8).at(9, 0, 0, 0)).unwrap();
     assert_eq!(fs::read_dir(&weekly).unwrap().count(), 1);
-    assert_eq!(
-        read_json(&weekly.join("settings-2026-W45.json"))["count"],
-        0
-    );
+    assert_eq!(read_json(&weekly.join("settings-2026-W45.json"))["count"], 0);
 
-    store
-        .save(&prefs("v3", 3), 1, date(2026, 11, 9).at(9, 0, 0, 0))
-        .unwrap();
-    assert_eq!(
-        read_json(&weekly.join("settings-2026-W46.json"))["count"],
-        2
-    );
+    store.save(&prefs("v3", 3), 1, date(2026, 11, 9).at(9, 0, 0, 0)).unwrap();
+    assert_eq!(read_json(&weekly.join("settings-2026-W46.json"))["count"], 2);
     assert_eq!(fs::read_dir(&weekly).unwrap().count(), 2);
 }
 
@@ -240,22 +202,10 @@ fn weekly_name_uses_the_iso_week_year() {
     let dir = tempfile::tempdir().unwrap();
     let store = store_in(&dir);
     // 2027-01-01 is a Friday in ISO week 53 of 2026.
-    store
-        .save(&prefs("old", 1), 1, date(2026, 12, 31).at(9, 0, 0, 0))
-        .unwrap();
-    store
-        .save(&prefs("new", 2), 1, date(2027, 1, 1).at(9, 0, 0, 0))
-        .unwrap();
-    assert!(
-        dir.path()
-            .join("backups/weekly/settings-2026-W53.json")
-            .exists()
-    );
-    assert!(
-        !dir.path()
-            .join("backups/weekly/settings-2027-W01.json")
-            .exists()
-    );
+    store.save(&prefs("old", 1), 1, date(2026, 12, 31).at(9, 0, 0, 0)).unwrap();
+    store.save(&prefs("new", 2), 1, date(2027, 1, 1).at(9, 0, 0, 0)).unwrap();
+    assert!(dir.path().join("backups/weekly/settings-2026-W53.json").exists());
+    assert!(!dir.path().join("backups/weekly/settings-2027-W01.json").exists());
 }
 
 #[test]

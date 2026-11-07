@@ -104,10 +104,7 @@ pub fn action_name(action: Action) -> &'static str {
 
 /// The action with this name, ignoring ASCII case. Only the names `action_name` returns match.
 pub fn parse_action(name: &str) -> Option<Action> {
-    Action::ALL
-        .iter()
-        .copied()
-        .find(|&action| action_name(action).eq_ignore_ascii_case(name))
+    Action::ALL.iter().copied().find(|&action| action_name(action).eq_ignore_ascii_case(name))
 }
 
 /// Reads one line without its line break. `Ok(None)` means the stream ended. A line that is too
@@ -131,10 +128,7 @@ pub(crate) fn encode_request(action: Action) -> String {
 
 /// Parses a request line (without its line break). The error text is the reply's message.
 pub(crate) fn parse_request(line: &str) -> Result<Action, String> {
-    let name = line
-        .strip_prefix(REQUEST_PREFIX)
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| "malformed request".to_owned())?;
+    let name = line.strip_prefix(REQUEST_PREFIX).filter(|name| !name.is_empty()).ok_or_else(|| "malformed request".to_owned())?;
     parse_action(name).ok_or_else(|| format!("unknown action {name}"))
 }
 

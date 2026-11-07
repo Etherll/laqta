@@ -85,10 +85,8 @@ async fn listen(
     };
     // The portal is present: report success now; binding may show a dialog.
     let _ = ready.send(Ok(()));
-    let shortcuts: Vec<NewShortcut> = bindings
-        .iter()
-        .map(|(c, a)| NewShortcut::new(shortcut_id(*a), a.label()).preferred_trigger(trigger(*c).as_deref()))
-        .collect();
+    let shortcuts: Vec<NewShortcut> =
+        bindings.iter().map(|(c, a)| NewShortcut::new(shortcut_id(*a), a.label()).preferred_trigger(trigger(*c).as_deref())).collect();
     // Dropping the wait cancels the serving future, so a stop also interrupts a pending bind dialog.
     let stopped = blocking::unblock(move || stop.recv());
     future::or(serve(&portal, &session, &shortcuts, &bindings, &on_fire), async {

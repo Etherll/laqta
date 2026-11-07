@@ -14,8 +14,8 @@ use laqta_app::{App, Dispatched, Ports};
 use laqta_domain::workflow::{AfterCaptureTasks, FileExistsAction};
 use laqta_domain::{Action, Bitmap, Frame, ImageFormat, Monitor, MonitorId, PhysRect, PixelFormat, Settings};
 use laqta_ports::fakes::{
-    ClipboardBehaviour, CountingRng, FakeClipboard, FakeHoverSource, FakeNotifier, FakeOverlay, FakeScreen, FakeShell,
-    InlineSpawner, ManualClock,
+    ClipboardBehaviour, CountingRng, FakeClipboard, FakeHoverSource, FakeNotifier, FakeOverlay, FakeScreen, FakeShell, InlineSpawner,
+    ManualClock,
 };
 use laqta_ports::{AppError, BoxFuture, Spawner, TaskEvent, TaskId};
 use tempfile::TempDir;
@@ -63,6 +63,7 @@ fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Set
         clock: Arc::new(ManualClock::new(jiff::civil::date(2026, 11, 7).at(14, 3, 22, 0))),
         spawner,
         overlay: Arc::new(FakeOverlay::default()),
+        tools: Arc::new(laqta_ports::fakes::FakeToolHost::default()),
         hover: Arc::new(FakeHoverSource::new(Vec::new())),
         notifier: notifier.clone(),
         rng: Arc::new(CountingRng::default()),
@@ -160,11 +161,7 @@ fn sniffed(path: &Path) -> Option<ImageFormat> {
 fn has_part_file(dir: &Path) -> bool {
     std::fs::read_dir(dir).unwrap().any(|entry| {
         let path = entry.unwrap().path();
-        if path.is_dir() {
-            has_part_file(&path)
-        } else {
-            path.extension().is_some_and(|ext| ext == "part")
-        }
+        if path.is_dir() { has_part_file(&path) } else { path.extension().is_some_and(|ext| ext == "part") }
     })
 }
 

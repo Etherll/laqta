@@ -81,7 +81,13 @@ fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), PortError> {
 /// so physical rects are the logical rects times that factor. Without a layout, one frame.
 pub(crate) fn split(w: u32, h: u32, rgba: Vec<u8>, layout: &[OutputLayout]) -> Vec<Frame> {
     let whole = |rgba: Vec<u8>| Frame {
-        monitor: Monitor { id: MonitorId("portal".into()), name: "Screen".into(), rect: PhysRect { x: 0, y: 0, width: w, height: h }, scale: 1.0, primary: true },
+        monitor: Monitor {
+            id: MonitorId("portal".into()),
+            name: "Screen".into(),
+            rect: PhysRect { x: 0, y: 0, width: w, height: h },
+            scale: 1.0,
+            primary: true,
+        },
         image: Bitmap::new(w, h, PixelFormat::Rgba8, Arc::from(rgba)).unwrap_or_else(|_| unreachable!("decoder size")),
     };
     let Some(union) = layout.iter().map(|o| o.logical).reduce(PhysRect::union) else { return vec![whole(rgba)] };
@@ -124,12 +130,7 @@ mod tests {
     use super::*;
 
     fn out(name: &str, x: i32, width: u32, height: u32) -> OutputLayout {
-        OutputLayout {
-            name: name.into(),
-            description: name.to_lowercase(),
-            logical: PhysRect { x, y: 0, width, height },
-            scale: 1.0,
-        }
+        OutputLayout { name: name.into(), description: name.to_lowercase(), logical: PhysRect { x, y: 0, width, height }, scale: 1.0 }
     }
 
     #[test]

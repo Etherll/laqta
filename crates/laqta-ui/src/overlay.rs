@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Bounds, Context, Div, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage,
-    Styled as _, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, img, point, px, size,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage, Styled as _,
+    Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, img, point, px, size,
 };
 use laqta_domain::geometry::PhysRect;
 use laqta_domain::region::{Button, KeyMods, RegionInput, RegionKey};
@@ -97,7 +97,12 @@ pub(crate) fn show(frames: Vec<Frame>, view: RegionView, on_input: InputCallback
     state.overlay = OverlayWindows { model: Some(model), windows };
 }
 
-fn open_window(model: Entity<OverlayModel>, index: usize, bounds: Option<Bounds<Pixels>>, cx: &mut App) -> anyhow_like::Result<AnyWindowHandle> {
+fn open_window(
+    model: Entity<OverlayModel>,
+    index: usize,
+    bounds: Option<Bounds<Pixels>>,
+    cx: &mut App,
+) -> anyhow_like::Result<AnyWindowHandle> {
     let bounds = bounds.unwrap_or_else(|| {
         let r = model.read(cx).monitors[index].rect;
         Bounds { origin: point(px(r.x as f32), px(r.y as f32)), size: size(px(r.width as f32), px(r.height as f32)) }
@@ -105,7 +110,11 @@ fn open_window(model: Entity<OverlayModel>, index: usize, bounds: Option<Bounds<
     let kind = overlay_kind();
     let options = WindowOptions {
         titlebar: None,
-        window_bounds: Some(if matches!(kind, WindowKind::PopUp) { WindowBounds::Windowed(bounds) } else { WindowBounds::Fullscreen(bounds) }),
+        window_bounds: Some(if matches!(kind, WindowKind::PopUp) {
+            WindowBounds::Windowed(bounds)
+        } else {
+            WindowBounds::Fullscreen(bounds)
+        }),
         focus: true,
         show: true,
         kind,
@@ -297,10 +306,10 @@ impl Render for OverlayView {
             None => root = root.child(div().absolute().left_0().top_0().size_full().bg(dim)),
         }
 
-        if view.drawing.is_none() {
-            if let Some(t) = &view.hovered {
-                root = root.child(boxed(&local(t.rect)).border_2().border_color(color(HOVER, 1.0)).bg(color(HOVER, 0.12)));
-            }
+        if view.drawing.is_none()
+            && let Some(t) = &view.hovered
+        {
+            root = root.child(boxed(&local(t.rect)).border_2().border_color(color(HOVER, 1.0)).bg(color(HOVER, 0.12)));
         }
         for (i, r) in view.regions.iter().enumerate() {
             let active = Some(i) == view.active;

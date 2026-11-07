@@ -30,6 +30,7 @@ fn harness(screenshots_dir: &Path, screen: FakeScreen) -> Harness {
         clock: Arc::new(ManualClock::new(jiff::civil::date(2026, 11, 7).at(14, 3, 22, 0))),
         spawner: spawner.clone(),
         overlay: Arc::new(laqta_ports::fakes::FakeOverlay::default()),
+        tools: Arc::new(laqta_ports::fakes::FakeToolHost::default()),
         hover: Arc::new(laqta_ports::fakes::FakeHoverSource::new(Vec::new())),
         notifier: Arc::new(laqta_ports::fakes::FakeNotifier::default()),
         rng: Arc::new(laqta_ports::fakes::CountingRng::default()),
@@ -62,10 +63,7 @@ fn print_screen_submits_a_capture_and_reports_in_queue_at_once() {
     assert_eq!(block_on(h.app.dispatch(Action::PrintScreen, None)).unwrap(), Dispatched::Task(TaskId(1)));
     assert_eq!(*h.screen.calls.lock().unwrap(), 1);
     assert_eq!(h.spawner.spawned.lock().unwrap().len(), 1);
-    assert!(matches!(
-        events.try_recv(),
-        Ok(TaskEvent::StatusChanged { id: TaskId(1), status: TaskStatus::InQueue })
-    ));
+    assert!(matches!(events.try_recv(), Ok(TaskEvent::StatusChanged { id: TaskId(1), status: TaskStatus::InQueue })));
 }
 
 #[test]

@@ -19,12 +19,12 @@ mod hover;
 mod keys;
 #[cfg(any(windows, test))]
 mod patch;
-#[cfg(any(windows, test))]
-mod window_rules;
 #[cfg(windows)]
 mod shell;
 #[cfg(windows)]
 mod shell_thread;
+#[cfg(any(windows, test))]
+mod window_rules;
 
 #[cfg(windows)]
 pub use imp::*;
