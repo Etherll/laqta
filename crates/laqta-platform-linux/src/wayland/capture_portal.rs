@@ -5,7 +5,8 @@ use ashpd::desktop::screenshot::Screenshot;
 use laqta_domain::{Bitmap, Frame, Monitor, MonitorId, PhysRect, PixelFormat};
 use laqta_ports::PortError;
 
-use super::capture_wayshot::{self, OutputLayout};
+use super::capture_wayshot;
+use super::layout::{OutputLayout, to_physical};
 
 fn fail(e: impl std::fmt::Display) -> PortError {
     PortError::Failed(format!("screenshot portal: {e}"))
@@ -75,15 +76,16 @@ fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), PortError> {
     Ok((info.width, info.height, rgba))
 }
 
-/// Splits the composed image into one frame per output. The image covers the union of the logical
-/// rects at a uniform factor (image width / union width). Without a layout, one frame.
+/// Splits the composed image into one frame per output (D2). The image covers the union of the
+/// logical rects at one uniform factor (image width / union width), which is every output's scale,
+/// so physical rects are the logical rects times that factor. Without a layout, one frame.
 pub(crate) fn split(w: u32, h: u32, rgba: Vec<u8>, layout: &[OutputLayout]) -> Vec<Frame> {
     let whole = |rgba: Vec<u8>| Frame {
         monitor: Monitor { id: MonitorId("portal".into()), name: "Screen".into(), rect: PhysRect { x: 0, y: 0, width: w, height: h }, scale: 1.0, primary: true },
         image: Bitmap::new(w, h, PixelFormat::Rgba8, Arc::from(rgba)).unwrap_or_else(|_| unreachable!("decoder size")),
     };
     let Some(union) = layout.iter().map(|o| o.logical).reduce(PhysRect::union) else { return vec![whole(rgba)] };
-    if layout.len() == 1 || union.width == 0 {
+    if union.width == 0 {
         return vec![whole(rgba)];
     }
     let f = w as f64 / union.width as f64;
@@ -102,11 +104,12 @@ pub(crate) fn split(w: u32, h: u32, rgba: Vec<u8>, layout: &[OutputLayout]) -> V
             px.extend_from_slice(&rgba[s..s + (cw * 4) as usize]);
         }
         let Ok(image) = Bitmap::new(cw, ch, PixelFormat::Rgba8, Arc::from(px)) else { continue };
+        let at = to_physical(o.logical, f as f32);
         frames.push(Frame {
             monitor: Monitor {
                 id: MonitorId(o.name.clone()),
                 name: o.description.clone(),
-                rect: PhysRect { x: o.logical.x, y: o.logical.y, width: cw, height: ch },
+                rect: PhysRect { x: at.x, y: at.y, width: cw, height: ch },
                 scale: f as f32,
                 primary: i == 0,
             },
@@ -120,6 +123,15 @@ pub(crate) fn split(w: u32, h: u32, rgba: Vec<u8>, layout: &[OutputLayout]) -> V
 mod tests {
     use super::*;
 
+    fn out(name: &str, x: i32, width: u32, height: u32) -> OutputLayout {
+        OutputLayout {
+            name: name.into(),
+            description: name.to_lowercase(),
+            logical: PhysRect { x, y: 0, width, height },
+            scale: 1.0,
+        }
+    }
+
     #[test]
     fn uri_to_path() {
         assert_eq!(file_path("file:///tmp/a%20b.png"), Some(PathBuf::from("/tmp/a b.png")));
@@ -128,10 +140,7 @@ mod tests {
 
     #[test]
     fn split_two_outputs_at_scale_two() {
-        let layout = [
-            OutputLayout { name: "A".into(), description: "a".into(), logical: PhysRect { x: 0, y: 0, width: 2, height: 1 } },
-            OutputLayout { name: "B".into(), description: "b".into(), logical: PhysRect { x: 2, y: 0, width: 1, height: 1 } },
-        ];
+        let layout = [out("A", 0, 2, 1), out("B", 2, 1, 1)];
         let (w, h) = (6, 2);
         let rgba: Vec<u8> = (0..w * h).flat_map(|i| [i as u8, 0, 0, 255]).collect();
         let frames = split(w, h, rgba, &layout);
@@ -139,5 +148,18 @@ mod tests {
         assert_eq!((frames[0].image.width(), frames[0].image.height()), (4, 2));
         assert_eq!((frames[1].image.width(), frames[1].image.height()), (2, 2));
         assert_eq!(frames[1].image.pixels()[0], 4);
+        assert_eq!(frames[0].monitor.rect, PhysRect { x: 0, y: 0, width: 4, height: 2 });
+        assert_eq!(frames[1].monitor.rect, PhysRect { x: 4, y: 0, width: 2, height: 2 });
+        assert_eq!(frames[1].monitor.scale, 2.0);
+    }
+
+    #[test]
+    fn split_places_frames_from_the_logical_origin() {
+        // Union (-2, 0, 3, 1) at factor 6 / 3 = 2: A starts left of the origin.
+        let layout = [out("A", -2, 2, 1), out("B", 0, 1, 1)];
+        let frames = split(6, 2, vec![0; 6 * 2 * 4], &layout);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].monitor.rect, PhysRect { x: -4, y: 0, width: 4, height: 2 });
+        assert_eq!(frames[1].monitor.rect, PhysRect { x: 0, y: 0, width: 2, height: 2 });
     }
 }

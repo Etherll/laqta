@@ -1,5 +1,7 @@
 pub mod capture_portal;
 pub mod capture_wayshot;
+pub mod hover_sway;
+pub mod layout;
 pub mod shortcuts_portal;
 
 use laqta_domain::Frame;
@@ -22,4 +24,3 @@ impl ScreenSource for WaylandScreen {
         })
     }
 }
-pub mod hover_sway;
