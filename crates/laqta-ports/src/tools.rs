@@ -44,8 +44,8 @@ pub trait WindowOps: Send + Sync {
 /// Synthetic input for scrolling capture (M6 D4): Windows `SendInput`, X11 XTEST; Wayland returns
 /// `Unsupported` (no portal grants input injection without the RemoteDesktop portal).
 pub trait InputSynth: Send + Sync {
-    /// Scrolls the window under `at` (physical desktop pixels) down by `amount` steps.
-    fn scroll(&self, at: laqta_domain::geometry::PhysPoint, method: laqta_domain::capture::ScrollMethod, amount: u32) -> Result<(), PortError>;
+    /// Scrolls the window under the point (`x`, `y`) in physical desktop pixels down by `amount` steps.
+    fn scroll(&self, x: i32, y: i32, method: laqta_domain::capture::ScrollMethod, amount: u32) -> Result<(), PortError>;
 }
 
 /// Run at login (M6 D10): Windows `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, Linux
