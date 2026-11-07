@@ -570,10 +570,11 @@ mod tests {
 
     #[test]
     fn defaults_have_one_distinct_name_per_variant() {
+        // 27 from M3, plus the M7 batches; every default has its own name.
         let defaults = Filter::defaults();
-        assert_eq!(defaults.len(), 27);
+        assert!(defaults.len() >= 27);
         let names: HashSet<&str> = defaults.iter().map(Filter::name).collect();
-        assert_eq!(names.len(), 27);
+        assert_eq!(names.len(), defaults.len());
     }
 
     #[test]
