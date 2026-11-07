@@ -14,12 +14,17 @@ laqta-domain.workspace = true
 laqta-ports.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-rusqlite.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 jiff.workspace = true
 async-broadcast.workspace = true
 png.workspace = true
+
+[target.'cfg(not(windows))'.dependencies]
+rusqlite = { workspace = true, features = ["bundled"] }
+
+[target.'cfg(windows)'.dependencies]
+rusqlite.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

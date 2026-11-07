@@ -45,7 +45,7 @@ fast_image_resize = { version = "6.1.0", default-features = false, features = ["
 serde_json = "1.0.154"
 image = { version = "0.25", default-features = false }
 smallvec = "1"
-rusqlite = { version = "0.41.1", features = ["bundled"] }
+rusqlite = "0.41.1"  # bundled on Linux, vcpkg SQLite on Windows (ADR 026)
 fastrand = "2.5.0"
 swayipc = "4.0.0"
 
