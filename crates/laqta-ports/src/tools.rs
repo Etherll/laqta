@@ -41,6 +41,13 @@ pub trait WindowOps: Send + Sync {
     fn inspect(&self, window: &HoverTarget) -> Result<Vec<(String, String)>, PortError>;
 }
 
+/// Synthetic input for scrolling capture (M6 D4): Windows `SendInput`, X11 XTEST; Wayland returns
+/// `Unsupported` (no portal grants input injection without the RemoteDesktop portal).
+pub trait InputSynth: Send + Sync {
+    /// Scrolls the window under `at` (physical desktop pixels) down by `amount` steps.
+    fn scroll(&self, at: laqta_domain::geometry::PhysPoint, method: laqta_domain::capture::ScrollMethod, amount: u32) -> Result<(), PortError>;
+}
+
 /// Run at login (M6 D10): Windows `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, Linux
 /// `~/.config/autostart/laqta.desktop`.
 pub trait Autostart: Send + Sync {

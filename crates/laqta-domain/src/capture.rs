@@ -29,6 +29,7 @@ pub struct CaptureOptions {
     pub custom_region: Option<PhysRect>,
     /// For `Action::CustomWindow`: the first window whose title contains this text.
     pub custom_window_title: String,
+    pub scrolling: ScrollingOptions,
 }
 
 impl Default for CaptureOptions {
@@ -41,7 +42,43 @@ impl Default for CaptureOptions {
             region: RegionCaptureOptions::default(),
             custom_region: None,
             custom_window_title: String::new(),
+            scrolling: ScrollingOptions::default(),
         }
+    }
+}
+
+/// How scrolling capture scrolls the window under the region (M6 D4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ScrollMethod {
+    #[default]
+    MouseWheel,
+    DownArrow,
+    PageDown,
+    /// Windows `WM_VSCROLL` to the window under the region.
+    ScrollMessage,
+}
+
+/// Scrolling capture options.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ScrollingOptions {
+    pub method: ScrollMethod,
+    /// Wait before the first frame, so the user can let go of the mouse.
+    pub start_delay_ms: u32,
+    /// Wait after each scroll before the next frame.
+    pub scroll_delay_ms: u32,
+    /// Stop after this many frames even if the page keeps scrolling.
+    pub max_frames: u32,
+    /// Wheel notches or key presses per step.
+    pub scroll_amount: u32,
+    /// Rows at the top and bottom of the region that never move (sticky headers, status bars).
+    pub ignore_top: u32,
+    pub ignore_bottom: u32,
+}
+
+impl Default for ScrollingOptions {
+    fn default() -> Self {
+        ScrollingOptions { method: ScrollMethod::MouseWheel, start_delay_ms: 300, scroll_delay_ms: 300, max_frames: 50, scroll_amount: 2, ignore_top: 0, ignore_bottom: 0 }
     }
 }
 
