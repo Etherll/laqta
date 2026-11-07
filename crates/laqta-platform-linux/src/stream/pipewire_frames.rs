@@ -45,6 +45,8 @@ pub struct PipeWireFrames {
     fps: u32,
     quit: Option<pipewire::channel::Sender<()>>,
     thread: Option<JoinHandle<()>>,
+    /// The last frame, repeated while the compositor sends nothing new.
+    last: Option<Arc<[u8]>>,
     session: Option<Session<Screencast>>,
 }
 
@@ -68,6 +70,7 @@ impl PipeWireFrames {
             quit: Some(quit_tx),
             thread: None,
             session: Some(session),
+            last: None,
         };
         let job = Job { crop, fps };
         let thread = thread::Builder::new()
@@ -116,13 +119,23 @@ impl FrameSource for PipeWireFrames {
         self.fps
     }
 
+    /// Paced at the stream's frame rate: compositors send frames only on damage, so on a still
+    /// screen the last frame repeats instead of the recording timing out.
     fn next_frame(&mut self) -> Result<Option<Bitmap>, PortError> {
-        match self.shared.pop(FRAME_TIMEOUT)? {
-            Some(pixels) => Bitmap::new(self.width, self.height, PixelFormat::Bgra8, pixels)
-                .map(Some)
-                .map_err(|e| PortError::Failed(format!("screen frame: {e}"))),
-            None => Ok(None),
-        }
+        let wait = match &self.last {
+            Some(_) => Duration::from_secs(1) / self.fps.max(1),
+            None => FRAME_TIMEOUT,
+        };
+        let pixels = match self.shared.pop(wait) {
+            Ok(Some(pixels)) => pixels,
+            Ok(None) => return Ok(None),
+            Err(e) => match &self.last {
+                Some(last) => last.clone(),
+                None => return Err(e),
+            },
+        };
+        self.last = Some(pixels.clone());
+        Bitmap::new(self.width, self.height, PixelFormat::Bgra8, pixels).map(Some).map_err(|e| PortError::Failed(format!("screen frame: {e}")))
     }
 
     fn stop(&mut self) {
