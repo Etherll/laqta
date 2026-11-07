@@ -16,12 +16,13 @@ targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 "laqta-http"     = []
 "laqta-upload"   = ["laqta-ports", "laqta-domain", "laqta-http"]
 "laqta-media"    = ["laqta-ports", "laqta-domain", "laqta-http"]
+"laqta-ml"       = ["laqta-ports", "laqta-domain", "laqta-imaging", "laqta-http"]
 "laqta"          = ["*"]                                                # apps/laqta
 
 # Direct non-workspace dependencies allowed per crate (normal deps only).
 [allow]
 "laqta-domain"  = ["serde", "thiserror", "bitflags", "jiff"]
-"laqta-imaging" = ["png", "rayon", "thiserror", "jpeg-encoder", "zune-jpeg", "image-webp", "gif", "tiff", "fast_image_resize", "qrcode"]
+"laqta-imaging" = ["png", "rayon", "thiserror", "jpeg-encoder", "zune-jpeg", "image-webp", "gif", "tiff", "fast_image_resize", "qrcode", "rxing", "kamadak-exif"]
 "laqta-ports"   = ["thiserror", "jiff"]
 "laqta-editor"  = ["tiny-skia", "cosmic-text", "thiserror", "rayon", "serde"]
 

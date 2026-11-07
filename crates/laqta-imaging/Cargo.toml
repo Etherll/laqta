@@ -21,3 +21,5 @@ gif.workspace = true
 tiff.workspace = true
 fast_image_resize.workspace = true
 qrcode.workspace = true
+rxing.workspace = true
+kamadak-exif.workspace = true

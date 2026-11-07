@@ -25,6 +25,7 @@ laqta-http = { path = "crates/laqta-http" }
 laqta-upload = { path = "crates/laqta-upload" }
 laqta-editor = { path = "crates/laqta-editor" }
 laqta-media = { path = "crates/laqta-media" }
+laqta-ml = { path = "crates/laqta-ml" }
 
 # UI (ADR 002: move together)
 gpui = { package = "gpui-pre", version = "=0.3.11" }
@@ -55,6 +56,17 @@ pipewire = "0.10.1"
 wasapi = "0.27.0"
 lzma-rs = "0.3.0"
 tar = "0.4.46"
+rxing = { version = "0.9.3", default-features = false, features = ["encoding_rs"] }
+kamadak-exif = "0.6.2"
+minijinja = { version = "3.0.5", default-features = false, features = ["builtins", "serde"] }
+sha1 = "0.11.0"
+md-5 = "0.11.0"
+blake3 = { version = "1.8.7", default-features = false, features = ["std", "pure"] }
+crc32fast = "1.5.4"
+xxhash-rust = { version = "0.8.19", features = ["xxh3", "xxh64"] }
+sysinfo = { version = "0.40.1", default-features = false, features = ["network", "system"] }
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic", "ndarray", "std"] }
+ndarray = "0.17.2"
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 rusqlite = "0.41.1"  # bundled on Linux, vcpkg SQLite on Windows (ADR 026)
 fastrand = "2.5.0"
