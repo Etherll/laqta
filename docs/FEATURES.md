@@ -36,7 +36,7 @@ Areas the survey did not cover in depth need a second pass:
 | Custom FFmpeg args, custom command line, FFmpeg path override and download | M4 | done |
 | Camera overlay (shape, position, size) | M7 | planned |
 | Native GPU path (WGC + Media Foundation) | M7 | planned |
-| Mouse highlighter (while recording and as a tool) | M5 | planned |
+| Mouse highlighter (while recording and as a tool) | M5 | done |
 
 ## Workflow and tasks
 
@@ -118,7 +118,7 @@ Hosts in the catalog are `.sxcu` files (ADR 004); hosts written in Rust are mark
 | Borderless window, active window borderless / topmost, inspect window | M5 (Windows and X11; Wayland where the compositor allows) | done |
 | Monitor test, network monitor | M5 | done |
 | Background remover: local model families (BiRefNet, BEN2 and others, ADR 023), custom models, and a remove.bg cloud option | M7 | planned |
-| Model manager: per-task model choice, downloads with progress, custom ONNX models of a supported family, CPU or GPU execution | M5 (OCR) / M7 (background removal) | planned |
+| Model manager: per-task model choice, downloads with progress, custom ONNX models of a supported family, CPU or GPU execution | M5 (OCR) / M7 (background removal) | done |
 | Analyze image (OpenAI, Gemini, OpenRouter) | M7 | planned |
 
 ## Application
@@ -134,7 +134,7 @@ Hosts in the catalog are `.sxcu` files (ADR 004); hosts written in Rust are mark
 | CLI (`task`, `workflow`, custom uploader, image effect, native-message input; `-silent`, `-portable`, `-multi`, `-NoHotkeys`) | M6 | done |
 | Single instance and argument forwarding | M0 | done |
 | Browser extension native messaging (Chrome, Firefox) | M6 | done |
-| Run at startup, shell context menu, Send To, file-type registration | M6 | planned |
+| Run at startup, shell context menu, Send To, file-type registration | M6 | done |
 | About 30 languages | M6 | done |
 | Auto-update | M6 | done |
 | Steam build | dropped unless requested | pending (owner): dropped unless the owner asks for a Steam build |
