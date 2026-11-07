@@ -4932,6 +4932,7 @@ dependencies = [
  "laqta-editor",
  "laqta-imaging",
  "laqta-library",
+ "laqta-photo",
  "laqta-ports",
  "rfd",
  "serde_json",

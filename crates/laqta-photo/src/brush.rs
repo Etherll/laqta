@@ -122,12 +122,7 @@ impl Dirty {
     }
 
     fn rect(&self) -> Option<PixelRect> {
-        self.bounds.map(|(x0, y0, x1, y1)| PixelRect {
-            x: x0 as u32,
-            y: y0 as u32,
-            w: (x1 - x0 + 1) as u32,
-            h: (y1 - y0 + 1) as u32,
-        })
+        self.bounds.map(|(x0, y0, x1, y1)| PixelRect { x: x0 as u32, y: y0 as u32, w: (x1 - x0 + 1) as u32, h: (y1 - y0 + 1) as u32 })
     }
 }
 

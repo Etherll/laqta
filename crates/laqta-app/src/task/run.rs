@@ -129,6 +129,13 @@ impl Job {
         if flags.contains(AfterCaptureTasks::PIN_TO_SCREEN) {
             self.pin(&image)?;
         }
+        if flags.contains(AfterCaptureTasks::OPEN_IN_PHOTO_EDITOR) {
+            self.checkpoint()?;
+            match self.cx.ports.tools.photo_editor(image.clone()) {
+                Ok(()) => self.emit(TaskEvent::PhotoEditorOpened { id: self.id }),
+                Err(error) => self.step_failed("photo_editor", error),
+            }
+        }
         if flags.contains(AfterCaptureTasks::SCAN_QR_CODE) {
             self.scan_qr(&image).await?;
         }

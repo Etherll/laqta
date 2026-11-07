@@ -10,8 +10,8 @@ use laqta_domain::Bitmap;
 use laqta_domain::color::Rgba;
 use laqta_domain::effects::{Adjust, Effect, EffectItem};
 use laqta_photo::{
-    BlendMode, Brush, BrushTool, Command, Document, Fill, FrameLayer, Layer, LayerId, LayerKind, LayerStyle,
-    Mask, PhotoEditor, SelectOp, SelectShape, Shadow, Shape, ShapeKind, StrokePosition,
+    BlendMode, Brush, BrushTool, Command, Document, Fill, FrameLayer, Layer, LayerId, LayerKind, LayerStyle, Mask, PhotoEditor, SelectOp,
+    SelectShape, Shadow, Shape, ShapeKind, StrokePosition,
 };
 
 use support::{from_fn, in_pool, snapshot, solid};
@@ -45,12 +45,7 @@ fn rect(w: f32, h: f32, fill: Rgba) -> LayerKind {
 
 fn blend_stack() -> Bitmap {
     let mut ed = editor();
-    add(
-        &mut ed,
-        "gradient",
-        LayerKind::Fill(Fill::LinearGradient { from: rgb(30, 60, 120), to: rgb(240, 200, 80), angle: 45.0 }),
-        (0, 0),
-    );
+    add(&mut ed, "gradient", LayerKind::Fill(Fill::LinearGradient { from: rgb(30, 60, 120), to: rgb(240, 200, 80), angle: 45.0 }), (0, 0));
     let checker = from_fn(40, 30, |x, y| if (x / 5 + y / 5) % 2 == 0 { [220, 40, 40, 255] } else { [250, 250, 250, 255] });
     add(&mut ed, "checker", LayerKind::Raster(checker), (10, 8));
     let sun = add(&mut ed, "sun", ellipse(30.0, 22.0, rgb(255, 160, 0)), (28, 12));
@@ -91,34 +86,26 @@ fn styled_layers() -> Bitmap {
         ],
     })
     .unwrap();
-    add(
-        &mut ed,
-        "frame",
-        LayerKind::Frame(FrameLayer { width: 3.0, color: rgb(40, 40, 40), radius: 6.0 }),
-        (0, 0),
-    );
+    add(&mut ed, "frame", LayerKind::Frame(FrameLayer { width: 3.0, color: rgb(40, 40, 40), radius: 6.0 }), (0, 0));
     ed.flatten()
 }
 
 fn painted_and_adjusted() -> Bitmap {
     let mut ed = editor();
-    let bg = add(&mut ed, "tiles", LayerKind::Raster(from_fn(W, H, |x, y| {
-        let v = if (x / 8 + y / 8) % 2 == 0 { 200 } else { 120 };
-        [v, v, v, 255]
-    })), (0, 0));
-    ed.execute(Command::Select { shape: SelectShape::Rect { x: 0.0, y: 0.0, width: 32.0, height: 48.0 }, op: SelectOp::Replace })
-        .unwrap();
+    let bg = add(
+        &mut ed,
+        "tiles",
+        LayerKind::Raster(from_fn(W, H, |x, y| {
+            let v = if (x / 8 + y / 8) % 2 == 0 { 200 } else { 120 };
+            [v, v, v, 255]
+        })),
+        (0, 0),
+    );
+    ed.execute(Command::Select { shape: SelectShape::Rect { x: 0.0, y: 0.0, width: 32.0, height: 48.0 }, op: SelectOp::Replace }).unwrap();
     let brush = Brush { size: 9.0, hardness: 0.6, opacity: 0.8, spacing: 0.25, color: rgb(255, 80, 0) };
-    ed.execute(Command::Paint {
-        layer: bg,
-        path: vec![(4.0, 4.0), (28.0, 44.0), (60.0, 10.0)],
-        brush,
-        tool: BrushTool::Paint,
-    })
-    .unwrap();
+    ed.execute(Command::Paint { layer: bg, path: vec![(4.0, 4.0), (28.0, 44.0), (60.0, 10.0)], brush, tool: BrushTool::Paint }).unwrap();
     ed.execute(Command::Deselect).unwrap();
-    ed.execute(Command::FloodFill { layer: bg, x: 40, y: 40, tolerance: 30, color: rgb(0, 120, 90), contiguous: true })
-        .unwrap();
+    ed.execute(Command::FloodFill { layer: bg, x: 40, y: 40, tolerance: 30, color: rgb(0, 120, 90), contiguous: true }).unwrap();
     let paint = add(&mut ed, "ink", LayerKind::Raster(solid(W, H, [0, 0, 0, 0])), (0, 0));
     ed.execute(Command::Paint {
         layer: paint,
@@ -129,8 +116,7 @@ fn painted_and_adjusted() -> Bitmap {
     .unwrap();
     ed.execute(Command::ApplyEffect { layer: paint, effect: Effect::Adjust(Adjust::Inverse) }).unwrap();
     // An adjustment that inverts everything below it, faded by a vertical mask.
-    ed.execute(Command::AddLayer { name: "invert".into(), kind: LayerKind::Adjustment(Effect::Adjust(Adjust::Inverse)) })
-        .unwrap();
+    ed.execute(Command::AddLayer { name: "invert".into(), kind: LayerKind::Adjustment(Effect::Adjust(Adjust::Inverse)) }).unwrap();
     let adj = ed.document().active.unwrap();
     let fade = Mask::from_vec(W, H, (0..W * H).map(|i| ((i / W) * 255 / (H - 1)) as u8).collect()).unwrap();
     ed.execute(Command::SetMask { layer: adj, mask: Some(fade) }).unwrap();

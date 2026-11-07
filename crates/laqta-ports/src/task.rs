@@ -117,6 +117,10 @@ pub enum TaskEvent {
     BackgroundRemoved {
         id: TaskId,
     },
+    /// `OPEN_IN_PHOTO_EDITOR`: the photo editor opened on the capture.
+    PhotoEditorOpened {
+        id: TaskId,
+    },
     /// `PIN_TO_SCREEN`: the capture is pinned.
     Pinned {
         id: TaskId,
@@ -223,6 +227,7 @@ impl TaskEvent {
             | TaskEvent::SaveSkipped { id, .. }
             | TaskEvent::StepFailed { id, .. }
             | TaskEvent::Pinned { id }
+            | TaskEvent::PhotoEditorOpened { id }
             | TaskEvent::BackgroundRemoved { id }
             | TaskEvent::Printed { id, .. }
             | TaskEvent::TextFound { id, .. }

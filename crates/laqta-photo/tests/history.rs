@@ -5,9 +5,7 @@
 mod support;
 
 use laqta_domain::color::Rgba;
-use laqta_photo::{
-    BlendMode, Brush, BrushTool, Command, Direction, LayerKind, PhotoEditor, SelectOp, SelectShape,
-};
+use laqta_photo::{BlendMode, Brush, BrushTool, Command, Direction, LayerKind, PhotoEditor, SelectOp, SelectShape};
 
 use support::{px, solid};
 
@@ -27,13 +25,11 @@ fn every_command_kind_round_trips() {
 
     ed.execute(Command::AddLayer { name: "paint".into(), kind: LayerKind::Raster(solid(8, 8, [0, 0, 0, 0])) }).unwrap();
     let top = ed.document().active.unwrap();
-    ed.execute(Command::Paint { layer: top, path: vec![(1.0, 1.0), (6.0, 6.0)], brush: red_brush(), tool: BrushTool::Paint })
-        .unwrap();
+    ed.execute(Command::Paint { layer: top, path: vec![(1.0, 1.0), (6.0, 6.0)], brush: red_brush(), tool: BrushTool::Paint }).unwrap();
     ed.execute(Command::SetOpacity { layer: top, opacity: 0.5 }).unwrap();
     ed.execute(Command::SetBlend { layer: top, blend: BlendMode::Multiply }).unwrap();
     ed.execute(Command::RenameLayer { layer: top, name: "renamed".into() }).unwrap();
-    ed.execute(Command::Select { shape: SelectShape::Rect { x: 0.0, y: 0.0, width: 4.0, height: 8.0 }, op: SelectOp::Replace })
-        .unwrap();
+    ed.execute(Command::Select { shape: SelectShape::Rect { x: 0.0, y: 0.0, width: 4.0, height: 8.0 }, op: SelectOp::Replace }).unwrap();
     ed.execute(Command::FloodFill { layer: base, x: 7, y: 7, tolerance: 0, color: Rgba::BLACK, contiguous: true }).unwrap();
     ed.execute(Command::DuplicateLayer { layer: top }).unwrap();
     ed.execute(Command::MoveLayer { layer: top, direction: Direction::Up }).unwrap();
@@ -102,8 +98,7 @@ fn the_cap_drops_the_oldest_entries_first() {
     ed.set_snapshot_cap(40 * 1024);
     let sweep = Brush { size: 30.0, ..red_brush() };
     for y in [8.0, 24.0, 40.0, 56.0] {
-        ed.execute(Command::Paint { layer: bg, path: vec![(0.0, y), (63.0, y)], brush: sweep, tool: BrushTool::Paint })
-            .unwrap();
+        ed.execute(Command::Paint { layer: bg, path: vec![(0.0, y), (63.0, y)], brush: sweep, tool: BrushTool::Paint }).unwrap();
     }
     assert!(ed.snapshot_bytes() <= 40 * 1024, "held {}", ed.snapshot_bytes());
     let mut undone = 0;

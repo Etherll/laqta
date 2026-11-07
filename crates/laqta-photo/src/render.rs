@@ -24,15 +24,7 @@ pub(crate) struct Patch {
 }
 
 /// Source-over `src` onto `canvas` at `(x, y)`, scaled by `opacity` and the mask.
-pub(crate) fn composite_at(
-    canvas: &mut Surface,
-    x: i32,
-    y: i32,
-    src: &Surface,
-    blend_mode: BlendMode,
-    opacity: f32,
-    mask: Option<&Mask>,
-) {
+pub(crate) fn composite_at(canvas: &mut Surface, x: i32, y: i32, src: &Surface, blend_mode: BlendMode, opacity: f32, mask: Option<&Mask>) {
     let (cw, ch) = (canvas.w as i32, canvas.h as i32);
     let x0 = x.max(0);
     let y0 = y.max(0);
@@ -139,15 +131,9 @@ fn draw_leaf(canvas: &mut Surface, layer: &Layer, o: (i32, i32), fonts: &Fonts) 
 fn content(kind: &LayerKind, o: (i32, i32), fonts: &Fonts, w: u32, h: u32) -> Option<Patch> {
     match kind {
         LayerKind::Raster(b) => Some(Patch { x: o.0, y: o.1, s: Surface::from_bitmap(b) }),
-        LayerKind::Smart { source, effects } => {
-            smart(source, effects, fonts).map(|s| Patch { x: o.0, y: o.1, s })
-        }
+        LayerKind::Smart { source, effects } => smart(source, effects, fonts).map(|s| Patch { x: o.0, y: o.1, s }),
         LayerKind::Shape(shape) => shape_patch(shape).map(|p| Patch { x: o.0 + p.x, y: o.1 + p.y, s: p.s }),
-        LayerKind::Text(t) => text::render(fonts, t).map(|s| Patch {
-            x: o.0 + t.x.round() as i32,
-            y: o.1 + t.y.round() as i32,
-            s,
-        }),
+        LayerKind::Text(t) => text::render(fonts, t).map(|s| Patch { x: o.0 + t.x.round() as i32, y: o.1 + t.y.round() as i32, s }),
         LayerKind::Fill(f) => Some(Patch { x: o.0, y: o.1, s: fill_surface(f, w, h) }),
         LayerKind::Frame(f) => frame_surface(f, w, h).map(|s| Patch { x: o.0, y: o.1, s }),
         LayerKind::Adjustment(_) | LayerKind::Group(_) => None,

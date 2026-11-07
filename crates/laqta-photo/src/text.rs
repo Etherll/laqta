@@ -8,14 +8,8 @@ use crate::surface::Surface;
 
 /// The text's pixels, or `None` when there are no fonts or no text.
 pub(crate) fn render(fonts: &Fonts, t: &TextLayer) -> Option<Surface> {
-    let style = FontStyle {
-        family: t.font_family.clone(),
-        size: t.size,
-        bold: t.bold,
-        italic: t.italic,
-        color: t.color,
-        ..FontStyle::default()
-    };
+    let style =
+        FontStyle { family: t.font_family.clone(), size: t.size, bold: t.bold, italic: t.italic, color: t.color, ..FontStyle::default() };
     fonts.render_text(&t.text, &style).map(|b| Surface::from_bitmap(&b))
 }
 

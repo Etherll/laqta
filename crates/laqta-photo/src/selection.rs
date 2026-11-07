@@ -20,13 +20,28 @@ pub enum SelectOp {
 pub enum SelectShape {
     /// The whole canvas.
     All,
-    Rect { x: f32, y: f32, width: f32, height: f32 },
-    Ellipse { x: f32, y: f32, width: f32, height: f32 },
+    Rect {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    },
+    Ellipse {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    },
     /// A lasso, filled even-odd.
     Polygon(Vec<(f32, f32)>),
     /// Pixels of the rendered composite within `tolerance` of the seed `(x, y)`. Contiguous floods
     /// from the seed; otherwise every matching pixel is taken.
-    MagicWand { x: i32, y: i32, tolerance: u8, contiguous: bool },
+    MagicWand {
+        x: i32,
+        y: i32,
+        tolerance: u8,
+        contiguous: bool,
+    },
 }
 
 /// The mask of a geometric shape, or `None` for a wand (which needs pixels) or degenerate geometry.

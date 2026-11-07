@@ -67,12 +67,7 @@ pub fn inpaint_fallback(bitmap: &Bitmap, mask: &Mask) -> Bitmap {
         }
         known[i] = true;
         let (x, y) = (i % w, i / w);
-        let neighbours = [
-            (x > 0).then(|| i - 1),
-            (x + 1 < w).then(|| i + 1),
-            (y > 0).then(|| i - w),
-            (y + 1 < h).then(|| i + w),
-        ];
+        let neighbours = [(x > 0).then(|| i - 1), (x + 1 < w).then(|| i + 1), (y > 0).then(|| i - w), (y + 1 < h).then(|| i + w)];
         for n in neighbours.into_iter().flatten() {
             if !known[n] && !queued[n] {
                 queued[n] = true;

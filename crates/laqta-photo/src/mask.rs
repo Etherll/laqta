@@ -98,8 +98,7 @@ impl Mask {
         }
         let (w, h) = (self.width as usize, self.height as usize);
         let radius = (3.0 * sigma).ceil() as i64;
-        let mut kernel: Vec<f32> =
-            (-radius..=radius).map(|i| (-((i * i) as f32) / (2.0 * sigma * sigma)).exp()).collect();
+        let mut kernel: Vec<f32> = (-radius..=radius).map(|i| (-((i * i) as f32) / (2.0 * sigma * sigma)).exp()).collect();
         let total: f32 = kernel.iter().sum();
         for k in &mut kernel {
             *k /= total;
@@ -141,8 +140,7 @@ impl Mask {
             for x in 0..width as i64 {
                 let (sx, sy) = (x - i64::from(dx), y - i64::from(dy));
                 if (0..self.width as i64).contains(&sx) && (0..self.height as i64).contains(&sy) {
-                    out.data[y as usize * width as usize + x as usize] =
-                        self.data[sy as usize * self.width as usize + sx as usize];
+                    out.data[y as usize * width as usize + x as usize] = self.data[sy as usize * self.width as usize + sx as usize];
                 }
             }
         }

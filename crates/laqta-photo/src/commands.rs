@@ -33,46 +33,121 @@ pub enum Direction {
 #[derive(Clone, Debug)]
 pub enum Command {
     /// Adds a layer on top of the root list. A group's children get fresh ids.
-    AddLayer { name: String, kind: LayerKind },
-    RemoveLayer { layer: LayerId },
+    AddLayer {
+        name: String,
+        kind: LayerKind,
+    },
+    RemoveLayer {
+        layer: LayerId,
+    },
     /// Copies a layer just above itself.
-    DuplicateLayer { layer: LayerId },
-    MoveLayer { layer: LayerId, direction: Direction },
+    DuplicateLayer {
+        layer: LayerId,
+    },
+    MoveLayer {
+        layer: LayerId,
+        direction: Direction,
+    },
     /// Merges a layer into the one directly below it. The result is a raster layer that keeps the
     /// lower layer's id and name.
-    MergeDown { layer: LayerId },
-    RenameLayer { layer: LayerId, name: String },
-    SetOpacity { layer: LayerId, opacity: f32 },
-    SetBlend { layer: LayerId, blend: BlendMode },
-    SetVisible { layer: LayerId, visible: bool },
-    SetLocked { layer: LayerId, locked: bool },
-    SetOffset { layer: LayerId, offset: (i32, i32) },
-    SetStyles { layer: LayerId, styles: Vec<LayerStyle> },
+    MergeDown {
+        layer: LayerId,
+    },
+    RenameLayer {
+        layer: LayerId,
+        name: String,
+    },
+    SetOpacity {
+        layer: LayerId,
+        opacity: f32,
+    },
+    SetBlend {
+        layer: LayerId,
+        blend: BlendMode,
+    },
+    SetVisible {
+        layer: LayerId,
+        visible: bool,
+    },
+    SetLocked {
+        layer: LayerId,
+        locked: bool,
+    },
+    SetOffset {
+        layer: LayerId,
+        offset: (i32, i32),
+    },
+    SetStyles {
+        layer: LayerId,
+        styles: Vec<LayerStyle>,
+    },
     /// Replaces the layer's content kind, for example after editing a shape or an effect.
-    SetKind { layer: LayerId, kind: LayerKind },
-    SetMask { layer: LayerId, mask: Option<Mask> },
+    SetKind {
+        layer: LayerId,
+        kind: LayerKind,
+    },
+    SetMask {
+        layer: LayerId,
+        mask: Option<Mask>,
+    },
     /// Resizes the canvas. Layers and masks move by `offset`, so `(dx, dy)` shifts the content.
-    ResizeCanvas { width: u32, height: u32, offset: (i32, i32) },
+    ResizeCanvas {
+        width: u32,
+        height: u32,
+        offset: (i32, i32),
+    },
     /// Keeps the rectangle at `(x, y)` with the given size. Equivalent to a resize with the
     /// opposite offset.
-    Crop { x: i32, y: i32, width: u32, height: u32 },
-    Select { shape: SelectShape, op: SelectOp },
+    Crop {
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    },
+    Select {
+        shape: SelectShape,
+        op: SelectOp,
+    },
     Deselect,
     InvertSelection,
     /// Gaussian feather of the selection, with sigma `radius` pixels.
-    Feather { radius: f32 },
+    Feather {
+        radius: f32,
+    },
     /// Grows the selection by `radius` pixels (square structuring element).
-    Grow { radius: u32 },
+    Grow {
+        radius: u32,
+    },
     /// Shrinks the selection by `radius` pixels (square structuring element).
-    Shrink { radius: u32 },
+    Shrink {
+        radius: u32,
+    },
     /// A stroke along `path`, in the layer's own pixel coordinates.
-    Paint { layer: LayerId, path: Vec<(f32, f32)>, brush: Brush, tool: BrushTool },
+    Paint {
+        layer: LayerId,
+        path: Vec<(f32, f32)>,
+        brush: Brush,
+        tool: BrushTool,
+    },
     /// Fills the region matching the pixel at `(x, y)`, in the layer's own coordinates.
-    FloodFill { layer: LayerId, x: i32, y: i32, tolerance: u8, color: Rgba, contiguous: bool },
+    FloodFill {
+        layer: LayerId,
+        x: i32,
+        y: i32,
+        tolerance: u8,
+        color: Rgba,
+        contiguous: bool,
+    },
     /// Runs an effect over a raster layer's pixels and keeps the result.
-    ApplyEffect { layer: LayerId, effect: Effect },
+    ApplyEffect {
+        layer: LayerId,
+        effect: Effect,
+    },
     /// Replaces a raster layer's pixels with an inpainting result of the same size.
-    InpaintResult { layer: LayerId, bitmap: Bitmap },
+    InpaintResult {
+        layer: LayerId,
+        bitmap: Bitmap,
+    },
 }
 
 /// A command's changes, and the layer it makes active, if any.
@@ -164,9 +239,7 @@ impl PhotoEditor {
             Command::Grow { radius } => self.map_selection(|m| (radius > 0).then(|| selection::grow(m, radius))),
             Command::Shrink { radius } => self.map_selection(|m| (radius > 0).then(|| selection::shrink(m, radius))),
             Command::Paint { layer, path, brush, tool } => self.plan_paint(layer, &path, &brush, tool),
-            Command::FloodFill { layer, x, y, tolerance, color, contiguous } => {
-                self.plan_fill(layer, (x, y), tolerance, color, contiguous)
-            }
+            Command::FloodFill { layer, x, y, tolerance, color, contiguous } => self.plan_fill(layer, (x, y), tolerance, color, contiguous),
             Command::ApplyEffect { layer, effect } => self.plan_effect(layer, &effect),
             Command::InpaintResult { layer, bitmap } => self.plan_inpaint(layer, bitmap),
         }
@@ -300,18 +373,10 @@ impl PhotoEditor {
         Ok((vec![pixel_change(path, rect, &before, &after)], None))
     }
 
-    fn plan_fill(
-        &self,
-        layer: LayerId,
-        seed: (i32, i32),
-        tolerance: u8,
-        color: Rgba,
-        contiguous: bool,
-    ) -> Result<Plan, PhotoError> {
+    fn plan_fill(&self, layer: LayerId, seed: (i32, i32), tolerance: u8, color: Rgba, contiguous: bool) -> Result<Plan, PhotoError> {
         let (path, before, origin) = self.raster_target(layer)?;
         let mut after = before.clone();
-        let Some(rect) = brush::bucket(&mut after, seed, tolerance, color, contiguous, self.doc.selection.as_ref(), origin)
-        else {
+        let Some(rect) = brush::bucket(&mut after, seed, tolerance, color, contiguous, self.doc.selection.as_ref(), origin) else {
             return Ok((Vec::new(), None));
         };
         Ok((vec![pixel_change(path, rect, &before, &after)], None))
@@ -322,8 +387,7 @@ impl PhotoEditor {
         let LayerKind::Raster(b) = &l.kind else {
             return Err(PhotoError::WrongKind { id: layer, expected: "a raster layer" });
         };
-        let out = with_context(&self.fonts, |cx| apply(b, effect, cx))
-            .map_err(|e| PhotoError::Effect(e.to_string()))?;
+        let out = with_context(&self.fonts, |cx| apply(b, effect, cx)).map_err(|e| PhotoError::Effect(e.to_string()))?;
         let mut after = l.clone();
         after.kind = LayerKind::Raster(out);
         Ok((vec![Change::Replace { path, before: Box::new(l), after: Box::new(after) }], None))

@@ -34,11 +34,22 @@ pub enum LayerStyle {
     DropShadow(Shadow),
     InnerShadow(Shadow),
     /// A blurred halo outside the shape. The shadow's offset is ignored.
-    OuterGlow { color: Rgba, opacity: f32, blur: f32 },
+    OuterGlow {
+        color: Rgba,
+        opacity: f32,
+        blur: f32,
+    },
     /// A ring of `width` pixels. The ring follows the 50% alpha contour, so its edge is hard.
-    Stroke { color: Rgba, width: f32, position: StrokePosition },
+    Stroke {
+        color: Rgba,
+        width: f32,
+        position: StrokePosition,
+    },
     /// Replaces the content colour with `color` at `opacity`, keeping its alpha.
-    ColorOverlay { color: Rgba, opacity: f32 },
+    ColorOverlay {
+        color: Rgba,
+        opacity: f32,
+    },
 }
 
 /// Styles drawn beneath the content.
@@ -50,9 +61,7 @@ pub(crate) fn is_under(style: &LayerStyle) -> bool {
 pub(crate) fn under(style: &LayerStyle, content: &Patch) -> Option<Patch> {
     match *style {
         LayerStyle::DropShadow(s) => shadow(content, s),
-        LayerStyle::OuterGlow { color, opacity, blur } => {
-            shadow(content, Shadow { color, opacity, offset: (0, 0), blur })
-        }
+        LayerStyle::OuterGlow { color, opacity, blur } => shadow(content, Shadow { color, opacity, offset: (0, 0), blur }),
         _ => None,
     }
 }
@@ -115,11 +124,7 @@ fn shadow(content: &Patch, s: Shadow) -> Option<Patch> {
     let alpha = alpha_mask(&content.s);
     let margin = (3.0 * s.blur).ceil() as i32 + s.offset.0.abs() + s.offset.1.abs();
     let moved = padded_alpha(&alpha, margin, s.offset.0, s.offset.1).blur(s.blur);
-    Some(Patch {
-        x: content.x - margin,
-        y: content.y - margin,
-        s: paint_coverage(&moved, s.color, s.opacity),
-    })
+    Some(Patch { x: content.x - margin, y: content.y - margin, s: paint_coverage(&moved, s.color, s.opacity) })
 }
 
 fn inner_shadow(content: &Patch, s: Shadow) -> Option<Patch> {

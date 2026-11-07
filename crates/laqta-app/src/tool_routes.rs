@@ -101,6 +101,7 @@ impl App {
                 }
                 Err(e) => Err(e),
             },
+            Action::PhotoEditor => self.ports.tools.open(ToolWindow::PhotoEditor(None)).map(|()| Dispatched::Done).map_err(AppError::from),
             Action::AnalyzeImage => self.analyze_region(ts).await,
             Action::RemoveBackground => self.remove_background_region(ts).await,
             Action::MouseHighlighter => {

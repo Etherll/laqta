@@ -65,6 +65,8 @@ pub enum ToolWindow {
     Editor(Option<std::path::PathBuf>),
     /// A windowed tool (M5).
     Tool(ToolKind),
+    /// The photo editor on a file, or empty (M7).
+    PhotoEditor(Option<std::path::PathBuf>),
 }
 
 /// The windowed tools (M5 D1). Each opens its own panel in the tools window.
@@ -103,6 +105,12 @@ pub trait ToolHost: Send + Sync {
     fn pin(&self, image: laqta_domain::Bitmap) -> Result<(), PortError> {
         let _ = image;
         Err(PortError::Unsupported("pin to screen".into()))
+    }
+
+    /// Opens the photo editor on an image (`OPEN_IN_PHOTO_EDITOR`). The task does not wait for it.
+    fn photo_editor(&self, image: laqta_domain::Bitmap) -> Result<(), PortError> {
+        let _ = image;
+        Err(PortError::Unsupported("the photo editor".into()))
     }
 
     /// Closes every pinned image.

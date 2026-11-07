@@ -12,6 +12,7 @@ mod effects_window;
 mod history_window;
 mod main_window;
 mod overlay;
+mod photo_window;
 mod pin_window;
 mod prompt_window;
 mod recording_bar;

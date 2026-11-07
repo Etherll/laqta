@@ -394,6 +394,10 @@ impl crate::ToolHost for FakeToolHost {
         self.pins.lock().unwrap().push((image.width(), image.height()));
         Ok(())
     }
+    fn photo_editor(&self, image: Bitmap) -> Result<(), PortError> {
+        self.texts.lock().unwrap().push(("photo editor".to_owned(), format!("{}x{}", image.width(), image.height())));
+        Ok(())
+    }
     fn close_pins(&self) -> Result<(), PortError> {
         self.pins.lock().unwrap().clear();
         Ok(())

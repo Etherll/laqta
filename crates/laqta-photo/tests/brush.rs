@@ -116,8 +116,7 @@ fn bucket_fills_one_region_or_every_match() {
 #[test]
 fn strokes_are_clipped_by_the_selection() {
     let (mut ed, id) = with_layer(16, solid(16, 16, [0, 0, 0, 0]));
-    ed.execute(Command::Select { shape: SelectShape::Rect { x: 0.0, y: 0.0, width: 8.0, height: 16.0 }, op: SelectOp::Replace })
-        .unwrap();
+    ed.execute(Command::Select { shape: SelectShape::Rect { x: 0.0, y: 0.0, width: 8.0, height: 16.0 }, op: SelectOp::Replace }).unwrap();
     stroke(&mut ed, id, &[(0.0, 8.0), (15.0, 8.0)], hard(4.0, RED), BrushTool::Paint);
     let out = ed.render();
     assert_eq!(px(&out, 4, 8), [255, 0, 0, 255], "inside the selection");

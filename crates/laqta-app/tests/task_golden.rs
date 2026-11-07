@@ -164,6 +164,7 @@ fn describe(event: &TaskEvent, dir: &Path) -> (u64, String) {
         TaskEvent::Deleted { id, path } => (id.0, format!("deleted {}", relative(dir, path))),
         TaskEvent::StepFailed { id, step, .. } => (id.0, format!("step_failed {step}")),
         TaskEvent::Pinned { id } => (id.0, "pinned".to_owned()),
+        TaskEvent::PhotoEditorOpened { id } => (id.0, "photo_editor_opened".to_owned()),
         TaskEvent::BackgroundRemoved { id } => (id.0, "background_removed".to_owned()),
         TaskEvent::Printed { id, path } => (id.0, format!("printed {}", relative(dir, path))),
         TaskEvent::TextFound { id, step, text } => (id.0, format!("text_found {step} {text:?}")),
@@ -1232,5 +1233,22 @@ fn remove_background_and_analyze() {
         assert_eq!(rig.analyzer.prompts.lock().unwrap().len(), 1);
         // The first frame's pixel has red 30 (< 128), so the fake made it transparent.
         assert_eq!(rig.clipboard.images.lock().unwrap()[0].pixels()[3], 0);
+    });
+}
+
+/// `OPEN_IN_PHOTO_EDITOR` (M7): the capture goes to the photo editor and the task goes on.
+#[test]
+fn open_in_photo_editor() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let flags = AfterCaptureTasks::OPEN_IN_PHOTO_EDITOR | AfterCaptureTasks::COPY_IMAGE_TO_CLIPBOARD;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), with_flags(tmp.path(), flags));
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/open_in_photo_editor.trace"));
+        assert_eq!(rig.tools.texts.lock().unwrap()[0].0, "photo editor");
     });
 }

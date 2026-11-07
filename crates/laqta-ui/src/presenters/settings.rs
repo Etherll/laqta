@@ -32,7 +32,7 @@ pub fn after_capture_options() -> Vec<TaskOption> {
         o(AfterCaptureTasks::ANNOTATE_IMAGE, "Open in image editor", true),
         o(AfterCaptureTasks::BEAUTIFY_IMAGE, "Beautify image", true),
         o(AfterCaptureTasks::ADD_IMAGE_EFFECTS, "Add image effects", true),
-        o(AfterCaptureTasks::OPEN_IN_PHOTO_EDITOR, "Open in photo editor", false),
+        o(AfterCaptureTasks::OPEN_IN_PHOTO_EDITOR, "Open in photo editor", true),
         o(AfterCaptureTasks::PIN_TO_SCREEN, "Pin to screen", true),
         o(AfterCaptureTasks::SEND_IMAGE_TO_PRINTER, "Print image", true),
         o(AfterCaptureTasks::PERFORM_ACTIONS, "Perform actions", true),

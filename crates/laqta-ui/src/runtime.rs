@@ -26,6 +26,7 @@ pub(crate) enum UiCommand {
     Toast(Toast),
     Open(ToolWindow),
     Pin(laqta_domain::Bitmap),
+    PhotoEditor(laqta_domain::Bitmap),
     ClosePins,
     ShowText { title: String, text: String },
     Edit { image: laqta_domain::Bitmap, reply: futures_channel::oneshot::Sender<Result<laqta_domain::Bitmap, PortError>> },
@@ -234,6 +235,9 @@ impl ToolHost for UiHandle {
     fn pin(&self, image: laqta_domain::Bitmap) -> Result<(), PortError> {
         self.send(UiCommand::Pin(image))
     }
+    fn photo_editor(&self, image: laqta_domain::Bitmap) -> Result<(), PortError> {
+        self.send(UiCommand::PhotoEditor(image))
+    }
     fn close_pins(&self) -> Result<(), PortError> {
         self.send(UiCommand::ClosePins)
     }
@@ -418,6 +422,8 @@ fn handle(cmd: UiCommand, cx: &mut App) {
         UiCommand::Open(ToolWindow::Effects(path)) => crate::effects_window::open(path, cx),
         UiCommand::Open(ToolWindow::Tool(kind)) => crate::tools_window::open(kind, cx),
         UiCommand::Pin(image) => crate::pin_window::pin(image, cx),
+        UiCommand::PhotoEditor(image) => crate::photo_window::open(Some(image), None, cx),
+        UiCommand::Open(ToolWindow::PhotoEditor(path)) => crate::photo_window::open(None, path, cx),
         UiCommand::ClosePins => crate::pin_window::close_all(cx),
         UiCommand::ShowText { title, text } => crate::pin_window::show_text(title, text, cx),
         UiCommand::Open(other) => tracing::warn!(?other, "no window for this tool yet"),

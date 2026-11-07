@@ -14,18 +14,42 @@ use crate::surface::PixelRect;
 #[derive(Clone, Debug)]
 pub(crate) enum Change {
     /// Inserts `layer` at `path`. Reverting removes it.
-    Insert { path: Vec<usize>, layer: Box<Layer> },
+    Insert {
+        path: Vec<usize>,
+        layer: Box<Layer>,
+    },
     /// Removes the layer at `path`. Reverting puts `layer` back.
-    Remove { path: Vec<usize>, layer: Box<Layer> },
+    Remove {
+        path: Vec<usize>,
+        layer: Box<Layer>,
+    },
     /// Swaps the whole layer at `path`. Used for property edits and whole-layer pixel edits.
-    Replace { path: Vec<usize>, before: Box<Layer>, after: Box<Layer> },
+    Replace {
+        path: Vec<usize>,
+        before: Box<Layer>,
+        after: Box<Layer>,
+    },
     /// Moves the layer at `path` to index `to` within its list.
-    Move { path: Vec<usize>, to: usize },
+    Move {
+        path: Vec<usize>,
+        to: usize,
+    },
     /// Replaces the pixels of a rectangle of the raster layer at `path`.
-    Pixels { path: Vec<usize>, rect: PixelRect, before: Vec<u8>, after: Vec<u8> },
-    Selection { before: Option<Mask>, after: Option<Mask> },
+    Pixels {
+        path: Vec<usize>,
+        rect: PixelRect,
+        before: Vec<u8>,
+        after: Vec<u8>,
+    },
+    Selection {
+        before: Option<Mask>,
+        after: Option<Mask>,
+    },
     /// The canvas size and every layer position and mask, as one state.
-    Canvas { before: Box<CanvasState>, after: Box<CanvasState> },
+    Canvas {
+        before: Box<CanvasState>,
+        after: Box<CanvasState>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -38,12 +62,7 @@ pub(crate) struct CanvasState {
 
 impl CanvasState {
     pub fn of(doc: &Document) -> CanvasState {
-        CanvasState {
-            width: doc.width,
-            height: doc.height,
-            layers: doc.layers.clone(),
-            selection: doc.selection.clone(),
-        }
+        CanvasState { width: doc.width, height: doc.height, layers: doc.layers.clone(), selection: doc.selection.clone() }
     }
 }
 
@@ -119,11 +138,7 @@ impl Change {
             Change::Insert { layer, .. } | Change::Remove { layer, .. } => layer_bytes(layer),
             Change::Replace { before, after, .. } => {
                 if same_pixels(&before.kind, &after.kind) {
-                    if before.mask == after.mask {
-                        0
-                    } else {
-                        mask_bytes(&before.mask) + mask_bytes(&after.mask)
-                    }
+                    if before.mask == after.mask { 0 } else { mask_bytes(&before.mask) + mask_bytes(&after.mask) }
                 } else {
                     layer_bytes(before) + layer_bytes(after)
                 }
@@ -133,9 +148,7 @@ impl Change {
             Change::Selection { before, after } => mask_option_bytes(before) + mask_option_bytes(after),
             // Canvas changes move layers but copy no pixels, so only their masks count.
             Change::Canvas { before, after } => {
-                let masks = |s: &CanvasState| {
-                    s.layers.iter().map(layer_mask_bytes).sum::<usize>() + mask_option_bytes(&s.selection)
-                };
+                let masks = |s: &CanvasState| s.layers.iter().map(layer_mask_bytes).sum::<usize>() + mask_option_bytes(&s.selection);
                 masks(before) + masks(after)
             }
         }
@@ -168,9 +181,7 @@ fn write_rect(b: &Bitmap, rect: PixelRect, data: &[u8]) -> Bitmap {
 fn same_pixels(a: &LayerKind, b: &LayerKind) -> bool {
     match (a, b) {
         (LayerKind::Raster(x), LayerKind::Raster(y)) => std::ptr::eq(x.pixels().as_ptr(), y.pixels().as_ptr()),
-        (LayerKind::Smart { source: x, .. }, LayerKind::Smart { source: y, .. }) => {
-            std::ptr::eq(x.pixels().as_ptr(), y.pixels().as_ptr())
-        }
+        (LayerKind::Smart { source: x, .. }, LayerKind::Smart { source: y, .. }) => std::ptr::eq(x.pixels().as_ptr(), y.pixels().as_ptr()),
         (LayerKind::Raster(_), _) | (_, LayerKind::Raster(_)) => false,
         (LayerKind::Smart { .. }, _) | (_, LayerKind::Smart { .. }) => false,
         _ => true,

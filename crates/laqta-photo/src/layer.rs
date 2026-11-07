@@ -1,7 +1,7 @@
 //! Layers: what a layer draws, where it sits, and how it composites.
 
-use laqta_domain::effects::{Effect, EffectItem};
 use laqta_domain::color::Rgba;
+use laqta_domain::effects::{Effect, EffectItem};
 use laqta_domain::{Bitmap, PixelFormat};
 
 use crate::blend::BlendMode;
@@ -48,7 +48,10 @@ pub enum LayerKind {
     /// Children composite in isolation, then the group blends as one layer.
     Group(Vec<Layer>),
     /// A source bitmap with effects re-applied on every render, so the source is never lost.
-    Smart { source: Bitmap, effects: Vec<EffectItem> },
+    Smart {
+        source: Bitmap,
+        effects: Vec<EffectItem>,
+    },
 }
 
 impl Layer {
@@ -79,11 +82,7 @@ pub(crate) fn normalise(kind: LayerKind) -> LayerKind {
 }
 
 fn rgba(b: Bitmap) -> Bitmap {
-    if b.format() == PixelFormat::Rgba8 {
-        b
-    } else {
-        Surface::from_bitmap(&b).into_bitmap()
-    }
+    if b.format() == PixelFormat::Rgba8 { b } else { Surface::from_bitmap(&b).into_bitmap() }
 }
 
 /// A vector shape. Each kind carries its own geometry in layer-local coordinates.
@@ -98,9 +97,22 @@ pub struct Shape {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ShapeKind {
-    Rect { x: f32, y: f32, width: f32, height: f32 },
-    Ellipse { x: f32, y: f32, width: f32, height: f32 },
-    Line { from: (f32, f32), to: (f32, f32) },
+    Rect {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    },
+    Ellipse {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    },
+    Line {
+        from: (f32, f32),
+        to: (f32, f32),
+    },
     /// Closed for fill and stroke.
     Polygon(Vec<(f32, f32)>),
 }
@@ -123,9 +135,16 @@ pub struct TextLayer {
 pub enum Fill {
     Solid(Rgba),
     /// `angle` in degrees, measured from the +x axis towards +y. The gradient spans the canvas.
-    LinearGradient { from: Rgba, to: Rgba, angle: f32 },
+    LinearGradient {
+        from: Rgba,
+        to: Rgba,
+        angle: f32,
+    },
     /// From `inner` at the canvas centre to `outer` at the corners.
-    RadialGradient { inner: Rgba, outer: Rgba },
+    RadialGradient {
+        inner: Rgba,
+        outer: Rgba,
+    },
 }
 
 /// A border of `width` pixels around the canvas, with corners rounded to `radius`.

@@ -6,8 +6,7 @@ mod support;
 
 use laqta_domain::color::Rgba;
 use laqta_photo::{
-    Command, Document, Fill, FrameLayer, LayerId, LayerKind, LayerStyle, PhotoEditor, Shadow, Shape, ShapeKind,
-    StrokePosition, TextLayer,
+    Command, Document, Fill, FrameLayer, LayerId, LayerKind, LayerStyle, PhotoEditor, Shadow, Shape, ShapeKind, StrokePosition, TextLayer,
 };
 
 use support::{px, solid};
@@ -126,11 +125,7 @@ fn an_ellipse_shape_fills_its_middle() {
 
 #[test]
 fn a_line_is_stroked_and_not_filled() {
-    let shape = Shape {
-        kind: ShapeKind::Line { from: (1.0, 4.0), to: (8.0, 4.0) },
-        fill: Some(RED),
-        stroke: Some((GREEN, 2.0)),
-    };
+    let shape = Shape { kind: ShapeKind::Line { from: (1.0, 4.0), to: (8.0, 4.0) }, fill: Some(RED), stroke: Some((GREEN, 2.0)) };
     let (ed, _) = layer(10, 10, LayerKind::Shape(shape), (0, 0));
     let out = ed.render();
     assert_eq!(px(&out, 4, 4), [0, 255, 0, 255], "stroked");
