@@ -18,7 +18,8 @@ use gpui_component::{ActiveTheme as _, Disableable as _, Root, Selectable as _, 
 use laqta_domain::color::Rgba;
 use laqta_domain::{Bitmap, PixelFormat};
 use laqta_photo::{
-    BlendMode, Brush, BrushTool, Command, Direction, Fill, LayerId, LayerKind, PhotoEditor, SelectOp, SelectShape, inpaint_fallback,
+    BlendMode, Brush, BrushTool, Command, Direction, Fill, FrameLayer, Layer, LayerId, LayerKind, LayerStyle, PhotoEditor, SelectOp,
+    SelectShape, Shadow, Shape, ShapeKind, StrokePosition, TextLayer, inpaint_fallback,
 };
 use smallvec::SmallVec;
 
@@ -149,6 +150,10 @@ struct PhotoWindow {
     brush_size: Entity<InputState>,
     opacity: Entity<InputState>,
     tolerance: Entity<InputState>,
+    /// The text for a new text layer.
+    text: Entity<InputState>,
+    /// Which adjustment "+ Adjustment" adds (an index into `Adjust::defaults()`).
+    adjustment: usize,
     message: Option<String>,
     busy: bool,
 }
@@ -174,6 +179,8 @@ impl PhotoWindow {
             brush_size: input("16", cx),
             opacity: input("1.0", cx),
             tolerance: input("32", cx),
+            text: input("Text", cx),
+            adjustment: 0,
             message: None,
             busy: false,
         };
@@ -352,6 +359,58 @@ impl PhotoWindow {
         .detach();
     }
 
+    /// The active layer, cloned.
+    fn active_layer(&self) -> Option<Layer> {
+        let e = self.editor.lock().ok()?;
+        let d = e.document();
+        d.active.and_then(|id| d.layer(id)).cloned()
+    }
+
+    /// A shape over the selection's bounds, or a centred one when nothing is selected.
+    fn add_shape(&mut self, ellipse: bool, cx: &mut Context<Self>) {
+        let (w, h) = (self.size.0 as f32, self.size.1 as f32);
+        let bounds = self.editor.lock().ok().and_then(|e| e.document().selection.clone()).and_then(|m| {
+            let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+            for y in 0..m.height() {
+                for x in 0..m.width() {
+                    if m.get(x as i32, y as i32) > 127 {
+                        (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+                    }
+                }
+            }
+            (x0 <= x1).then(|| (x0 as f32, y0 as f32, (x1 - x0 + 1) as f32, (y1 - y0 + 1) as f32))
+        });
+        let (x, y, width, height) = bounds.unwrap_or((w * 0.3, h * 0.3, w * 0.4, h * 0.4));
+        let color = parse_hex(&self.val(&self.color, cx)).unwrap_or(Rgba::BLACK);
+        let kind = if ellipse { ShapeKind::Ellipse { x, y, width, height } } else { ShapeKind::Rect { x, y, width, height } };
+        self.add_layer(
+            LayerKind::Shape(Shape { kind, fill: Some(color), stroke: None }),
+            if ellipse { "Ellipse" } else { "Rectangle" },
+            cx,
+        );
+    }
+
+    fn toggle_style(&mut self, which: &str, cx: &mut Context<Self>) {
+        let Some(layer) = self.active_layer() else { return };
+        let color = parse_hex(&self.val(&self.color, cx)).unwrap_or(Rgba::BLACK);
+        let mut styles = layer.styles.clone();
+        let is = |s: &LayerStyle| match which {
+            "shadow" => matches!(s, LayerStyle::DropShadow(_)),
+            "glow" => matches!(s, LayerStyle::OuterGlow { .. }),
+            _ => matches!(s, LayerStyle::Stroke { .. }),
+        };
+        if styles.iter().any(is) {
+            styles.retain(|s| !is(s));
+        } else {
+            styles.push(match which {
+                "shadow" => LayerStyle::DropShadow(Shadow { color: Rgba::BLACK, opacity: 0.6, offset: (6, 6), blur: 6.0 }),
+                "glow" => LayerStyle::OuterGlow { color, opacity: 0.8, blur: 8.0 },
+                _ => LayerStyle::Stroke { color, width: 4.0, position: StrokePosition::Outside },
+            });
+        }
+        self.exec(Command::SetStyles { layer: layer.id, styles }, cx);
+    }
+
     fn add_layer(&mut self, kind: LayerKind, name: &str, cx: &mut Context<Self>) {
         self.exec(Command::AddLayer { name: name.into(), kind }, cx);
     }
@@ -477,6 +536,7 @@ impl PhotoWindow {
             }))
         };
         let (w, h) = self.size;
+        let adjust_name = laqta_domain::effects::Adjust::defaults().get(self.adjustment).map(|a| a.name()).unwrap_or("Adjustment");
         div()
             .w(px(PANEL_W))
             .h_full()
@@ -515,12 +575,48 @@ impl PhotoWindow {
                             cx,
                         )
                     })))
+                    .child(Button::new("adj-pick").label(format!("{adjust_name} ▸")).xsmall().ghost().on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.adjustment = (this.adjustment + 1) % laqta_domain::effects::Adjust::defaults().len().max(1);
+                            cx.notify();
+                        },
+                    )))
                     .child(Button::new("add-adj").label("+ Adjustment").xsmall().on_click(cx.listener(|this, _, _, cx| {
-                        let effect = laqta_domain::effects::Effect::Adjust(
-                            laqta_domain::effects::Adjust::defaults().into_iter().next().unwrap_or(laqta_domain::effects::Adjust::Inverse),
-                        );
-                        this.add_layer(LayerKind::Adjustment(effect), "Adjustment", cx)
+                        let all = laqta_domain::effects::Adjust::defaults();
+                        let Some(a) = all.get(this.adjustment).cloned() else { return };
+                        let name = a.name().to_owned();
+                        this.add_layer(LayerKind::Adjustment(laqta_domain::effects::Effect::Adjust(a)), &name, cx)
                     })))
+                    .child(Button::new("add-text").label("+ Text").xsmall().on_click(cx.listener(|this, _, _, cx| {
+                        let text = this.val(&this.text, cx);
+                        let size: f32 = this.val(&this.brush_size, cx).parse().unwrap_or(32.0f32).max(8.0) * 2.0;
+                        let color = parse_hex(&this.val(&this.color, cx)).unwrap_or(Rgba::BLACK);
+                        let (x, y) = (this.size.0 as f32 * 0.1, this.size.1 as f32 * 0.1);
+                        let layer = TextLayer { text, font_family: String::new(), size, color, bold: false, italic: false, x, y };
+                        this.add_layer(LayerKind::Text(layer), "Text", cx)
+                    })))
+                    .child(
+                        Button::new("add-rect")
+                            .label("+ Rectangle")
+                            .xsmall()
+                            .on_click(cx.listener(|this, _, _, cx| this.add_shape(false, cx))),
+                    )
+                    .child(
+                        Button::new("add-ellipse")
+                            .label("+ Ellipse")
+                            .xsmall()
+                            .on_click(cx.listener(|this, _, _, cx| this.add_shape(true, cx))),
+                    )
+                    .child(Button::new("add-frame").label("+ Frame").xsmall().on_click(cx.listener(|this, _, _, cx| {
+                        let color = parse_hex(&this.val(&this.color, cx)).unwrap_or(Rgba::BLACK);
+                        this.add_layer(LayerKind::Frame(FrameLayer { width: 16.0, color, radius: 0.0 }), "Frame", cx)
+                    })))
+                    .child(act("Group", "group", group_active, self, cx))
+                    .child(act("Smart object", "smart", smart_active, self, cx))
+                    .child(act("Shadow", "st-shadow", |t, _, cx| t.toggle_style("shadow", cx), self, cx))
+                    .child(act("Glow", "st-glow", |t, _, cx| t.toggle_style("glow", cx), self, cx))
+                    .child(act("Stroke", "st-stroke", |t, _, cx| t.toggle_style("stroke", cx), self, cx))
+                    .child(act("Mask from selection", "mask", mask_from_selection, self, cx))
                     .child(act("Duplicate", "dup", |t, l, cx| t.exec(Command::DuplicateLayer { layer: l }, cx), self, cx))
                     .child(act("Up", "up", |t, l, cx| t.exec(Command::MoveLayer { layer: l, direction: Direction::Up }, cx), self, cx))
                     .child(act(
@@ -589,6 +685,32 @@ impl PhotoWindow {
     }
 }
 
+/// Wraps the active layer in a group.
+fn group_active(t: &mut PhotoWindow, l: LayerId, cx: &mut Context<PhotoWindow>) {
+    if let Some(layer) = t.active_layer() {
+        t.exec(Command::AddLayer { name: "Group".into(), kind: LayerKind::Group(vec![layer]) }, cx);
+        t.exec(Command::RemoveLayer { layer: l }, cx);
+    }
+}
+
+/// Turns the active raster layer into a smart object, so effects can be re-applied to its source.
+fn smart_active(t: &mut PhotoWindow, l: LayerId, cx: &mut Context<PhotoWindow>) {
+    match t.active_layer().map(|x| x.kind) {
+        Some(LayerKind::Raster(source)) => {
+            t.exec(Command::SetKind { layer: l, kind: LayerKind::Smart { source, effects: Vec::new() } }, cx)
+        }
+        _ => {
+            t.message = Some("Only a raster layer becomes a smart object.".into());
+            cx.notify();
+        }
+    }
+}
+
+fn mask_from_selection(t: &mut PhotoWindow, l: LayerId, cx: &mut Context<PhotoWindow>) {
+    let sel = t.editor.lock().ok().and_then(|e| e.document().selection.clone());
+    t.exec(Command::SetMask { layer: l, mask: sel }, cx);
+}
+
 trait SelectedBg {
     fn when_selected(self, on: bool, cx: &App) -> Self;
 }
@@ -638,6 +760,8 @@ impl Render for PhotoWindow {
             .child(div().w(px(56.)).child(Input::new(&self.opacity).small()))
             .child(widgets::muted("Tolerance", cx))
             .child(div().w(px(56.)).child(Input::new(&self.tolerance).small()))
+            .child(widgets::muted("Text", cx))
+            .child(div().w(px(120.)).child(Input::new(&self.text).small()))
             .child(div().flex_1().truncate().child(widgets::muted(self.message.clone().unwrap_or_else(|| format!("{w} × {h}")), cx)))
             .child(Button::new("save").label("Save").small().on_click(cx.listener(|this, _, _, cx| this.save(false, cx))))
             .child(Button::new("saveas").label("Save as…").small().on_click(cx.listener(|this, _, _, cx| this.save(true, cx))))

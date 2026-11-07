@@ -800,7 +800,9 @@ impl SettingsWindow {
     fn models_page(&self, cx: &mut Context<Self>) -> gpui::Div {
         use laqta_domain::settings::ModelProvider;
         let mut providers = div().flex().gap(px(4.));
-        for (p, label) in [(ModelProvider::Auto, "Automatic"), (ModelProvider::Cpu, "CPU"), (ModelProvider::Gpu, "GPU (runs on the CPU in this build)")] {
+        for (p, label) in
+            [(ModelProvider::Auto, "Automatic"), (ModelProvider::Cpu, "CPU"), (ModelProvider::Gpu, "GPU (runs on the CPU in this build)")]
+        {
             providers = providers.child(
                 Button::new(SharedString::from(format!("prov-{p:?}")))
                     .label(label)
