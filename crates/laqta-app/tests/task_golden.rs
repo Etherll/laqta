@@ -47,6 +47,11 @@ fn build_app(dir: &Path, behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner
         shell: Arc::new(FakeShell::default()),
         clock: Arc::new(ManualClock::new(jiff::civil::date(2026, 11, 7).at(14, 3, 22, 0))),
         spawner,
+        overlay: Arc::new(laqta_ports::fakes::FakeOverlay::default()),
+        hover: Arc::new(laqta_ports::fakes::FakeHoverSource::new(Vec::new())),
+        notifier: Arc::new(laqta_ports::fakes::FakeNotifier::default()),
+        rng: Arc::new(laqta_ports::fakes::CountingRng::default()),
+        host: laqta_ports::HostInfo::default(),
     };
     let settings = Settings { screenshots_dir: dir.to_path_buf(), ..Settings::default_for(dir.to_path_buf()) };
     (App::new(ports, settings), clipboard)

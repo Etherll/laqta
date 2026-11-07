@@ -3116,6 +3116,7 @@ dependencies = [
  "async-io",
  "blocking",
  "dirs 7.0.0",
+ "fastrand",
  "futures-channel",
  "futures-lite",
  "gpui-pre",

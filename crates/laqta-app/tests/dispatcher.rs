@@ -29,6 +29,11 @@ fn harness(screenshots_dir: &Path, screen: FakeScreen) -> Harness {
         shell: shell.clone(),
         clock: Arc::new(ManualClock::new(jiff::civil::date(2026, 11, 7).at(14, 3, 22, 0))),
         spawner: spawner.clone(),
+        overlay: Arc::new(laqta_ports::fakes::FakeOverlay::default()),
+        hover: Arc::new(laqta_ports::fakes::FakeHoverSource::new(Vec::new())),
+        notifier: Arc::new(laqta_ports::fakes::FakeNotifier::default()),
+        rng: Arc::new(laqta_ports::fakes::CountingRng::default()),
+        host: laqta_ports::HostInfo::default(),
     };
     let settings = Settings { screenshots_dir: screenshots_dir.to_path_buf(), ..Settings::default_for(screenshots_dir.to_path_buf()) };
     Harness { app: App::new(ports, settings), screen, shell, spawner }

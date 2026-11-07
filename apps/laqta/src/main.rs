@@ -5,6 +5,7 @@ mod blocking_pool;
 mod cli;
 mod logging;
 mod spawner;
+mod stubs;
 mod wiring;
 
 use std::process::ExitCode;

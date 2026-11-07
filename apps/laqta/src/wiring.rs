@@ -7,6 +7,8 @@ use laqta_app::{App, Dispatched, Ports};
 use laqta_domain::{Action, Settings};
 use laqta_ports::{ActionCallback, Clock, HotkeyRegistrar, PortError, Spawner, Tray, TrayMenu};
 
+use crate::stubs;
+
 use crate::spawner::{AppSpawner, SystemClock};
 
 struct Platform {
@@ -22,7 +24,7 @@ fn platform(clock: Arc<dyn Clock>, spawner: Arc<dyn Spawner>) -> Result<Platform
     tracing::info!("session: {session:?}");
     let p = laqta_platform_linux::ports(session);
     Ok(Platform {
-        ports: Ports { screen: p.screen, clipboard: p.clipboard, shell: p.shell, clock, spawner },
+        ports: stubs::ports(p.screen, p.clipboard, p.shell, clock, spawner),
         hotkeys: p.hotkeys,
         tray: p.tray,
     })
@@ -33,7 +35,7 @@ fn platform(clock: Arc<dyn Clock>, spawner: Arc<dyn Spawner>) -> Result<Platform
     laqta_platform_windows::set_dpi_awareness();
     let p = laqta_platform_windows::ports();
     Ok(Platform {
-        ports: Ports { screen: p.screen, clipboard: p.clipboard, shell: p.shell, clock, spawner },
+        ports: stubs::ports(p.screen, p.clipboard, p.shell, clock, spawner),
         hotkeys: p.hotkeys,
         tray: p.tray,
     })

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_broadcast::{InactiveReceiver, Receiver};
 use laqta_domain::{Action, Settings, WorkflowId};
-use laqta_ports::{AppError, BoxFuture, Clipboard, Clock, ScreenSource, Shell, Spawner, TaskEvent, TaskId};
+use laqta_ports::{AppError, BoxFuture, Clipboard, Clock, HostInfo, HoverSource, Notifier, Overlay, Rng, ScreenSource, Shell, Spawner, TaskEvent, TaskId};
 
 use crate::files;
 use crate::task::{Task, TaskJob};
@@ -18,6 +18,13 @@ pub struct Ports {
     pub shell: Arc<dyn Shell>,
     pub clock: Arc<dyn Clock>,
     pub spawner: Arc<dyn Spawner>,
+    pub overlay: Arc<dyn Overlay>,
+    pub hover: Arc<dyn HoverSource>,
+    pub notifier: Arc<dyn Notifier>,
+    pub rng: Arc<dyn Rng>,
+    /// Plain values `main` supplies, not ports.
+    pub host: HostInfo,
+    // codecs: added with W1f
 }
 
 impl fmt::Debug for Ports {
@@ -34,9 +41,32 @@ pub enum Dispatched {
     Exit,
 }
 
+/// The current settings. A new value replaces the old one; running tasks keep the value they started with.
+#[derive(Debug)]
+pub(crate) struct SettingsCell(std::sync::RwLock<Arc<Settings>>);
+
+impl SettingsCell {
+    pub(crate) fn new(settings: Settings) -> Self {
+        SettingsCell(std::sync::RwLock::new(Arc::new(settings)))
+    }
+    pub(crate) fn get(&self) -> Arc<Settings> {
+        match self.0.read() {
+            Ok(g) => Arc::clone(&g),
+            Err(p) => Arc::clone(&p.into_inner()),
+        }
+    }
+    pub(crate) fn set(&self, settings: Settings) {
+        let new = Arc::new(settings);
+        match self.0.write() {
+            Ok(mut g) => *g = new,
+            Err(p) => *p.into_inner() = new,
+        }
+    }
+}
+
 pub struct App {
     ports: Arc<Ports>,
-    settings: Arc<Settings>,
+    settings: Arc<SettingsCell>,
     task: Task,
     /// Keeps the event channel open while nobody listens, so sends never fail.
     idle: InactiveReceiver<TaskEvent>,
@@ -53,7 +83,7 @@ impl App {
         let (mut events, active) = async_broadcast::broadcast::<TaskEvent>(EVENT_CAPACITY);
         events.set_overflow(true);
         let ports = Arc::new(ports);
-        let settings = Arc::new(settings);
+        let settings = Arc::new(SettingsCell::new(settings));
         let task = Task::new(Arc::clone(&ports), Arc::clone(&settings), events);
         Arc::new(App { ports, settings, task, idle: active.deactivate() })
     }
@@ -68,7 +98,12 @@ impl App {
     }
 
     pub fn settings(&self) -> Settings {
-        self.settings.as_ref().clone()
+        self.settings.get().as_ref().clone()
+    }
+
+    /// Replaces the settings. New dispatches and new tasks use them.
+    pub fn set_settings(&self, settings: Settings) {
+        self.settings.set(settings);
     }
 
     async fn route(self: Arc<Self>, action: Action) -> Result<Dispatched, AppError> {
@@ -78,7 +113,7 @@ impl App {
                 Ok(Dispatched::Task(self.task.submit(TaskJob::Capture { frames })))
             }
             Action::OpenScreenshotsFolder => {
-                let dir = self.settings.screenshots_dir.clone();
+                let dir = self.settings.get().screenshots_dir.clone();
                 files::create_dir_all(self.ports.spawner.as_ref(), dir.clone())
                     .await
                     .map_err(|e| AppError::Io(e.to_string()))?;

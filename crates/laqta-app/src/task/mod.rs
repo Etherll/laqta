@@ -12,10 +12,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_broadcast::Sender;
 use futures_lite::FutureExt;
-use laqta_domain::{Frame, Settings};
+use laqta_domain::Frame;
 use laqta_ports::{AppError, BoxFuture, TaskEvent, TaskId, TaskStatus};
 
-use crate::dispatcher::Ports;
+use crate::dispatcher::{Ports, SettingsCell};
 use status::{Queue, Reporter};
 
 /// Capture jobs that may run at once. Further jobs wait in `InQueue`.
@@ -31,7 +31,7 @@ pub enum TaskJob {
 
 pub(crate) struct Task {
     ports: Arc<Ports>,
-    settings: Arc<Settings>,
+    settings: Arc<SettingsCell>,
     reporter: Reporter,
     capture_slots: Arc<Queue>,
     save_slots: Arc<Queue>,
@@ -39,7 +39,7 @@ pub(crate) struct Task {
 }
 
 impl Task {
-    pub(crate) fn new(ports: Arc<Ports>, settings: Arc<Settings>, events: Sender<TaskEvent>) -> Task {
+    pub(crate) fn new(ports: Arc<Ports>, settings: Arc<SettingsCell>, events: Sender<TaskEvent>) -> Task {
         Task {
             ports,
             settings,
@@ -62,7 +62,7 @@ impl Task {
         let capture_slots = Arc::clone(&self.capture_slots);
         let save_slots = Arc::clone(&self.save_slots);
         let ports = Arc::clone(&self.ports);
-        let settings = Arc::clone(&self.settings);
+        let settings = self.settings.get();
         let reporter = self.reporter.clone();
         Box::pin(async move {
             // The slot is taken and released outside the guarded body (ADR 020).
