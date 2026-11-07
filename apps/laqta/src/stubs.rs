@@ -31,6 +31,28 @@ pub fn host_info() -> HostInfo {
     HostInfo { user_name: user.clone(), user_login: user, computer_name: computer }
 }
 
+/// Sandbox mode's secret store (M6 D8): kept in memory, gone on exit.
+#[derive(Debug, Default)]
+pub struct MemorySecrets(std::sync::Mutex<std::collections::HashMap<String, String>>);
+
+impl laqta_ports::SecretStore for MemorySecrets {
+    fn get(&self, key: &str) -> Result<Option<String>, laqta_ports::PortError> {
+        Ok(self.0.lock().ok().and_then(|m| m.get(key).cloned()))
+    }
+    fn set(&self, key: &str, secret: &str) -> Result<(), laqta_ports::PortError> {
+        if let Ok(mut m) = self.0.lock() {
+            m.insert(key.to_owned(), secret.to_owned());
+        }
+        Ok(())
+    }
+    fn delete(&self, key: &str) -> Result<(), laqta_ports::PortError> {
+        if let Ok(mut m) = self.0.lock() {
+            m.remove(key);
+        }
+        Ok(())
+    }
+}
+
 /// Until the platform `InputSynth` and the `notify` watcher land (M6 wave).
 #[derive(Debug)]
 pub struct Pending;

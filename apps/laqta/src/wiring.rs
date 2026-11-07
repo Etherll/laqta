@@ -158,7 +158,10 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     startup.extend(args.requests.iter().cloned());
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let spawner = AppSpawner::start(clock.clone()).map_err(|e| format!("cannot start the app worker: {e}"))?;
-    let platform = platform()?;
+    let mut platform = platform()?;
+    if args.sandbox {
+        platform.secrets = Arc::new(stubs::MemorySecrets::default());
+    }
     let data = data_dir(&args);
     let store = Arc::new(SettingsStore::new(data.clone()));
     let settings = load_settings(&store);
@@ -349,10 +352,14 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             if !autoclose {
                 return;
             }
-            while !pending.is_empty() {
+            // A recording's file reaches Task as a new task when it stops, so new tasks join the wait.
+            while !pending.is_empty() || app.is_recording() {
                 match events.recv().await {
                     Ok(laqta_ports::TaskEvent::StatusChanged { id, status }) if status.is_settled() => {
                         pending.remove(&id);
+                    }
+                    Ok(laqta_ports::TaskEvent::StatusChanged { id, status: laqta_ports::TaskStatus::InQueue }) => {
+                        pending.insert(id);
                     }
                     Ok(_) => {}
                     Err(_) => break,
