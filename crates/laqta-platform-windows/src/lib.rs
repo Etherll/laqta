@@ -8,6 +8,8 @@
 //! alpha, the shutter sound) also build under `test`, so their tests run on Linux.
 
 #[cfg(any(windows, test))]
+mod autostart;
+#[cfg(any(windows, test))]
 mod backdrop;
 #[cfg(windows)]
 mod capture_dxgi;
@@ -21,6 +23,8 @@ mod cursor;
 mod hdr;
 #[cfg(windows)]
 mod hover;
+#[cfg(any(windows, test))]
+mod integration;
 #[cfg(any(windows, test))]
 mod keys;
 #[cfg(windows)]
@@ -41,6 +45,8 @@ mod sound;
 mod stream;
 #[cfg(windows)]
 mod transparent;
+#[cfg(windows)]
+mod window_ops;
 #[cfg(any(windows, test))]
 mod window_rules;
 
@@ -60,7 +66,10 @@ mod imp {
     };
     use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 
-    use crate::{capture_dxgi, capture_gdi, clipboard, cursor, hover, secrets, shell, shell_thread, stream, transparent};
+    use crate::{
+        autostart, capture_dxgi, capture_gdi, clipboard, cursor, hover, integration, secrets, shell, shell_thread, stream, transparent,
+        window_ops,
+    };
 
     /// The Windows adapters, ready to hand to `laqta_app::Ports`.
     pub struct WindowsPorts {
@@ -72,6 +81,9 @@ mod imp {
         pub tray: Arc<dyn Tray>,
         pub hover: Arc<dyn laqta_ports::HoverSource>,
         pub secrets: Arc<dyn SecretStore>,
+        pub window_ops: Arc<dyn laqta_ports::WindowOps>,
+        pub autostart: Arc<dyn laqta_ports::Autostart>,
+        pub integration: Arc<dyn laqta_ports::ShellIntegration>,
     }
 
     impl std::fmt::Debug for WindowsPorts {
@@ -90,6 +102,9 @@ mod imp {
             tray: Arc::new(shell_thread::WindowsTray),
             hover: Arc::new(hover::WindowsHover),
             secrets: Arc::new(secrets::CredentialStore),
+            window_ops: Arc::new(window_ops::WindowsWindowOps),
+            autostart: Arc::new(autostart::WindowsAutostart::default()),
+            integration: Arc::new(integration::WindowsShellIntegration::default()),
         }
     }
 
