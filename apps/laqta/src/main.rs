@@ -4,6 +4,7 @@
 mod blocking_pool;
 mod cli;
 mod logging;
+mod notifier;
 mod spawner;
 mod stubs;
 mod wiring;

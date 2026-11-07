@@ -115,7 +115,7 @@ pub fn run(server: laqta_ipc::Server, startup_actions: Vec<Action>) -> Result<()
         overlay: Arc::new(ui.clone()),
         tools: Arc::new(ui.clone()),
         hover: platform.hover,
-        notifier: Arc::new(ui.clone()),
+        notifier: Arc::new(crate::notifier::AppNotifier { ui: ui.clone() }),
         rng: stubs::system_rng(),
         host: stubs::host_info(),
         codecs: laqta_imaging::Codecs::builtin(),
