@@ -196,6 +196,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let uploaders = crate::uploads::registry(&data, Arc::new(ui.clone()), rng.clone());
     let host_deps = crate::uploads::host_deps(platform.secrets.clone(), platform.shell.clone());
     crate::uploads::apply_accounts(&uploaders, &settings.hosts, &host_deps);
+    let cloud_options: crate::cloud::SharedCloudOptions = Arc::new(std::sync::RwLock::new(settings.cloud.clone()));
     let model_options: crate::models::SharedModelOptions = Arc::new(std::sync::RwLock::new(settings.models.clone()));
     let ports = Ports {
         screen: platform.screen,
@@ -220,8 +221,18 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         window_ops: platform.window_ops.clone(),
         input: platform.input.clone(),
         highlighter: platform.highlighter.clone(),
-        background: Arc::new(stubs::M7Pending),
-        analyzer: Arc::new(stubs::M7Pending),
+        background: Arc::new(crate::cloud::Background::new(
+            cloud_options.clone(),
+            Arc::new(stubs::M7Pending),
+            platform.secrets.clone(),
+            spawner.clone(),
+            laqta_imaging::Codecs::builtin(),
+        )),
+        analyzer: Arc::new(crate::cloud::Analyzer {
+            options: cloud_options.clone(),
+            secrets: platform.secrets.clone(),
+            spawner: spawner.clone(),
+        }),
         inpainter: Arc::new(stubs::M7Pending),
         watcher: Arc::new(laqta_library::NotifyWatcher::default()),
         uploaders: uploaders.clone(),
@@ -288,6 +299,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let use_hotkeys = !args.no_hotkeys;
     let save_settings: crate::imports::SaveSettings = {
         let model_options = model_options.clone();
+        let cloud_options = cloud_options.clone();
         let app = app.clone();
         let store = store.clone();
         let clock = clock.clone();
@@ -304,6 +316,9 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             laqta_ui::i18n::set_language(s.language.as_deref());
             if let Ok(mut m) = model_options.write() {
                 *m = s.models.clone();
+            }
+            if let Ok(mut c) = cloud_options.write() {
+                *c = s.cloud.clone();
             }
             app.set_settings(s.clone());
             if use_hotkeys {

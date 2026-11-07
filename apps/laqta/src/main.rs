@@ -3,6 +3,7 @@
 
 mod blocking_pool;
 mod cli;
+mod cloud;
 mod fonts;
 mod imports;
 mod logging;

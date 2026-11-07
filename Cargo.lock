@@ -4637,6 +4637,7 @@ dependencies = [
  "gpui-pre-platform",
  "jiff",
  "laqta-app",
+ "laqta-cloud",
  "laqta-domain",
  "laqta-editor",
  "laqta-http",
