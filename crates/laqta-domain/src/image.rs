@@ -75,3 +75,31 @@ mod tests {
         assert!(matches!(err, Err(BitmapError::WrongLength { expected: 16, actual: 15, .. })));
     }
 }
+
+/// An encoded image file format. Codecs live in `laqta-imaging`; this is only the name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub enum ImageFormat {
+    Png,
+    Jpeg,
+    Gif,
+    Bmp,
+    Tiff,
+    WebP,
+}
+
+impl ImageFormat {
+    pub const ALL: [ImageFormat; 6] = [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::Gif, ImageFormat::Bmp, ImageFormat::Tiff, ImageFormat::WebP];
+
+    /// File extension without the dot.
+    pub fn extension(self) -> &'static str {
+        match self {
+            ImageFormat::Png => "png",
+            ImageFormat::Jpeg => "jpg",
+            ImageFormat::Gif => "gif",
+            ImageFormat::Bmp => "bmp",
+            ImageFormat::Tiff => "tif",
+            ImageFormat::WebP => "webp",
+        }
+    }
+}

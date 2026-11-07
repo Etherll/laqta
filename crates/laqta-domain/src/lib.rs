@@ -15,6 +15,6 @@ pub mod workflow;
 pub use action::Action;
 pub use geometry::{Monitor, MonitorId, PhysRect};
 pub use hotkey::{Key, KeyChord, Modifiers};
-pub use image::{Bitmap, BitmapError, Frame, PixelFormat};
+pub use image::{Bitmap, BitmapError, Frame, ImageFormat, PixelFormat};
 pub use settings::Settings;
 pub use workflow::WorkflowId;
