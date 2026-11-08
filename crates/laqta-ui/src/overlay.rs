@@ -275,6 +275,13 @@ impl Render for OverlayView {
         };
         let win_w = origin.width as f32 / s;
         let win_h = origin.height as f32 / s;
+        // GPUI sizes displays by the integer output scale, so on a fractionally scaled output
+        // (KDE at 125%) the window opens too small. Once the real scale is known, grow it to
+        // cover the whole monitor.
+        let viewport = window.viewport_size();
+        if (f32::from(viewport.width) - win_w).abs() > 1.0 || (f32::from(viewport.height) - win_h).abs() > 1.0 {
+            window.resize(size(px(win_w), px(win_h)));
+        }
         let dim = color(0x000000, view.dim_alpha as f32 / 255.0);
 
         let mut root = div()
