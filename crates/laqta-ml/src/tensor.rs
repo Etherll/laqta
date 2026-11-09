@@ -43,6 +43,22 @@ impl BgrImage {
         self.height
     }
 
+    /// `region` (inside the image) turned 90° counter-clockwise, as `numpy.rot90` turns it: the
+    /// region's right column becomes the top row.
+    pub fn crop_rotated_ccw(&self, region: PhysRect) -> BgrImage {
+        let (w, h) = (region.width, region.height);
+        let mut data = Vec::with_capacity(w as usize * h as usize * 3);
+        for row in 0..w {
+            let src_x = region.x as u32 + (w - 1 - row);
+            for col in 0..h {
+                let src_y = region.y as u32 + col;
+                let index = (src_y as usize * self.width as usize + src_x as usize) * 3;
+                data.extend_from_slice(&self.data[index..index + 3]);
+            }
+        }
+        BgrImage { width: h, height: w, data }
+    }
+
     fn value(&self, x: u32, y: u32, channel: usize) -> f32 {
         let index = (y as usize * self.width as usize + x as usize) * 3 + channel;
         f32::from(self.data[index])
@@ -197,6 +213,22 @@ mod tests {
 
     fn rect(x: i32, y: i32, width: u32, height: u32) -> PhysRect {
         PhysRect { x, y, width, height }
+    }
+
+    #[test]
+    fn a_counter_clockwise_turn_matches_numpy_rot90() {
+        // A 3x2 region with distinct blue values [[1, 2, 3], [4, 5, 6]]. numpy.rot90 gives
+        // [[3, 6], [2, 5], [1, 4]]: the right column becomes the top row.
+        let mut data = vec![0u8; 4 * 3 * 3];
+        for (i, value) in [1u8, 2, 3, 4, 5, 6].into_iter().enumerate() {
+            let (x, y) = (1 + i % 3, i / 3);
+            data[(y * 4 + x) * 3] = value;
+        }
+        let image = BgrImage::new(4, 3, data).expect("valid image");
+        let turned = image.crop_rotated_ccw(rect(1, 0, 3, 2));
+        assert_eq!((turned.width(), turned.height()), (2, 3));
+        let blue: Vec<f32> = (0..3).flat_map(|y| (0..2).map(move |x| (x, y))).map(|(x, y)| turned.value(x, y, 0)).collect();
+        assert_eq!(blue, vec![3.0, 6.0, 2.0, 5.0, 1.0, 4.0]);
     }
 
     #[test]

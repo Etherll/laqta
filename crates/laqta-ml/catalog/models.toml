@@ -18,12 +18,51 @@
 # Hugging Face URLs are pinned to a commit. The dictionaries come from PaddleOCR at a pinned commit.
 
 [[model]]
-id = "ppocr-v5-mobile-det"
+id = "ppocr-v6-medium-det"
 task = "ocr-det"
 family = "o1-det"
 default = true
+name = "PP-OCRv6 medium text detection"
+description = "Finds text lines in an image (DBNet). Works for any script, and holds up on small screen text."
+url = "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx/resolve/61323801669c338b7891481ec7bac61ce31b576a/inference.onnx"
+sha256 = "eb13b44b25bb36f89528b68720af8a61d9cf381176107f465db1757b65d086e1"
+size_bytes = 62032837
+licence = "Apache-2.0"
+commercial = true
+precisions = ["fp32"]
+languages = []
+
+# PaddleOCR's settings for this model (its inference.yml), not PP-OCRv5's.
+[model.db]
+thresh = 0.2
+box_thresh = 0.45
+unclip_ratio = 1.4
+
+[[model]]
+id = "ppocr-v6-medium-rec"
+task = "ocr-rec"
+family = "o1-rec"
+default = true
+name = "PP-OCRv6 medium recognition"
+description = "Reads text lines in Chinese, Japanese, English and other Latin-script languages, and Greek."
+url = "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/50c7eacafc52fa7bcf4194e8cd08e46f8558504b/inference.onnx"
+sha256 = "9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba"
+size_bytes = 76554979
+licence = "Apache-2.0"
+commercial = true
+precisions = ["fp32"]
+languages = ["zh", "en", "ja", "el", "latin"]
+dict_url = "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf/ppocr/utils/dict/ppocrv6_dict.txt"
+dict_sha256 = "b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d"
+dict_size_bytes = 74947
+
+[[model]]
+id = "ppocr-v5-mobile-det"
+task = "ocr-det"
+family = "o1-det"
+default = false
 name = "PP-OCRv5 mobile text detection"
-description = "Finds text lines in an image (DBNet). Works for any script."
+description = "Finds text lines in an image (DBNet). A smaller, faster download than PP-OCRv6."
 url = "https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx/resolve/e6f4fa85f00e168c862bc462aebca69eef9b3d3d/inference.onnx"
 sha256 = "a431985659dc921974177a95adcfbb90fd9e51989a5e04d70d0b75f597b6e61d"
 size_bytes = 4826518
@@ -36,7 +75,7 @@ languages = []
 id = "ppocr-v5-mobile-rec-multi"
 task = "ocr-rec"
 family = "o1-rec"
-default = true
+default = false
 name = "PP-OCRv5 mobile recognition, Chinese, English, Japanese"
 description = "Reads text lines in Simplified and Traditional Chinese, English and Japanese."
 url = "https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_rec_onnx/resolve/ed152b8b495f84de93cda5709d768548a9127622/inference.onnx"

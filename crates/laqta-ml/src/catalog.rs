@@ -8,6 +8,7 @@ use serde::Deserialize;
 use crate::error::MlError;
 use crate::families::Family;
 use crate::families::matting::MattingParams;
+use crate::families::o1::DbParams;
 
 const CATALOG_TOML: &str = include_str!("../catalog/models.toml");
 
@@ -67,6 +68,10 @@ pub struct ModelEntry {
     /// The `[model.matting]` table, required by the `matting-parametric` family and refused by others.
     #[serde(default)]
     pub matting: Option<MattingParams>,
+    /// The `[model.db]` table: DBNet thresholds for an `o1-det` detector. Optional; refused by
+    /// other families.
+    #[serde(default)]
+    pub db: Option<DbParams>,
 }
 
 impl ModelEntry {
@@ -151,6 +156,11 @@ impl Catalog {
                 (Family::MattingParametric, Some(params)) => params.check().map_err(fail)?,
                 (Family::MattingParametric, None) => return Err(fail("a matting family needs a [model.matting] table".into())),
                 (_, Some(_)) => return Err(fail("only a matting family has a [model.matting] table".into())),
+                (_, None) => {}
+            }
+            match (family, &model.db) {
+                (Family::O1Det, Some(params)) => params.check().map_err(fail)?,
+                (_, Some(_)) => return Err(fail("only an o1-det detector has a [model.db] table".into())),
                 (_, None) => {}
             }
             match model.task {

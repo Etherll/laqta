@@ -98,51 +98,69 @@ fn recognise(runtime: &Runtime, det: &str, rec: &str, bitmap: &Bitmap) -> Result
         return Ok(OcrResult::default());
     }
     let image = BgrImage::from_bitmap(bitmap);
-    let regions = detect(runtime, det, &image)?;
+    // Each detector has its own DB thresholds; a model without any uses PP-OCRv5's.
+    let params = catalog().model(det).and_then(|entry| entry.db).unwrap_or_default();
+    let regions = detect(runtime, det, &params, &image)?;
     if regions.is_empty() {
         return Ok(OcrResult::default());
     }
     let dictionary = read_dictionary(&runtime.dict_path(rec))?;
+    // Crops in reading order. They are read in batches of similar width, as PaddleOCR reads them,
+    // so a batch pads little; the lines are put back in reading order afterwards.
+    let crops: Vec<(PhysRect, u32, Vec<f32>)> = o1::reading_order(&regions)
+        .into_iter()
+        .filter_map(|index| o1::rec_crop(&image, regions[index]).map(|(scaled, data)| (regions[index], scaled, data)))
+        .collect();
+    let mut by_width: Vec<usize> = (0..crops.len()).collect();
+    by_width.sort_by_key(|&i| crops[i].1);
+    let mut read: Vec<Option<(String, f32)>> = vec![None; crops.len()];
     let mut table: Option<Vec<String>> = None;
-    let mut lines = Vec::with_capacity(regions.len());
     runtime.with_session(Task::OcrRec, rec, |session| {
-        for index in o1::reading_order(&regions) {
-            let rect = regions[index];
-            let Some(data) = o1::rec_input(&image, rect) else { continue };
-            let input = to_input(o1::REC_MAX_WIDTH as usize, data)?;
-            let (shape, scores) = run(session, &input)?;
-            if shape.len() != 3 {
-                return Err(MlError::Inference(format!("the recogniser output has rank {}, expected 3", shape.len())));
+        for batch in by_width.chunks(o1::REC_BATCH) {
+            let widest = batch.iter().map(|&i| crops[i].1).max().unwrap_or(0);
+            let width = o1::rec_input_width(widest);
+            let mut data = Vec::with_capacity(batch.len() * 3 * o1::REC_HEIGHT as usize * width as usize);
+            for &i in batch {
+                data.extend(o1::rec_pad(crops[i].1, &crops[i].2, width));
             }
-            let classes = shape[2];
+            let input = Array4::from_shape_vec((batch.len(), 3, o1::REC_HEIGHT as usize, width as usize), data)
+                .map_err(|error| MlError::Inference(error.to_string()))?;
+            let (shape, scores) = run(session, &input)?;
+            if shape.len() != 3 || shape[0] != batch.len() {
+                return Err(MlError::Inference(format!("the recogniser output has shape {shape:?} for a batch of {}", batch.len())));
+            }
+            let (steps, classes) = (shape[1], shape[2]);
             if table.is_none() {
                 table = Some(o1::ctc_classes(&dictionary, classes).map_err(MlError::Inference)?);
             }
             let Some(classes_table) = table.as_deref() else { continue };
-            let steps = o1::best_per_step(&scores, classes);
-            let (text, confidence) = o1::ctc_greedy(&steps, classes_table);
-            if !text.trim().is_empty() {
-                lines.push(OcrLine { rect, text, confidence });
+            for (k, &i) in batch.iter().enumerate() {
+                let rows = &scores[k * steps * classes..(k + 1) * steps * classes];
+                read[i] = Some(o1::ctc_greedy(&o1::best_per_step(rows, classes), classes_table));
             }
         }
         Ok(())
     })?;
+    let lines = crops
+        .iter()
+        .zip(read)
+        .filter_map(|((rect, _, _), read)| {
+            let (text, confidence) = read?;
+            (!text.trim().is_empty()).then_some(OcrLine { rect: *rect, text, confidence })
+        })
+        .collect();
     Ok(OcrResult { lines })
 }
 
 /// Text regions in source pixels, from the detector.
-fn detect(runtime: &Runtime, det: &str, image: &BgrImage) -> Result<Vec<PhysRect>, MlError> {
+fn detect(runtime: &Runtime, det: &str, params: &o1::DbParams, image: &BgrImage) -> Result<Vec<PhysRect>, MlError> {
     let (width, height, data) = o1::det_input(image);
     let input =
         Array4::from_shape_vec((1, 3, height as usize, width as usize), data).map_err(|error| MlError::Inference(error.to_string()))?;
     let (shape, map) = runtime.with_session(Task::OcrDet, det, |session| run(session, &input))?;
     let (map_height, map_width) = map_dims(&shape, map.len())?;
-    let boxes = o1::db_boxes(&map, map_width, map_height);
+    let boxes = o1::db_boxes(&map, map_width, map_height, params);
     Ok(boxes.into_iter().map(|boxed| o1::to_source_rect(boxed, map_width, map_height, image.width(), image.height())).collect())
-}
-
-fn to_input(width: usize, data: Vec<f32>) -> Result<Array4<f32>, MlError> {
-    Array4::from_shape_vec((1, 3, o1::REC_HEIGHT as usize, width), data).map_err(|error| MlError::Inference(error.to_string()))
 }
 
 /// Runs one input and copies the output out, so the session can be used again.

@@ -9,30 +9,72 @@ use laqta_domain::PhysRect;
 
 use crate::tensor::{BgrImage, HALF, IMAGENET, clip_rect, resample_nchw};
 
-/// The detector's longest side, in pixels.
-pub const DET_LIMIT_SIDE: u32 = 960;
+/// The detector's longest side, in pixels (PaddleOCR's `max_side_limit`). Larger images are scaled
+/// down to it. Screenshots stay at full size, because UI text is small and shrinking it loses
+/// characters.
+pub const DET_MAX_SIDE: u32 = 4000;
+/// The detector's shortest side, in pixels. Smaller images are scaled up to it.
+pub const DET_MIN_SIDE: u32 = 64;
 /// The detector needs both sides to be multiples of this.
 pub const DET_MULTIPLE: u32 = 32;
-/// Probability above which a pixel counts as text.
-pub const DET_THRESHOLD: f32 = 0.3;
-/// Mean probability a region needs to be kept.
-pub const DET_BOX_THRESHOLD: f32 = 0.6;
-/// How far a detected region grows: DBNet's unclip ratio.
-pub const DET_UNCLIP_RATIO: f32 = 1.5;
-/// Smallest region kept, as a bounding-box area in probability-map pixels.
-pub const DET_MIN_AREA: usize = 16;
+/// A region whose shorter side is under this many probability-map pixels is dropped (PaddleOCR's
+/// `min_size`); after the unclip, the limit is two pixels more.
+pub const DET_MIN_SIDE_PX: f32 = 3.0;
+/// A crop at least this many times taller than wide is vertical text, read after a 90° turn.
+pub const REC_VERTICAL_RATIO: f32 = 1.5;
 /// The recogniser's input height.
 pub const REC_HEIGHT: u32 = 48;
-/// The recogniser input width. Every crop is padded to it, as RapidOCR does. A crop wider than this
-/// after scaling is squashed to it. RapidOCR instead grows the input width with the crop, so a long
-/// screenshot line loses detail here. This is a known gap.
-pub const REC_MAX_WIDTH: u32 = 320;
+/// The narrowest recogniser input. A short crop is padded to it on the right.
+pub const REC_MIN_WIDTH: u32 = 320;
+/// The widest recogniser input. A crop keeps its aspect ratio up to this width; only a longer one
+/// is squashed.
+pub const REC_WIDTH_LIMIT: u32 = 3200;
 
-/// The detector input size: the longest side is at most `DET_LIMIT_SIDE`, and each side is rounded
-/// to the nearest multiple of `DET_MULTIPLE` (at least one multiple).
+/// DBNet post-processing settings. Each detector model has its own; the defaults are PP-OCRv5's.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DbParams {
+    /// Probability above which a pixel counts as text.
+    pub thresh: f32,
+    /// Mean probability a region needs to be kept.
+    pub box_thresh: f32,
+    /// How far a detected region grows.
+    pub unclip_ratio: f32,
+}
+
+impl DbParams {
+    /// Both thresholds must be probabilities and the unclip ratio a modest growth factor.
+    pub fn check(&self) -> Result<(), String> {
+        let probability = |v: f32| v > 0.0 && v < 1.0;
+        if !probability(self.thresh) || !probability(self.box_thresh) {
+            return Err(format!("db thresholds must be between 0 and 1, got {} and {}", self.thresh, self.box_thresh));
+        }
+        if !(self.unclip_ratio > 0.0 && self.unclip_ratio <= 4.0) {
+            return Err(format!("db unclip_ratio must be in (0, 4], got {}", self.unclip_ratio));
+        }
+        Ok(())
+    }
+}
+
+impl Default for DbParams {
+    fn default() -> Self {
+        Self { thresh: 0.3, box_thresh: 0.6, unclip_ratio: 1.5 }
+    }
+}
+
+/// The detector input size: the longest side is at most `DET_MAX_SIDE`, the shortest at least
+/// `DET_MIN_SIDE`, and each side is rounded to the nearest multiple of `DET_MULTIPLE` (at least one
+/// multiple).
 pub fn det_size(width: u32, height: u32) -> (u32, u32) {
     let longest = width.max(height).max(1);
-    let ratio = if longest > DET_LIMIT_SIDE { DET_LIMIT_SIDE as f32 / longest as f32 } else { 1.0 };
+    let shortest = width.min(height).max(1);
+    let ratio = if longest > DET_MAX_SIDE {
+        DET_MAX_SIDE as f32 / longest as f32
+    } else if shortest < DET_MIN_SIDE {
+        (DET_MIN_SIDE as f32 / shortest as f32).min(DET_MAX_SIDE as f32 / longest as f32)
+    } else {
+        1.0
+    };
     (round_side(width, ratio), round_side(height, ratio))
 }
 
@@ -64,8 +106,6 @@ struct Component {
     min_y: usize,
     max_x: usize,
     max_y: usize,
-    sum: f32,
-    count: usize,
 }
 
 fn find(parent: &mut [usize], mut node: usize) -> usize {
@@ -83,16 +123,16 @@ fn union(parent: &mut [usize], a: usize, b: usize) {
     }
 }
 
-/// DB post-processing. Pixels above `DET_THRESHOLD` form 8-connected components (union-find). Each
+/// DB post-processing. Pixels above `params.thresh` form 8-connected components (union-find). Each
 /// component's bounding box is kept if its area is at least `DET_MIN_AREA` and its mean probability
-/// is at least `DET_BOX_THRESHOLD`. Kept boxes are grown by the unclip distance, `area * ratio /
+/// is at least `params.box_thresh`. Kept boxes are grown by the unclip distance, `area * ratio /
 /// perimeter`, on every side, and clamped to the map. The result is sorted top to bottom, then left
 /// to right.
-pub fn db_boxes(prob: &[f32], width: usize, height: usize) -> Vec<MapBox> {
+pub fn db_boxes(prob: &[f32], width: usize, height: usize, params: &DbParams) -> Vec<MapBox> {
     if width == 0 || height == 0 || prob.len() != width * height {
         return Vec::new();
     }
-    let on = |i: usize| prob[i] > DET_THRESHOLD;
+    let on = |i: usize| prob[i] > params.thresh;
     let mut parent: Vec<usize> = (0..prob.len()).collect();
     for y in 0..height {
         for x in 0..width {
@@ -118,6 +158,21 @@ pub fn db_boxes(prob: &[f32], width: usize, height: usize) -> Vec<MapBox> {
         }
     }
 
+    // Prefix sums of the probability map, for the mean over any box in constant time.
+    let mut sums = vec![0.0f64; (width + 1) * (height + 1)];
+    for y in 0..height {
+        let mut row = 0.0f64;
+        for x in 0..width {
+            row += f64::from(prob[y * width + x]);
+            sums[(y + 1) * (width + 1) + x + 1] = sums[y * (width + 1) + x + 1] + row;
+        }
+    }
+    let box_mean = |c: &Component| {
+        let at = |x: usize, y: usize| sums[y * (width + 1) + x];
+        let total = at(c.max_x + 1, c.max_y + 1) - at(c.min_x, c.max_y + 1) - at(c.max_x + 1, c.min_y) + at(c.min_x, c.min_y);
+        (total / ((c.max_x - c.min_x + 1) * (c.max_y - c.min_y + 1)) as f64) as f32
+    };
+
     let mut components: HashMap<usize, Component> = HashMap::new();
     for y in 0..height {
         for x in 0..width {
@@ -126,34 +181,34 @@ pub fn db_boxes(prob: &[f32], width: usize, height: usize) -> Vec<MapBox> {
                 continue;
             }
             let root = find(&mut parent, i);
-            let component = components.entry(root).or_insert(Component { min_x: x, min_y: y, max_x: x, max_y: y, sum: 0.0, count: 0 });
+            let component = components.entry(root).or_insert(Component { min_x: x, min_y: y, max_x: x, max_y: y });
             component.min_x = component.min_x.min(x);
             component.min_y = component.min_y.min(y);
             component.max_x = component.max_x.max(x);
             component.max_y = component.max_y.max(y);
-            component.sum += prob[i];
-            component.count += 1;
         }
     }
 
-    let mut boxes: Vec<MapBox> = components.values().filter_map(|component| component_box(component, width, height)).collect();
+    let mut boxes: Vec<MapBox> =
+        components.values().filter_map(|component| component_box(component, box_mean(component), width, height, params)).collect();
     boxes.sort_by(|a, b| a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0)));
     boxes
 }
 
-fn component_box(component: &Component, width: usize, height: usize) -> Option<MapBox> {
-    let box_width = component.max_x - component.min_x + 1;
-    let box_height = component.max_y - component.min_y + 1;
-    if box_width * box_height < DET_MIN_AREA {
+/// One component's box, scored as PaddleOCR's `box_score_fast` does: the mean probability over the
+/// whole box, not only over the pixels above the threshold.
+fn component_box(component: &Component, score: f32, width: usize, height: usize, params: &DbParams) -> Option<MapBox> {
+    let box_width = (component.max_x - component.min_x + 1) as f32;
+    let box_height = (component.max_y - component.min_y + 1) as f32;
+    if box_width.min(box_height) < DET_MIN_SIDE_PX || score < params.box_thresh {
         return None;
     }
-    let score = component.sum / component.count as f32;
-    if score < DET_BOX_THRESHOLD {
+    let area = box_width * box_height;
+    let perimeter = 2.0 * (box_width + box_height);
+    let distance = area * params.unclip_ratio / perimeter;
+    if (box_width + 2.0 * distance).min(box_height + 2.0 * distance) < DET_MIN_SIDE_PX + 2.0 {
         return None;
     }
-    let area = (box_width * box_height) as f32;
-    let perimeter = 2.0 * (box_width + box_height) as f32;
-    let distance = area * DET_UNCLIP_RATIO / perimeter;
     Some(MapBox {
         x0: (component.min_x as f32 - distance).max(0.0),
         y0: (component.min_y as f32 - distance).max(0.0),
@@ -175,20 +230,50 @@ pub fn to_source_rect(boxed: MapBox, map_width: usize, map_height: usize, source
 }
 
 /// The scaled recogniser width for a crop: the height is scaled to `REC_HEIGHT` and the aspect ratio is
-/// kept, up to `REC_MAX_WIDTH`.
+/// kept, up to `REC_WIDTH_LIMIT`.
 pub fn rec_width(crop_width: u32, crop_height: u32) -> u32 {
     let ratio = crop_width as f32 / crop_height.max(1) as f32;
-    ((REC_HEIGHT as f32 * ratio).ceil() as u32).clamp(1, REC_MAX_WIDTH)
+    ((REC_HEIGHT as f32 * ratio).ceil() as u32).clamp(1, REC_WIDTH_LIMIT)
 }
 
-/// The recogniser input for one text region: NCHW data of shape `[3, REC_HEIGHT, REC_MAX_WIDTH]`. The
-/// scaled crop sits on the left and the rest is zero after normalisation, as RapidOCR pads. `None` if
-/// the region is empty after clipping to the image.
-pub fn rec_input(image: &BgrImage, rect: PhysRect) -> Option<Vec<f32>> {
+/// The recogniser input width for a scaled crop: at least `REC_MIN_WIDTH`, as PaddleOCR's
+/// `max_wh_ratio` starts at 320 / 48.
+pub fn rec_input_width(scaled: u32) -> u32 {
+    scaled.max(REC_MIN_WIDTH)
+}
+
+/// How many text lines the recogniser reads in one run, as PaddleOCR's `rec_batch_num`.
+pub const REC_BATCH: usize = 6;
+
+/// One text region scaled for the recogniser: `(scaled width, NCHW data of shape [3, REC_HEIGHT,
+/// scaled width])`, not yet padded. Long lines keep their aspect ratio instead of being squashed,
+/// and a crop at least 1.5 times taller than wide is turned 90° counter-clockwise first
+/// (PaddleOCR's vertical-text rule). `None` if the region is empty after clipping to the image.
+pub fn rec_crop(image: &BgrImage, rect: PhysRect) -> Option<(u32, Vec<f32>)> {
     let clipped = clip_rect(image, rect)?;
-    let scaled = rec_width(clipped.width, clipped.height);
-    let crop = resample_nchw(image, clipped, scaled, REC_HEIGHT, HALF);
-    Some(pad_right(&crop, 3 * REC_HEIGHT as usize, scaled as usize, REC_MAX_WIDTH as usize))
+    let (source, region) = if clipped.height as f32 >= REC_VERTICAL_RATIO * clipped.width as f32 {
+        let turned = image.crop_rotated_ccw(clipped);
+        let whole = PhysRect { x: 0, y: 0, width: turned.width(), height: turned.height() };
+        (std::borrow::Cow::Owned(turned), whole)
+    } else {
+        (std::borrow::Cow::Borrowed(image), clipped)
+    };
+    let scaled = rec_width(region.width, region.height);
+    Some((scaled, resample_nchw(&source, region, scaled, REC_HEIGHT, HALF)))
+}
+
+/// Pads a `rec_crop` result on the right with zeros (gray, after normalisation) to `width` columns,
+/// as PaddleOCR pads every line of a batch to the batch's widest.
+pub fn rec_pad(scaled: u32, crop: &[f32], width: u32) -> Vec<f32> {
+    pad_right(crop, 3 * REC_HEIGHT as usize, scaled as usize, width as usize)
+}
+
+/// The recogniser input for one text region on its own: `(width, NCHW data of shape [3,
+/// REC_HEIGHT, width])`, the scaled crop padded to `rec_input_width`.
+pub fn rec_input(image: &BgrImage, rect: PhysRect) -> Option<(u32, Vec<f32>)> {
+    let (scaled, crop) = rec_crop(image, rect)?;
+    let width = rec_input_width(scaled);
+    Some((width, rec_pad(scaled, &crop, width)))
 }
 
 /// Pads each of `rows` rows of `from` values with zeros on the right, up to `to` values.
@@ -321,11 +406,12 @@ mod tests {
     }
 
     #[test]
-    fn det_size_limits_the_longest_side_and_rounds_to_32() {
-        assert_eq!(det_size(1920, 1080), (960, 544));
-        assert_eq!(det_size(100, 50), (96, 64));
-        assert_eq!(det_size(10, 10), (32, 32));
+    fn det_size_keeps_screenshots_full_size_and_rounds_to_32() {
+        assert_eq!(det_size(1920, 1080), (1920, 1088), "a screenshot is not shrunk");
         assert_eq!(det_size(640, 480), (640, 480));
+        assert_eq!(det_size(8000, 1000), (4000, 512), "the longest side is capped");
+        assert_eq!(det_size(100, 50), (128, 64), "a small image is scaled up to a 64 px short side");
+        assert_eq!(det_size(10, 10), (64, 64));
     }
 
     #[test]
@@ -342,7 +428,7 @@ mod tests {
                 prob[y * width + x] = 0.8;
             }
         }
-        let boxes = db_boxes(&prob, width, height);
+        let boxes = db_boxes(&prob, width, height, &DbParams::default());
         assert_eq!(boxes.len(), 2);
         let first = boxes[0];
         assert!(first.x0 < 2.0 && first.x1 > 7.0, "unclip grows the first box: {first:?}");
@@ -361,7 +447,7 @@ mod tests {
                 prob[y * width + x] = 0.5;
             }
         }
-        assert!(db_boxes(&prob, width, height).is_empty());
+        assert!(db_boxes(&prob, width, height, &DbParams::default()).is_empty());
     }
 
     #[test]
@@ -369,7 +455,7 @@ mod tests {
         let (width, height) = (10usize, 10usize);
         let mut prob = vec![0.0f32; width * height];
         prob[3 * width + 3] = 0.99;
-        assert!(db_boxes(&prob, width, height).is_empty());
+        assert!(db_boxes(&prob, width, height, &DbParams::default()).is_empty());
     }
 
     #[test]
@@ -379,13 +465,53 @@ mod tests {
         for i in 0..5 {
             prob[i * width + i] = 0.9;
         }
-        let boxes = db_boxes(&prob, width, height);
+        // The diagonal fills only a fifth of its box, so a low box threshold keeps it.
+        let params = DbParams { box_thresh: 0.1, ..DbParams::default() };
+        let boxes = db_boxes(&prob, width, height, &params);
         assert_eq!(boxes.len(), 1);
     }
 
     #[test]
+    fn the_score_is_the_mean_over_the_whole_box() {
+        // A 5x5 ring of 0.9 around an empty middle: 0.9 over the lit pixels, but 16 * 0.9 / 25 =
+        // 0.576 over the box, under PP-OCRv5's 0.6, so PaddleOCR drops it and so does Laqta.
+        let (width, height) = (10usize, 10usize);
+        let mut prob = vec![0.0f32; width * height];
+        for y in 2..7 {
+            for x in 2..7 {
+                if y == 2 || y == 6 || x == 2 || x == 6 {
+                    prob[y * width + x] = 0.9;
+                }
+            }
+        }
+        assert!(db_boxes(&prob, width, height, &DbParams::default()).is_empty());
+        let lenient = DbParams { box_thresh: 0.5, ..DbParams::default() };
+        let boxes = db_boxes(&prob, width, height, &lenient);
+        assert_eq!(boxes.len(), 1);
+        assert!((boxes[0].score - 0.576).abs() < 1e-4, "{:?}", boxes[0]);
+    }
+
+    #[test]
+    fn a_region_thinner_than_three_pixels_is_dropped() {
+        let (width, height) = (20usize, 10usize);
+        let mut prob = vec![0.0f32; width * height];
+        for x in 2..18 {
+            prob[4 * width + x] = 0.95;
+            prob[5 * width + x] = 0.95;
+        }
+        assert!(db_boxes(&prob, width, height, &DbParams::default()).is_empty());
+    }
+
+    #[test]
+    fn db_params_are_checked() {
+        assert!(DbParams::default().check().is_ok());
+        assert!(DbParams { thresh: 1.2, ..DbParams::default() }.check().is_err());
+        assert!(DbParams { unclip_ratio: 0.0, ..DbParams::default() }.check().is_err());
+    }
+
+    #[test]
     fn a_mismatched_probability_map_gives_no_boxes() {
-        assert!(db_boxes(&[0.9; 5], 2, 2).is_empty());
+        assert!(db_boxes(&[0.9; 5], 2, 2, &DbParams::default()).is_empty());
     }
 
     #[test]
@@ -465,14 +591,15 @@ mod tests {
     fn rec_width_scales_the_height_and_caps_the_width() {
         assert_eq!(rec_width(100, 20), 240);
         assert_eq!(rec_width(10, 40), 12);
-        assert_eq!(rec_width(3200, 20), REC_MAX_WIDTH);
+        assert_eq!(rec_width(100_000, 20), REC_WIDTH_LIMIT);
     }
 
     #[test]
-    fn rec_input_pads_the_scaled_crop_to_the_max_width() {
+    fn rec_input_pads_a_short_crop_to_the_minimum_width() {
         // A 100x20 crop scales to 240x48. The input is [3, 48, 320], so columns 240 and up are zero.
         let image = BgrImage::new(100, 20, vec![128; 100 * 20 * 3]).expect("valid image");
-        let data = rec_input(&image, rect(0, 0, 100, 20)).expect("non-empty crop");
+        let (width, data) = rec_input(&image, rect(0, 0, 100, 20)).expect("non-empty crop");
+        assert_eq!(width, 320);
         assert_eq!(data.len(), 3 * 48 * 320);
         assert!(data[239] > 0.0, "the last scaled column is inside the crop");
         assert_eq!(data[240], 0.0, "the first padded column");
@@ -480,10 +607,33 @@ mod tests {
     }
 
     #[test]
+    fn a_long_line_gets_a_wider_input_instead_of_being_squashed() {
+        // 1000x20 keeps its 50:1 ratio at 48 px high: 2400 columns, not 320.
+        let image = BgrImage::new(1000, 20, vec![200; 1000 * 20 * 3]).expect("valid image");
+        let (width, data) = rec_input(&image, rect(0, 0, 1000, 20)).expect("non-empty crop");
+        assert_eq!(width, 2400);
+        assert_eq!(data.len(), 3 * 48 * 2400);
+    }
+
+    #[test]
+    fn a_tall_crop_is_turned_before_reading() {
+        // A 20x100 column of text is read as a 100x20 line: 240 scaled columns, padded to 320.
+        let mut pixels = vec![255u8; 20 * 100 * 3];
+        // Mark the top-right pixel; after a counter-clockwise turn it is the top-left one.
+        let top_right = (19) * 3;
+        pixels[top_right..top_right + 3].copy_from_slice(&[0, 0, 0]);
+        let image = BgrImage::new(20, 100, pixels).expect("valid image");
+        let turned = image.crop_rotated_ccw(rect(0, 0, 20, 100));
+        assert_eq!((turned.width(), turned.height()), (100, 20));
+        let (width, _) = rec_input(&image, rect(0, 0, 20, 100)).expect("non-empty crop");
+        assert_eq!(width, 320);
+    }
+
+    #[test]
     fn det_input_has_the_detector_shape() {
         let image = BgrImage::new(70, 40, vec![0; 70 * 40 * 3]).expect("valid image");
         let (width, height, data) = det_input(&image);
-        assert_eq!((width, height), (64, 32));
-        assert_eq!(data.len(), 3 * 64 * 32);
+        assert_eq!((width, height), (128, 64), "the short side is scaled up to 64");
+        assert_eq!(data.len(), 3 * 128 * 64);
     }
 }

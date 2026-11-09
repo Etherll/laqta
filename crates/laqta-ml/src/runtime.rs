@@ -213,7 +213,7 @@ fn gpu_providers(_provider: ExecutionProvider) -> Vec<ExecutionProviderDispatch>
 }
 
 fn build_session(environment: &Environment, path: &Path, provider: ExecutionProvider) -> Result<Session, MlError> {
-    let threads = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
+    let threads = intra_threads(std::thread::available_parallelism().map_or(1, NonZeroUsize::get));
     let gpu = gpu_providers(provider);
     if !gpu.is_empty() {
         match commit(environment, path, threads, &gpu) {
@@ -222,6 +222,13 @@ fn build_session(environment: &Environment, path: &Path, provider: ExecutionProv
         }
     }
     commit(environment, path, threads, &[])
+}
+
+/// ONNX Runtime's threads per model run: half the logical cores (about the physical ones), at most
+/// 8. More threads cost more in coordination than they gain: on a 32-thread CPU, OCR of a
+/// screenshot took 2.1 s with 32 threads and 0.73 s with 8.
+fn intra_threads(logical: usize) -> usize {
+    (logical / 2).clamp(1, 8)
 }
 
 fn commit(environment: &Environment, path: &Path, threads: usize, providers: &[ExecutionProviderDispatch]) -> Result<Session, MlError> {
@@ -237,6 +244,13 @@ fn commit(environment: &Environment, path: &Path, threads: usize, providers: &[E
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn intra_threads_use_about_the_physical_cores_up_to_eight() {
+        assert_eq!(intra_threads(1), 1);
+        assert_eq!(intra_threads(8), 4);
+        assert_eq!(intra_threads(32), 8);
+    }
     use crate::catalog::catalog;
 
     fn block_on<F: std::future::Future>(future: F) -> F::Output {

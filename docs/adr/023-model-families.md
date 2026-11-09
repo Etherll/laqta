@@ -89,7 +89,7 @@ Status: accepted (2026-11-07, owner request).
 | Family | Task | Covers | Notes |
 | - | - | - | - |
 | A: ImageNet-normalised, fixed square, sigmoid | background removal | BiRefNet (lite, general, matting, HR), BEN2, RMBG-2.0 as a custom model only | Parametric. Default entry: BiRefNet-lite fp16 (115 MB, MIT). BEN2 (219 MB, MIT) takes an `output_activation` parameter until we confirm whether its output is already a sigmoid |
-| O1: PP-OCR (DBNet detection + CTC recognition) | OCR | PP-OCRv5 mobile and server detection, per-script recognition models with pinned dictionaries | Apache-2.0. ONNX files from the oar-ocr or RapidOCR mirrors. PP-OCRv6 is added when ONNX exports exist |
+| O1: PP-OCR (DBNet detection + CTC recognition) | OCR | PP-OCRv6 medium (the default) and PP-OCRv5 mobile detection and recognition, with pinned dictionaries; each detector carries its own DB thresholds | Apache-2.0. ONNX files from PaddlePaddle's own Hugging Face repositories |
 | B: rembg U²-Net / IS-Net, min-max output | background removal | u2net, u2netp (5 MB), silueta, IS-Net; RMBG-1.4 as a custom model only | Parametric. IS-Net ships only once its weights licence is settled: the DIS repo says Apache-2.0, the ONNX mirror says AGPL-3.0 |
 | C: MODNet | background removal (portraits) | MODNet | Apache-2.0, 13 MB fp16. The output is already alpha |
 

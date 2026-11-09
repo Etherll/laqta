@@ -6,8 +6,11 @@
 //!   and `<id>.dict.txt` for the recogniser (the file names `Runtime::model_path` and `dict_path`
 //!   use).
 //!
-//! Without them each test logs why it skipped and returns. The golden test (a fixture image with its
-//! expected text) is still to come: it needs a fixture image that the owner supplies.
+//! - `LAQTA_OCR_PAIR` (optional): `<det id>,<rec id>` to test a pair other than the defaults, for
+//!   example `ppocr-v5-mobile-det,ppocr-v5-mobile-rec-multi`.
+//!
+//! Without the first two each test logs why it skipped and returns. The golden test reads
+//! `fixtures/laqta-home.png`, a screenshot of Laqta's home screen, and checks the lines it must find.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -38,8 +41,14 @@ fn setup(test: &str) -> Option<(Arc<Runtime>, ModelOcr, PathBuf, PathBuf)> {
         return None;
     };
     let catalog = catalog();
-    let det = catalog.default_for(Task::OcrDet).expect("a default detector");
-    let rec = catalog.default_for(Task::OcrRec).expect("a default recogniser");
+    let pair = std::env::var("LAQTA_OCR_PAIR").ok();
+    let (det, rec) = match pair.as_deref().and_then(|p| p.split_once(',')) {
+        Some((det, rec)) => (catalog.model(det).expect("a known detector id"), catalog.model(rec).expect("a known recogniser id")),
+        None => (
+            catalog.default_for(Task::OcrDet).expect("a default detector"),
+            catalog.default_for(Task::OcrRec).expect("a default recogniser"),
+        ),
+    };
     let runtime = Arc::new(Runtime::new(lib, models, ExecutionProvider::Cpu));
     runtime.ensure_ort().expect("ONNX Runtime loads from LAQTA_ORT_LIB");
     let det_path = runtime.model_path(&det.id);
@@ -92,4 +101,53 @@ fn a_dark_block_runs_detection_and_recognition() {
     });
     let result = block_on(ocr.recognize(bitmap, String::new())).expect("OCR runs on a dark block");
     eprintln!("dark block: {} line(s): {:?}", result.lines.len(), result.lines);
+}
+
+/// The lines a correct reading of `fixtures/laqta-home.png` contains, in reading order. They cover
+/// a heading, a long sentence (which a squashed recogniser input garbles), a path, small card text
+/// and key names.
+const HOME_LINES: [&str; 12] = [
+    "New capture",
+    "Capture",
+    "Grab a region, a window or the whole screen. Every capture lands in History.",
+    "Save to ~/Pictures/Laqta",
+    "Drag to select an area",
+    "Every monitor at once",
+    "Repeat the previous area",
+    "Ctrl+Shift+PrtSc",
+    "A long page, stitched",
+    "Pick an area, then record",
+    "Text capture (OCR)",
+    "or drop files anywhere here",
+];
+
+#[test]
+fn a_screenshot_reads_its_text() {
+    let Some((_runtime, ocr, _, _)) = setup("a_screenshot_reads_its_text") else {
+        return;
+    };
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/laqta-home.png");
+    let bytes = std::fs::read(&path).expect("the fixture is readable");
+    let bitmap = laqta_imaging::Codecs::builtin().decode(&bytes).expect("the fixture decodes");
+    let started = std::time::Instant::now();
+    let result = block_on(ocr.recognize(bitmap.clone(), String::new())).expect("OCR runs on the fixture");
+    let first = started.elapsed();
+    // The second run reuses the loaded models, as the app does after its first OCR.
+    let started = std::time::Instant::now();
+    block_on(ocr.recognize(bitmap, String::new())).expect("OCR runs again");
+    let elapsed = started.elapsed();
+    eprintln!("first run (loads the models) {first:?}, warm run {elapsed:?}");
+    let text: Vec<String> = result.lines.iter().map(|line| line.text.split_whitespace().collect::<Vec<_>>().join(" ")).collect();
+    for line in &result.lines {
+        eprintln!("{:>5.2} {:?}", line.confidence, line.text);
+    }
+    let joined = text.join("\n");
+    let missing: Vec<&str> = HOME_LINES.iter().copied().filter(|want| !joined.contains(want)).collect();
+    eprintln!(
+        "{} lines in {elapsed:?}; {} of {} expected lines found",
+        result.lines.len(),
+        HOME_LINES.len() - missing.len(),
+        HOME_LINES.len()
+    );
+    assert!(missing.is_empty(), "not read: {missing:#?}");
 }
