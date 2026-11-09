@@ -88,11 +88,20 @@ fn minimal_entry(executable: &Path) -> String {
     )
 }
 
+/// Whether a package installed an entry for the id in one of `data_dirs` (`XDG_DATA_DIRS`, colon
+/// separated). The user's hidden entry would shadow it, so none is written then.
+fn system_entry(data_dirs: &str) -> bool {
+    data_dirs.split(':').filter(|d| d.starts_with('/')).any(|d| desktop_file_path(Path::new(d)).is_file())
+}
+
 /// Writes the minimal entry unless an entry for the id is already there, in which case it only
 /// makes sure the entry names the app icon. Returns whether it wrote anything (the desktop's
 /// application cache then needs a refresh).
-fn ensure_entry(data_home: &Path, executable: &Path) -> bool {
+fn ensure_entry(data_home: &Path, executable: &Path, data_dirs: &str) -> bool {
     let path = desktop_file_path(data_home);
+    if !path.is_file() && system_entry(data_dirs) {
+        return false;
+    }
     if let Ok(old) = std::fs::read_to_string(&path) {
         let Some(new) = with_icon(&old) else { return false };
         return write_file(&path, &new, 0o644).is_ok();
@@ -111,7 +120,8 @@ fn ensure_entry(data_home: &Path, executable: &Path) -> bool {
 pub fn register(executable: &Path) {
     let data_home = xdg_dir("XDG_DATA_HOME", ".local/share");
     let icons = install_icons(&data_home);
-    if ensure_entry(&data_home, executable) | icons {
+    let data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".to_owned());
+    if ensure_entry(&data_home, executable, &data_dirs) | icons {
         // KDE looks entries up in its service cache; refresh it so the new one is found now.
         for tool in ["kbuildsycoca6", "kbuildsycoca5"] {
             if std::process::Command::new(tool).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok() {
@@ -145,12 +155,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("laqta-{}-app-id", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let exe = Path::new("/opt/laqta/laqta");
-        assert!(ensure_entry(&dir, exe));
+        assert!(ensure_entry(&dir, exe, ""));
         let path = desktop_file_path(&dir);
         assert!(path.ends_with("applications/io.github.etherll.Laqta.desktop"));
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("/opt/laqta/laqta") && text.contains("NoDisplay=true"), "{text}");
-        assert!(!ensure_entry(&dir, exe), "an existing entry is left alone");
+        assert!(!ensure_entry(&dir, exe, ""), "an existing entry is left alone");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -166,10 +176,23 @@ mod tests {
         let old = "[Desktop Entry]\nType=Application\nName=Laqta\nIcon=camera-photo\nExec=laqta\n";
         let path = desktop_file_path(&dir);
         write_file(&path, old, 0o644).unwrap();
-        assert!(ensure_entry(&dir, Path::new("/opt/laqta/laqta")));
+        assert!(ensure_entry(&dir, Path::new("/opt/laqta/laqta"), ""));
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(text, "[Desktop Entry]\nIcon=io.github.etherll.Laqta\nType=Application\nName=Laqta\nExec=laqta\n");
-        assert!(!ensure_entry(&dir, Path::new("/opt/laqta/laqta")));
+        assert!(!ensure_entry(&dir, Path::new("/opt/laqta/laqta"), ""));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_packaged_entry_is_not_shadowed() {
+        let dir = std::env::temp_dir().join(format!("laqta-{}-system-entry", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (home, system) = (dir.join("home"), dir.join("usr-share"));
+        write_file(&desktop_file_path(&system), "[Desktop Entry]\nName=Laqta\n", 0o644).unwrap();
+        let dirs = format!("/nowhere:{}", system.display());
+        assert!(!ensure_entry(&home, Path::new("/usr/bin/laqta"), &dirs));
+        assert!(!desktop_file_path(&home).exists(), "no hidden user entry over the packaged one");
+        assert!(ensure_entry(&home, Path::new("/usr/bin/laqta"), "/nowhere"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
