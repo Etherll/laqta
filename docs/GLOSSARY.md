@@ -20,6 +20,7 @@ adapter, leverage, locality) follow the codebase-design vocabulary and are not r
 | **Step** | One after-capture or after-upload operation (save, copy, upload, shorten, …). Private to Task |
 | **Frozen frame** | The screen image captured before the overlay opens. Selection and cropping work on it, so nothing is captured twice |
 | **Region session** | The module that turns frozen frames into a Selection, shared by capture and recording |
+| **Editor interaction** | The GPUI-free presenter between an editor window and its engine (`EditorInteraction`, `PhotoInteraction`): it applies input or queues edits, decides when the canvas must re-render, and coalesces renders through a **Render gate**. Renders run on a snapshot of the engine (`RenderJob`), never under its lock. Not a "session": it has no lifecycle of its own |
 | **Selection** | What a Region session returns: rects, the target window (title, process), and the final image with any overlay annotations rendered into it |
 | **Hover target** | A window or UI element the overlay can snap to |
 | **HoverSource** | The port that supplies hover targets, loaded in the background |
