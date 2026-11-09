@@ -267,7 +267,8 @@ fn copy_workspace(root: &Path, dest: &Path) -> Result<(), String> {
     for item in ["Cargo.toml", "Cargo.lock", "deps-policy.toml"] {
         std::fs::copy(root.join(item), dest.join(item)).map_err(|e| format!("{item}: {e}"))?;
     }
-    for dir in ["crates", "apps", "xtask"] {
+    // `vendor` holds the `[patch]` crates, so `cargo metadata` needs it; `assets` holds files crates embed.
+    for dir in ["crates", "apps", "xtask", "vendor", "assets"] {
         copy_dir(&root.join(dir), &dest.join(dir)).map_err(|e| format!("{dir}: {e}"))?;
     }
     Ok(())
