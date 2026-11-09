@@ -72,7 +72,7 @@ aes-gcm = "0.11.1"
 pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"] }
 bs58 = "0.5.1"
 hmac = "0.13.0"
-notify-debouncer-full = "0.6"
+notify-debouncer-full = "0.7"
 flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 rxing = { version = "0.9.3", default-features = false, features = ["encoding_rs", "decoders", "qrcode", "multi_barcode_readers"] }
 kamadak-exif = "0.6.2"
