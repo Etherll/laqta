@@ -16,7 +16,6 @@ use gpui_component::{ActiveTheme as _, Disableable as _, Root, Selectable as _, 
 use laqta_app as t;
 use laqta_domain::{Bitmap, ImageFormat, PixelFormat};
 use laqta_ports::{ClipboardContent, ToolKind};
-use smallvec::SmallVec;
 
 use crate::runtime::UiState;
 use crate::widgets;
@@ -207,17 +206,7 @@ fn spec(kind: ToolKind) -> Spec {
     }
 }
 
-/// GPUI wants BGRA.
-fn render_image(bitmap: &Bitmap) -> Option<Arc<RenderImage>> {
-    let mut bytes = bitmap.pixels().to_vec();
-    if bitmap.format() == PixelFormat::Rgba8 {
-        for px in bytes.as_chunks_mut::<4>().0 {
-            px.swap(0, 2);
-        }
-    }
-    let buffer = image::RgbaImage::from_raw(bitmap.width(), bitmap.height(), bytes)?;
-    Some(Arc::new(RenderImage::new(SmallVec::<[image::Frame; 1]>::from_elem(image::Frame::new(buffer), 1))))
-}
+use crate::gpu_image::render_image;
 
 fn decode_file(path: &Path, codecs: &laqta_imaging::Codecs) -> Result<Bitmap, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -347,8 +336,10 @@ impl ToolsWindow {
     }
 
     fn start_network(&mut self, cx: &mut Context<Self>) {
+        // Reading the counters walks /proc or the OS tables, so it runs on a background thread.
+        let first = cx.background_spawn(async move { sysinfo::Networks::new_with_refreshed_list() });
         cx.spawn(async move |this, cx| {
-            let Ok(mut networks) = sysinfo::Networks::new_with_refreshed_list() else {
+            let Ok(mut networks) = first.await else {
                 let _ = this.update(cx, |this, cx| {
                     this.net = vec![("Network counters are not available here".into(), 0, 0, 0, 0)];
                     cx.notify();
@@ -357,14 +348,19 @@ impl ToolsWindow {
             };
             loop {
                 cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
-                networks.refresh(true);
-                let mut rows: Vec<_> = networks
-                    .iter()
-                    .map(|(name, d)| {
-                        (name.to_string_lossy().into_owned(), d.received(), d.transmitted(), d.total_received(), d.total_transmitted())
-                    })
-                    .collect();
-                rows.sort_by(|a, b| a.0.cmp(&b.0));
+                let sampled = cx.background_spawn(async move {
+                    networks.refresh(true);
+                    let mut rows: Vec<_> = networks
+                        .iter()
+                        .map(|(name, d)| {
+                            (name.to_string_lossy().into_owned(), d.received(), d.transmitted(), d.total_received(), d.total_transmitted())
+                        })
+                        .collect();
+                    rows.sort_by(|a, b| a.0.cmp(&b.0));
+                    (networks, rows)
+                });
+                let rows;
+                (networks, rows) = sampled.await;
                 // The window closed: stop sampling.
                 if this
                     .update(cx, |this, cx| {

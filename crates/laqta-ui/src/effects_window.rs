@@ -32,6 +32,29 @@ const CONTROL_W: f32 = 176.0;
 const HEADER_H: f32 = 56.0;
 
 pub(crate) fn open(path: Option<PathBuf>, cx: &mut App) {
+    let Some(p) = path else { return open_on(None, None, cx) };
+    // Read, decode and convert the file off the GPUI thread; a file that doesn't decode opens on the sample.
+    let app = cx.global::<UiState>().services.app.clone();
+    let file = p.clone();
+    let task = cx.background_spawn(async move {
+        let decoded = app.decode_file(file).await;
+        decoded.map(|image| {
+            let original = crate::toast::render_image(&image);
+            (image, original)
+        })
+    });
+    cx.spawn(async move |cx| {
+        let decoded = task.await;
+        if let Err(e) = &decoded {
+            tracing::warn!(path = %p.display(), "effects: cannot open the image: {e}");
+        }
+        cx.update(|cx| open_on(Some(p), decoded.ok(), cx));
+    })
+    .detach();
+}
+
+/// Opens the window on `opened` (the decoded image at `path` and its GPUI copy), or on the sample image.
+fn open_on(path: Option<PathBuf>, opened: Option<(Bitmap, Option<Arc<RenderImage>>)>, cx: &mut App) {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(1180.), px(780.)), cx)),
         titlebar: Some(crate::chrome::titlebar("Image effects")),
@@ -42,7 +65,7 @@ pub(crate) fn open(path: Option<PathBuf>, cx: &mut App) {
         ..Default::default()
     };
     if let Err(e) = cx.open_window(options, |window, cx| {
-        let view = cx.new(|cx| EffectsWindow::new(path, window, cx));
+        let view = cx.new(|cx| EffectsWindow::new(path, opened, window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     }) {
         tracing::error!("effects window failed: {e:#}");
@@ -140,19 +163,25 @@ fn category_of(e: &Effect) -> &'static str {
 }
 
 impl EffectsWindow {
-    fn new(path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(path: Option<PathBuf>, opened: Option<(Bitmap, Option<Arc<RenderImage>>)>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let services = cx.global::<UiState>().services.clone();
         let settings = services.app.settings();
         let mut presets = settings.effect_presets.clone();
         if presets.is_empty() {
             presets.push(Preset { name: "Preset 1".into(), effects: Vec::new() });
         }
-        let opened = path.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| services.codecs.decode(&b).ok());
         let sample_name = match (&opened, &path) {
             (Some(_), Some(p)) => p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
             _ => "Sample image".into(),
         };
-        let sample = opened.unwrap_or_else(sample_image);
+        let (sample, original) = match opened {
+            Some((image, original)) => (image, original),
+            None => {
+                let sample = sample_image();
+                let original = crate::toast::render_image(&sample);
+                (sample, original)
+            }
+        };
         let params = cx.new(|cx| TextareaState::new(window, cx));
         cx.subscribe(&params, |this: &mut Self, _, ev: &InputEvent, cx| {
             if matches!(ev, InputEvent::Change) && this.json {
@@ -183,7 +212,6 @@ impl EffectsWindow {
             }
         })
         .detach();
-        let original = crate::toast::render_image(&sample);
         let saved = (presets.clone(), settings.defaults.effect_preset.clone());
         let mut this = EffectsWindow {
             after_capture: settings.defaults.effect_preset.clone(),

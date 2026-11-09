@@ -79,12 +79,21 @@ const TOOLS: [(Tool, &str); 9] = [
 ];
 
 pub(crate) fn open(image: Option<Bitmap>, path: Option<PathBuf>, cx: &mut App) {
-    let services = cx.global::<UiState>().services.clone();
-    let image = match (image, &path) {
-        (Some(b), _) => Some(b),
-        (None, Some(p)) => std::fs::read(p).ok().and_then(|b| services.codecs.decode(&b).ok()),
-        (None, None) => None,
-    };
+    if image.is_none()
+        && let Some(p) = path.clone()
+    {
+        // Read and decode the file off the GPUI thread; a file that doesn't decode opens a blank canvas.
+        let app = cx.global::<UiState>().services.app.clone();
+        cx.spawn(async move |cx| {
+            let decoded = app.decode_file(p.clone()).await;
+            if let Err(e) = &decoded {
+                tracing::warn!(path = %p.display(), "photo editor: cannot open the image: {e}");
+            }
+            cx.update(|cx| open(Some(decoded.unwrap_or_else(|_| blank(1280, 800))), Some(p), cx));
+        })
+        .detach();
+        return;
+    }
     let image = image.unwrap_or_else(|| blank(1280, 800));
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(1280.), px(820.)), cx)),
@@ -174,6 +183,9 @@ use gpui::Entity;
 impl PhotoWindow {
     fn new(image: Bitmap, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let services = cx.global::<UiState>().services.clone();
+        // Scan the fonts now, off the UI thread, so the first text tool or emoji doesn't wait for it.
+        let fonts = services.fonts.clone();
+        cx.background_spawn(async move { fonts.warm() }).detach();
         let size = (image.width(), image.height());
         let editor = PhotoEditor::from_bitmap(image).with_fonts(services.fonts.clone());
         let compute = crate::editor_window::compute_fn(services.spawner.clone());

@@ -18,6 +18,7 @@ use crate::assets::IconName;
 use crate::presenters::history::{self, HistoryRow, PAGE_SIZE};
 use crate::runtime::{UiState, activate};
 use crate::theme::{self, radius, space, text};
+use crate::thumbnails;
 use crate::widgets::{self, Pill};
 
 pub(crate) fn open(images_only: bool, cx: &mut App) {
@@ -127,23 +128,36 @@ impl HistoryWindow {
     fn save_tags(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.editing_tags.take() else { return };
         let tags = history::parse_tags(&self.tags.read(cx).value());
-        if let Some(store) = cx.global::<UiState>().services.history.clone()
-            && let Err(e) = store.set_tags(id, &tags)
-        {
-            self.error = Some(e.to_string());
-        }
-        self.reload(cx);
+        let Some(store) = cx.global::<UiState>().services.history.clone() else { return self.reload(cx) };
+        // SQLite writes run off the UI thread; the list reloads once the write is in.
+        let task = cx.background_spawn(async move { store.set_tags(id, &tags).map_err(|e| e.to_string()) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if let Err(e) = result {
+                    this.error = Some(e);
+                }
+                this.reload(cx);
+            });
+        })
+        .detach();
     }
 
     /// Removes the history entry only; the file stays where it is.
     fn delete(&mut self, id: i64, cx: &mut Context<Self>) {
-        if let Some(store) = cx.global::<UiState>().services.history.clone() {
-            match store.delete(id) {
-                Ok(()) => self.flash("Removed from history", cx),
-                Err(e) => self.error = Some(e.to_string()),
-            }
-        }
-        self.reload(cx);
+        let Some(store) = cx.global::<UiState>().services.history.clone() else { return self.reload(cx) };
+        let task = cx.background_spawn(async move { store.delete(id).map_err(|e| e.to_string()) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => this.flash("Removed from history", cx),
+                    Err(e) => this.error = Some(e),
+                }
+                this.reload(cx);
+            });
+        })
+        .detach();
     }
 
     /// Shows `text` under the title for a moment.
@@ -354,7 +368,7 @@ impl Render for HistoryWindow {
         }
 
         // A thumbnail with a hairline ring; `r` is the corner radius.
-        let thumb = |row: &HistoryRow, w: Option<f32>, h: f32, r: gpui::Pixels| {
+        let thumb = |row: &HistoryRow, image: Option<std::sync::Arc<gpui::RenderImage>>, w: Option<f32>, h: f32, r: gpui::Pixels| {
             let mut frame = div()
                 .h(px(h))
                 .rounded(r)
@@ -369,8 +383,8 @@ impl Render for HistoryWindow {
                 Some(w) => frame.w(px(w)).flex_none(),
                 None => frame.w_full(),
             };
-            match &row.thumbnail {
-                Some(path) => frame.child(img(path.clone()).size_full().rounded(r).object_fit(gpui::ObjectFit::Cover)),
+            match image {
+                Some(image) => frame.child(img(image).size_full().rounded(r).object_fit(gpui::ObjectFit::Cover)),
                 None => frame.child(div().text_size(px(11.)).text_color(t.muted_foreground).child(row.kind)),
             }
         };
@@ -389,7 +403,7 @@ impl Render for HistoryWindow {
                     .border_1()
                     .border_color(gpui::transparent_black())
                     .hover(move |s| s.bg(wash))
-                    .child(thumb(r, None, 132., radius::MD))
+                    .child(thumb(r, r.thumbnail.as_deref().and_then(|p| thumbnails::get(p, cx)), None, 132., radius::MD))
                     .child(
                         div()
                             .px(space::S1)
@@ -444,7 +458,7 @@ impl Render for HistoryWindow {
                     .py(px(10.))
                     .rounded(radius::XL)
                     .hover(move |s| s.bg(wash))
-                    .child(thumb(r, Some(64.), 40., radius::SM))
+                    .child(thumb(r, r.thumbnail.as_deref().and_then(|p| thumbnails::get(p, cx)), Some(64.), 40., radius::SM))
                     .child(
                         div()
                             .flex_1()

@@ -43,6 +43,12 @@ impl Fonts {
         Fonts::new(Arc::new(|| (fontdb::Database::new(), "en-US".to_string())))
     }
 
+    /// Builds the font system now, so the first text or emoji doesn't wait for the font scan.
+    /// The caller runs it off the UI thread; a layout that arrives meanwhile waits for it.
+    pub fn warm(&self) {
+        self.with(|_| ());
+    }
+
     fn with<T>(&self, f: impl FnOnce(&mut Loaded) -> T) -> T {
         let mut guard = match self.state.lock() {
             Ok(g) => g,

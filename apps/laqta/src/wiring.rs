@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use laqta_app::{App, Dispatched, Ports};
 use laqta_domain::settings::SETTINGS_VERSION;
-use laqta_domain::{Action, Settings};
+use laqta_domain::{Action, KeyChord, Settings};
 use laqta_library::{History, SettingsStore};
 use laqta_ports::{
     ActionCallback, Clipboard, Clock, HotkeyRegistrar, HoverSource, PortError, ScreenSource, Shell, Spawner, Tray, TrayMenu,
@@ -151,20 +151,37 @@ fn load_settings(store: &SettingsStore) -> Settings {
     }
 }
 
-/// Registers the enabled workflows' hotkeys and adjusts the tray tooltip when they're unsupported.
-fn register_hotkeys(hotkeys: &dyn HotkeyRegistrar, settings: &Settings, on_fire: ActionCallback) -> bool {
+/// The bindings last registered with the platform. Registration can take seconds (Wayland's portal), so it runs on a
+/// thread that may block, and this lets an unchanged save skip it.
+type RegisteredBindings = Arc<Mutex<Option<Vec<(KeyChord, Action)>>>>;
+
+/// Makes the platform's hotkeys match the app's current bindings unless they already do. Returns whether the platform
+/// reports hotkeys unsupported; false when the bindings were already registered. The settings are read under the lock,
+/// so the last run to take it leaves the latest bindings registered.
+fn sync_hotkeys(app: &App, hotkeys: &dyn HotkeyRegistrar, registered: &RegisteredBindings, on_fire: ActionCallback) -> bool {
+    let mut current = registered.lock().unwrap_or_else(|e| e.into_inner());
+    let bindings = app.settings().hotkey_bindings();
+    if current.as_ref() == Some(&bindings) {
+        return false;
+    }
     hotkeys.unregister_all();
     let mut unsupported = false;
-    for (chord, result) in hotkeys.register(&settings.hotkey_bindings(), on_fire) {
+    // A failed chord (not "unsupported") is retried on the next save, as before.
+    let mut retry = false;
+    for (chord, result) in hotkeys.register(&bindings, on_fire) {
         match result {
             Ok(()) => tracing::info!(%chord, "hotkey registered"),
             Err(PortError::Unsupported(why)) => {
                 unsupported = true;
                 tracing::warn!(%chord, "global hotkeys unsupported here ({why}); bind `laqta --action <name>` in your desktop's keyboard settings");
             }
-            Err(e) => tracing::warn!(%chord, "hotkey registration failed: {e}"),
+            Err(e) => {
+                retry = true;
+                tracing::warn!(%chord, "hotkey registration failed: {e}");
+            }
         }
     }
+    *current = if retry { None } else { Some(bindings) };
     unsupported
 }
 
@@ -198,7 +215,10 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let rng = stubs::system_rng();
     let uploaders = crate::uploads::registry(&data, Arc::new(ui.clone()), rng.clone());
     let host_deps = crate::uploads::host_deps(platform.secrets.clone(), platform.shell.clone());
-    crate::uploads::apply_accounts(&uploaders, &settings.hosts, &host_deps);
+    // Upload accounts read the system keyring (always, for Imgur's token): a D-Bus round trip, or
+    // an unlock prompt that never returns on its own. They load in the startup task below, before
+    // the startup requests that may upload, never on the main thread.
+    let accounts: Arc<Mutex<()>> = Arc::default();
     let cloud_options: crate::cloud::SharedCloudOptions = Arc::new(std::sync::RwLock::new(settings.cloud.clone()));
     let recorder_backend = Arc::new(std::sync::RwLock::new(settings.defaults.recording.backend));
     let model_options: crate::models::SharedModelOptions = Arc::new(std::sync::RwLock::new(settings.models.clone()));
@@ -254,6 +274,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let app = App::new(ports, settings);
     let (quit_tx, quit_rx) = mpsc::channel::<()>();
     let hotkeys = platform.hotkeys;
+    let registered: RegisteredBindings = Arc::new(Mutex::new(None));
 
     // Task events: the log and the history writer.
     let mut events = app.events();
@@ -274,12 +295,15 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         let spawner = spawner.clone();
         let quit_tx = quit_tx.clone();
         let hotkeys = hotkeys.clone();
+        let registered = registered.clone();
         let slot = dispatch_slot.clone();
         Arc::new(move |action: Action| {
             let app = app.clone();
             let quit_tx = quit_tx.clone();
             let hotkeys = hotkeys.clone();
+            let registered = registered.clone();
             let slot = slot.clone();
+            let blocking = spawner.clone();
             spawner.spawn(Box::pin(async move {
                 let workflow = app.settings().workflows.iter().find(|w| w.enabled && w.action == action).map(|w| w.id);
                 match app.dispatch(action, workflow).await {
@@ -289,7 +313,13 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                     Ok(Dispatched::HotkeysToggled(off)) => {
                         let cb = slot.lock().ok().and_then(|s| s.clone());
                         if let Some(cb) = cb {
-                            register_hotkeys(hotkeys.as_ref(), &app.settings(), cb);
+                            // The portal round trip can take seconds: keep it off the async worker.
+                            let app = app.clone();
+                            blocking
+                                .run_blocking(Box::new(move || {
+                                    sync_hotkeys(&app, hotkeys.as_ref(), &registered, cb);
+                                }))
+                                .await;
                         }
                         tracing::info!(off, "hotkeys toggled");
                     }
@@ -314,15 +344,17 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         let store = store.clone();
         let clock = clock.clone();
         let hotkeys = hotkeys.clone();
+        let registered = registered.clone();
+        let accounts = accounts.clone();
         let dispatch = dispatch.clone();
         let uploaders = uploaders.clone();
         let host_deps = host_deps.clone();
+        let spawner = spawner.clone();
         let sandbox = args.sandbox;
         Arc::new(move |s: Settings| {
             if !sandbox {
                 store.save(&s, SETTINGS_VERSION, clock.now()).map_err(|e| e.to_string())?;
             }
-            crate::uploads::apply_accounts(&uploaders, &s.hosts, &host_deps);
             laqta_ui::i18n::set_language(s.language.as_deref());
             if let Ok(mut m) = model_options.write() {
                 *m = s.models.clone();
@@ -334,9 +366,25 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                 *b = s.defaults.recording.backend;
             }
             app.set_settings(s.clone());
-            if use_hotkeys {
-                register_hotkeys(hotkeys.as_ref(), &s, dispatch.clone());
-            }
+            // Keyring reads and the hotkey portal can each take seconds; the caller (often the UI
+            // thread) returns at once. Hotkeys re-register only when the bindings changed.
+            let (app_b, hotkeys, registered, dispatch) = (app.clone(), hotkeys.clone(), registered.clone(), dispatch.clone());
+            let (uploaders, host_deps, accounts) = (uploaders.clone(), host_deps.clone(), accounts.clone());
+            let blocking = spawner.clone();
+            spawner.spawn(Box::pin(async move {
+                blocking
+                    .run_blocking(Box::new(move || {
+                        // Serialized, and from the latest settings, so two quick saves can't leave the older accounts.
+                        {
+                            let _one_at_a_time = accounts.lock().unwrap_or_else(|e| e.into_inner());
+                            crate::uploads::apply_accounts(&uploaders, &app_b.settings().hosts, &host_deps);
+                        }
+                        if use_hotkeys {
+                            sync_hotkeys(&app_b, hotkeys.as_ref(), &registered, dispatch);
+                        }
+                    }))
+                    .await;
+            }));
             app.start_watch_folders();
             Ok(())
         })
@@ -369,13 +417,34 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let language = laqta_ui::i18n::set_language(settings.language.as_deref());
     tracing::info!(language, "UI language");
     let mut menu: TrayMenu = laqta_ui::presenters::tray::tray_menu(&settings);
-    if use_hotkeys && register_hotkeys(hotkeys.as_ref(), &settings, dispatch.clone()) {
-        menu.tooltip = laqta_ui::presenters::tray::TOOLTIP_NO_HOTKEY.to_string();
-    }
-    match platform.tray.show(menu, dispatch.clone()) {
-        Ok(()) => tracing::info!("tray icon shown"),
-        Err(PortError::Unsupported(why)) => tracing::warn!("no tray ({why}); the CLI and hotkey still work"),
-        Err(e) => tracing::warn!("tray failed: {e}; the CLI and hotkey still work"),
+    // Hotkey registration can wait seconds on Wayland's portal, and the tray tooltip depends on its
+    // result, so both run on a startup thread while the main thread goes on to the UI.
+    let start_shell = {
+        let (app, hotkeys, registered, dispatch, tray) =
+            (app.clone(), hotkeys.clone(), registered.clone(), dispatch.clone(), platform.tray.clone());
+        move || {
+            if use_hotkeys && sync_hotkeys(&app, hotkeys.as_ref(), &registered, dispatch.clone()) {
+                menu.tooltip = laqta_ui::presenters::tray::TOOLTIP_NO_HOTKEY.to_string();
+            }
+            match tray.show(menu, dispatch) {
+                Ok(()) => tracing::info!("tray icon shown"),
+                Err(PortError::Unsupported(why)) => tracing::warn!("no tray ({why}); the CLI and hotkey still work"),
+                Err(e) => tracing::warn!("tray failed: {e}; the CLI and hotkey still work"),
+            }
+        }
+    };
+    let start_shell = Arc::new(Mutex::new(Some(start_shell)));
+    let on_thread = start_shell.clone();
+    let spawned = std::thread::Builder::new().name("laqta-startup".into()).spawn(move || {
+        if let Some(start) = on_thread.lock().ok().and_then(|mut s| s.take()) {
+            start();
+        }
+    });
+    if let Err(e) = spawned {
+        tracing::warn!("cannot start the startup thread ({e}); registering hotkeys inline");
+        if let Some(start) = start_shell.lock().ok().and_then(|mut s| s.take()) {
+            start();
+        }
     }
 
     app.start_watch_folders();
@@ -391,7 +460,15 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         let quit_tx = quit_tx.clone();
         let autoclose = args.autoclose;
         let mut events = app.events();
+        let (uploaders, host_deps, accounts, blocking) = (uploaders.clone(), host_deps.clone(), accounts.clone(), spawner.clone());
         spawner.spawn(Box::pin(async move {
+            let settings_app = app.clone();
+            blocking
+                .run_blocking(Box::new(move || {
+                    let _one_at_a_time = accounts.lock().unwrap_or_else(|e| e.into_inner());
+                    crate::uploads::apply_accounts(&uploaders, &settings_app.settings().hosts, &host_deps);
+                }))
+                .await;
             let mut pending: std::collections::HashSet<laqta_ports::TaskId> = Default::default();
             for request in startup {
                 match run_request(&app, &importer, request).await {

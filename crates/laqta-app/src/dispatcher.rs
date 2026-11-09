@@ -1,8 +1,10 @@
 use std::fmt;
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_broadcast::{InactiveReceiver, Receiver};
+use futures_channel::oneshot;
 use laqta_domain::geometry::PhysRect;
 use laqta_domain::region::HoverTarget;
 use laqta_domain::workflow::{AfterCaptureTasks, TaskSettings};
@@ -144,6 +146,7 @@ impl App {
     }
 
     pub fn dispatch(self: &Arc<Self>, action: Action, workflow: Option<WorkflowId>) -> BoxFuture<'static, Result<Dispatched, AppError>> {
+        tracing::debug!(target: "laqta::perf", ?action, "dispatch");
         Box::pin(Arc::clone(self).route(action, workflow))
     }
 
@@ -287,10 +290,29 @@ impl App {
         Ok(self.submit(CaptureImage::Image(image), ts, None))
     }
 
+    /// Reads the clipboard on the blocking pool, so the OS clipboard never stalls the async worker. A panic in the
+    /// read resumes here, as it would have from the read itself.
+    async fn clipboard_get(&self) -> Result<Option<ClipboardContent>, PortError> {
+        let clipboard = Arc::clone(&self.ports.clipboard);
+        let (tx, rx) = oneshot::channel();
+        self.ports
+            .spawner
+            .run_blocking(Box::new(move || {
+                let outcome = std::panic::catch_unwind(AssertUnwindSafe(move || clipboard.get()));
+                let _ = tx.send(outcome);
+            }))
+            .await;
+        match rx.await {
+            Ok(Ok(result)) => result,
+            Ok(Err(payload)) => std::panic::resume_unwind(payload),
+            Err(oneshot::Canceled) => Err(PortError::Cancelled),
+        }
+    }
+
     /// "Upload from clipboard": an image becomes a capture with the upload flag, each file is one upload, a URL
     /// is downloaded and uploaded, and other text is uploaded as text. An empty clipboard is an error.
-    fn clipboard_upload(&self, mut ts: TaskSettings) -> Result<Dispatched, AppError> {
-        match self.ports.clipboard.get().map_err(AppError::from)? {
+    async fn clipboard_upload(&self, mut ts: TaskSettings) -> Result<Dispatched, AppError> {
+        match self.clipboard_get().await.map_err(AppError::from)? {
             Some(ClipboardContent::Image(image)) => {
                 ts.after_capture.insert(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST);
                 Ok(self.submit(CaptureImage::Image(image), ts, None))
@@ -414,7 +436,7 @@ impl App {
                 }
                 Ok(self.upload(UploadSource::Text(text), ts))
             }
-            Action::ClipboardUpload | Action::ClipboardUploadWithContentViewer => self.clipboard_upload(ts),
+            Action::ClipboardUpload | Action::ClipboardUploadWithContentViewer => self.clipboard_upload(ts).await,
             Action::UploadUrl => {
                 let answer = self.ports.prompt.ask_text("URL to upload", "").await.map_err(AppError::from)?;
                 let url = as_url(&answer).ok_or_else(not_a_url)?.to_owned();

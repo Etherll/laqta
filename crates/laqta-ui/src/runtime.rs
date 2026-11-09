@@ -20,7 +20,7 @@ use crate::presenters::task_list::TaskList;
 use crate::{history_window, main_window, overlay, settings_window, toast, tray_popup};
 
 pub(crate) enum UiCommand {
-    ShowOverlay { frames: Vec<Frame>, view: RegionView, on_input: InputCallback },
+    ShowOverlay { frames: Vec<Frame>, images: Vec<Option<std::sync::Arc<gpui::RenderImage>>>, view: RegionView, on_input: InputCallback },
     UpdateOverlay(RegionView),
     CloseOverlay,
     Toast(Toast),
@@ -62,7 +62,8 @@ impl UiHandle {
 
 impl Overlay for UiHandle {
     fn show(&self, frames: Vec<Frame>, view: RegionView, on_input: InputCallback) -> Result<(), PortError> {
-        self.send(UiCommand::ShowOverlay { frames, view, on_input })
+        let images = overlay::render_images(&frames);
+        self.send(UiCommand::ShowOverlay { frames, images, view, on_input })
     }
     fn update(&self, view: RegionView) {
         let _ = self.send(UiCommand::UpdateOverlay(view));
@@ -369,6 +370,13 @@ pub fn run(services: UiServices, rx: UiReceiver) {
             actions_toolbar: None,
             recording: Default::default(),
         });
+        // Every window but the overlay is a `Root`; log its build and first frame (`perf`).
+        cx.observe_new(|_: &mut gpui_component::Root, window: Option<&mut gpui::Window>, _| {
+            if let Some(window) = window {
+                crate::perf::first_frame("window", window);
+            }
+        })
+        .detach();
 
         // Task events feed the task list; this task sleeps until an event arrives.
         let mut events = services.app.events();
@@ -408,12 +416,13 @@ pub fn run(services: UiServices, rx: UiReceiver) {
 }
 
 fn handle(cmd: UiCommand, cx: &mut App) {
+    tracing::debug!(target: "laqta::perf", "ui command");
     // The first command that can open a window loads the UI fonts; a tray-only process never does.
     if !matches!(cmd, UiCommand::UpdateOverlay(_) | UiCommand::CloseOverlay | UiCommand::ClosePins | UiCommand::Quit) {
         crate::theme::ensure_fonts(cx);
     }
     match cmd {
-        UiCommand::ShowOverlay { frames, view, on_input } => overlay::show(frames, view, on_input, cx),
+        UiCommand::ShowOverlay { frames, images, view, on_input } => overlay::show(frames, images, view, on_input, cx),
         UiCommand::UpdateOverlay(view) => overlay::update(view, cx),
         UiCommand::CloseOverlay => overlay::close(cx),
         UiCommand::Toast(t) => toast::show(t, cx),

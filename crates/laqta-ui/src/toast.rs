@@ -10,24 +10,13 @@ use gpui::{
 };
 use gpui_component::ActiveTheme as _;
 use laqta_domain::workflow::{ToastClickAction, ToastPlacement};
-use laqta_domain::{Bitmap, PixelFormat};
 use laqta_ports::Toast;
-use smallvec::SmallVec;
 
 use crate::runtime::UiState;
 
 const MARGIN: f32 = 16.0;
 
-pub(crate) fn render_image(bitmap: &Bitmap) -> Option<Arc<RenderImage>> {
-    let mut bytes = bitmap.pixels().to_vec();
-    if bitmap.format() == PixelFormat::Rgba8 {
-        for px in bytes.as_chunks_mut::<4>().0 {
-            px.swap(0, 2);
-        }
-    }
-    let buffer = image::RgbaImage::from_raw(bitmap.width(), bitmap.height(), bytes)?;
-    Some(Arc::new(RenderImage::new(SmallVec::<[image::Frame; 1]>::from_elem(image::Frame::new(buffer), 1))))
-}
+pub(crate) use crate::gpu_image::render_image;
 
 pub(crate) fn show(toast: Toast, cx: &mut App) {
     let Some(display) = cx.primary_display() else { return };

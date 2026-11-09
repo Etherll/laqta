@@ -19,7 +19,7 @@ use laqta_ports::fakes::{
 };
 use laqta_ports::{AppError, BoxFuture, HostInfo, HoverSource, PortError, RegionView};
 
-use super::{Selection, crop_frames, select, view};
+use super::{Selection, crop_frames, pixel_at, pixel_in_frames, select, view};
 use crate::dispatcher::Ports;
 
 /// The left monitor's pixel as the frame holds it (BGRA), and as the composed image holds it (RGBA).
@@ -424,4 +424,20 @@ fn middle_click_with_the_active_monitor_action_returns_the_monitor_under_the_cur
     let left = middle_click_selection((1, 1));
     assert_eq!(left.rects, vec![PhysRect { x: 0, y: 0, width: 4, height: 4 }]);
     assert_eq!(pixels(&left.image), vec![LEFT; 16]);
+}
+
+#[test]
+fn the_first_views_pixel_matches_the_composite_everywhere() {
+    in_pool(|| {
+        // Side by side, and overlapping (the later frame paints on top).
+        for (frames, width) in [(two_frames(), 8), (vec![frame(0, LEFT_BGRA), frame(2, RIGHT_BGRA)], 6)] {
+            let bounds = PhysRect { x: 0, y: 0, width, height: 4 };
+            let composed = laqta_imaging::compose_monitors(&frames);
+            for y in -1..=4 {
+                for x in -1..=width as i32 {
+                    assert_eq!(pixel_in_frames(&frames, (x, y)), pixel_at(&composed, bounds, (x, y)), "at ({x}, {y})");
+                }
+            }
+        }
+    });
 }

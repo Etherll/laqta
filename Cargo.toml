@@ -144,6 +144,27 @@ blocking = { path = "vendor/blocking" }
 # gpui-component 0.9.0 draws square client-side window corners; Laqta rounds them (ADR 028).
 gpui-component = { path = "vendor/gpui-component" }
 
+# Dev builds run dependencies optimized: unoptimized GPUI, wgpu/naga, png, image and cosmic-text
+# make window opens, captures and encodes many times slower than release. Workspace crates stay
+# quick to rebuild; the pixel-loop crates get opt-level 2.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.laqta-imaging]
+opt-level = 2
+
+[profile.dev.package.laqta-editor]
+opt-level = 2
+
+[profile.dev.package.laqta-photo]
+opt-level = 2
+
+[profile.dev.package.laqta-platform-linux]
+opt-level = 2
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

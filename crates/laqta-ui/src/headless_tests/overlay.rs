@@ -28,7 +28,8 @@ fn overlay_covers_the_monitor_at_125_percent(cx: &mut TestAppContext) {
         },
         image: Bitmap::new(w, h, PixelFormat::Bgra8, vec![0u8; (w * h * 4) as usize].into()).unwrap(),
     };
-    cx.update(|cx| crate::overlay::show(vec![frame], RegionView::default(), Arc::new(|_| {}), cx));
+    let images = crate::overlay::render_images(std::slice::from_ref(&frame));
+    cx.update(|cx| crate::overlay::show(vec![frame], images, RegionView::default(), Arc::new(|_| {}), cx));
     let window = *cx.windows().last().expect("the overlay window");
     let mut vcx = VisualTestContext::from_window(window, cx);
 

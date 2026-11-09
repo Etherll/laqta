@@ -21,6 +21,18 @@ pub struct TaskRow {
 #[derive(Clone, Debug, Default)]
 pub struct TaskList {
     rows: Vec<TaskRow>,
+    /// Counts the events that can change the history library, so a view reloads it only then.
+    library_generation: u64,
+}
+
+/// Whether `event` can change what the history library holds: a save (the history writer records
+/// it), a delete, or a task settling. Progress, recording ticks and the rest only repaint.
+pub fn changes_library(event: &TaskEvent) -> bool {
+    match event {
+        TaskEvent::Saved { .. } | TaskEvent::Deleted { .. } => true,
+        TaskEvent::StatusChanged { status, .. } => matches!(status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Stopped),
+        _ => false,
+    }
 }
 
 pub fn status_label(status: TaskStatus) -> &'static str {
@@ -59,6 +71,11 @@ impl TaskList {
         &self.rows
     }
 
+    /// Goes up by one for each applied event where `changes_library` holds.
+    pub fn library_generation(&self) -> u64 {
+        self.library_generation
+    }
+
     pub fn is_running(&self) -> bool {
         self.rows
             .iter()
@@ -89,6 +106,9 @@ impl TaskList {
     }
 
     pub fn apply(&mut self, event: &TaskEvent) {
+        if changes_library(event) {
+            self.library_generation += 1;
+        }
         let row = self.row(event.id());
         match event {
             TaskEvent::StatusChanged { status, .. } => {
@@ -143,6 +163,19 @@ mod tests {
         assert_eq!(status_tone(TaskStatus::Completed), StatusTone::Success);
         assert_eq!(status_tone(TaskStatus::Failed), StatusTone::Danger);
         assert_eq!(status_tone(TaskStatus::InQueue), StatusTone::Neutral);
+    }
+
+    #[test]
+    fn only_saves_deletes_and_settling_change_the_library() {
+        let mut list = TaskList::default();
+        let id = TaskId(1);
+        list.apply(&TaskEvent::StatusChanged { id, status: TaskStatus::Working });
+        list.apply(&TaskEvent::Progress { id, sent: 10, total: Some(100) });
+        assert_eq!(list.library_generation(), 0);
+        list.apply(&TaskEvent::Saved { id, path: "/s/a.png".into() });
+        list.apply(&TaskEvent::StatusChanged { id, status: TaskStatus::Completed });
+        list.apply(&TaskEvent::Deleted { id, path: "/s/a.png".into() });
+        assert_eq!(list.library_generation(), 3);
     }
 
     #[test]

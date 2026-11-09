@@ -14,7 +14,6 @@ use laqta_domain::geometry::PhysRect;
 use laqta_domain::region::{Button, KeyMods, RegionCommand, RegionInput, RegionKey};
 use laqta_domain::{Bitmap, Frame, PixelFormat};
 use laqta_ports::{InputCallback, RegionView};
-use smallvec::SmallVec;
 
 use crate::runtime::UiState;
 
@@ -36,18 +35,20 @@ pub(crate) struct OverlayModel {
     on_input: InputCallback,
 }
 
-/// GPUI wants BGRA. Frames are BGRA (Windows, X11) or RGBA (Wayland).
-fn render_image(bitmap: &Bitmap) -> Option<Arc<RenderImage>> {
-    let mut bytes = bitmap.pixels().to_vec();
-    if bitmap.format() == PixelFormat::Rgba8 {
-        for px in bytes.as_chunks_mut::<4>().0 {
-            px.swap(0, 2);
-        }
+/// Converts each frame for GPUI, off the GPUI thread: `UiHandle::show` calls this on the caller's
+/// thread, one scoped thread per extra monitor.
+pub(crate) fn render_images(frames: &[Frame]) -> Vec<Option<Arc<RenderImage>>> {
+    match frames {
+        [] => Vec::new(),
+        [one] => vec![render_image(&one.image)],
+        many => std::thread::scope(|scope| {
+            let handles: Vec<_> = many.iter().map(|f| scope.spawn(|| render_image(&f.image))).collect();
+            handles.into_iter().map(|h| h.join().ok().flatten()).collect()
+        }),
     }
-    let buffer = image::RgbaImage::from_raw(bitmap.width(), bitmap.height(), bytes)?;
-    let frames: SmallVec<[image::Frame; 1]> = SmallVec::from_elem(image::Frame::new(buffer), 1);
-    Some(Arc::new(RenderImage::new(frames)))
 }
+
+use crate::gpu_image::render_image;
 
 /// Pairs each frame with a display: both sorted by position (left to right, then top to bottom).
 fn match_displays(frames: &[Frame], cx: &App) -> Vec<Option<Bounds<Pixels>>> {
@@ -73,12 +74,14 @@ fn is_wayland() -> bool {
     cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
 }
 
-pub(crate) fn show(frames: Vec<Frame>, view: RegionView, on_input: InputCallback, cx: &mut App) {
+/// `images` holds `render_images(&frames)`, converted before the command reached the GPUI thread.
+pub(crate) fn show(frames: Vec<Frame>, images: Vec<Option<Arc<RenderImage>>>, view: RegionView, on_input: InputCallback, cx: &mut App) {
     close(cx);
     let display_bounds = match_displays(&frames, cx);
     let monitors: Vec<MonitorImage> = frames
         .iter()
-        .filter_map(|f| Some(MonitorImage { rect: f.monitor.rect, image: render_image(&f.image)?, bitmap: f.image.clone() }))
+        .zip(images)
+        .filter_map(|(f, image)| Some(MonitorImage { rect: f.monitor.rect, image: image?, bitmap: f.image.clone() }))
         .collect();
     let count = monitors.len();
     let model = cx.new(|_| OverlayModel { monitors, view, on_input });
@@ -129,6 +132,7 @@ fn open_window(
     };
     let handle = cx
         .open_window(options, |window, cx| {
+            crate::perf::first_frame("overlay", window);
             let view = cx.new(|cx| OverlayView::new(model, index, cx));
             let focus = view.read(cx).focus.clone();
             window.focus(&focus, cx);

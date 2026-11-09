@@ -11,8 +11,7 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{ActiveTheme as _, Root};
-use laqta_domain::{Bitmap, PixelFormat};
-use smallvec::SmallVec;
+use laqta_domain::Bitmap;
 
 use crate::widgets;
 
@@ -22,16 +21,7 @@ pub(crate) struct Pins(Vec<AnyWindowHandle>);
 
 impl gpui::Global for Pins {}
 
-fn render_image(bitmap: &Bitmap) -> Option<Arc<RenderImage>> {
-    let mut bytes = bitmap.pixels().to_vec();
-    if bitmap.format() == PixelFormat::Rgba8 {
-        for px in bytes.as_chunks_mut::<4>().0 {
-            px.swap(0, 2);
-        }
-    }
-    let buffer = image::RgbaImage::from_raw(bitmap.width(), bitmap.height(), bytes)?;
-    Some(Arc::new(RenderImage::new(SmallVec::<[image::Frame; 1]>::from_elem(image::Frame::new(buffer), 1))))
-}
+use crate::gpu_image::render_image;
 
 pub(crate) fn pin(image: Bitmap, cx: &mut App) {
     let Some(render) = render_image(&image) else { return };

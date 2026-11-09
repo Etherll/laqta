@@ -20,6 +20,7 @@ use crate::presenters::library::{self, CardGlyph, LibraryCard, LibraryTab};
 use crate::presenters::task_list::{StatusTone, TaskList, status_label, status_tone};
 use crate::runtime::{UiState, activate};
 use crate::theme::{self, radius, space, text};
+use crate::thumbnails;
 use crate::widgets::{self, Pill, Tone};
 
 /// How many items the library shows; "See all" opens History for the rest.
@@ -60,14 +61,21 @@ struct MainWindow {
     /// A short confirmation, such as "Copied", shown in the library header for a moment.
     notice: Option<SharedString>,
     focus: FocusHandle,
+    /// `TaskList::library_generation` at the last reload.
+    library_generation: u64,
 }
 
 impl MainWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let tasks = cx.global::<UiState>().tasks.clone();
-        // Repaint on task events and reload the library (a small indexed query).
-        cx.observe(&tasks, |this, _, cx| {
-            this.reload(cx);
+        // Repaint on task events. Reload the library (a small indexed query) only after an event that
+        // can change it, not on every progress or recording tick.
+        cx.observe(&tasks, |this, tasks, cx| {
+            let generation = tasks.read(cx).library_generation();
+            if generation != this.library_generation {
+                this.library_generation = generation;
+                this.reload(cx);
+            }
             cx.notify();
         })
         .detach();
@@ -79,7 +87,9 @@ impl MainWindow {
         })
         .detach();
         let focus = cx.focus_handle();
-        let mut this = MainWindow { tasks, library: Vec::new(), tab: LibraryTab::Recent, grid: true, search, notice: None, focus };
+        let library_generation = tasks.read(cx).library_generation();
+        let mut this =
+            MainWindow { tasks, library: Vec::new(), tab: LibraryTab::Recent, grid: true, search, notice: None, focus, library_generation };
         this.reload(cx);
         this
     }
@@ -498,6 +508,7 @@ impl MainWindow {
         let mut grid = div().grid().grid_cols(cols).gap(space::S4);
         for c in &self.library {
             let group = SharedString::from(format!("lib-{}", c.id));
+            let image = c.thumbnail.as_deref().and_then(|p| thumbnails::get(p, cx));
             let thumb = div()
                 .relative()
                 .w_full()
@@ -507,9 +518,9 @@ impl MainWindow {
                 .flex()
                 .items_center()
                 .justify_center()
-                .when(c.thumbnail.is_none(), |d| d.bg(t.foreground.opacity(0.04)))
-                .child(match &c.thumbnail {
-                    Some(path) => img(path.clone()).size_full().rounded(radius::LG).object_fit(gpui::ObjectFit::Cover).into_any_element(),
+                .when(image.is_none(), |d| d.bg(t.foreground.opacity(0.04)))
+                .child(match image {
+                    Some(image) => img(image).size_full().rounded(radius::LG).object_fit(gpui::ObjectFit::Cover).into_any_element(),
                     None => widgets::icon(glyph_icon(c.glyph), t.muted_foreground).size(px(28.)).into_any_element(),
                 })
                 .child(self.overlay_actions(c, &group, cx));
@@ -597,8 +608,8 @@ impl MainWindow {
             .flex()
             .items_center()
             .justify_center()
-            .child(match &c.thumbnail {
-                Some(path) => img(path.clone()).size_full().rounded(radius::SM).object_fit(gpui::ObjectFit::Cover).into_any_element(),
+            .child(match c.thumbnail.as_deref().and_then(|p| thumbnails::get(p, cx)) {
+                Some(image) => img(image).size_full().rounded(radius::SM).object_fit(gpui::ObjectFit::Cover).into_any_element(),
                 None => widgets::icon(glyph_icon(c.glyph), t.muted_foreground).into_any_element(),
             });
         let mut row = div()

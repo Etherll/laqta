@@ -37,7 +37,9 @@ pub(crate) async fn select(ports: &Ports, frames: Vec<Frame>, options: &RegionCa
     let bounds = bounds_of(&frames)?;
     // The overlay takes the frames, so keep each monitor's rect and primary flag for an ActiveMonitor outcome.
     let monitors: Vec<(PhysRect, bool)> = frames.iter().map(|f| (frame_rect(f), f.monitor.primary)).collect();
-    let composed = compose(ports.spawner.as_ref(), frames.clone()).await?;
+    // Compose the desktop only after the overlay is up: the overlay paints the frames themselves,
+    // and inputs queue in the channel until the composite is ready.
+    let compose_frames = frames.clone();
     let mut state = RegionState::new(RegionConfig {
         bounds,
         multi_region: options.multi_region,
@@ -55,7 +57,7 @@ pub(crate) async fn select(ports: &Ports, frames: Vec<Frame>, options: &RegionCa
         // The session may have ended already. A late input has nowhere to go.
         let _ = tx.unbounded_send(input);
     });
-    let first = view(&state, bounds, options, pixel_at(&composed, bounds, state.cursor()));
+    let first = view(&state, bounds, options, pixel_in_frames(&frames, state.cursor()));
     ports.overlay.show(frames, first, on_input)?;
 
     let loaded = async {
@@ -68,6 +70,14 @@ pub(crate) async fn select(ports: &Ports, frames: Vec<Frame>, options: &RegionCa
     };
 
     let session = async {
+        // Composed while the overlay is up and the hover targets load; inputs wait in the channel.
+        let composed = match compose(ports.spawner.as_ref(), compose_frames).await {
+            Ok(composed) => composed,
+            Err(error) => {
+                ports.overlay.close();
+                return Err(error);
+            }
+        };
         while let Some(input) = inputs.next().await {
             let changed = state.handle(input);
             if let Some(outcome) = state.outcome().cloned() {
@@ -186,6 +196,25 @@ async fn compose(spawner: &dyn Spawner, frames: Vec<Frame>) -> Result<Bitmap, Ap
         Ok(Ok(bitmap)) => Ok(bitmap),
         Ok(Err(message)) => Err(AppError::Panic(message)),
         Err(oneshot::Canceled) => Err(AppError::Cancelled),
+    }
+}
+
+/// The RGB under `at` (desktop pixels), read from the frame that covers it. The first view uses it,
+/// before the composite exists; frames sit where `compose_monitors` puts them (`frame_rect`), and a
+/// later frame paints over an earlier one, so the last covering frame wins.
+fn pixel_in_frames(frames: &[Frame], at: (i32, i32)) -> [u8; 3] {
+    let (x, y) = (i64::from(at.0), i64::from(at.1));
+    let covers = |r: &PhysRect| {
+        (i64::from(r.x)..i64::from(r.x) + i64::from(r.width)).contains(&x)
+            && (i64::from(r.y)..i64::from(r.y) + i64::from(r.height)).contains(&y)
+    };
+    let Some(frame) = frames.iter().rev().find(|f| covers(&frame_rect(f))) else { return [0; 3] };
+    let rect = frame_rect(frame);
+    let i = ((y - i64::from(rect.y)) * i64::from(rect.width) + (x - i64::from(rect.x))) as usize * 4;
+    let Some(px) = frame.image.pixels().get(i..i + 4) else { return [0; 3] };
+    match frame.image.format() {
+        PixelFormat::Rgba8 => [px[0], px[1], px[2]],
+        PixelFormat::Bgra8 => [px[2], px[1], px[0]],
     }
 }
 

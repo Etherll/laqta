@@ -5,6 +5,7 @@
 mod auto_capture;
 mod dispatcher;
 mod files;
+mod images;
 mod recording;
 mod region;
 mod scrolling;

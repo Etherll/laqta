@@ -15,5 +15,5 @@ pub mod tools;
 
 pub use codecs::{CodecError, CodecExtension, Codecs, EncodeOptions, sniff};
 pub use compose::compose_monitors;
-pub use ops::{crop, resize, thumbnail, upscale_nearest};
+pub use ops::{bgra8_pixels, crop, resize, thumbnail, upscale_nearest};
 pub use png::{EncodeError, encode_png};

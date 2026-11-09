@@ -9,19 +9,13 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::{ActiveTheme as _, Root};
-use smallvec::SmallVec;
 
 use crate::runtime::UiState;
 use crate::widgets;
 
 fn qr_image(url: &str) -> Option<Arc<RenderImage>> {
     let bmp = laqta_imaging::qr::qr_encode(url, 6).ok()?;
-    let mut bytes = bmp.pixels().to_vec();
-    for p in bytes.as_chunks_mut::<4>().0 {
-        p.swap(0, 2);
-    }
-    let buffer = image::RgbaImage::from_raw(bmp.width(), bmp.height(), bytes)?;
-    Some(Arc::new(RenderImage::new(SmallVec::<[image::Frame; 1]>::from_elem(image::Frame::new(buffer), 1))))
+    crate::gpu_image::render_image(&bmp)
 }
 
 pub(crate) fn open(url: String, qr: bool, cx: &mut App) {

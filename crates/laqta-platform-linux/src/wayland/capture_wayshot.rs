@@ -31,7 +31,10 @@ fn to_layout(o: &libwayshot::output::OutputInfo) -> OutputLayout {
 /// captured width over its logical width. The space uses the largest scale, so a frame whose
 /// capture is smaller is resampled to its physical size.
 pub fn capture_all() -> Result<Vec<Frame>, PortError> {
+    let started = std::time::Instant::now();
+    let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;
     let conn = WayshotConnection::new().map_err(fail)?;
+    tracing::debug!(target: "laqta::perf", ms = ms(started), "wayshot connected");
     let outputs = conn.get_all_outputs().to_vec();
     if outputs.is_empty() {
         return Err(PortError::Failed("wayshot: no outputs".into()));
@@ -40,7 +43,12 @@ pub fn capture_all() -> Result<Vec<Frame>, PortError> {
     let mut images = Vec::with_capacity(outputs.len());
     for o in &outputs {
         let mut layout = to_layout(o);
-        let img = conn.screenshot_single_output(o, false).map_err(fail)?.into_rgba8();
+        let shot = std::time::Instant::now();
+        let img = conn.screenshot_single_output(o, false).map_err(fail)?;
+        tracing::debug!(target: "laqta::perf", ms = ms(shot), output = %o.name, "wayshot screenshot");
+        let convert = std::time::Instant::now();
+        let img = img.into_rgba8();
+        tracing::debug!(target: "laqta::perf", ms = ms(convert), "wayshot into_rgba8");
         layout.scale = if layout.logical.width > 0 { img.width() as f32 / layout.logical.width as f32 } else { 1.0 };
         layouts.push(layout);
         images.push(img);
@@ -64,6 +72,7 @@ pub fn capture_all() -> Result<Vec<Frame>, PortError> {
             image,
         });
     }
+    tracing::debug!(target: "laqta::perf", ms = ms(started), "wayshot capture_all");
     Ok(frames)
 }
 

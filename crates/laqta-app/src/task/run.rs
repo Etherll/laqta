@@ -7,14 +7,16 @@
 //! the before-upload window), and the toast, so the toast can carry the URL (upload.rs).
 
 use std::fmt::Display;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use futures_channel::oneshot;
 use laqta_domain::Bitmap;
 use laqta_domain::effects::Preset;
 use laqta_domain::workflow::{AfterCaptureTasks, AfterUploadTasks, TaskSettings};
-use laqta_ports::{AppError, PortError, TaskEvent, TaskId, TaskStatus, Toast, UploadData, UploadKind, UploadRequest};
+use laqta_ports::{AppError, Clipboard, PortError, TaskEvent, TaskId, TaskStatus, Toast, UploadData, UploadKind, UploadRequest};
 
 use super::encode::{self, Encoded, Plan, Prepared};
 use super::save::{self, Outcome, SavedFile};
@@ -105,20 +107,20 @@ impl Job {
         let saved = saved_file.as_ref();
 
         if flags.contains(AfterCaptureTasks::COPY_IMAGE_TO_CLIPBOARD) {
-            self.copy_image(&image)?;
+            self.copy_image(&image).await?;
         }
         let mut thumbnail_path = None;
         if flags.contains(AfterCaptureTasks::SAVE_THUMBNAIL_IMAGE_TO_FILE) {
             thumbnail_path = self.save_thumbnail(saved, thumbnail).await?;
         }
         if flags.contains(AfterCaptureTasks::COPY_FILE_TO_CLIPBOARD) {
-            self.copy_file(saved)?;
+            self.copy_file(saved).await?;
         }
         if flags.contains(AfterCaptureTasks::COPY_FILE_PATH_TO_CLIPBOARD) {
-            self.copy_path(saved)?;
+            self.copy_path(saved).await?;
         }
         if flags.contains(AfterCaptureTasks::COPY_FOLDER_PATH_TO_CLIPBOARD) {
-            self.copy_folder(saved)?;
+            self.copy_folder(saved).await?;
         }
         if flags.contains(AfterCaptureTasks::SEND_IMAGE_TO_PRINTER) {
             self.print(saved)?;
@@ -428,10 +430,10 @@ impl Job {
         self.emit(TaskEvent::Saved { id: self.id, path: saved.path.clone() });
         let flags = self.settings.after_capture;
         if flags.contains(AfterCaptureTasks::COPY_FILE_TO_CLIPBOARD) {
-            self.copy_file(Some(&saved))?;
+            self.copy_file(Some(&saved)).await?;
         }
         if flags.contains(AfterCaptureTasks::COPY_FILE_PATH_TO_CLIPBOARD) {
-            self.copy_path(Some(&saved))?;
+            self.copy_path(Some(&saved)).await?;
         }
         if flags.contains(AfterCaptureTasks::SHOW_IN_EXPLORER) {
             self.reveal(Some(&saved))?;
@@ -501,9 +503,33 @@ impl Job {
         }
     }
 
-    fn copy_image(&self, image: &Bitmap) -> Step {
+    /// Runs one clipboard call on the blocking pool, so the OS clipboard never stalls the async worker. A panic in
+    /// the call resumes here, so the job reports it as it would from the call itself (ADR 020).
+    async fn clipboard<T: Send + 'static>(
+        &self,
+        call: impl FnOnce(&dyn Clipboard) -> Result<T, PortError> + Send + 'static,
+    ) -> Result<T, PortError> {
+        let clipboard = Arc::clone(&self.cx.ports.clipboard);
+        let (tx, rx) = oneshot::channel();
+        self.cx
+            .ports
+            .spawner
+            .run_blocking(Box::new(move || {
+                let outcome = std::panic::catch_unwind(AssertUnwindSafe(move || call(&*clipboard)));
+                let _ = tx.send(outcome);
+            }))
+            .await;
+        match rx.await {
+            Ok(Ok(result)) => result,
+            Ok(Err(payload)) => std::panic::resume_unwind(payload),
+            Err(oneshot::Canceled) => Err(PortError::Cancelled),
+        }
+    }
+
+    async fn copy_image(&self, image: &Bitmap) -> Step {
         self.checkpoint()?;
-        match self.cx.ports.clipboard.set_image(image) {
+        let image = image.clone();
+        match self.clipboard(move |clipboard| clipboard.set_image(&image)).await {
             Ok(()) => self.emit(TaskEvent::Copied { id: self.id }),
             Err(error) => self.emit(TaskEvent::CopyFailed { id: self.id, reason: error.to_string() }),
         }
@@ -530,20 +556,22 @@ impl Job {
         }
     }
 
-    fn copy_file(&self, saved: Option<&SavedFile>) -> Step {
+    async fn copy_file(&self, saved: Option<&SavedFile>) -> Step {
         let Some(saved) = saved else { return Ok(()) };
         self.checkpoint()?;
-        match self.cx.ports.clipboard.set_files(std::slice::from_ref(&saved.path)) {
+        let path = saved.path.clone();
+        match self.clipboard(move |clipboard| clipboard.set_files(std::slice::from_ref(&path))).await {
             Ok(()) => self.emit(TaskEvent::FileCopied { id: self.id }),
             Err(error) => self.step_failed("copy_file", error),
         }
         Ok(())
     }
 
-    fn copy_path(&self, saved: Option<&SavedFile>) -> Step {
+    async fn copy_path(&self, saved: Option<&SavedFile>) -> Step {
         let Some(saved) = saved else { return Ok(()) };
         self.checkpoint()?;
-        match self.cx.ports.clipboard.set_text(&saved.path.display().to_string()) {
+        let text = saved.path.display().to_string();
+        match self.clipboard(move |clipboard| clipboard.set_text(&text)).await {
             Ok(()) => self.emit(TaskEvent::PathCopied { id: self.id, path: saved.path.clone() }),
             Err(error) => self.step_failed("copy_path", error),
         }
@@ -551,10 +579,11 @@ impl Job {
     }
 
     /// `COPY_FOLDER_PATH_TO_CLIPBOARD`: the saved file's folder.
-    fn copy_folder(&self, saved: Option<&SavedFile>) -> Step {
+    async fn copy_folder(&self, saved: Option<&SavedFile>) -> Step {
         let Some(dir) = saved.and_then(|s| s.path.parent()) else { return Ok(()) };
         self.checkpoint()?;
-        match self.cx.ports.clipboard.set_text(&dir.display().to_string()) {
+        let text = dir.display().to_string();
+        match self.clipboard(move |clipboard| clipboard.set_text(&text)).await {
             Ok(()) => self.emit(TaskEvent::PathCopied { id: self.id, path: dir.to_path_buf() }),
             Err(error) => self.step_failed("copy_folder_path", error),
         }

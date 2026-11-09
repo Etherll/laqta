@@ -1,8 +1,10 @@
 use interprocess::local_socket::{GenericFilePath, prelude::*};
 use laqta_domain::Action;
-use laqta_ipc::{Claim, action_name, claim_at, parse_action};
+use laqta_ipc::{Claim, Request, action_name, claim_at, parse_action};
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
+use std::sync::{Mutex, mpsc};
+use std::time::Duration;
 
 /// A unique endpoint inside `dir`. Windows gets a pipe name derived from the directory's name.
 fn endpoint(dir: &tempfile::TempDir) -> String {
@@ -134,6 +136,35 @@ fn overlong_request_gets_malformed_reply_and_hangs_up() {
     line.clear();
     let _ = stream.read_line(&mut line);
     assert!(line.is_empty(), "connection should be closed, got {line:?}");
+}
+
+#[test]
+fn connections_are_served_concurrently() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let endpoint = endpoint(&dir);
+    let Claim::Primary(server) = claim_at(&endpoint).expect("claim") else {
+        panic!("claim should be primary");
+    };
+    // The first request waits here until the test has the second client's reply.
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let release_rx = Mutex::new(release_rx);
+    server.serve_requests(move |request| match request {
+        Request::Action(Action::PrintScreen) => {
+            let release = release_rx.lock().expect("release lock").recv_timeout(Duration::from_secs(10));
+            release.map_err(|_| "second client was not answered".to_owned())
+        }
+        _ => Err("nope".to_owned()),
+    });
+    let Claim::Secondary(mut first) = claim_at(&endpoint).expect("first client") else {
+        panic!("first claim should be secondary");
+    };
+    let Claim::Secondary(mut second) = claim_at(&endpoint).expect("second client") else {
+        panic!("second claim should be secondary");
+    };
+    let first_reply = std::thread::spawn(move || first.send(Action::PrintScreen));
+    assert_eq!(second.send(Action::ExitLaqta), Err("nope".to_owned()));
+    release_tx.send(()).expect("release the first request");
+    assert_eq!(first_reply.join().expect("first client thread"), Ok(()));
 }
 
 /// CamelCase to kebab-case. `action_name` follows this rule for every action except `ExitLaqta`.

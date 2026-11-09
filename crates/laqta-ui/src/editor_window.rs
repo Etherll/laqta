@@ -18,10 +18,9 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::{ActiveTheme as _, Icon, Root};
 use laqta_domain::color::Rgba;
-use laqta_domain::{Bitmap, ImageFormat, PixelFormat};
+use laqta_domain::{Bitmap, ImageFormat};
 use laqta_editor::{Chrome, Command, Editor, EditorInput, EditorKey, EditorRequest, Mods, PointerButton, Tool};
 use laqta_ports::PortError;
-use smallvec::SmallVec;
 
 use crate::assets::IconName;
 use crate::chrome;
@@ -64,12 +63,26 @@ const EMOJI: [&str; 12] = ["😀", "😂", "😍", "👍", "👎", "🔥", "✅"
 /// Opens the editor on `image` (a capture) or on a file. `reply` receives the result for Task's
 /// `ANNOTATE_IMAGE`; without it the window is standalone (Save/Copy/Upload).
 pub(crate) fn open(image: Option<Bitmap>, reply: Option<EditReply>, path: Option<PathBuf>, cx: &mut App) {
-    let services = cx.global::<UiState>().services.clone();
-    let image = match (image, &path) {
-        (Some(i), _) => Some(i),
-        (None, Some(p)) => std::fs::read(p).ok().and_then(|b| services.codecs.decode(&b).ok()),
-        (None, None) => None,
-    };
+    if image.is_none()
+        && let Some(p) = path.clone()
+    {
+        // Read and decode the file off the GPUI thread, then open on the decoded image.
+        let app = cx.global::<UiState>().services.app.clone();
+        cx.spawn(async move |cx| {
+            let decoded = app.decode_file(p.clone()).await;
+            cx.update(|cx| match decoded {
+                Ok(image) => open(Some(image), reply, Some(p), cx),
+                Err(e) => {
+                    tracing::warn!(path = %p.display(), "editor: cannot open the image: {e}");
+                    if let Some(r) = reply {
+                        let _ = r.send(Err(PortError::Failed("no image to edit".into())));
+                    }
+                }
+            });
+        })
+        .detach();
+        return;
+    }
     let Some(image) = image else {
         if let Some(r) = reply {
             let _ = r.send(Err(PortError::Failed("no image to edit".into())));
@@ -124,16 +137,7 @@ async fn compute_picture(compute: &ComputeFn, bitmap: Bitmap) -> Option<Arc<Rend
     crate::presenters::render_gate::compute(compute, move || to_render_image(&bitmap)).await.flatten()
 }
 
-fn to_render_image(b: &Bitmap) -> Option<Arc<RenderImage>> {
-    let mut bytes = b.pixels().to_vec();
-    if b.format() == PixelFormat::Rgba8 {
-        for p in bytes.as_chunks_mut::<4>().0 {
-            p.swap(0, 2);
-        }
-    }
-    let buffer = image::RgbaImage::from_raw(b.width(), b.height(), bytes)?;
-    Some(Arc::new(RenderImage::new(SmallVec::<[image::Frame; 1]>::from_elem(image::Frame::new(buffer), 1))))
-}
+use crate::gpu_image::render_image as to_render_image;
 
 struct EditorWindow {
     /// Input, render gating and snapshot renders (GPUI-free, tested in the presenter).
@@ -180,6 +184,9 @@ fn in_pool<R: Send + 'static>(spawner: &Arc<dyn laqta_ports::Spawner>, f: impl F
 impl EditorWindow {
     fn new(image: Bitmap, reply: Option<EditReply>, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let services = cx.global::<UiState>().services.clone();
+        // Scan the fonts now, off the UI thread, so the first text tool or emoji doesn't wait for it.
+        let fonts = services.fonts.clone();
+        cx.background_spawn(async move { fonts.warm() }).detach();
         let editor = Editor::new(image, services.fonts.clone());
         let chrome = editor.chrome();
         let compute = compute_fn(services.spawner.clone());

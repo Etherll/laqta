@@ -7,6 +7,18 @@ use laqta_domain::{Bitmap, PhysRect, PixelFormat};
 
 /// The part of `img` inside `rect` (image pixel coordinates), clamped to the image. An empty
 /// intersection gives a 1x1 transparent bitmap.
+/// A copy of the pixels in BGRA order, the layout GPU textures (and GPUI's `RenderImage`) take.
+/// Here rather than in the UI so the per-pixel loop is optimized even in dev builds.
+pub fn bgra8_pixels(img: &Bitmap) -> Vec<u8> {
+    let mut out = img.pixels().to_vec();
+    if img.format() == PixelFormat::Rgba8 {
+        for p in out.as_chunks_mut::<4>().0 {
+            p.swap(0, 2);
+        }
+    }
+    out
+}
+
 pub fn crop(img: &Bitmap, rect: PhysRect) -> Bitmap {
     let (iw, ih) = (i64::from(img.width()), i64::from(img.height()));
     let x0 = i64::from(rect.x).clamp(0, iw);
@@ -116,6 +128,14 @@ pub fn to_rgba(img: &Bitmap) -> Bitmap {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn bgra8_pixels_swaps_rgba_and_copies_bgra() {
+        let rgba = Bitmap::new(2, 1, PixelFormat::Rgba8, vec![1, 2, 3, 4, 5, 6, 7, 8].into()).unwrap();
+        assert_eq!(bgra8_pixels(&rgba), [3, 2, 1, 4, 7, 6, 5, 8]);
+        let bgra = Bitmap::new(2, 1, PixelFormat::Bgra8, vec![1, 2, 3, 4, 5, 6, 7, 8].into()).unwrap();
+        assert_eq!(bgra8_pixels(&bgra), [1, 2, 3, 4, 5, 6, 7, 8]);
+    }
 
     fn pool() -> rayon::ThreadPool {
         #[allow(clippy::disallowed_types)]

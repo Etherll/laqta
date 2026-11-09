@@ -133,6 +133,9 @@ struct SettingsWindow {
     cloud: [Entity<InputState>; 5],
     /// The last update check's message, and whether it can be installed from here.
     update: Option<(String, bool)>,
+    /// Run-at-login and file-manager menu state, read off the UI thread (`refresh_integration`).
+    /// `None` until the first read lands.
+    integration_status: Option<(Result<bool, String>, Result<bool, String>)>,
     focus: FocusHandle,
     language: Entity<SelectState<Vec<SharedString>>>,
 }
@@ -214,7 +217,8 @@ impl SettingsWindow {
                     .map(|v| text_input(v.to_string(), window, cx))
             },
             watch: Vec::new(),
-            model_rows: cx.global::<UiState>().services.models.rows(),
+            // Filled by `refresh_model_rows`: building the rows parses the catalog and checks files.
+            model_rows: Vec::new(),
             model_status: Default::default(),
             custom_family: 0,
             custom_name: text_input("My model", window, cx),
@@ -228,11 +232,45 @@ impl SettingsWindow {
             draft,
             page: Page::General,
             message: None,
+            integration_status: None,
         };
+        this.refresh_model_rows(cx);
+        this.refresh_integration(cx);
         this.rebuild_workflow_inputs(window, cx);
         this.rebuild_host_inputs(window, cx);
         this.rebuild_watch_inputs(window, cx);
         this
+    }
+
+    /// Reloads the model rows on a background thread.
+    fn refresh_model_rows(&mut self, cx: &mut Context<Self>) {
+        let models = cx.global::<UiState>().services.models.clone();
+        let task = cx.background_spawn(async move { models.rows() });
+        cx.spawn(async move |this, cx| {
+            let rows = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.model_rows = rows;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Reads the run-at-login and file-manager menu state on a background thread: both read files.
+    fn refresh_integration(&mut self, cx: &mut Context<Self>) {
+        let services = &cx.global::<UiState>().services;
+        let (autostart, integration) = (services.autostart.clone(), services.integration.clone());
+        let task = cx.background_spawn(async move {
+            (autostart.is_enabled().map_err(|e| e.to_string()), integration.is_installed().map_err(|e| e.to_string()))
+        });
+        cx.spawn(async move |this, cx| {
+            let status = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.integration_status = Some(status);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn rebuild_workflow_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1234,9 +1272,9 @@ impl SettingsWindow {
     }
 
     fn integration(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let services = &cx.global::<UiState>().services;
-        let autostart = services.autostart.is_enabled();
-        let shell = services.integration.is_installed();
+        let Some((autostart, shell)) = self.integration_status.clone() else {
+            return page().child(widgets::section("Startup", cx).child(widgets::row_with("Checking…", None::<String>, Slot::Hug, div(), cx)));
+        };
         let startup = match autostart {
             Ok(on) => widgets::switch_row(
                 "autostart",
@@ -1254,6 +1292,7 @@ impl SettingsWindow {
                         ),
                         cx,
                     );
+                    this.refresh_integration(cx);
                 }),
                 cx,
             ),
@@ -1279,6 +1318,7 @@ impl SettingsWindow {
                                 .and_then(|exe| services.integration.install(&exe).map_err(|e| e.to_string()));
                             this.report(r.map(|()| "Added to the file manager. Some file managers show it after a restart.".into()), cx);
                         }
+                        this.refresh_integration(cx);
                     }),
                     cx,
                 ),
