@@ -59,6 +59,13 @@ jobs:
           DISPLAY=:99 xsetroot -solid "#336699"
       - run: cargo nextest run --workspace --profile ci
         env: { DISPLAY: ":99" }
+      - name: Keep the test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-linux-x11
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
       - run: cargo test --doc --workspace
         env: { DISPLAY: ":99" }
 
@@ -80,6 +87,13 @@ jobs:
           sleep 3
           echo "WAYLAND_DISPLAY=$(ls $XDG_RUNTIME_DIR | grep -m1 '^wayland-[0-9]*$')" >> "$GITHUB_ENV"
       - run: cargo nextest run -p laqta-platform-linux --profile ci
+      - name: Keep the test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-linux-wayland
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
 
   test-windows:
     name: Test (Windows)
@@ -98,3 +112,10 @@ jobs:
       # The lint job runs on Linux, so the Windows-only code is linted here.
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo nextest run --workspace --profile ci
+      - name: Keep the test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-windows
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
