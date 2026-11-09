@@ -3,7 +3,7 @@
 //! on the compute pool for every call, since some commands call imaging kernels.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use futures_channel::oneshot;
 use gpui::{
@@ -19,6 +19,8 @@ use laqta_editor::{Chrome, Command, Editor, EditorInput, EditorKey, EditorReques
 use laqta_ports::PortError;
 use smallvec::SmallVec;
 
+use crate::presenters::editor_interaction::{EditorInteraction, Step};
+use crate::presenters::render_gate::ComputeFn;
 use crate::runtime::UiState;
 
 pub(crate) type EditReply = oneshot::Sender<Result<Bitmap, PortError>>;
@@ -98,6 +100,11 @@ pub(crate) fn open_file(path: Option<PathBuf>, cx: &mut App) {
     open(None, None, path, cx);
 }
 
+/// Converts a rendered canvas for GPUI on the compute pool (a 4K copy and channel swap).
+async fn compute_picture(compute: &ComputeFn, bitmap: Bitmap) -> Option<Arc<RenderImage>> {
+    crate::presenters::render_gate::compute(compute, move || to_render_image(&bitmap)).await.flatten()
+}
+
 fn to_render_image(b: &Bitmap) -> Option<Arc<RenderImage>> {
     let mut bytes = b.pixels().to_vec();
     if b.format() == PixelFormat::Rgba8 {
@@ -110,7 +117,9 @@ fn to_render_image(b: &Bitmap) -> Option<Arc<RenderImage>> {
 }
 
 struct EditorWindow {
-    editor: Arc<Mutex<Editor>>,
+    /// Input, render gating and snapshot renders (GPUI-free, tested in the presenter).
+    interaction: EditorInteraction,
+    compute: ComputeFn,
     spawner: Arc<dyn laqta_ports::Spawner>,
     picture: Option<Arc<RenderImage>>,
     chrome: Chrome,
@@ -123,7 +132,18 @@ struct EditorWindow {
     customising: bool,
 }
 
-/// Runs `f` on the compute pool and waits for it (editor operations take milliseconds).
+/// The compute pool as the presenters take it. A panic drops the work's result sender, so the
+/// presenter's future resolves to `None` (ADR 020).
+pub(crate) fn compute_fn(spawner: Arc<dyn laqta_ports::Spawner>) -> ComputeFn {
+    Arc::new(move |work: Box<dyn FnOnce() + Send>| {
+        spawner.run_compute(Box::new(move || {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+        }))
+    })
+}
+
+/// Runs `f` on the compute pool and waits for it. Only for commands and export paths until R1 A2;
+/// pointer and key input never use it (`tests/view_guards.rs`).
 fn in_pool<R: Send + 'static>(spawner: &Arc<dyn laqta_ports::Spawner>, f: impl FnOnce() -> R + Send + 'static) -> Option<R> {
     let (tx, rx) = oneshot::channel();
     let fut = spawner.run_compute(Box::new(move || {
@@ -138,12 +158,14 @@ fn in_pool<R: Send + 'static>(spawner: &Arc<dyn laqta_ports::Spawner>, f: impl F
 impl EditorWindow {
     fn new(image: Bitmap, reply: Option<EditReply>, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let services = cx.global::<UiState>().services.clone();
-        let editor = Arc::new(Mutex::new(Editor::new(image, services.fonts.clone())));
+        let editor = Editor::new(image, services.fonts.clone());
+        let chrome = editor.chrome();
+        let compute = compute_fn(services.spawner.clone());
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        let chrome = editor.lock().map(|e| e.chrome()).unwrap_or_else(|p| p.into_inner().chrome());
         let mut this = EditorWindow {
-            editor,
+            interaction: EditorInteraction::new(editor, compute.clone()),
+            compute,
             spawner: services.spawner.clone(),
             picture: None,
             chrome,
@@ -155,46 +177,68 @@ impl EditorWindow {
             emoji_open: false,
             customising: false,
         };
-        this.refresh();
+        if this.interaction.initial() {
+            this.start_render(cx);
+        }
         this
     }
 
-    /// Re-renders the whole canvas and the chrome.
-    fn refresh(&mut self) {
-        let ed = self.editor.clone();
-        if let Some((bmp, chrome)) = in_pool(&self.spawner, move || {
-            let e = ed.lock().unwrap_or_else(|p| p.into_inner());
-            (e.export(), e.chrome())
-        }) {
-            self.picture = to_render_image(&bmp);
-            self.chrome = chrome;
-        }
+    /// Renders a snapshot of the canvas on the compute pool and shows it, without blocking the UI
+    /// thread. While a render runs, further requests collapse into one more (`RenderGate`).
+    fn start_render(&mut self, cx: &mut Context<Self>) {
+        let render = self.interaction.render();
+        let compute = self.compute.clone();
+        cx.spawn(async move |this, cx| {
+            let bitmap = render.await;
+            let picture = match bitmap {
+                Some(b) => compute_picture(&compute, b).await,
+                None => None,
+            };
+            let _ = this.update(cx, |this, cx| {
+                if picture.is_some() {
+                    this.picture = picture;
+                }
+                if this.interaction.render_finished() {
+                    this.start_render(cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
-    fn run(&mut self, f: impl FnOnce(&mut Editor) -> Option<EditorRequest> + Send + 'static, window: &mut Window, cx: &mut Context<Self>) {
-        let ed = self.editor.clone();
-        let request = in_pool(&self.spawner, move || {
-            let mut e = ed.lock().unwrap_or_else(|p| p.into_inner());
-            f(&mut e)
-        })
-        .flatten();
-        self.refresh();
-        if let Some(r) = request {
+    fn apply(&mut self, step: Step, window: &mut Window, cx: &mut Context<Self>) {
+        self.chrome = step.chrome;
+        if step.render_now {
+            self.start_render(cx);
+        }
+        if let Some(r) = step.request {
             self.request(r, window, cx);
         }
         cx.notify();
     }
 
+    /// Pointer, key and text input: the engine runs inline (state math only); rendering is async.
     fn input(&mut self, input: EditorInput, window: &mut Window, cx: &mut Context<Self>) {
-        self.run(move |e| e.handle(input).request, window, cx);
+        let step = self.interaction.input(input);
+        self.apply(step, window, cx);
     }
 
+    /// Commands still run on the pool and wait for it, until R1 A2 moves them behind the facade.
     fn command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
-        self.run(move |e| e.execute(command).request, window, cx);
+        let ed = self.interaction.editor();
+        let out = in_pool(&self.spawner, move || ed.lock().unwrap_or_else(|p| p.into_inner()).execute(command));
+        match out {
+            Some(out) => {
+                let step = self.interaction.after_output(out);
+                self.apply(step, window, cx);
+            }
+            None => self.message = Some("The command failed.".into()),
+        }
     }
 
     fn export(&self) -> Option<Bitmap> {
-        let ed = self.editor.clone();
+        let ed = self.interaction.editor();
         in_pool(&self.spawner, move || ed.lock().unwrap_or_else(|p| p.into_inner()).export())
     }
 

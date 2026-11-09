@@ -23,6 +23,8 @@ use laqta_photo::{
 };
 use smallvec::SmallVec;
 
+use crate::presenters::photo_interaction::PhotoInteraction;
+use crate::presenters::render_gate::ComputeFn;
 use crate::runtime::UiState;
 use crate::widgets;
 
@@ -136,8 +138,17 @@ fn parse_hex(s: &str) -> Option<Rgba> {
     Some(Rgba::rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
 }
 
+/// One queued engine edit: runs under the engine lock on the compute pool.
+type Edit = Box<dyn FnOnce(&mut PhotoEditor) -> Result<(), String> + Send>;
+
 struct PhotoWindow {
-    editor: Arc<Mutex<PhotoEditor>>,
+    /// Commands, view cache and render gating (GPUI-free, tested in the presenter).
+    interaction: PhotoInteraction,
+    compute: ComputeFn,
+    /// Edits waiting for the running one; they run in order, one at a time.
+    queue: std::collections::VecDeque<Edit>,
+    /// The render gate asked for a render while a command held the engine.
+    render_deferred: bool,
     spawner: Arc<dyn laqta_ports::Spawner>,
     picture: Option<Arc<RenderImage>>,
     size: (u32, u32),
@@ -165,9 +176,13 @@ impl PhotoWindow {
         let services = cx.global::<UiState>().services.clone();
         let size = (image.width(), image.height());
         let editor = PhotoEditor::from_bitmap(image).with_fonts(services.fonts.clone());
+        let compute = crate::editor_window::compute_fn(services.spawner.clone());
         let mut input = |v: &str, cx: &mut Context<Self>| cx.new(|cx| InputState::new(window, cx).default_value(v.to_owned()));
         let mut this = PhotoWindow {
-            editor: Arc::new(Mutex::new(editor)),
+            interaction: PhotoInteraction::new(editor, compute.clone()),
+            compute,
+            queue: std::collections::VecDeque::new(),
+            render_deferred: false,
             spawner: services.spawner.clone(),
             picture: None,
             size,
@@ -184,37 +199,101 @@ impl PhotoWindow {
             message: None,
             busy: false,
         };
-        this.refresh(cx);
+        if this.interaction.initial() {
+            this.start_render(cx);
+        }
         this
     }
 
+    fn editor(&self) -> Arc<Mutex<PhotoEditor>> {
+        self.interaction.editor()
+    }
+
+    /// Reads the document without waiting: `None` while a command holds the engine.
+    fn doc_read<R>(&self, f: impl FnOnce(&laqta_photo::Document) -> R) -> Option<R> {
+        let editor = self.editor();
+        let guard = editor.try_lock().ok()?;
+        Some(f(guard.document()))
+    }
+
+    /// Queues an engine edit. Edits run one at a time on the compute pool; the UI thread never
+    /// waits for them.
+    fn edit(&mut self, f: impl FnOnce(&mut PhotoEditor) -> Result<(), String> + Send + 'static, cx: &mut Context<Self>) {
+        self.queue.push_back(Box::new(f));
+        self.next_edit(cx);
+    }
+
+    fn next_edit(&mut self, cx: &mut Context<Self>) {
+        if !self.interaction.idle() {
+            return;
+        }
+        let Some(f) = self.queue.pop_front() else { return };
+        let run = self.interaction.command(f);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let r = run.await;
+            let _ = this.update(cx, |this, cx| {
+                this.message = match r {
+                    Some(Ok(())) => None,
+                    Some(Err(e)) => Some(e),
+                    None => Some("The edit failed.".into()),
+                };
+                let render = this.interaction.command_finished();
+                if render || std::mem::take(&mut this.render_deferred) {
+                    this.start_render(cx);
+                }
+                this.next_edit(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Renders a snapshot on the compute pool and shows it. Only starts between edits, because a
+    /// snapshot needs the engine lock that a running edit holds.
+    fn start_render(&mut self, cx: &mut Context<Self>) {
+        if !self.interaction.idle() {
+            self.render_deferred = true;
+            return;
+        }
+        let render = self.interaction.render();
+        let compute = self.compute.clone();
+        cx.spawn(async move |this, cx| {
+            let bitmap = render.await;
+            let size = bitmap.as_ref().map(|b| (b.width(), b.height()));
+            let picture = match bitmap {
+                Some(b) => crate::presenters::render_gate::compute(&compute, move || to_render_image(&b)).await.flatten(),
+                None => None,
+            };
+            let _ = this.update(cx, |this, cx| {
+                if let (Some(p), Some(size)) = (picture, size) {
+                    this.picture = Some(p);
+                    this.size = size;
+                }
+                if this.interaction.render_finished() {
+                    this.start_render(cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Waits on the pool. Only for save (flatten) until R1 A2.
     fn with<R: Send + 'static>(&self, f: impl FnOnce(&mut PhotoEditor) -> R + Send + 'static) -> Option<R> {
-        let editor = self.editor.clone();
+        let editor = self.editor();
         in_pool(&self.spawner, move || {
             let mut e = editor.lock().unwrap_or_else(|p| p.into_inner());
             f(&mut e)
         })
     }
 
-    fn refresh(&mut self, cx: &mut Context<Self>) {
-        if let Some(b) = self.with(|e| e.render()) {
-            self.size = (b.width(), b.height());
-            self.picture = to_render_image(&b);
-        }
-        cx.notify();
-    }
-
     fn exec(&mut self, cmd: Command, cx: &mut Context<Self>) {
-        match self.with(move |e| e.execute(cmd)) {
-            Some(Ok(())) => self.message = None,
-            Some(Err(e)) => self.message = Some(e.to_string()),
-            None => {}
-        }
-        self.refresh(cx);
+        self.edit(move |e| e.execute(cmd).map_err(|e| e.to_string()), cx);
     }
 
     fn active(&self) -> Option<LayerId> {
-        self.editor.lock().ok().and_then(|e| e.document().active)
+        self.doc_read(|d| d.active).unwrap_or_else(|| self.interaction.view().active.and_then(|i| self.interaction.view().layers.get(i).map(|l| l.id)))
     }
 
     fn val(&self, input: &Entity<InputState>, cx: &App) -> String {
@@ -304,7 +383,8 @@ impl PhotoWindow {
     fn inpaint(&mut self, cx: &mut Context<Self>) {
         let Some(layer) = self.active() else { return };
         let (bitmap, mask) = {
-            let Ok(e) = self.editor.lock() else { return };
+            let editor = self.editor();
+            let Ok(e) = editor.try_lock() else { return };
             let doc = e.document();
             let Some(sel) = doc.selection.clone() else {
                 self.message = Some("Select the area to fill first.".into());
@@ -361,15 +441,13 @@ impl PhotoWindow {
 
     /// The active layer, cloned.
     fn active_layer(&self) -> Option<Layer> {
-        let e = self.editor.lock().ok()?;
-        let d = e.document();
-        d.active.and_then(|id| d.layer(id)).cloned()
+        self.doc_read(|d| d.active.and_then(|id| d.layer(id)).cloned()).flatten()
     }
 
     /// A shape over the selection's bounds, or a centred one when nothing is selected.
     fn add_shape(&mut self, ellipse: bool, cx: &mut Context<Self>) {
         let (w, h) = (self.size.0 as f32, self.size.1 as f32);
-        let bounds = self.editor.lock().ok().and_then(|e| e.document().selection.clone()).and_then(|m| {
+        let bounds = self.doc_read(|d| d.selection.clone()).flatten().and_then(|m| {
             let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
             for y in 0..m.height() {
                 for x in 0..m.width() {
@@ -461,17 +539,11 @@ impl PhotoWindow {
     }
 
     fn layers_panel(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let (layers, active, selection) = match self.editor.lock() {
-            Ok(e) => {
-                let d = e.document();
-                (
-                    d.layers.iter().map(|l| (l.id, l.name.clone(), l.visible, l.opacity, l.blend, l.locked)).collect::<Vec<_>>(),
-                    d.active,
-                    d.selection.is_some(),
-                )
-            }
-            Err(_) => (Vec::new(), None, false),
-        };
+        // The cached view: a running edit holds the engine, and the panel must not wait for it.
+        let view = self.interaction.view();
+        let layers: Vec<_> = view.layers.iter().map(|l| (l.id, l.name.clone(), l.visible, l.opacity, l.blend, l.locked)).collect();
+        let active = view.active.and_then(|i| view.layers.get(i).map(|l| l.id));
+        let selection = self.doc_read(|d| d.selection.is_some()).unwrap_or(false);
         let mut list = div().flex().flex_col().gap(px(4.));
         for (id, name, visible, opacity, blend, locked) in layers.into_iter().rev() {
             let selected = active == Some(id);
@@ -499,8 +571,7 @@ impl PhotoWindow {
                             .ghost()
                             .selected(selected)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                let _ = this.with(move |e| e.set_active(Some(id)));
-                                this.refresh(cx);
+                                this.edit(move |e| e.set_active(Some(id)).map_err(|e| e.to_string()), cx);
                             })),
                     )
                     .child(div().flex_1())
@@ -707,7 +778,7 @@ fn smart_active(t: &mut PhotoWindow, l: LayerId, cx: &mut Context<PhotoWindow>) 
 }
 
 fn mask_from_selection(t: &mut PhotoWindow, l: LayerId, cx: &mut Context<PhotoWindow>) {
-    let sel = t.editor.lock().ok().and_then(|e| e.document().selection.clone());
+    let sel = t.doc_read(|d| d.selection.clone()).flatten();
     t.exec(Command::SetMask { layer: l, mask: sel }, cx);
 }
 
@@ -745,12 +816,16 @@ impl Render for PhotoWindow {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(Button::new("undo").label("Undo").small().on_click(cx.listener(|this, _, _, cx| {
-                let _ = this.with(|e| e.undo());
-                this.refresh(cx);
+                this.edit(|e| {
+                    e.undo();
+                    Ok(())
+                }, cx);
             })))
             .child(Button::new("redo").label("Redo").small().on_click(cx.listener(|this, _, _, cx| {
-                let _ = this.with(|e| e.redo());
-                this.refresh(cx);
+                this.edit(|e| {
+                    e.redo();
+                    Ok(())
+                }, cx);
             })))
             .child(widgets::muted("Colour", cx))
             .child(div().w(px(90.)).child(Input::new(&self.color).small()))
