@@ -1,0 +1,83 @@
+name: Release
+
+# Pushing a version tag (v0.1.0, v0.2.0-beta.1, …) builds Laqta for Linux and Windows and attaches
+# the archives to a draft GitHub release. Review the draft, then publish it.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Build (Linux x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: >-
+          sudo apt-get update && sudo apt-get install -y
+          libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev libxcb1-dev
+          libfontconfig-dev libfreetype-dev libdbus-1-dev libpipewire-0.3-dev libclang-dev pkg-config
+      - run: cargo build --release --locked -p laqta -p laqta-nmh
+      - name: Package
+        run: |
+          name="laqta-${GITHUB_REF_NAME}-linux-x86_64"
+          mkdir -p "dist/$name"
+          cp target/release/laqta target/release/laqta-nmh LICENSE README.md "dist/$name/"
+          cp -r assets/icon "dist/$name/icons"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*.tar.gz*
+
+  windows:
+    name: Build (Windows x64)
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      VCPKGRS_TRIPLET: x64-windows-static-md
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: vcpkg install "sqlite3[fts5]:x64-windows-static-md"
+      - run: echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+      - run: cargo build --release --locked -p laqta -p laqta-nmh
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "laqta-$env:GITHUB_REF_NAME-windows-x64"
+          New-Item -ItemType Directory -Force "dist/$name" | Out-Null
+          Copy-Item target/release/laqta.exe, target/release/laqta-nmh.exe, LICENSE, README.md "dist/$name/"
+          Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
+          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Out-File -Encoding ascii "dist/$name.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip*
+
+  release:
+    name: Draft the GitHub release
+    needs: [linux, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: dist/*

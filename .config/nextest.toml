@@ -2,3 +2,8 @@
 # A hung test (a route waiting on a fake overlay, a timer loop) fails after 2 minutes instead of
 # holding the run.
 slow-timeout = { period = "60s", terminate-after = 2 }
+
+[profile.ci]
+# CI reports every failing test instead of stopping at the first one.
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 2 }
