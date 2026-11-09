@@ -140,6 +140,8 @@ tempfile = "3.27.0"
 [patch.crates-io]
 # blocking 1.7.0 never retires its last idle thread (2 wakeups/s forever; risk R6). One-line fix.
 blocking = { path = "vendor/blocking" }
+# gpui-component 0.9.0 draws square client-side window corners; Laqta rounds them (ADR 028).
+gpui-component = { path = "vendor/gpui-component" }
 
 [profile.release]
 lto = "fat"
