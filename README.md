@@ -26,11 +26,7 @@
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/readme/cover-dark.webp">
-    <source media="(prefers-color-scheme: light)" srcset="assets/readme/cover-light.webp">
-    <img alt="Laqta's main window: capture modes, quick actions and the capture library" src="assets/readme/cover-light.webp" width="900">
-  </picture>
+  <img alt="Laqta's main window: capture modes, quick actions and the capture library" src="assets/readme/cover-light.webp" width="900">
 </p>
 
 **Laqta** (Arabic لقطة, *"a snapshot"*) takes screenshots and screen recordings, lets you mark
