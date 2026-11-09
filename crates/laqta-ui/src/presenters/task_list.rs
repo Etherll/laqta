@@ -35,6 +35,24 @@ pub fn status_label(status: TaskStatus) -> &'static str {
     }
 }
 
+/// How a status reads at a glance: the view picks a colour per tone and always shows the label too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusTone {
+    Neutral,
+    Busy,
+    Success,
+    Danger,
+}
+
+pub fn status_tone(status: TaskStatus) -> StatusTone {
+    match status {
+        TaskStatus::InQueue | TaskStatus::Stopped => StatusTone::Neutral,
+        TaskStatus::Preparing | TaskStatus::Working | TaskStatus::Stopping => StatusTone::Busy,
+        TaskStatus::Completed => StatusTone::Success,
+        TaskStatus::Failed => StatusTone::Danger,
+    }
+}
+
 impl TaskList {
     /// Newest first.
     pub fn rows(&self) -> &[TaskRow] {
@@ -118,6 +136,14 @@ impl TaskList {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tones_cover_every_status() {
+        assert_eq!(status_tone(TaskStatus::Working), StatusTone::Busy);
+        assert_eq!(status_tone(TaskStatus::Completed), StatusTone::Success);
+        assert_eq!(status_tone(TaskStatus::Failed), StatusTone::Danger);
+        assert_eq!(status_tone(TaskStatus::InQueue), StatusTone::Neutral);
+    }
 
     #[test]
     fn rows_follow_events() {
