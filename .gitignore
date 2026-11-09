@@ -2,3 +2,13 @@
 **/target
 .claude/
 *.part
+
+# Local notes, not part of the project
+CLAUDE.md
+PLAN.md
+*_DRIFT_REPORT.md
+egm-review/
+docs/plan/
+docs/research/
+docs/review/
+docs/proposals/
