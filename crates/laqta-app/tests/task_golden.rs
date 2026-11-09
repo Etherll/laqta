@@ -235,7 +235,7 @@ fn has_part_file(dir: &Path) -> bool {
 
 /// The file the default name pattern gives the capture at 14:03:22 on 2026-11-07.
 fn saved_png(dir: &Path) -> std::path::PathBuf {
-    dir.join("2026-11/Laqta_2026-11-07_14-03-22.png")
+    dir.join("2026-11").join("Laqta_2026-11-07_14-03-22.png")
 }
 
 #[test]
