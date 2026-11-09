@@ -44,16 +44,19 @@ history. The command-line options you already use work too.
 
 ## ⚡ Get started
 
-Prebuilt downloads will be on the [Releases](../../releases) page:
+Download the latest build for your system:
 
 <table>
   <tr><td><b>Platform</b></td><td><b>Download</b></td></tr>
-  <tr><td><b>Windows (x64)</b></td><td>Coming soon</td></tr>
-  <tr><td><b>Linux (AppImage)</b></td><td>Coming soon</td></tr>
-  <tr><td><b>Linux (deb)</b></td><td>Coming soon</td></tr>
+  <tr><td><b>Windows (x64)</b></td><td><a href="../../releases/latest/download/laqta-windows-x64.zip">laqta-windows-x64.zip</a></td></tr>
+  <tr><td><b>Debian / Ubuntu (amd64)</b></td><td><a href="../../releases/latest/download/laqta-linux-amd64.deb">laqta-linux-amd64.deb</a></td></tr>
+  <tr><td><b>Linux (x86_64)</b></td><td><a href="../../releases/latest/download/laqta-linux-x86_64.tar.gz">laqta-linux-x86_64.tar.gz</a></td></tr>
 </table>
 
-Until then, you can [build it from source](#%EF%B8%8F-build-from-source).
+Every file has a `.sha256` next to it on the [Releases](../../releases) page. On Windows, unzip
+and run `laqta.exe`. On Debian or Ubuntu, install the package with
+`sudo apt install ./laqta-linux-amd64.deb`. Other Linux systems can unpack the archive and run
+`laqta`, or [build it from source](#%EF%B8%8F-build-from-source).
 
 Laqta lives in the tray. Press <kbd>Ctrl</kbd>+<kbd>PrtSc</kbd> to capture a region,
 <kbd>PrtSc</kbd> for the whole screen, or set your own shortcuts in **Settings → Shortcuts**.
