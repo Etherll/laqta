@@ -1,4 +1,4 @@
-//! Flickr (M7 D12): OAuth 1.0a with HMAC-SHA1 (RFC 5849). The first upload signs the user in through
+//! Flickr: OAuth 1.0a with HMAC-SHA1 (RFC 5849). The first upload signs the user in through
 //! the browser, with a loopback callback as the request token's `oauth_callback`. The access token
 //! then lives in `SecretStore`. The upload is a multipart `POST` to `up.flickr.com` whose OAuth
 //! parameters travel in the Authorization header (multipart fields are not in the base string), and

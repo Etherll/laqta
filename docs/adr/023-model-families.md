@@ -1,7 +1,6 @@
 # ADR 023: Model families and a model catalog
 
-Status: accepted (2026-11-07, owner request). The initial family list follows
-`research/models.md`.
+Status: accepted (2026-11-07, owner request).
 
 **Context.**
 - The owner wants users to choose between several local models and model architectures for the
@@ -85,7 +84,7 @@ Status: accepted (2026-11-07, owner request). The initial family list follows
 - **A remote catalog fetched at runtime:** a catalog that changes without a release can't be
   reviewed. Catalog updates ship with releases.
 
-**Initial families** (from `research/models.md`, implemented in this order):
+**Initial families** (implemented in this order):
 
 | Family | Task | Covers | Notes |
 | - | - | - | - |
@@ -96,10 +95,10 @@ Status: accepted (2026-11-07, owner request). The initial family list follows
 
 Built so far: family A as `matting-parametric` (entries `birefnet-lite`, `birefnet-lite-fp16` as the default, and `ben2-base`), family B only as that family's min-max activation (entry `u2netp`), O1 as the two families `o1-det` and `o1-rec` (one file, `families/o1.rs`), and `lama` for inpainting (entry `big-lama`). Not built: family C (MODNet) and the u2net, silueta and IS-Net entries.
 
-Not in the first wave: InSPyReNet (no official ONNX), withoutbg (a four-model pipeline), SAM-family
+Not in the first set: InSPyReNet (no official ONNX), withoutbg (a four-model pipeline), SAM-family
 models (need prompts), and transformer OCR (the PP-OCR Latin model covers it).
 
-CPU latency and peak RAM at 1024 px are not published for any of these. A spike in the M5 plan
+CPU latency and peak RAM at 1024 px are not published for any of these. A spike in M5
 measures them on the reference machine before defaults are final.
 
 **Consequences.**

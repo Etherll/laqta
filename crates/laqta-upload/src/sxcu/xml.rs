@@ -56,7 +56,7 @@ fn parse(path: &str) -> Result<Vec<Step>, SxcuError> {
             rest = tail;
             false
         } else if steps.is_empty() {
-            // A relative path starts at the document, as in ShareX.
+            // In `.sxcu` XPath, a relative path starts at the document.
             false
         } else {
             return Err(SxcuError::Syntax(format!("expected `/` in XPath `{path}`")));

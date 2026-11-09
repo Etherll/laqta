@@ -1,4 +1,4 @@
-//! The remote storage browser's back ends (M7 D11): S3 listings from canned ListObjectsV2 pages, the
+//! The remote storage browser's back ends: S3 listings from canned ListObjectsV2 pages, the
 //! FTP listing parsers (Unix, DOS and MLSD), and the wiring from accounts. No network.
 #![allow(clippy::unwrap_used)]
 

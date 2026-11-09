@@ -1,7 +1,7 @@
 targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 
-# The allowed workspace edges for the crates M0 creates, copied from ARCHITECTURE.md §3.
-# Each milestone plan adds the rows for the crates it creates. An edge not listed fails.
+# The allowed workspace edges for the crates, copied from ARCHITECTURE.md §3.
+# Each new crate adds its own rows. An edge not listed fails.
 [edges]
 "laqta-domain"   = []
 "laqta-imaging"  = ["laqta-domain"]
@@ -11,7 +11,7 @@ targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 "laqta-editor"   = ["laqta-imaging", "laqta-domain"]
 "laqta-photo"    = ["laqta-editor", "laqta-imaging", "laqta-domain"]                # ADR 027
 "laqta-cloud"    = ["laqta-ports", "laqta-domain", "laqta-http"]
-"laqta-ui"       = ["laqta-app", "laqta-ports", "laqta-domain", "laqta-library", "laqta-imaging", "laqta-editor", "laqta-photo"]  # imaging: thumbnails and the magnifier (M1 D9)
+"laqta-ui"       = ["laqta-app", "laqta-ports", "laqta-domain", "laqta-library", "laqta-imaging", "laqta-editor", "laqta-photo"]  # imaging: thumbnails and the magnifier
 "laqta-platform-linux"   = ["laqta-ports", "laqta-domain"]
 "laqta-platform-windows" = ["laqta-ports", "laqta-domain"]
 "laqta-library"  = ["laqta-ports", "laqta-domain"]

@@ -1,4 +1,4 @@
-//! Regions inside a window, from pixels only (docs/plan/LAYOUT.md): the panels a UI is split
+//! Regions inside a window, from pixels only: the panels a UI is split
 //! into (sidebars, headers, columns) and the boxes inside them (inputs, cards, buttons), so the
 //! region overlay can snap to them where no accessibility tree is available.
 //!

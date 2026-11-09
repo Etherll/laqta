@@ -1,6 +1,6 @@
 # ADR 025: SChannel TLS and system OpenSSH SFTP on Windows
 
-Status: accepted (2026-11-07), amends ADR 007 and STACK.md §9.
+Status: accepted (2026-11-07), amends ADR 007.
 
 **Context.**
 - ADR 007 picks `reqwest` with rustls, and `russh` for SFTP. Both crypto providers rustls and

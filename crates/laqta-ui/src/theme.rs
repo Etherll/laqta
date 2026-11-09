@@ -129,7 +129,7 @@ pub fn apply(theme: Theme, cx: &mut App) {
 }
 
 /// Registers the bundled UI fonts with GPUI and makes them the theme fonts. Called when the first
-/// window opens, so the tray-only process never loads them (§1.4, risk R6).
+/// window opens, so the tray-only process never loads them (ARCHITECTURE §1.4).
 pub(crate) fn ensure_fonts(cx: &mut App) {
     struct Loaded;
     impl gpui::Global for Loaded {}

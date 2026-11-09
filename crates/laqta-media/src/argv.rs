@@ -8,7 +8,7 @@ use laqta_ports::recording::{OsScreen, TranscodeSpec};
 
 /// Every run starts with these: overwrite the output, and print only errors.
 const COMMON: [&str; 5] = ["-y", "-hide_banner", "-loglevel", "error", "-nostats"];
-/// Segments are Matroska, which survives a crash. The final remux writes the chosen container (D4).
+/// Segments are Matroska, which survives a crash. The final remux writes the chosen container.
 const SEGMENT_FORMAT: &str = "matroska";
 /// Clusters close every 500 ms, and packets are flushed as they are written. A segment killed
 /// midway then keeps everything up to its last closed cluster. Without this the file is only a
@@ -34,7 +34,7 @@ impl Host {
     }
 }
 
-/// How Windows captures a `Target` (M4 D1). `ddagrab` is the default. `gdigrab` is the fallback
+/// How Windows captures a `Target`. `ddagrab` is the default. `gdigrab` is the fallback
 /// when `ddagrab` fails at start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowsCapture {
@@ -225,7 +225,7 @@ pub fn animation_args(codec: VideoCodec, input: &Path, output: &Path) -> Vec<Str
 }
 
 /// The first GIF run: one palette for the whole clip, written as a single-frame PNG. `palettegen`
-/// keeps only a histogram, so the clip is not held in memory (D7).
+/// keeps only a histogram, so the clip is not held in memory.
 pub fn palette_args(input: &Path, fps: u32, output: &Path) -> Vec<String> {
     let mut a = Argv::default();
     a.flag(&COMMON).flag(&["-i"]).push(input.to_string_lossy().into_owned());
@@ -521,7 +521,7 @@ fn map_audio(a: &mut Argv, count: usize, stdin_fed: bool) {
 }
 
 /// The encoder and its quality. Software encoders also set `yuv420p`. Hardware encoders take the
-/// frame format they are given. GIF, WebP and APNG record a lossless H.264 intermediate (D7).
+/// frame format they are given. GIF, WebP and APNG record a lossless H.264 intermediate.
 fn encoder(a: &mut Argv, codec: VideoCodec, quality: Quality) {
     match codec {
         VideoCodec::X264 => {

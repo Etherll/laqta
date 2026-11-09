@@ -2,7 +2,7 @@
 
 Status: accepted (2026-11-07)
 
-**Context.** About 40 ShareX hosts are a single HTTP request with a simple response.
+**Context.** About 40 upload hosts are a single HTTP request with a simple response.
 
 **Decision.** Those hosts ship as `.sxcu` files in `laqta-upload/catalog/`. Only hosts that need OAuth, request signing, custom crypto or a non-HTTP protocol get Rust code.
 

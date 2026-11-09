@@ -1,4 +1,4 @@
-//! The tools window (M5): one panel per `ToolKind`. Each panel picks its inputs (files, a folder,
+//! The tools window: one panel per `ToolKind`. Each panel picks its inputs (files, a folder,
 //! a few fields, a choice), runs the matching `laqta_app::tools` function off the UI thread, and
 //! shows the outcome as text or an image.
 

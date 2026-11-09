@@ -1,4 +1,4 @@
-//! Auto capture (M6 D5): a timer on `Clock::sleep` that dispatches `settings.auto_capture.action`
+//! Auto capture: a timer on `Clock::sleep` that dispatches `settings.auto_capture.action`
 //! every interval, `count` times or until stopped.
 
 use std::panic::AssertUnwindSafe;

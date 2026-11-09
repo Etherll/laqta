@@ -76,7 +76,7 @@ fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), PortError> {
     Ok((info.width, info.height, rgba))
 }
 
-/// Splits the composed image into one frame per output (D2). The image covers the union of the
+/// Splits the composed image into one frame per output. The image covers the union of the
 /// logical rects at one uniform factor (image width / union width), which is every output's scale,
 /// so physical rects are the logical rects times that factor. Without a layout, one frame.
 pub(crate) fn split(w: u32, h: u32, rgba: Vec<u8>, layout: &[OutputLayout]) -> Vec<Frame> {

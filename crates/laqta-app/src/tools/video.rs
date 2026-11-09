@@ -1,4 +1,4 @@
-//! Video and animation tools: wrappers over the `Media` port (M5 D1). The adapter does the encoding; these functions
+//! Video and animation tools: wrappers over the `Media` port. The adapter does the encoding; these functions
 //! choose the spec and the output names.
 
 use std::path::{Path, PathBuf};

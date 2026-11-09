@@ -1,5 +1,5 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
-//! Filter kernels (M3 D8): one PNG snapshot per filter on a 24x24 test card, plus property checks.
+//! Filter kernels: one PNG snapshot per filter on a 24x24 test card, plus property checks.
 //! Snapshots are written when missing and rewritten with `LAQTA_BLESS=1`; otherwise pixels must match
 //! exactly.
 
@@ -157,7 +157,7 @@ fn every_filter_matches_its_snapshot() {
 #[test]
 fn snapshot_cases_cover_every_default() {
     let names: Vec<String> = cases().iter().map(|(name, _)| (*name).to_string()).collect();
-    // The 27 M3 filters; each M7 batch (X2, X3, X4) checks its own in `effects_filter_x*.rs`.
+    // The 27 filters; `effects_filter_x*.rs` covers the rest.
     for filter in Filter::defaults().into_iter().take(27) {
         assert!(names.contains(&slug(filter.name())), "no snapshot case for {}", filter.name());
     }

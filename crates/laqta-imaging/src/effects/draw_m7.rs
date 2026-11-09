@@ -1,4 +1,4 @@
-//! Kernels for the 6 M7 drawings (X1 batch, M7 D5): paper confetti, a line, a shape, a pointer, a
+//! Kernels for the 6 drawings: paper confetti, a line, a shape, a pointer, a
 //! gradient overlay and snowflakes. Each draws onto a copy of the image. Edges are antialiased over
 //! about one pixel, from distances to the outline, the way `rounded_coverage` does it.
 

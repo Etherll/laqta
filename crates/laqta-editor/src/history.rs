@@ -3,7 +3,7 @@
 use crate::fx::Img;
 use crate::model::Annotation;
 
-/// The default cap on snapshot bytes kept for undo (M3 D3).
+/// The default cap on snapshot bytes kept for undo.
 pub const DEFAULT_SNAPSHOT_CAP: usize = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug)]

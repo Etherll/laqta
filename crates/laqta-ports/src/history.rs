@@ -1,6 +1,6 @@
 //! The edits the windows make to history entries. New entries come from the task-event subscriber in
 //! `laqta-library` (ADR 018) and reads go through its query functions, so the application needs only these two
-//! writes, which a window used to make straight on the store.
+//! writes, which a window makes straight on the store.
 
 use crate::PortError;
 

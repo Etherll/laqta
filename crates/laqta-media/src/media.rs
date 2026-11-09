@@ -110,7 +110,7 @@ struct Prepared {
 }
 
 /// Maps the port's inputs to FFmpeg's. Only one input can use stdin. Raw frames come first, so PCM
-/// is dropped when both are present (M4 D6). GIF, WebP and APNG take no sound. A loopback device
+/// is dropped when both are present. GIF, WebP and APNG take no sound. A loopback device
 /// cannot be recorded through dshow, so on Windows it is dropped (system sound is `Pcm`).
 fn prepare(input: RecordingInput, spec: &RecordSpec, host: Host) -> Prepared {
     let animation = spec.codec.is_animation();

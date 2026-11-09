@@ -358,7 +358,7 @@ fn pick_index(ctx: &mut NameContext<'_>, len: usize) -> usize {
     ((ctx.rng)() % len as u64) as usize
 }
 
-/// What the upload-info tokens read (ShareX's `$url` family). An empty string is an absent value, so
+/// What the upload-info tokens (`$url` and the rest) read. An empty string is an absent value, so
 /// `$shorturl` falls back to `url` when nothing was shortened.
 #[derive(Clone, Debug)]
 pub struct UploadInfo<'a> {

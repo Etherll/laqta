@@ -1,4 +1,4 @@
-//! Watch folders (M6 D6): each enabled `WatchFolder` gets a `FileWatcher` watch; matching files are
+//! Watch folders: each enabled `WatchFolder` gets a `FileWatcher` watch; matching files are
 //! (optionally moved into the screenshots folder and) uploaded with the folder's workflow.
 
 use std::path::PathBuf;

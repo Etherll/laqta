@@ -1,4 +1,4 @@
-//! Thumbnails of several images at one bound (M5 thumbnailer).
+//! Thumbnails of several images at one bound.
 
 use laqta_domain::Bitmap;
 

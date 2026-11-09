@@ -1,4 +1,4 @@
-//! The M7 hosts of HO-b (Flickr, Box, YouTube, Google Cloud Storage, Azure Blob, Backblaze B2) against
+//! The Flickr, Box, YouTube, Google Cloud Storage, Azure Blob and Backblaze B2 hosts against
 //! local servers with canned replies: request shapes, signatures and parsed results. No network.
 #![allow(clippy::unwrap_used)]
 

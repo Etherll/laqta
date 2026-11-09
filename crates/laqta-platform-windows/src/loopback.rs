@@ -1,4 +1,4 @@
-//! System sound as PCM (M4 D6): a WASAPI shared-mode loopback capture of the default playback device.
+//! System sound as PCM: a WASAPI shared-mode loopback capture of the default playback device.
 //! The capture runs on its own thread and fills a bounded buffer that FFmpeg reads through a pipe.
 //! While the device delivers nothing, the thread writes silence on the wall clock, so the audio
 //! stays in step with the picture. Microphones are not here: `dshow` opens them by name.

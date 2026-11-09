@@ -1,4 +1,4 @@
-//! The document's data: tools, styles and annotations (M3 D6).
+//! The document's data: tools, styles and annotations.
 
 use laqta_domain::Bitmap;
 use laqta_domain::color::Rgba;
@@ -164,7 +164,7 @@ impl Default for FontStyle {
     }
 }
 
-/// The current drawing style; new annotations copy it (M3 D6).
+/// The current drawing style; new annotations copy it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Style {
     pub border_color: Rgba,

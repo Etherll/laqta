@@ -1,4 +1,4 @@
-//! History entries and the query that reads them (docs/plan/M1.md §4.1). Pure data: `laqta-library`
+//! History entries and the query that reads them. Pure data: `laqta-library`
 //! stores it in SQLite.
 
 use std::path::{Path, PathBuf};

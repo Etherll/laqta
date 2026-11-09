@@ -1,4 +1,4 @@
-//! Kernels for the 20 M7 manipulations (X1 batch, M7 D5): warps, mirrors, tiles and 3D turns.
+//! Kernels for the 20 manipulations: warps, mirrors, tiles and 3D turns.
 //! Each output pixel is computed from its own coordinates, so rows run on the compute pool and the
 //! result doesn't depend on the thread count. Sampling is bilinear (`Buf::sample`), and points outside
 //! the input are transparent. Angles are degrees unless a name says otherwise.

@@ -1,5 +1,5 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
-//! Filters X4 (M7 D5): one PNG snapshot per filter on the 24x24 test card, plus property checks.
+//! One PNG snapshot per filter on the 24x24 test card, plus property checks.
 //! Snapshots are written when missing and rewritten with `LAQTA_BLESS=1`; otherwise pixels must match
 //! exactly.
 
@@ -14,7 +14,7 @@ use laqta_imaging::encode_png;
 
 const N: u32 = 24;
 
-/// The 42 X4 variants, by enum variant name.
+/// The 42 variants, by enum variant name.
 const X4_VARIANTS: [&str; 42] = [
     "PerlinNoise",
     "PixelSorting",
@@ -120,7 +120,7 @@ fn px(b: &Bitmap, x: u32, y: u32) -> [u8; 4] {
     b.pixels()[i..i + 4].try_into().unwrap()
 }
 
-/// Every X4 filter, with parameters sized for the 24x24 card. The file name is `x4_<name>.png`.
+/// Every filter, with parameters sized for the 24x24 card. The file name is `x4_<name>.png`.
 fn cases() -> Vec<(&'static str, Filter)> {
     vec![
         ("perlin_noise", Filter::PerlinNoise { scale: 4, strength: 0.5, seed: 3 }),

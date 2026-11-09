@@ -1,4 +1,4 @@
-//! Draws the mouse cursor onto captured frames (M1 §4.5). For each frame the cursor overlaps, the
+//! Draws the mouse cursor onto captured frames. For each frame the cursor overlaps, the
 //! frame's patch under the cursor is copied into a DIB, GDI draws the cursor over it, and the patch
 //! is written back. Drawing over the real pixels handles alpha and XOR cursors alike.
 

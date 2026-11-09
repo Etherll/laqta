@@ -1,4 +1,4 @@
-//! Ruler maths: the size of the rectangle two points span, and pixel-to-physical conversions (M5 ruler). Pure values.
+//! Ruler maths: the size of the rectangle two points span, and pixel-to-physical conversions. Pure values.
 
 /// What the ruler shows for two points, in pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]

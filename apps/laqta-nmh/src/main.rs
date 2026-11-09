@@ -1,4 +1,4 @@
-//! The browser native-messaging host (M6 D2). Chrome and Firefox start it and send one message:
+//! The browser native-messaging host. Chrome and Firefox start it and send one message:
 //! a 4-byte little-endian length and UTF-8 JSON. It forwards the request to the running Laqta over
 //! IPC (starting Laqta with `-silent` when none runs) and replies the same way.
 

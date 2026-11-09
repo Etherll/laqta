@@ -1,4 +1,4 @@
-//! The Windows `ScreenStream` (ADR 016, M4 D1 and D6). A region is described as a DXGI output and an
+//! The Windows `ScreenStream` (ADR 016). A region is described as a DXGI output and an
 //! offset on it, so `laqta-media` can run `ddagrab` on the adapter that owns the output. System sound
 //! is a WASAPI loopback `Pcm` input (`loopback.rs`). Microphones are passed through by their friendly
 //! name for `dshow`. The output lookup is pure and is tested on every target.

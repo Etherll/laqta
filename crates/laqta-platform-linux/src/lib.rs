@@ -1,4 +1,4 @@
-//! Linux adapters for the M0 ports: X11 and Wayland capture, hotkeys, tray, clipboard and shell.
+//! Linux adapters for the ports: X11 and Wayland capture, hotkeys, tray, clipboard and shell.
 //! Port vocabulary stays Laqta's; X11/Wayland/portal terms stay inside this crate.
 #![cfg(target_os = "linux")]
 
@@ -27,7 +27,7 @@ pub use secrets::SecretServiceStore;
 pub use session::Session;
 pub use sound::play_sound;
 
-/// Every port Linux provides in M0, for the session `main` detected.
+/// Every port Linux provides, for the session `main` detected.
 #[allow(missing_debug_implementations)]
 pub struct LinuxPorts {
     pub screen: Arc<dyn ScreenSource>,

@@ -58,7 +58,7 @@ pub enum UploadError {
 }
 
 impl UploadError {
-    /// Network errors, 5xx and 429 are worth retrying (risk R7).
+    /// Network errors, 5xx and 429 are worth retrying.
     pub fn is_retryable(&self) -> bool {
         match self {
             UploadError::Network(_) => true,

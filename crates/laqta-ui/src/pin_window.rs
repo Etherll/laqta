@@ -1,4 +1,4 @@
-//! Pin to screen (M5). A pin is a borderless pop-up window showing an image:
+//! Pin to screen. A pin is a borderless pop-up window showing an image:
 //! drag to move, scroll to zoom, double-click, right-click or Escape to close.
 
 use std::sync::Arc;

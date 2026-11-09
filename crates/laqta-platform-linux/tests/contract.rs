@@ -1,4 +1,4 @@
-//! Platform contract tests (M0 §7.1). They need a display: Xvfb for X11 or headless sway for
+//! Platform contract tests. They need a display: Xvfb for X11 or headless sway for
 //! Wayland. They touch the real screen and clipboard, so they run only with `LAQTA_CONTRACT=1`
 //! (set by CI); otherwise each test logs why and returns. On CI (`CI` set) the root is #336699.
 #![cfg(target_os = "linux")]

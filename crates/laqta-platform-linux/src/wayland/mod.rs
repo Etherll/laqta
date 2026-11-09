@@ -8,7 +8,7 @@ pub mod shortcuts_portal;
 use laqta_domain::Frame;
 use laqta_ports::{BoxFuture, PortError, ScreenSource};
 
-/// `libwayshot` per output, then the Screenshot portal (M0 §5.3).
+/// `libwayshot` per output, then the Screenshot portal.
 #[derive(Debug)]
 pub struct WaylandScreen;
 

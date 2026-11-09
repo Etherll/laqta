@@ -1,4 +1,4 @@
-//! `cargo xtask measure-idle` (M0 §7.3, risk R6): idle RSS, CPU time and wakeups of the release
+//! `cargo xtask measure-idle`: idle RSS, CPU time and wakeups of the release
 //! binary, with and without GPUI.
 
 use std::path::Path;
@@ -65,6 +65,6 @@ fn sample(pid: u32) -> Option<Sample> {
 
 #[cfg(not(target_os = "linux"))]
 fn sample(_pid: u32) -> Option<Sample> {
-    // Windows: read WorkingSetSize in Task Manager by hand (recorded in Mn-results.md).
+    // Windows: read WorkingSetSize in Task Manager by hand.
     None
 }

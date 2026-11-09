@@ -1,6 +1,6 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
 
-//! Tests for the 8 drawing and 10 manipulation effects (M3 D8). Each effect has a PNG snapshot in
+//! Tests for the 8 drawing and 10 manipulation effects. Each effect has a PNG snapshot in
 //! `tests/snapshots`, taken from a 20x16 input with transparent areas, plus pixel checks.
 //! A missing snapshot is written on the first run. `LAQTA_BLESS=1` rewrites every snapshot.
 

@@ -1,4 +1,4 @@
-//! The 27 classic filters as data. Kernels live in `laqta-imaging::effects::filter`.
+//! The image filters as data. Kernels live in `laqta-imaging::effects::filter`.
 //!
 //! Parameters are clamped to their usable range by the kernels rather than rejected, so a preset
 //! from a live preview or a `.sxie` file always renders. Angles are degrees; offsets and sizes are
@@ -160,7 +160,6 @@ pub enum Filter {
         radius: u32,
         levels: u8,
     },
-    // ---- X2 ----
     /// Red from a view shifted `parallax` px right, and green and blue from one shifted left, for red and cyan glasses.
     Anaglyph3D {
         parallax: u32,
@@ -393,8 +392,6 @@ pub enum Filter {
         amount: f32,
         seed: u64,
     },
-    // ---- end X2 ----
-    // ---- X3 ----
     /// Sprocket holes in `hole` down the left and right margins of a `strip` frame, `width` px deep.
     FilmStripFrame {
         width: u32,
@@ -644,8 +641,6 @@ pub enum Filter {
         strength: f32,
         radius: u32,
     },
-    // ---- end X3 ----
-    // ---- X4 ----
     /// Perlin gradient noise on a `scale` px lattice, mixed toward grey by `strength` (0..=1).
     PerlinNoise {
         scale: u32,
@@ -882,7 +877,6 @@ pub enum Filter {
         color: Rgba,
         accent: Rgba,
     },
-    // ---- end X4 ----
 }
 
 impl Filter {
@@ -915,7 +909,6 @@ impl Filter {
             Filter::ZoomBlur { .. } => "Zoom blur",
             Filter::Median { .. } => "Median",
             Filter::OilPaint { .. } => "Oil paint",
-            // ---- X2 ----
             Filter::Anaglyph3D { .. } => "Anaglyph 3D",
             Filter::AnamorphicLensFlare { .. } => "Anamorphic lens flare",
             Filter::AnimeSpeedLines { .. } => "Anime speed lines",
@@ -957,8 +950,6 @@ impl Filter {
             Filter::EtchedGlass { .. } => "Etched glass",
             Filter::FakeHair { .. } => "Fake hair",
             Filter::FilmGrain { .. } => "Film grain",
-            // ---- end X2 ----
-            // ---- X3 ----
             Filter::FilmStripFrame { .. } => "Film strip frame",
             Filter::FrostedGlass { .. } => "Frosted glass",
             Filter::FrostedGlassIceEdges { .. } => "Frosted glass ice edges",
@@ -1001,8 +992,6 @@ impl Filter {
             Filter::PaletteMap { .. } => "Palette map",
             Filter::PaperStencilMask { .. } => "Paper stencil mask",
             Filter::PencilSketch { .. } => "Pencil sketch",
-            // ---- end X3 ----
-            // ---- X4 ----
             Filter::PerlinNoise { .. } => "Perlin noise",
             Filter::PixelSorting { .. } => "Pixel sorting",
             Filter::PlasmaEnergyArcs { .. } => "Plasma energy arcs",
@@ -1045,11 +1034,10 @@ impl Filter {
             Filter::WoodenFrame { .. } => "Wooden frame",
             Filter::XRayScan { .. } => "X-ray scan",
             Filter::ZigZagBorder { .. } => "Zigzag border",
-            // ---- end X4 ----
         }
     }
 
-    /// One filter per variant, with ShareX-like default parameters.
+    /// One filter per variant, with default parameters.
     pub fn defaults() -> Vec<Filter> {
         vec![
             Filter::Blur { radius: 5 },
@@ -1079,7 +1067,6 @@ impl Filter {
             Filter::ZoomBlur { amount: 0.3, center_x: 0.5, center_y: 0.5 },
             Filter::Median { radius: 2 },
             Filter::OilPaint { radius: 3, levels: 16 },
-            // ---- X2 ----
             Filter::Anaglyph3D { parallax: 3 },
             Filter::AnamorphicLensFlare { threshold: 0.8, length: 40, strength: 0.6, color: Rgba::rgb(120, 180, 255) },
             Filter::AnimeSpeedLines { lines: 72, inner: 0.35, strength: 0.6, color: Rgba::WHITE, seed: 1 },
@@ -1121,8 +1108,6 @@ impl Filter {
             Filter::EtchedGlass { radius: 2, seed: 1 },
             Filter::FakeHair { strands: 40, length: 30, color: Rgba::rgb(40, 25, 15), seed: 1 },
             Filter::FilmGrain { amount: 0.25, seed: 1 },
-            // ---- end X2 ----
-            // ---- X3 ----
             Filter::FilmStripFrame { width: 24, strip: Rgba::rgb(22, 22, 22), hole: Rgba::rgb(240, 240, 240) },
             Filter::FrostedGlass { radius: 4, opacity: 0.5, seed: 1 },
             Filter::FrostedGlassIceEdges { radius: 3, edge: 24, ice: Rgba::rgb(210, 235, 255), seed: 1 },
@@ -1165,8 +1150,6 @@ impl Filter {
             Filter::PaletteMap { shadow: Rgba::rgb(20, 10, 60), midtone: Rgba::rgb(220, 90, 120), highlight: Rgba::rgb(255, 240, 200) },
             Filter::PaperStencilMask { paper: Rgba::rgb(240, 232, 214), ink: Rgba::rgb(35, 30, 28), threshold: 0.5, grain: 0.6, seed: 1 },
             Filter::PencilSketch { strength: 1.0, radius: 6 },
-            // ---- end X3 ----
-            // ---- X4 ----
             Filter::PerlinNoise { scale: 6, strength: 0.4, seed: 1 },
             Filter::PixelSorting { threshold: 0.35, vertical: false },
             Filter::PlasmaEnergyArcs { scale: 6, strength: 0.8, color: Rgba::rgb(120, 220, 255), seed: 1 },
@@ -1209,7 +1192,6 @@ impl Filter {
             Filter::WoodenFrame { width: 14, color: Rgba::rgb(139, 90, 43), seed: 1 },
             Filter::XRayScan { position: 0.5, tint: Rgba::rgb(120, 255, 200) },
             Filter::ZigZagBorder { width: 10, color: Rgba::rgb(200, 40, 60), accent: Rgba::WHITE },
-            // ---- end X4 ----
         ]
     }
 }
@@ -1223,7 +1205,7 @@ mod tests {
 
     #[test]
     fn defaults_have_one_distinct_name_per_variant() {
-        // 27 from M3, plus the M7 batches; every default has its own name.
+        // Every variant's default has its own name.
         let defaults = Filter::defaults();
         assert!(defaults.len() >= 27);
         let names: HashSet<&str> = defaults.iter().map(Filter::name).collect();

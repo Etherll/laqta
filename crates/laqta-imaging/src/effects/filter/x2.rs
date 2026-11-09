@@ -1,4 +1,4 @@
-//! Filters X2 (M7 D5): borders, glitch, film, drawing and light effects. Each kernel is written from the
+//! Filters: borders, glitch, film, drawing and light effects. Each kernel is written from the
 //! effect's name and what it does to an image, and shares the helpers in the parent module. Pixels are
 //! straight RGBA8 in and out. Every kernel is pure and deterministic for its seed.
 

@@ -114,7 +114,7 @@ async fn transfer(
         if url.is_empty() {
             return Err(UploadError::BadResponse("SendSpace: the upload element has no url".to_owned()));
         }
-        // ShareX sends all three fields, empty or not.
+        // All three fields are sent, empty or not.
         let fields = [
             ("MAX_FILE_SIZE", attribute(upload, "max_file_size")),
             ("UPLOAD_IDENTIFIER", attribute(upload, "upload_identifier")),

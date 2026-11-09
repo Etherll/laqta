@@ -1,6 +1,6 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
 
-//! M2 dispatcher routes: each upload action reads the clipboard, the prompt or the uploaders it needs, and
+//! Dispatcher routes: each upload action reads the clipboard, the prompt or the uploaders it needs, and
 //! submits the jobs it names. The jobs themselves are traced in `task_golden.rs`.
 
 use std::path::Path;

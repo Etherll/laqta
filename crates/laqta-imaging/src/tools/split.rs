@@ -1,4 +1,4 @@
-//! Splits an image into tiles, by a grid or by tile size (M5 image splitter).
+//! Splits an image into tiles, by a grid or by tile size.
 
 use laqta_domain::{Bitmap, PhysRect};
 

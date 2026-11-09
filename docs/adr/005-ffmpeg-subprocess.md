@@ -2,7 +2,7 @@
 
 Status: accepted (2026-11-07)
 
-**Context.** ShareX records through an FFmpeg process by default, and also has a native Windows path (Windows.Graphics.Capture + Media Foundation).
+**Context.** Recording can go through an FFmpeg process or through a native Windows path (Windows.Graphics.Capture + Media Foundation).
 
 **Decision.** The `Media` port's first adapter runs FFmpeg as a subprocess. A native Windows recorder is a second adapter, added in M7.
 

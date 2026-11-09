@@ -1,4 +1,4 @@
-//! Joins images into one strip, side by side or stacked (M5 image combiner).
+//! Joins images into one strip, side by side or stacked.
 
 use laqta_domain::Bitmap;
 use laqta_domain::color::Rgba;

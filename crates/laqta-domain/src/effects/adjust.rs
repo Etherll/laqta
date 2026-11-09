@@ -11,8 +11,8 @@ pub enum Channel {
     Blue,
 }
 
-/// One adjustment and its parameters. Ranges are ShareX's, and defaults are too where ShareX
-/// sets them; the rest are chosen here.
+/// One adjustment and its parameters. Ranges match the values in `.sxie` packages; the
+/// defaults are chosen here.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Adjust {
     /// Scales alpha by `alpha` and adds `add`, both in 0..1. Colour is unchanged.

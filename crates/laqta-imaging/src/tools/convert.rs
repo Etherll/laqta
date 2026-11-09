@@ -1,4 +1,4 @@
-//! Re-encodes an image file into another format, and resizes it on the way (M5 image converter and resizer).
+//! Re-encodes an image file into another format, and resizes it on the way.
 
 use crate::ops;
 use crate::{CodecError, Codecs, EncodeOptions};

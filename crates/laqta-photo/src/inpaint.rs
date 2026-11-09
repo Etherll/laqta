@@ -1,4 +1,4 @@
-//! The classic inpainting fallback, used when no learned model is installed (M7 D4). Telea-style:
+//! The classic inpainting fallback, used when no learned model is installed. Telea-style:
 //! masked pixels are filled from the boundary inward, each one as the distance-weighted average of
 //! the known pixels around it.
 //!

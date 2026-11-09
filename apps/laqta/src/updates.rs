@@ -1,4 +1,4 @@
-//! "Check for updates" (M6 D12): the latest GitHub release; on Windows the Velopack package is
+//! "Check for updates": the latest GitHub release; on Windows the Velopack package is
 //! downloaded through verified fetch and applied with `Update.exe`, then Laqta quits.
 
 use std::path::PathBuf;

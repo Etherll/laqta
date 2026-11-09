@@ -1,4 +1,4 @@
-//! The Recording session (M4, ARCHITECTURE §2.2 and §4.4). A start action picks the area (a drawn region, the active
+//! The Recording session (ARCHITECTURE §2.2 and §4.4). A start action picks the area (a drawn region, the active
 //! window, the custom region or the last recording's area), counts down, opens the screen stream and starts the
 //! encoder. A driver future (`drive.rs`) then owns the encoder: it takes pause, resume, stop and abort commands,
 //! ticks every second, and watches the encoder. The finished file goes to Task.

@@ -1,4 +1,4 @@
-//! Pixel and file tools for the M5 tool windows (D1). Each tool is a pure function over `Bitmap`s or
+//! Pixel and file tools for the tool windows. Each tool is a pure function over `Bitmap`s or
 //! encoded bytes. Functions that resize or encode run on the compute pool and assert that in debug
 //! builds, as `ops::resize` does. Pixel outputs are Rgba8.
 

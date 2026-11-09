@@ -1,4 +1,4 @@
-//! Local background removal and inpainting (M7 D4, D6): the chosen catalog or custom model,
+//! Local background removal and inpainting: the chosen catalog or custom model,
 //! downloaded with ONNX Runtime on first use after the user agrees, then run through `laqta-ml`.
 
 use std::path::PathBuf;

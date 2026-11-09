@@ -14,15 +14,9 @@ mod edge;
 mod rank;
 mod shift;
 mod tone;
-// ---- X2 ----
 mod x2;
-// ---- end X2 ----
-// ---- X3 ----
 mod x3;
-// ---- end X3 ----
-// ---- X4 ----
 mod x4;
-// ---- end X4 ----
 
 use laqta_domain::effects::Filter;
 use laqta_domain::{Bitmap, PixelFormat};
@@ -79,7 +73,6 @@ pub(super) fn apply(image: &Bitmap, effect: &Filter, _cx: &EffectContext<'_>) ->
         Filter::ZoomBlur { amount, center_x, center_y } => blur::zoom(&src, amount, center_x, center_y),
         Filter::Median { radius } => rank::median(&src, radius.min(MAX_WINDOW_RADIUS)),
         Filter::OilPaint { radius, levels } => rank::oil_paint(&src, radius.min(MAX_WINDOW_RADIUS), levels),
-        // ---- X2 ----
         Filter::Anaglyph3D { parallax } => x2::anaglyph(&src, parallax),
         Filter::AnamorphicLensFlare { threshold, length, strength, color } => {
             x2::anamorphic_flare(&src, threshold, length, strength, color)
@@ -123,8 +116,6 @@ pub(super) fn apply(image: &Bitmap, effect: &Filter, _cx: &EffectContext<'_>) ->
         Filter::EtchedGlass { radius, seed } => x2::etched_glass(&src, radius, seed),
         Filter::FakeHair { strands, length, color, seed } => x2::fake_hair(&src, strands, length, color, seed),
         Filter::FilmGrain { amount, seed } => x2::film_grain(&src, amount, seed),
-        // ---- end X2 ----
-        // ---- X3 ----
         Filter::FilmStripFrame { width, strip, hole } => x3::film_strip_frame(&src, width, strip, hole)?,
         Filter::FrostedGlass { radius, opacity, seed } => x3::frosted_glass(&src, radius, opacity, seed),
         Filter::FrostedGlassIceEdges { radius, edge, ice, seed } => x3::frosted_glass_ice_edges(&src, radius, edge, ice, seed),
@@ -171,8 +162,6 @@ pub(super) fn apply(image: &Bitmap, effect: &Filter, _cx: &EffectContext<'_>) ->
         Filter::PaletteMap { shadow, midtone, highlight } => x3::palette_map(&src, shadow, midtone, highlight),
         Filter::PaperStencilMask { paper, ink, threshold, grain, seed } => x3::paper_stencil(&src, paper, ink, threshold, grain, seed),
         Filter::PencilSketch { strength, radius } => x3::pencil_sketch(&src, strength, radius),
-        // ---- end X3 ----
-        // ---- X4 ----
         Filter::PerlinNoise { scale, strength, seed } => x4::perlin_noise(&src, scale, strength, seed),
         Filter::PixelSorting { threshold, vertical } => x4::pixel_sorting(&src, threshold, vertical),
         Filter::PlasmaEnergyArcs { scale, strength, color, seed } => x4::plasma_energy_arcs(&src, scale, strength, color, seed),
@@ -215,7 +204,6 @@ pub(super) fn apply(image: &Bitmap, effect: &Filter, _cx: &EffectContext<'_>) ->
         Filter::WoodenFrame { width, color, seed } => x4::wooden_frame(&src, width, color, seed)?,
         Filter::XRayScan { position, tint } => x4::xray_scan(&src, position, tint),
         Filter::ZigZagBorder { width, color, accent } => x4::zigzag_border(&src, width, color, accent)?,
-        // ---- end X4 ----
     };
     Ok(out.into_bitmap())
 }

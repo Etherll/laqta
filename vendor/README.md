@@ -9,5 +9,5 @@
   surface rounds itself to match, and `window_corner_radii` is exported so views round the
   backgrounds they paint into a corner. Upstream keeps the frame square because content masks are
   rectangular. `set_window_blank` makes a window draw nothing, frame and shadow included, so the
-  main window leaves no trace in a capture while the compositor animates its minimize. Upgrade it together with `gpui-pre` (ADR 002) and re-apply the patch; search for
-  "Laqta patch".
+  main window leaves no trace in a capture while the compositor animates its minimize. Upgrade it
+  together with `gpui-pre` (ADR 002) and re-apply the patch; search for "Laqta patch".

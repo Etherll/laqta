@@ -79,7 +79,7 @@ pub enum TaskEvent {
         id: TaskId,
         error: AppError,
     },
-    /// M1 after-capture steps.
+    /// After-capture steps.
     ThumbnailSaved {
         id: TaskId,
         path: PathBuf,
@@ -137,7 +137,7 @@ pub enum TaskEvent {
         step: &'static str,
         reason: String,
     },
-    /// M2 upload phase.
+    /// Upload phase.
     UploadStarted {
         id: TaskId,
         destination: String,
@@ -180,7 +180,7 @@ pub enum TaskEvent {
         url: String,
         qr: bool,
     },
-    /// M4 recording session (the id is the recording's own task id).
+    /// Recording session (the id is the recording's own task id).
     RecordingCountdown {
         id: TaskId,
         seconds_left: u32,

@@ -1,4 +1,4 @@
-//! Capture modes and their options (docs/plan/M1.md §4.1).
+//! Capture modes and their options.
 
 use crate::geometry::{MonitorId, PhysRect};
 
@@ -47,7 +47,7 @@ impl Default for CaptureOptions {
     }
 }
 
-/// How scrolling capture scrolls the window under the region (M6 D4).
+/// How scrolling capture scrolls the window under the region.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ScrollMethod {
     #[default]
@@ -58,7 +58,7 @@ pub enum ScrollMethod {
     ScrollMessage,
 }
 
-/// Scrolling capture options.
+/// Options for scrolling capture.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ScrollingOptions {
@@ -90,7 +90,7 @@ impl Default for ScrollingOptions {
     }
 }
 
-/// What a right or middle click does while the region overlay is idle (ShareX's mouse-button actions).
+/// What a right or middle click does while the region overlay is idle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum RegionMouseAction {
     /// Nothing happens.

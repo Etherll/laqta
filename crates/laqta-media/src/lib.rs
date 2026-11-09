@@ -1,4 +1,4 @@
-//! The `Media` adapter: FFmpeg as a subprocess (ADR 005, M4). It finds or downloads FFmpeg, builds
+//! The `Media` adapter: FFmpeg as a subprocess (ADR 005). It finds or downloads FFmpeg, builds
 //! argument lists as data (`argv`), runs them without a shell, and records through segments
 //! (`process`). It never calls platform code: it only maps the screen and audio inputs it is given.
 #![forbid(unsafe_code)]

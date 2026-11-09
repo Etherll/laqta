@@ -1,4 +1,4 @@
-//! The native Windows recorder (M7 D10): Windows.Graphics.Capture frames into a Media Foundation sink
+//! The native Windows recorder: Windows.Graphics.Capture frames into a Media Foundation sink
 //! writer, offered as a second `Media` recording backend beside FFmpeg. It records one monitor at a time,
 //! writes H.264 and, for system sound, AAC, and refuses everything else as `Unsupported`, so the app falls
 //! back to FFmpeg. `pure` builds on every target, so its tests run on Linux.

@@ -1,4 +1,4 @@
-//! Scrolling-capture stitching (M6 D4) on synthetic pages. Every page row is distinct, frames are cut
+//! Scrolling-capture stitching on synthetic pages. Every page row is distinct, frames are cut
 //! at known offsets, and the stitched image must equal the page exactly.
 #![allow(clippy::unwrap_used)]
 

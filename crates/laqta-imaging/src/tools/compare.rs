@@ -1,4 +1,4 @@
-//! Pixel comparison of two images (M5 image comparer).
+//! Pixel comparison of two images.
 
 use laqta_domain::Bitmap;
 

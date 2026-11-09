@@ -1,8 +1,8 @@
 # ADR 024: Ports crate, core purity and its enforcement
 
-Status: accepted (2026-11-07, after the Clean Architecture validation), amended 2026-11-07 after the trade-offs review (`egm-review/tradeoffs/`): file access in `laqta-app`, and the `cosmic-text` requirement; amended 2026-11-09 by ADR 029 (the `Fonts` handle goes to `laqta-ui`, not the Region session)
+Status: accepted (2026-11-07), amended 2026-11-07: file access in `laqta-app`, and the `cosmic-text` requirement; amended 2026-11-09 by ADR 029 (the `Fonts` handle goes to `laqta-ui`, not the Region session)
 
-**Context.** The validation scored the plan 7/10. Five of seven checks passed. Two failed:
+**Context.** An earlier design broke two core-purity rules:
 
 - **Outside vocabulary in inner types.** `ScreenStream` was described in FFmpeg and WASAPI terms.
   The `.sxie` package format and the CLI action names sat in `laqta-domain`.
@@ -10,7 +10,7 @@ Status: accepted (2026-11-07, after the Clean Architecture validation), amended 
   were registered globally. `cosmic-text`'s `FontSystem::new()` reads the locale and scans system
   fonts, which was confirmed in the cosmic-text 0.19.0 source.
 
-It also found these problems:
+The earlier design also had these gaps:
 - About eight adapter crates depended on the concrete `laqta-app`.
 - The CI guard was a deny-list that crates like `ort`, `pipewire` and `notify` would pass.
 - There was no timer port.
@@ -79,7 +79,7 @@ It also found these problems:
   tests are enough until compile times say otherwise.
 
 **`cosmic-text` requirement (amended).** The earlier text pinned `cosmic-text` to GPUI's version.
-The trade-offs review replaced that:
+The current rule and its evidence:
 - **Evidence.** In `gpui-pre` 0.3.11, `cosmic-text` comes in only through `gpui-pre-wgpu`, on
   Linux. GPUI's font system is private, so sharing a version never saved memory. Re-check this
   on each GPUI upgrade.
@@ -89,7 +89,7 @@ The trade-offs review replaced that:
 - **Review rule.** Any `Cargo.lock` change that moves `cosmic-text` requires reviewing the
   Editor engine's snapshot tests, because text in exported images may shift.
 
-**Re-check (2026-11-07).** All seven checks pass (9/10). The follow-up fixes are recorded here:
+**Re-check (2026-11-07).** The follow-up fixes are recorded here:
 - the compute-pool `debug_assert`;
 - fonts through `main`'s loader;
 - the sealed `OsScreenRef` (ADR 016);
@@ -98,7 +98,6 @@ The trade-offs review replaced that:
 - tool rules in `laqta-app`.
 
 **Consequences.**
-- The validation's two failed checks are fixed, so all seven checks pass on paper.
 - `laqta-app` keeps `std::fs`, confined to its private `files` module. Every `files` function is
   async: a private helper runs the work through `Spawner::run_blocking` and returns the result
   over a `futures-channel` oneshot, so the single async worker never blocks on a slow disk. The

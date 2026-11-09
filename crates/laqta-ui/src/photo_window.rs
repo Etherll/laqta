@@ -1,4 +1,4 @@
-//! The photo editor window (M7 D1–D4). It forwards input to `laqta-photo` and paints its render;
+//! The photo editor window. It forwards input to `laqta-photo` and paints its render;
 //! the engine runs on the compute pool, since adjustment layers and effects call imaging kernels.
 //! Inpainting runs the `Inpainter` port and hands the result to the engine as a command, falling
 //! back to the engine's classic fill when no model is available.
@@ -297,7 +297,7 @@ impl PhotoWindow {
         .detach();
     }
 
-    /// Waits on the pool. Only for save (flatten) until R1 A2.
+    /// Waits on the pool. Only for save (flatten).
     fn with<R: Send + 'static>(&self, f: impl FnOnce(&mut PhotoEditor) -> R + Send + 'static) -> Option<R> {
         let editor = self.editor();
         in_pool(&self.spawner, move || {

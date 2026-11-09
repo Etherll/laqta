@@ -1,4 +1,4 @@
-//! The hash checker: digests of a file or a text, and a comparison against an expected value (M5 hash checker).
+//! The hash checker: digests of a file or a text, and a comparison against an expected value.
 
 use std::path::Path;
 

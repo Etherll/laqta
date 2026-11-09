@@ -1,6 +1,6 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
 
-//! One input script per tool → export → snapshot (M3 D8).
+//! One input script per tool → export → snapshot.
 
 mod support;
 

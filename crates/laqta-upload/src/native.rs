@@ -168,7 +168,6 @@ pub fn native_hosts(accounts: &[HostAccount], deps: &HostDeps) -> NativeHosts {
                 let cfg = sf::SharedFolderConfig { directory: a.get("directory").into(), url_base: (!url.is_empty()).then(|| url.into()) };
                 out.destinations.push(Arc::new(sf::SharedFolder::new(cfg)));
             }
-            // ---- HO-a ----
             HostKind::Gist => {
                 use crate::hosts::gist as g;
                 let config = g::GistConfig { api_base: g::GITHUB_API.into(), public: a.flag("public") };
@@ -234,8 +233,6 @@ pub fn native_hosts(accounts: &[HostAccount], deps: &HostDeps) -> NativeHosts {
                 };
                 out.destinations.push(Arc::new(smtp::Smtp::new(config, deps.secrets.clone())));
             }
-            // ---- end HO-a ----
-            // ---- HO-b ----
             HostKind::Flickr => {
                 use crate::hosts::flickr::{Flickr, FlickrConfig, FlickrEndpoints};
                 let config =
@@ -302,7 +299,6 @@ pub fn native_hosts(accounts: &[HostAccount], deps: &HostDeps) -> NativeHosts {
                 };
                 out.destinations.push(Arc::new(b2::BackblazeB2::new(cfg, deps.secrets.clone())));
             }
-            // ---- end HO-b ----
             #[allow(unreachable_patterns)]
             _ => tracing::warn!(kind = ?a.kind, "host not built into this binary"),
         }

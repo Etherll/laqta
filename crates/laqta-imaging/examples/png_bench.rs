@@ -1,4 +1,4 @@
-//! Median of 20 compose-and-encode runs of a 3840x2160 frame (M0 §7.3).
+//! Median of 20 compose-and-encode runs of a 3840x2160 frame.
 #![allow(clippy::unwrap_used, clippy::disallowed_types, clippy::disallowed_methods)]
 
 use std::time::Instant;

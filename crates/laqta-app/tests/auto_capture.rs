@@ -1,6 +1,6 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
 
-//! Auto capture (M6 D5): the loop runs the captured action `count` times, waits at least a second between runs, stops
+//! Auto capture: the loop runs the captured action `count` times, waits at least a second between runs, stops
 //! on the stop action (also during a wait), toggles, keeps one loop per start, and ends on a cancelled capture.
 
 use std::path::Path;

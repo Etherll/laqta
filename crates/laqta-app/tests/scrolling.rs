@@ -1,6 +1,6 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
 
-//! Scrolling capture (M6 D4): the region is captured, scrolled and stitched until the page stops moving.
+//! Scrolling capture: the region is captured, scrolled and stitched until the page stops moving.
 //! The page is a synthetic tall image; the screen shows a window of it that moves down with each capture.
 
 use std::path::Path;

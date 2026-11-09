@@ -1,6 +1,6 @@
 # ADR 026: SQLite from vcpkg on Windows
 
-Status: accepted (2026-11-07), amends STACK.md §10 (`rusqlite`, `bundled`).
+Status: accepted (2026-11-07), amends ADR 006 for the Windows build (`rusqlite` was `bundled`).
 
 **Context.** `rusqlite`'s `bundled` feature compiles SQLite's C source in a build script. The required
 Windows check (`cargo check --workspace --target x86_64-pc-windows-msvc`) runs on Linux without the

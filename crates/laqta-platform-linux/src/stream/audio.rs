@@ -1,4 +1,4 @@
-//! Audio devices from PulseAudio's `pactl`, which PipeWire's pulse server answers too (M4 D6). A
+//! Audio devices from PulseAudio's `pactl`, which PipeWire's pulse server answers too. A
 //! monitor source is system sound (loopback). Every other source is a microphone.
 
 use std::io::ErrorKind;

@@ -1,4 +1,4 @@
-//! Windows OCR (M5 D4): `Windows.Media.Ocr` behind the `Ocr` port (ADR 023). The pixel conversion,
+//! Windows OCR: `Windows.Media.Ocr` behind the `Ocr` port (ADR 023). The pixel conversion,
 //! the downscale and the rectangle maths are pure and tested on every target. The WinRT calls are
 //! Windows-only, and each recognition runs on a thread of its own that holds a COM apartment.
 

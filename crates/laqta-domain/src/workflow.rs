@@ -222,7 +222,8 @@ impl Default for TaskSettings {
     }
 }
 
-/// An external program run after capture (ShareX "Actions", `AfterCaptureTasks::PERFORM_ACTIONS`).
+/// An external program run after capture. Imported ShareX `PerformActions` tasks map to
+/// `AfterCaptureTasks::PERFORM_ACTIONS`.
 /// In `args`, `%input` is the saved file and `%output` the output file (input with `output_extension`).
 #[derive(Clone, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -330,7 +331,7 @@ impl Default for BeautifySettings {
     }
 }
 
-/// Where uploads go and how results are reported (ShareX's destinations and upload settings).
+/// Where uploads go and how results are reported.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct UploadSettings {
@@ -342,7 +343,7 @@ pub struct UploadSettings {
     pub url_sharer: String,
     /// What "copy URL" puts on the clipboard (upload-info tokens such as `$url`, `$shorturl`).
     pub clipboard_format: String,
-    /// Retries after the first attempt for network errors, HTTP 5xx and 429 (risk R7).
+    /// Retries after the first attempt for network errors, HTTP 5xx and 429.
     pub retries: u32,
     /// Ask before uploading files larger than this (bytes); 0 = never.
     pub large_file_warning_bytes: u64,
@@ -439,7 +440,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    /// ShareX's 23 after-capture tasks plus Laqta's Remove background.
+    /// One flag for each of the 23 after-capture tasks (the set ShareX workflows use), plus Remove background.
     fn after_capture_has_24_flags() {
         assert_eq!(AfterCaptureTasks::all().bits().count_ones(), 24);
         assert_eq!(AfterCaptureTasks::all().bits(), (1 << 24) - 1);

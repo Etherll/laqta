@@ -8,7 +8,7 @@
 # Each run uses a scratch HOME and runtime dir under $LAQTA_BENCH_DIR (default target/bench):
 # a cold start, 12 captures to fill history, each window opened 3 times (closed in between),
 # settings and history with the main window open, and 3 region overlays (Escape cancels).
-# Timings come from the `laqta::perf` trace points (docs/plan/PERF.md).
+# Timings come from the `laqta::perf` trace points.
 set -u
 BIN=$(realpath "$1"); LABEL=$2; MODE=${3:-3840x2160}
 BASE=$(realpath -m "${LAQTA_BENCH_DIR:-target/bench}")

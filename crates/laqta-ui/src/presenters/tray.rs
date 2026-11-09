@@ -22,7 +22,7 @@ pub fn tray_menu(settings: &Settings) -> TrayMenu {
     }
 }
 
-/// Tooltip used when hotkey registration returned `Unsupported` (M0 §5.4).
+/// Tooltip used when hotkey registration returned `Unsupported`.
 pub const TOOLTIP_NO_HOTKEY: &str = "Laqta — bind `laqta --action print-screen` in your desktop's keyboard settings";
 
 #[cfg(test)]

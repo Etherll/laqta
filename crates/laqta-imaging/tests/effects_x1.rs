@@ -1,8 +1,8 @@
-//! Snapshot and value tests for the 43 M7 X1 effects (M7 D5): 17 adjustments, 20 manipulations and
+//! Snapshot and value tests for the 43 effects: 17 adjustments, 20 manipulations and
 //! 6 drawings. Each case runs on one of the existing test cards: the 16x16 card of `effects_adjust.rs`
 //! or the 20x16 card with transparent margins of `effects_dm.rs`. It must match
 //! `tests/snapshots/x1_<name>.png` by decoded pixels. A missing snapshot is written and passes;
-//! `LAQTA_BLESS=1` rewrites the X1 snapshots.
+//! `LAQTA_BLESS=1` rewrites the snapshots.
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
 
 use std::path::PathBuf;
@@ -89,7 +89,7 @@ fn card_image(card: Card) -> Bitmap {
     }
 }
 
-/// One case per X1 effect: snapshot name, card, and the effect with parameters that change the card.
+/// One case per effect: snapshot name, card, and the effect with parameters that change the card.
 fn cases() -> Vec<(&'static str, Card, Effect)> {
     let adj = Effect::Adjust;
     let man = Effect::Manip;
@@ -228,8 +228,8 @@ fn every_x1_effect_matches_its_snapshot() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// The X1 variants in `defaults()`. The first 15 adjustments, 10 manipulations and 8 drawings are
-/// M3's, and their own tests cover them.
+/// The variants in `defaults()` past the first 15 adjustments, 10 manipulations and 8 drawings.
+/// Those earlier variants have their own tests in `effects_adjust.rs` and `effects_dm.rs`.
 fn x1_defaults() -> Vec<Effect> {
     let x1: Vec<Effect> = Adjust::defaults()
         .into_iter()

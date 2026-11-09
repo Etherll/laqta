@@ -1,6 +1,6 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
 
-//! Dispatcher routes (M0 §5.1). Each M0 action returns its documented result.
+//! Dispatcher routes. Each action returns its documented result.
 
 use std::path::Path;
 use std::sync::Arc;

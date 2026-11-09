@@ -1,4 +1,4 @@
-//! Frames from a ScreenCast node through PipeWire (ADR 016, M4 D2). A thread of its own runs the
+//! Frames from a ScreenCast node through PipeWire (ADR 016). A thread of its own runs the
 //! PipeWire loop and copies each frame, cropped to the recording area and converted to BGRA, into a
 //! queue of two. `next_frame` takes the newest frame from that queue and drops the older ones. It does
 //! not pace: frames come as the compositor sends them (at most the requested rate) and the consumer

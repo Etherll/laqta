@@ -1,4 +1,4 @@
-//! AT-SPI UI-element hover targets (M1 §4.1): the visible elements of the focused window, so the
+//! AT-SPI UI-element hover targets: the visible elements of the focused window, so the
 //! region overlay can snap to a button or a panel as well as to a whole window. Coordinates are
 //! AT-SPI screen extents, used as they come. Wayland sessions get no elements: there the extents
 //! do not line up with the physical pixels the overlay uses.

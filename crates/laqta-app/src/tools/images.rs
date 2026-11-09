@@ -1,4 +1,4 @@
-//! Image tools: file wrappers over `laqta-imaging::tools` (M5 D1). Each function reads its inputs on the blocking pool,
+//! Image tools: file wrappers over `laqta-imaging::tools`. Each function reads its inputs on the blocking pool,
 //! does the pixel work on the compute pool, and writes the outputs. Outputs get a new name beside the input or in the
 //! chosen folder, and never overwrite an existing file. An output the caller names exactly (`out_path`) may be
 //! overwritten, but never an input.

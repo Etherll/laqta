@@ -1,4 +1,4 @@
-//! The mouse highlighter on Windows (M5 D9): a layered, click-through, top-most popup that shows a
+//! The mouse highlighter on Windows: a layered, click-through, top-most popup that shows a
 //! disc at the pointer.
 //!
 //! A thread owns the popup while the highlighter is on. Each tick it reads the pointer, moves the

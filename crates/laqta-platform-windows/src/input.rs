@@ -1,4 +1,4 @@
-//! Synthetic input for scrolling capture on Windows (M6 D4): `SetCursorPos` to the region's point,
+//! Synthetic input for scrolling capture on Windows: `SetCursorPos` to the region's point,
 //! then wheel notches or arrow and page keys through `SendInput`, or `WM_VSCROLL` to the window
 //! under the point. The event plan is plain data, so its tests run on every target; the Win32 calls
 //! and the `INPUT` records are Windows-only.

@@ -113,11 +113,11 @@ pub struct RecordingSettings {
     pub custom_args: String,
     /// Path to FFmpeg; empty = PATH or the downloaded copy.
     pub ffmpeg_path: String,
-    /// Turn the mouse highlighter on while recording (M5 D9).
+    /// Turn the mouse highlighter on while recording.
     pub highlight_mouse: bool,
-    /// The camera overlay (M7 D9).
+    /// The camera overlay.
     pub camera: CameraOverlay,
-    /// FFmpeg or, on Windows, the native recorder (M7 D10).
+    /// FFmpeg or, on Windows, the native recorder.
     pub backend: RecorderBackend,
 }
 
@@ -207,7 +207,7 @@ pub struct RecordSpec {
     pub show_cursor: bool,
     pub audio: Vec<AudioDevice>,
     pub custom_args: String,
-    /// The camera picture over the recording (M7 D9); `None` = off.
+    /// The camera picture over the recording; `None` = off.
     pub camera: Option<CameraOverlay>,
 }
 

@@ -2,10 +2,10 @@
 //!
 //! A pointer, key or scroll handler that waits on the compute pool (`in_pool`, `block_on`) or on
 //! the disk (`std::fs`) freezes the window: on a 280 Hz mouse, a full-canvas render per move kept
-//! the editor "Not Responding" (2026-11-08). This test scans each view's source for the closures
+//! the editor "Not Responding". This test scans each view's source for the closures
 //! passed to input listeners, follows `this.<fn>(` / `self.<fn>(` calls one level into the same
-//! file, and fails on a blocking call. It stands in for type-level enforcement until R1 A2
-//! removes `in_pool` from `laqta-ui` entirely.
+//! file, and fails on a blocking call. It stands in for type-level enforcement until
+//! `in_pool` is removed from `laqta-ui` entirely.
 
 use std::path::Path;
 
@@ -25,10 +25,10 @@ const LISTENERS: &[&str] = &[
 const BLOCKING: &[&str] = &["in_pool(", "block_on(", "std::fs::"];
 
 /// Known exceptions: (file, fn, reason). The scan does not follow calls past an allowed fn.
-/// Each one is an R1 A2 item: a user-requested save, not per-event work.
+/// Each one is a user-requested save, not per-event work.
 const ALLOWED: &[(&str, &str, &str)] = &[
-    ("editor_window.rs", "save", "Ctrl+S / Enter: encodes with in_pool, writes in background_spawn; R1 A2"),
-    ("editor_window.rs", "save_as", "Ctrl+Shift+S: as save; R1 A2"),
+    ("editor_window.rs", "save", "Ctrl+S / Enter: encodes with in_pool, writes in background_spawn"),
+    ("editor_window.rs", "save_as", "Ctrl+Shift+S: as save"),
 ];
 
 fn allowed(file: &str, name: &str) -> bool {

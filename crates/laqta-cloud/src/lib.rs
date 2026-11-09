@@ -1,4 +1,4 @@
-//! Cloud ML adapters (M7 D7): remove.bg as a `BackgroundRemover`, and one OpenAI-compatible client as
+//! Cloud ML adapters: remove.bg as a `BackgroundRemover`, and one OpenAI-compatible client as
 //! the `ImageAnalyzer`. API keys come from `SecretStore`. HTTP goes through `laqta-http`, behind a
 //! `Transport` so tests run without the network.
 

@@ -1,4 +1,4 @@
-//! URL sharing (ADR 014, D8). Each service is a template with `{url}` replaced by the percent-encoded
+//! URL sharing (ADR 014). Each service is a template with `{url}` replaced by the percent-encoded
 //! URL. Email opens the user's mail client through `mailto:`.
 
 use std::sync::Arc;

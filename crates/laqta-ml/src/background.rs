@@ -1,5 +1,5 @@
-//! The `BackgroundRemover` port backed by a catalog model of family `matting-parametric` (ADR 023,
-//! M7 D6). Inference runs on its own thread, and the result comes back over a oneshot channel, as
+//! The `BackgroundRemover` port backed by a catalog model of family `matting-parametric` (ADR 023).
+//! Inference runs on its own thread, and the result comes back over a oneshot channel, as
 //! `ModelOcr` does.
 
 use std::sync::Arc;

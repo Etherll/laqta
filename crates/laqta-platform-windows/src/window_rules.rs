@@ -3,7 +3,7 @@
 
 use laqta_domain::PhysRect;
 
-/// The snap filter (M1 §4.5): visible, not minimized, not cloaked, and a tool window only when it
+/// The snap filter: visible, not minimized, not cloaked, and a tool window only when it
 /// is also an app window.
 pub(crate) fn is_snap_candidate(visible: bool, iconic: bool, cloaked: bool, tool_window: bool, app_window: bool) -> bool {
     visible && !iconic && !cloaked && (!tool_window || app_window)

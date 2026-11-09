@@ -1,4 +1,4 @@
-//! Metadata of image files: reading EXIF, and stripping metadata from JPEG, PNG and WebP (M5 metadata viewer and stripper).
+//! Metadata of image files: reading EXIF, and stripping metadata from JPEG, PNG and WebP.
 
 use std::io::Cursor;
 

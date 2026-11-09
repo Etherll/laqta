@@ -1,4 +1,4 @@
-//! The mouse highlighter on X11 (M5 D9): a click-through disc that follows the pointer.
+//! The mouse highlighter on X11: a click-through disc that follows the pointer.
 //!
 //! The window is override-redirect. It takes a 32-bit ARGB visual when the screen has one, so a
 //! compositing manager can blend the translucent fill. Its input region is empty, so clicks pass

@@ -53,7 +53,7 @@ pub(crate) async fn save_atomic(spawner: &dyn Spawner, path: PathBuf, bytes: Vec
     .await
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // No M0 caller; the cleanup path in a later milestone uses it.
+#[cfg_attr(not(test), allow(dead_code))] // Not called outside tests yet; the cleanup path will use it.
 pub(crate) async fn remove(spawner: &dyn Spawner, path: PathBuf) -> io::Result<()> {
     blocking(spawner, move || std::fs::remove_file(&path)).await
 }

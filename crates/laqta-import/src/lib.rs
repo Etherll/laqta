@@ -1,4 +1,4 @@
-//! Reads ShareX configuration, history, `.sxcu`, `.sxie` and backup archives into Laqta values (M6 D7).
+//! Reads ShareX configuration, history, `.sxcu`, `.sxie` and backup archives into Laqta values.
 //!
 //! The functions read files and return values; nothing is written or fetched. What ShareX has and
 //! Laqta cannot represent is reported in `ImportResult::warnings` and left out.

@@ -1,4 +1,4 @@
-//! Shell integration on Windows (M6 D11, D2): the "Upload with Laqta" verbs under `HKCU\Software\Classes`,
+//! Shell integration on Windows: the "Upload with Laqta" verbs under `HKCU\Software\Classes`,
 //! the Send To script and the browser native-messaging host registrations. The text and file parts
 //! build on every target and are tested on Linux with temp dirs; the registry calls are Windows-only.
 

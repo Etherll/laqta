@@ -1,4 +1,4 @@
-//! The background remover and image analyzer the app uses (M7 D7, D8): the settings pick a local
+//! The background remover and image analyzer the app uses: the settings pick a local
 //! model family or remove.bg, and the analyzer's endpoint and model, at each call.
 
 use std::sync::{Arc, RwLock};

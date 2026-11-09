@@ -1,4 +1,4 @@
-//! Output layout and the mixed-scale mapping (M1 D2). Pure: no I/O.
+//! Output layout and the mixed-scale mapping. Pure: no I/O.
 //!
 //! Compositors report outputs in logical pixels. Laqta's virtual desktop is physical, so every
 //! logical rect is scaled by the largest output scale (`s_max`); a lower-scale output is upscaled
@@ -21,7 +21,7 @@ pub fn max_scale(outputs: &[OutputLayout]) -> f32 {
 }
 
 /// Maps a logical rect to physical pixels at `scale`. Each of x, y, width and height is rounded on
-/// its own, as the D2 rule states.
+/// its own.
 pub fn to_physical(r: PhysRect, scale: f32) -> PhysRect {
     let s = f64::from(scale);
     PhysRect {

@@ -1,6 +1,6 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
 
-//! Golden event traces for the Capture job (M0 §7.1, M1 §4.3). Each test renders the `TaskEvent`s as lines
+//! Golden event traces for the Capture job. Each test renders the `TaskEvent`s as lines
 //! and compares them with `tests/golden/<name>.trace`. Window titles, cropped images and stops are traced in
 //! `src/task/tests.rs`, because the dispatcher does not submit those jobs yet.
 
@@ -123,7 +123,7 @@ fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Set
     }
 }
 
-/// M0 settings with the screenshots folder in `dir`.
+/// Settings with the screenshots folder in `dir`.
 fn settings_in(dir: &Path) -> Settings {
     Settings { screenshots_dir: dir.to_path_buf(), ..Settings::default_for(dir.to_path_buf()) }
 }
@@ -559,7 +559,7 @@ fn destination(rig: &Rig, id: &str, results: Vec<Result<UploadResult, UploadErro
     destination
 }
 
-/// M0 settings for an upload: a capture that saves its image, copies it, and uploads it.
+/// Settings for an upload: a capture that saves its image, copies it, and uploads it.
 fn upload_settings(dir: &Path) -> Settings {
     let mut settings = settings_in(dir);
     settings.defaults.after_capture =
@@ -641,7 +641,7 @@ fn upload_fails_after_retries() {
     });
 }
 
-/// ShareX deletes the file in a `finally` block, so a failed upload does not keep a file the user asked to delete.
+/// The delete step runs even when the upload fails, so a failed upload does not keep a file the user asked to delete.
 #[test]
 fn delete_file_after_failed_upload() {
     in_compute_pool(|| {
@@ -1182,7 +1182,7 @@ fn perform_action_output_is_uploaded_as_its_kind() {
     });
 }
 
-/// A finished recording handed to Task (M4): the after-capture file steps run on the file, with the
+/// A finished recording handed to Task: the after-capture file steps run on the file, with the
 /// recording's toast.
 #[test]
 fn saved_recording() {
@@ -1205,7 +1205,7 @@ fn saved_recording() {
     });
 }
 
-/// `PIN_TO_SCREEN`, `SCAN_QR_CODE` and `DO_OCR` (M5): the capture is pinned, scanned (no code in the test
+/// `PIN_TO_SCREEN`, `SCAN_QR_CODE` and `DO_OCR`: the capture is pinned, scanned (no code in the test
 /// frames) and read; the OCR text is shown and copied.
 #[test]
 fn pin_qr_ocr() {
@@ -1230,7 +1230,7 @@ fn pin_qr_ocr() {
     });
 }
 
-/// A region selected and finished with the toolbar's Copy button (UX1): the capture is copied and not saved,
+/// A region selected and finished with the toolbar's Copy button: the capture is copied and not saved,
 /// although the default steps save and copy.
 #[test]
 fn selection_action_copy() {
@@ -1287,7 +1287,7 @@ fn folder_path_and_print() {
     });
 }
 
-/// `REMOVE_BACKGROUND` and `ANALYZE_IMAGE` (M7): the cut-out is what gets copied; the analysis is shown,
+/// `REMOVE_BACKGROUND` and `ANALYZE_IMAGE`: the cut-out is what gets copied; the analysis is shown,
 /// copied and traced.
 #[test]
 fn remove_background_and_analyze() {
@@ -1309,7 +1309,7 @@ fn remove_background_and_analyze() {
     });
 }
 
-/// `OPEN_IN_PHOTO_EDITOR` (M7): the capture goes to the photo editor and the task goes on.
+/// `OPEN_IN_PHOTO_EDITOR`: the capture goes to the photo editor and the task goes on.
 #[test]
 fn open_in_photo_editor() {
     in_compute_pool(|| {

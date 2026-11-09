@@ -94,7 +94,7 @@ struct Loaded {
 }
 
 /// The model runtime for one process: where ONNX Runtime and the models live, and the sessions that
-/// are loaded now. At most one session is loaded per task (ADR 023 §6).
+/// are loaded now. At most one session is loaded per task (ADR 023).
 pub struct Runtime {
     lib_path: PathBuf,
     models_dir: PathBuf,

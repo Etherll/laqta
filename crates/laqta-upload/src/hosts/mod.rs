@@ -29,7 +29,12 @@ pub mod sftp;
 #[cfg(feature = "host-shared-folder")]
 pub mod shared_folder;
 
-// ---- HO-a ----
+pub mod azure_blob;
+pub mod b2;
+pub mod box_com;
+pub mod flickr;
+#[cfg(feature = "host-s3")]
+pub mod gcs;
 pub mod gist;
 pub mod mediafire;
 pub mod nextcloud;
@@ -37,16 +42,7 @@ pub mod privatebin;
 pub mod pushbullet;
 pub mod sendspace;
 pub mod smtp;
-// ---- end HO-a ----
-// ---- HO-b ----
-pub mod azure_blob;
-pub mod b2;
-pub mod box_com;
-pub mod flickr;
-#[cfg(feature = "host-s3")]
-pub mod gcs;
 pub mod youtube;
-// ---- end HO-b ----
 
 use laqta_http::{Body, HttpError, Request, Response};
 use laqta_ports::{PortError, ProgressCallback, UploadData, UploadError};

@@ -1,4 +1,4 @@
-//! Shell integration on Linux (M6 D11, D2): "Upload with Laqta" for the file managers, and the
+//! Shell integration on Linux: "Upload with Laqta" for the file managers, and the
 //! browser native-messaging host manifests. Each root is a field, so tests point them at a temp
 //! dir; `default()` uses the XDG data directory and the browsers' own locations.
 

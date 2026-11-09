@@ -124,7 +124,7 @@ fn pictures_dir() -> std::path::PathBuf {
     dirs::picture_dir().or_else(|| dirs::home_dir().map(|h| h.join("Pictures"))).unwrap_or_else(|| "Pictures".into())
 }
 
-/// `-sandbox` (M6 D8): a fresh temporary folder, removed on exit. `-portable`: `LaqtaData` next to the
+/// `-sandbox`: a fresh temporary folder, removed on exit. `-portable`: `LaqtaData` next to the
 /// binary, as the `portable` marker file does.
 fn data_dir(args: &crate::cli::Args) -> std::path::PathBuf {
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
@@ -402,7 +402,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         *s = Some(dispatch.clone());
     }
 
-    // Sandbox mode writes no settings (M6 D8); `-NoHotkeys` registers none.
+    // Sandbox mode writes no settings; `-NoHotkeys` registers none.
     let use_hotkeys = !args.no_hotkeys;
     let save_settings: crate::imports::SaveSettings = {
         let model_options = model_options.clone();

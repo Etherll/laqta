@@ -1,4 +1,4 @@
-//! Text recognition for the OCR tool, through the `Ocr` port (ADR 023, M5 D2).
+//! Text recognition for the OCR tool, through the `Ocr` port (ADR 023).
 
 use laqta_domain::Bitmap;
 use laqta_ports::{AppError, OcrResult};

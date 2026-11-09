@@ -114,7 +114,7 @@ pub trait HoverSource: Send + Sync {
     fn active_window(&self) -> crate::BoxFuture<'_, Result<Option<HoverTarget>, PortError>>;
 }
 
-/// A window the dispatcher can open (ARCHITECTURE §2.2, windowed tools). Tools join in M5.
+/// A window the dispatcher can open (ARCHITECTURE §2.2), including the windowed tools.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ToolWindow {
@@ -130,13 +130,13 @@ pub enum ToolWindow {
     Effects(Option<std::path::PathBuf>),
     /// The image editor on a file (`Action::ImageEditor` with no capture).
     Editor(Option<std::path::PathBuf>),
-    /// A windowed tool (M5).
+    /// A windowed tool.
     Tool(ToolKind),
-    /// The photo editor on a file, or empty (M7).
+    /// The photo editor on a file, or empty.
     PhotoEditor(Option<std::path::PathBuf>),
 }
 
-/// The windowed tools (M5 D1). Each opens its own panel in the tools window.
+/// The windowed tools. Each opens its own panel in the tools window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ToolKind {
     ColorPicker,
@@ -168,7 +168,7 @@ pub enum ToolKind {
 pub trait ToolHost: Send + Sync {
     fn open(&self, window: ToolWindow) -> Result<(), PortError>;
 
-    /// Pins an image to the screen: a borderless, always-on-top window (M5).
+    /// Pins an image to the screen: a borderless, always-on-top window.
     fn pin(&self, image: laqta_domain::Bitmap) -> Result<(), PortError> {
         let _ = image;
         Err(PortError::Unsupported("pin to screen".into()))

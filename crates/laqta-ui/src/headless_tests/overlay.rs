@@ -1,4 +1,4 @@
-//! The region overlay on a fractionally scaled monitor (D8). GPUI sizes displays by the integer
+//! The region overlay on a fractionally scaled monitor. GPUI sizes displays by the integer
 //! output scale, so the overlay must grow itself to the monitor's physical size over the real
 //! scale (KDE at 125% showed only a 1280×720 corner before the fix).
 
@@ -42,7 +42,7 @@ fn overlay_covers_the_monitor_at_125_percent(cx: &mut TestAppContext) {
     assert_eq!(vcx.update(|window, _| window.bounds().size), requested, "no resize loop");
 }
 
-/// UX1 L1: a settled selection gets the engine and the toolbar; a drawing tool locks the
+/// A settled selection gets the engine and the toolbar; a drawing tool locks the
 /// selection, and an action without annotations finishes straight away.
 #[gpui::test]
 fn the_capture_toolbar_locks_for_drawing_and_finishes_with_its_action(cx: &mut TestAppContext) {
@@ -107,7 +107,7 @@ fn the_capture_toolbar_locks_for_drawing_and_finishes_with_its_action(cx: &mut T
     assert!(matches!(sent.lock().unwrap().last(), Some(RegionInput::Command(RegionCommand::Cancel))));
 }
 
-/// LAYOUT: the wheel over the overlay grows the hover (one notch up is `Wheel(1)`), and touchpad
+/// The wheel over the overlay grows the hover (one notch up is `Wheel(1)`), and touchpad
 /// pixels add up to whole notches before anything is sent.
 #[gpui::test]
 fn the_wheel_sends_whole_notches(cx: &mut TestAppContext) {

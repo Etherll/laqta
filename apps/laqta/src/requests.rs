@@ -1,4 +1,4 @@
-//! Requests from the command line, a secondary instance or the native-messaging host (M6 D1, D2).
+//! Requests from the command line, a secondary instance or the native-messaging host.
 //! Every one ends in `App::dispatch` or an Upload job; `.sxcu` and `.sxie` files are imported instead.
 
 use std::path::{Path, PathBuf};

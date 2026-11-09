@@ -15,8 +15,7 @@ use super::fail;
 /// Captures each RandR monitor from the root window with `GetImage`, and draws the XFixes cursor
 /// onto the frames when the request asks for it.
 ///
-/// Decision (M0): plain `GetImage` only; the XShm path is deferred to M1, where the overlay latency
-/// budget measures whether it is needed.
+/// Plain `GetImage` only; the XShm path is not used.
 #[derive(Debug)]
 pub struct X11Screen;
 

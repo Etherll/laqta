@@ -1,4 +1,5 @@
-//! The `Inpainter` port backed by the `lama` family (ADR 023, M7 D4). Inference runs on its own thread,
+//! The `Inpainter` port backed by the `lama` family (ADR 023).
+//! Inference runs on its own thread,
 //! and the result comes back over a oneshot channel, as `ModelOcr` does.
 
 use std::sync::Arc;

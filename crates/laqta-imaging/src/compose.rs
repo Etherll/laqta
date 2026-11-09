@@ -3,7 +3,7 @@ use rayon::prelude::*;
 
 /// Places each frame at its monitor's rect origin minus the union's origin, at its own image size,
 /// on a transparent canvas the size of the union. Converts BGRA to RGBA. Rects are always physical
-/// pixels (M1 D2), so frames are only placed, never scaled or re-laid out.
+/// pixels, so frames are only placed, never scaled or re-laid out.
 pub fn compose_monitors(frames: &[Frame]) -> Bitmap {
     debug_assert!(rayon::current_thread_index().is_some(), "compose_monitors must run inside the compute pool");
     let placements = destinations(frames);

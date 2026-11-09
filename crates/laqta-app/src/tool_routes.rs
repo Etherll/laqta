@@ -1,4 +1,4 @@
-//! Dispatcher routes for the M5 tools. Windowed tools open `ToolWindow::Tool`; capture-based tools
+//! Dispatcher routes for the tools. Windowed tools open `ToolWindow::Tool`; capture-based tools
 //! (screen colour picker, ruler, pin, OCR, QR scan) run a Region session first and show the result.
 
 use std::sync::Arc;
@@ -123,8 +123,9 @@ impl App {
         let _ = self.ports.clipboard.set_text(&formats.hex);
         match self.ports.tools.show_color(color) {
             Err(laqta_ports::PortError::Unsupported(_)) => {
-                let text =
-                    [&formats.hex, &formats.rgb, &formats.hsl, &formats.hsv, &formats.cmyk, &formats.decimal].map(|s| s.as_str()).join("\n");
+                let text = [&formats.hex, &formats.rgb, &formats.hsl, &formats.hsv, &formats.cmyk, &formats.decimal]
+                    .map(|s| s.as_str())
+                    .join("\n");
                 self.show("Screen colour (hex copied)", &text)
             }
             other => other.map(|()| Dispatched::Done).map_err(AppError::from),

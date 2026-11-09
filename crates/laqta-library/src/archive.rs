@@ -1,4 +1,4 @@
-//! The data-folder archive (docs/FEATURES.md, Application: "export / import archive"): a zip of the
+//! The data-folder archive: a zip of the
 //! settings, the history database, custom uploaders and backups, with paths relative to the data
 //! folder.
 

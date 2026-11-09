@@ -12,7 +12,7 @@ use laqta_upload::catalog::{CATALOG, catalog};
 use laqta_upload::registry::Registry;
 use laqta_upload::sxcu::{CustomUploader, DestinationType, Env, Input, SxcuError, build_request};
 
-/// The M2 catalog hosts (FEATURES.md), by the `Name` each file gives.
+/// The catalog hosts, by the `Name` each file gives.
 const M2_NAMES: &[&str] = &[
     "Chevereto",
     "vgy.me",

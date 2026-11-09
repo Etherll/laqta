@@ -1,6 +1,6 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
 
-//! `Command::ReplaceImage` and the Object eraser tool (UX1 T4), plus the tool key map.
+//! `Command::ReplaceImage` and the Object eraser tool, plus the tool key map.
 
 mod support;
 

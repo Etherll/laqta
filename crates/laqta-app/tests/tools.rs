@@ -1,6 +1,6 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
 
-//! Tests for the M5 tool logic: the pure formats and maths, and the file, media, OCR and window tools over fakes.
+//! Tests for the tool logic: the pure formats and maths, and the file, media, OCR and window tools over fakes.
 //! `laqta-imaging` asserts that its pixel work runs in a rayon pool, as the compute pool does, so each test body runs
 //! inside one.
 

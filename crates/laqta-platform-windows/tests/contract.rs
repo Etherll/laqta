@@ -1,4 +1,4 @@
-//! Platform contract tests (docs/plan/M0.md §7.1). They need an interactive desktop session.
+//! Platform contract tests. They need an interactive desktop session.
 #![cfg(windows)]
 #![allow(clippy::unwrap_used)]
 

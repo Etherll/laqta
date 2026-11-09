@@ -1,6 +1,6 @@
 //! Blocking-I/O threads that exit after 10 s idle, so an idle process has no wakeups.
 //!
-//! Decision (M0, risk R6): the `blocking` crate 1.7.0 never retires its last idle thread, which
+//! The `blocking` crate 1.7.0 never retires its last idle thread, which
 //! then wakes every 500 ms forever. Laqta's own blocking work runs here instead.
 
 use std::collections::VecDeque;

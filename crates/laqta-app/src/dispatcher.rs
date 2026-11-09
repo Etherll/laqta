@@ -40,15 +40,15 @@ pub struct Ports {
     pub stream: Arc<dyn laqta_ports::ScreenStream>,
     pub ocr: Arc<dyn laqta_ports::Ocr>,
     pub window_ops: Arc<dyn laqta_ports::WindowOps>,
-    /// Scrolling capture's synthetic scroll (M6 D4).
+    /// Synthetic scroll input for scrolling capture.
     pub input: Arc<dyn laqta_ports::InputSynth>,
-    /// The mouse highlighter (M5 D9).
+    /// The mouse highlighter.
     pub highlighter: Arc<dyn laqta_ports::PointerHighlighter>,
-    /// Background removal, analysis and inpainting (M7).
+    /// Background removal, image analysis and inpainting.
     pub background: Arc<dyn laqta_ports::BackgroundRemover>,
     pub analyzer: Arc<dyn laqta_ports::ImageAnalyzer>,
     pub inpainter: Arc<dyn laqta_ports::Inpainter>,
-    /// Watch folders (M6 D6).
+    /// Watch folders.
     pub watcher: Arc<dyn laqta_ports::FileWatcher>,
     pub uploaders: Arc<dyn laqta_ports::Uploaders>,
     pub hover: Arc<dyn HoverSource>,
@@ -123,11 +123,11 @@ pub struct App {
     pub(crate) recording: std::sync::Mutex<Option<ActiveRecording>>,
     /// The area of the last recording, for `StartScreenRecorder`.
     pub(crate) last_recording_area: std::sync::Mutex<Option<PhysRect>>,
-    /// The running auto capture's stop flag (M6 D5).
+    /// The running auto capture's stop flag.
     pub(crate) auto_capture: std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
-    /// Live watch-folder handles (M6 D6); replaced by `start_watch_folders`.
+    /// Live watch-folder handles; replaced by `start_watch_folders`.
     pub(crate) watches: std::sync::Mutex<Vec<laqta_ports::WatchHandle>>,
-    /// What the borderless and top-most toggles switched on (M5 D7).
+    /// What the borderless and top-most toggles switched on.
     pub(crate) window_toggles: crate::tools::WindowToggles,
     /// The history the windows edit, once `main` attaches it (`history.rs`).
     pub(crate) history: std::sync::OnceLock<Arc<dyn laqta_ports::HistoryEdit>>,

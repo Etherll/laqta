@@ -37,7 +37,7 @@ pub struct EffectItem {
     pub enabled: bool,
 }
 
-/// A named list of effects (an effect preset, `.sxie` compatible).
+/// A named list of effects. Mirrors the `ImageEffectPreset` JSON that `.sxie` files hold.
 #[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Preset {

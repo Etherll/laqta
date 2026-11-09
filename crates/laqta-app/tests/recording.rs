@@ -1,6 +1,6 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
 
-//! M4 Recording session: the start actions and their areas, the countdown, pause and resume, stop and abort, the
+//! Recording session: the start actions and their areas, the countdown, pause and resume, stop and abort, the
 //! fixed duration, an encoder that dies, and the hand-off of the finished file to Task. The driver is a spawned
 //! future that runs until it is told to stop (or its duration runs out), so each test steps the spawned futures
 //! one poll at a time.

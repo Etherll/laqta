@@ -1,4 +1,4 @@
-//! Run at login (M6 D10): the `Laqta` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+//! Run at login: the `Laqta` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 //! The value text is pure and tested on every target; the registry calls are Windows-only.
 
 use std::path::Path;

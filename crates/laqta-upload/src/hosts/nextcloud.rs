@@ -109,7 +109,7 @@ async fn transfer(
         return Ok(UploadResult { url: Some(webdav_url), ..UploadResult::default() });
     }
     let share_path: String = remote.iter().map(|part| format!("/{part}")).collect();
-    // OCS v1 with `format=json` in the URL, as ShareX sends it: ownCloud reads the format from the
+    // OCS v1 with `format=json` in the URL: ownCloud reads the format from the
     // URL only, and Nextcloud reads both places. `permissions=1` is read-only.
     let mut ocs = Request::new(Method::Post, format!("{server}/ocs/v1.php/apps/files_sharing/api/v1/shares"));
     ocs.query = vec![("format".to_owned(), "json".to_owned())];

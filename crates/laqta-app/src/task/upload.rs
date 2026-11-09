@@ -1,5 +1,5 @@
-//! The upload phase and the after-upload steps (M2 §4, ADR 011). Every upload goes through `Job::send`: the
-//! destination, the large-file warning, the upload with bounded retries (risk R7), and then the after-upload
+//! The upload phase and the after-upload steps (ADR 011). Every upload goes through `Job::send`: the
+//! destination, the large-file warning, the upload with bounded retries, and then the after-upload
 //! steps, which run only when the host returned a URL. The image of a capture job and the Upload jobs
 //! (text, file, URL to download, URL to shorten) share these steps.
 
@@ -144,7 +144,7 @@ impl Job {
     }
 
     /// The upload itself: the destination, the large-file warning, then the attempts. A network error, an HTTP
-    /// 5xx or a 429 is retried `settings.upload.retries` times, waiting 1 s and then 3 s (risk R7). Any other
+    /// 5xx or a 429 is retried `settings.upload.retries` times, waiting 1 s and then 3 s. Any other
     /// error fails at once.
     async fn upload(&self, kind: UploadKind, request: UploadRequest, size: u64) -> Result<UploadResult, Ended> {
         let settings = &self.settings.upload;
@@ -201,7 +201,7 @@ impl Job {
         })
     }
 
-    /// The after-upload steps, in the order of the flags (M2 §4). Each step runs only when its flag is set. A
+    /// The after-upload steps, in the order of the flags. Each step runs only when its flag is set. A
     /// failed step is reported as `StepFailed`, and the next step still runs. A stop is checked before each step.
     /// Returns the URL the steps ended with.
     async fn after_upload(&self, result: &UploadResult, sent: &Sent, flags: AfterUploadTasks) -> Step<String> {

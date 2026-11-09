@@ -1,7 +1,7 @@
-//! `.sxie` effect classes mapped to Laqta's effect enums. Each arm names a ShareX class and
-//! its JSON properties, as Json.NET writes them. `$type`, `Enabled` and the simple `Value` properties
-//! follow ShareX's format. The other property names are best-effort and are not yet
-//! checked against a real `.sxie`, so they are kept together here to be corrected in one place.
+//! Effects in ShareX `ImageEffectsLib` `.sxie` packages, mapped to Laqta's effect enums. Each arm names a
+//! ShareX class and its JSON properties, as Json.NET writes them. `$type`, `Enabled` and the simple `Value`
+//! properties follow the ShareX format. The other property names are not yet checked against a real `.sxie`
+//! file, so they are kept together here to be corrected in one place.
 //!
 //! `parse` and `write` are mirror images: a name read by one is written by the other.
 
@@ -312,7 +312,6 @@ pub(crate) fn write(effect: &Effect) -> Option<(&'static str, Object)> {
                 p.flag("AutoSourceFromCorner", *auto_source_from_corner);
                 "ReplaceColor"
             }
-            // ---- X1 ----
             Adjust::AutoContrast { .. }
             | Adjust::ChannelSwap { .. }
             | Adjust::Clarity { .. }
@@ -330,7 +329,6 @@ pub(crate) fn write(effect: &Effect) -> Option<(&'static str, Object)> {
             | Adjust::TemperatureTint { .. }
             | Adjust::Threshold { .. }
             | Adjust::Vibrance { .. } => return None,
-            // ---- end X1 ----
         },
         Effect::Draw(draw) => match draw {
             Draw::Background { color, gradient } => {
@@ -392,14 +390,12 @@ pub(crate) fn write(effect: &Effect) -> Option<(&'static str, Object)> {
                 p.shadow("Shadow", *shadow);
                 "DrawTextEx"
             }
-            // ---- X1 ----
             Draw::Confetti { .. }
             | Draw::DrawLine { .. }
             | Draw::DrawShape { .. }
             | Draw::FakeCursor { .. }
             | Draw::GradientOverlay { .. }
             | Draw::Snowflakes { .. } => return None,
-            // ---- end X1 ----
         },
         Effect::Filter(filter) => match filter {
             Filter::Blur { radius } => {
@@ -506,8 +502,7 @@ pub(crate) fn write(effect: &Effect) -> Option<(&'static str, Object)> {
             | Filter::ZoomBlur { .. }
             | Filter::Median { .. }
             | Filter::OilPaint { .. } => return None,
-            // New M7 filters have no ImageEffectsLib class: add `Filter::Name { .. } => return None,` arms.
-            // ---- X2 ----
+            // Laqta-only filters have no ImageEffectsLib class: add `Filter::Name { .. } => return None,` arms.
             Filter::Anaglyph3D { .. } => return None,
             Filter::AnamorphicLensFlare { .. } => return None,
             Filter::AnimeSpeedLines { .. } => return None,
@@ -549,8 +544,6 @@ pub(crate) fn write(effect: &Effect) -> Option<(&'static str, Object)> {
             Filter::EtchedGlass { .. } => return None,
             Filter::FakeHair { .. } => return None,
             Filter::FilmGrain { .. } => return None,
-            // ---- end X2 ----
-            // ---- X3 ----
             Filter::FilmStripFrame { .. } => return None,
             Filter::FrostedGlass { .. } => return None,
             Filter::FrostedGlassIceEdges { .. } => return None,
@@ -593,8 +586,6 @@ pub(crate) fn write(effect: &Effect) -> Option<(&'static str, Object)> {
             Filter::PaletteMap { .. } => return None,
             Filter::PaperStencilMask { .. } => return None,
             Filter::PencilSketch { .. } => return None,
-            // ---- end X3 ----
-            // ---- X4 ----
             Filter::PerlinNoise { .. } => return None,
             Filter::PixelSorting { .. } => return None,
             Filter::PlasmaEnergyArcs { .. } => return None,
@@ -637,7 +628,6 @@ pub(crate) fn write(effect: &Effect) -> Option<(&'static str, Object)> {
             Filter::WoodenFrame { .. } => return None,
             Filter::XRayScan { .. } => return None,
             Filter::ZigZagBorder { .. } => return None,
-            // ---- end X4 ----
         },
         Effect::Manip(manip) => match manip {
             Manip::AutoCrop { color, tolerance, margin } => {
@@ -700,7 +690,6 @@ pub(crate) fn write(effect: &Effect) -> Option<(&'static str, Object)> {
                 p.flag("Grow", *grow);
                 "Skew"
             }
-            // ---- X1 ----
             Manip::CylinderWrap { .. }
             | Manip::DisplacementMap { .. }
             | Manip::FisheyeLens { .. }
@@ -721,7 +710,6 @@ pub(crate) fn write(effect: &Effect) -> Option<(&'static str, Object)> {
             | Manip::TileShuffle { .. }
             | Manip::Twirl { .. }
             | Manip::WaveDistortion { .. } => return None,
-            // ---- end X1 ----
         },
     };
     Some((class, p.into_object()))

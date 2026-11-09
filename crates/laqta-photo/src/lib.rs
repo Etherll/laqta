@@ -1,4 +1,4 @@
-//! The photo editor engine (M7 D1-D4, ADR 027): layered documents with the 16 blend modes, masks,
+//! The photo editor engine (ADR 027): layered documents with the 16 blend modes, masks,
 //! selections, brushes, retouching, layer styles, adjustment and smart layers, and the inpainting
 //! fallback. The pure core: no I/O, threads, environment or clock reads.
 //!

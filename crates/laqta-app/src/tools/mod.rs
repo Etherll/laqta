@@ -1,4 +1,4 @@
-//! Application logic for the M5 tools (M5 D1, ARCHITECTURE §2.2). The pure parts are plain values: colour formats,
+//! Application logic for the tools (ARCHITECTURE §2.2). The pure parts are plain values: colour formats,
 //! ruler maths, the colour history. The rest are functions that take the `Ports` they use, so file access goes through
 //! `files`, pixel work runs on the compute pool, and platform calls go through the ports. The tool windows in
 //! `laqta-ui` call these functions.

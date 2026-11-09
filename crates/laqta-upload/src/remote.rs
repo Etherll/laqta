@@ -1,4 +1,4 @@
-//! Remote storage for the browser window (M7 D11): the `RemoteStorage` port for every S3, FTP/FTPS
+//! Remote storage for the browser window: the `RemoteStorage` port for every S3, FTP/FTPS
 //! and SFTP account. Paths are the protocol's own: S3 uses object keys (folders end in `/`), FTP and
 //! SFTP use server paths, relative to the login directory unless they start with `/`. An empty path
 //! means the account's start folder: its `path_prefix` for S3, its `directory` for FTP and SFTP.

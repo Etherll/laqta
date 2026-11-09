@@ -1,4 +1,4 @@
-//! Snapshot and value tests for the adjustment kernels (M3 D8). Each variant runs on a fixed 16x16
+//! Snapshot and value tests for the adjustment kernels. Each variant runs on a fixed 16x16
 //! pattern inside a compute pool and must match `tests/snapshots/adjust_<name>.png` exactly, by
 //! decoded pixels. A missing snapshot is written and passes; `LAQTA_BLESS=1` rewrites them all.
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
@@ -150,7 +150,7 @@ fn snapshots_match_committed_pngs() {
 #[test]
 fn every_variant_has_a_snapshot_case() {
     let cases = cases();
-    // The 15 M3 adjustments; each M7 batch checks its own in `effects_x1.rs`.
+    // The first 15 adjustments; `effects_x1.rs` covers the rest.
     for variant in Adjust::defaults().into_iter().take(15) {
         let covered = cases.iter().any(|(_, c)| std::mem::discriminant(c) == std::mem::discriminant(&variant));
         assert!(covered, "no snapshot case for {}", variant.name());

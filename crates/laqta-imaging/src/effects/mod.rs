@@ -1,4 +1,4 @@
-//! Effect kernels (M3 D4), one module per category, matching `laqta_domain::effects`.
+//! Effect kernels, one module per category, matching `laqta_domain::effects`.
 
 use laqta_domain::Bitmap;
 use laqta_domain::effects::{Effect, Preset, TextSpec};

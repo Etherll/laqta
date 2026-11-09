@@ -31,7 +31,7 @@ pub fn host_info() -> HostInfo {
     HostInfo { user_name: user.clone(), user_login: user, computer_name: computer }
 }
 
-/// Sandbox mode's secret store (M6 D8): kept in memory, gone on exit.
+/// Sandbox mode's secret store: kept in memory, gone on exit.
 #[derive(Debug, Default)]
 pub struct MemorySecrets(std::sync::Mutex<std::collections::HashMap<String, String>>);
 

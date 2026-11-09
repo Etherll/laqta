@@ -1,4 +1,4 @@
-//! Draws a mark image over a picture (M5 watermark).
+//! Draws a mark image over a picture.
 
 use laqta_domain::Bitmap;
 use laqta_domain::effects::draw::Placement;

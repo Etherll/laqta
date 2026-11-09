@@ -1,4 +1,4 @@
-//! The region overlay (`Overlay` port, ADR 012, M1 D8): one borderless fullscreen window per
+//! The region overlay (`Overlay` port, ADR 012): one borderless fullscreen window per
 //! monitor showing the frozen frame. It forwards pointer and keyboard input in physical desktop
 //! pixels and paints the Region session's `RegionView`. It computes nothing itself.
 

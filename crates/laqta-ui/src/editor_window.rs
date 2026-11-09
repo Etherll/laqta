@@ -1,4 +1,4 @@
-//! The annotation editor window (M3). It forwards input to the Editor engine, paints the engine's
+//! The annotation editor window. It forwards input to the Editor engine, paints the engine's
 //! rendered pixels and chrome, and computes nothing itself (ARCHITECTURE §5 rule). The engine runs
 //! on the compute pool for every call, since some commands call imaging kernels.
 
@@ -211,8 +211,8 @@ pub(crate) fn compute_fn(spawner: Arc<dyn laqta_ports::Spawner>) -> ComputeFn {
     })
 }
 
-/// Runs `f` on the compute pool and waits for it. Only for commands and export paths until R1 A2;
-/// pointer and key input never use it (`tests/view_guards.rs`).
+/// Runs `f` on the compute pool and waits for it. Only for commands and export paths.
+/// Pointer and key input never use it (`tests/view_guards.rs`).
 fn in_pool<R: Send + 'static>(spawner: &Arc<dyn laqta_ports::Spawner>, f: impl FnOnce() -> R + Send + 'static) -> Option<R> {
     let (tx, rx) = oneshot::channel();
     let fut = spawner.run_compute(Box::new(move || {
@@ -302,7 +302,7 @@ impl EditorWindow {
         self.apply(step, window, cx);
     }
 
-    /// Commands still run on the pool and wait for it, until R1 A2 moves them behind the facade.
+    /// Commands still run on the pool and wait for it.
     fn command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
         let ed = self.interaction.editor();
         let out = in_pool(&self.spawner, move || ed.lock().unwrap_or_else(|p| p.into_inner()).execute(command));

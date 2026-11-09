@@ -1,18 +1,18 @@
 # Glossary
 
 Domain terms used in Laqta's code and docs. Architecture terms (module, interface, depth, seam,
-adapter, leverage, locality) follow the codebase-design vocabulary and are not repeated here.
+adapter, leverage, locality) follow the deep-module design vocabulary and are not repeated here.
 
 | Term | Meaning |
 | - | - |
-| **Action** | One thing the user can trigger: a variant of the `Action` enum, one per ShareX hotkey action plus a few of Laqta's own (about 80 in all). Hotkeys, the tray, the CLI and watch folders all produce Actions |
+| **Action** | One thing the user can trigger: a variant of the `Action` enum. There is one per hotkey action, plus a few specific to Laqta (about 80 in all). Hotkeys, the tray, the CLI and watch folders all produce Actions |
 | **Action dispatcher** | The single entry point that turns an Action plus an optional Workflow into work for Task, the Region session, the Recording session, Watch folders, a pure tool or a windowed tool. A mechanism that already holds the action's input (a dropped file, a URL, a watched file) adds an `ActionInput` through `dispatch_with` |
 | **Pure core** | The crates that do no I/O, start no threads of their own and make no OS calls: `laqta-domain`, `laqta-imaging`, `laqta-editor` and `laqta-photo` |
 | **Pure tool** | A tool that only decodes, runs `laqta-imaging` and encodes (hash, resize, convert, QR, …). The dispatcher calls it directly |
 | **Windowed tool** | A tool with its own window (colour picker, ruler, pin to screen, OCR, video tools, …). It opens through the `ToolHost` port; its rules live in `laqta-app`'s `tools` module |
 | **OsScreenRef** | A reference to an OS screen (a Windows output, or an X11 display and screen) carried by a recording `Target`. Created by the platform adapter, passed through the application unread, and read by `laqta-media` and the Windows native recorder |
 | **Lazy resource** | A heavy dependency started on first use and released by its owner's one-shot release timer: the HTTP runtime, the compute pool, the SQLite connection (opened at start, then released when idle), onnxruntime and models, the FFmpeg process, the font database. The HTTP runtime, the compute pool and the SQLite connection release today; the font database, onnxruntime and models do not yet |
-| **Workflow** | A named Action plus a `TaskSettingsPatch`. ShareX calls these hotkey task settings |
+| **Workflow** | A named Action plus a `TaskSettingsPatch`. ShareX's name for the same idea is hotkey task settings |
 | **Effective settings** | Default `TaskSettings` with a Workflow's patch applied |
 | **Task** | One unit of work from input to result: after-capture steps, upload, after-upload steps and cleanup. Also the module that owns this lifecycle. (`laqta_ml::catalog::Task` is an unrelated enum of model tasks) |
 | **TaskJob** | What a Task starts from: `Capture` (a captured image) or `Upload` of an `UploadSource` (text, a file, a URL to download and reupload, a URL to shorten, or a file already saved). A folder has no job of its own: the dispatcher submits one job per file |

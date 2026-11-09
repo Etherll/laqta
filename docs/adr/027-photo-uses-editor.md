@@ -1,6 +1,6 @@
 # ADR 027: The photo editor reuses the Editor engine's fonts and text layout
 
-Status: accepted (2026-11-07, M7 plan D1).
+Status: accepted (2026-11-07), as built in M7.
 
 **Context.** ARCHITECTURE §3 gave `laqta-photo` edges to `laqta-imaging` and `laqta-domain` only.
 The photo editor needs the same text shaping (the injected `Fonts` handle, ADR 024) and the same

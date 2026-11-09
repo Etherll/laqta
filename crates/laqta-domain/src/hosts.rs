@@ -14,7 +14,6 @@ pub enum HostKind {
     Ftp,
     Sftp,
     SharedFolder,
-    // M7 hosts (D12)
     Gist,
     PrivateBin,
     Pushbullet,

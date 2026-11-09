@@ -1,8 +1,8 @@
 # ADR 021: The seam rule
 
-Status: accepted (2026-11-07), amended 2026-11-07 after the trade-offs review (file access)
+Status: accepted (2026-11-07), amended 2026-11-07 (file access)
 
-**Context.** The first rule counted any test fake as a second adapter. Every trait has a fake, so the rule excluded nothing, and it contradicted ADRs 014 and 018.
+**Context.** An earlier rule counted any test fake as a second adapter. Every trait has a fake, so the rule excluded nothing, and it contradicted ADRs 014 and 018.
 
 **Decision.** A port exists only if it has either:
 - two production adapters (adapters for different platforms count), or

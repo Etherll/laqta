@@ -1,4 +1,4 @@
-//! Imports from ShareX (M6 D7): a configuration folder or `.sxb` backup, a `.sxcu` custom uploader and
+//! Imports from ShareX: a configuration folder or `.sxb` backup, a `.sxcu` custom uploader and
 //! a `.sxie` effect preset. Settings go through the same save path as the settings window.
 
 use std::path::{Path, PathBuf};

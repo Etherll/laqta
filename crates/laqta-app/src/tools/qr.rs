@@ -1,4 +1,4 @@
-//! QR tools: making a QR code, and reading the codes in a screen capture, an image or a file (M5 D5).
+//! QR tools: making a QR code, and reading the codes in a screen capture, an image or a file.
 
 use std::path::Path;
 

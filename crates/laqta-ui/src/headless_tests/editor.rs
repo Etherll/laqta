@@ -1,7 +1,7 @@
-//! The annotation editor window under a stream of mouse moves (D7). Renders wait in the
+//! The annotation editor window under a stream of mouse moves. Renders wait in the
 //! `QueuedSpawner` until the test runs them, as a 4K render lags a 280 Hz mouse.
 //!
-//! D7c is implicit: before the fix, the view waited for each render with `block_on`, so with a
+//! Before the fix, the view waited for each render with `block_on`, so with a
 //! queued render these tests would hang until nextest's timeout instead of passing.
 
 use gpui::{Modifiers, MouseButton, Pixels, Point, TestAppContext, VisualTestContext, point, px};

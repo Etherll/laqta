@@ -1,4 +1,4 @@
-//! The remote storage browser (M7 D11): the S3, FTP and SFTP accounts from the Uploads settings,
+//! The remote storage browser: the S3, FTP and SFTP accounts from the Uploads settings,
 //! listed, uploaded to, downloaded from, renamed and deleted through the `RemoteStorage` port.
 
 use std::sync::Arc;

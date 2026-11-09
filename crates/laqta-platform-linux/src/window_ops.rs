@@ -1,4 +1,4 @@
-//! Window tools on X11 (M5 D7): borderless through `_MOTIF_WM_HINTS`, top-most through a
+//! Window tools on X11: borderless through `_MOTIF_WM_HINTS`, top-most through a
 //! `_NET_WM_STATE` client message to the root window, and the inspector's properties. Wayland has
 //! no client-side window control, so every call there is `Unsupported`.
 

@@ -1,4 +1,4 @@
-//! X11 hover targets (M1 wave 2, task W2b).
+//! X11 hover targets.
 use laqta_domain::region::HoverTarget;
 use laqta_ports::{BoxFuture, HoverSource, PortError};
 

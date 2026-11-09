@@ -25,7 +25,7 @@ pub const DET_MIN_AREA: usize = 16;
 pub const REC_HEIGHT: u32 = 48;
 /// The recogniser input width. Every crop is padded to it, as RapidOCR does. A crop wider than this
 /// after scaling is squashed to it. RapidOCR instead grows the input width with the crop, so a long
-/// screenshot line loses detail here. This is a known gap; see the report.
+/// screenshot line loses detail here. This is a known gap.
 pub const REC_MAX_WIDTH: u32 = 320;
 
 /// The detector input size: the longest side is at most `DET_LIMIT_SIDE`, and each side is rounded

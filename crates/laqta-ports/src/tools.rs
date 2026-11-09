@@ -1,4 +1,4 @@
-//! Ports used by the tools (M5).
+//! Ports used by the tools.
 
 use laqta_domain::Bitmap;
 use laqta_domain::geometry::PhysRect;
@@ -33,7 +33,7 @@ pub trait Ocr: Send + Sync {
     fn languages(&self) -> Vec<String>;
 }
 
-/// Window tools (M5 D7).
+/// Window tools.
 pub trait WindowOps: Send + Sync {
     fn set_borderless(&self, window: &HoverTarget, borderless: bool) -> Result<(), PortError>;
     fn set_topmost(&self, window: &HoverTarget, topmost: bool) -> Result<(), PortError>;
@@ -41,19 +41,19 @@ pub trait WindowOps: Send + Sync {
     fn inspect(&self, window: &HoverTarget) -> Result<Vec<(String, String)>, PortError>;
 }
 
-/// Background removal (ADR 023, M7 D6–D8): `laqta-ml` model families or remove.bg (`laqta-cloud`).
+/// Background removal (ADR 023): `laqta-ml` model families or remove.bg (`laqta-cloud`).
 pub trait BackgroundRemover: Send + Sync {
     /// The image with its background made transparent: same size, straight alpha.
     fn remove(&self, image: Bitmap) -> BoxFuture<'_, Result<Bitmap, PortError>>;
 }
 
-/// AI image analysis (M7 D7): one OpenAI-compatible client in `laqta-cloud`.
+/// AI image analysis: one OpenAI-compatible client in `laqta-cloud`.
 pub trait ImageAnalyzer: Send + Sync {
     /// The model's answer to `prompt` about `image`.
     fn analyze(&self, image: Bitmap, prompt: String) -> BoxFuture<'_, Result<String, PortError>>;
 }
 
-/// Inpainting for the photo editor (M7 D4): the `lama` family in `laqta-ml`.
+/// Inpainting for the photo editor: the `lama` family in `laqta-ml`.
 pub trait Inpainter: Send + Sync {
     /// Fills the pixels where `mask` (one byte per pixel, row-major, non-zero = fill) is set.
     fn inpaint(&self, image: Bitmap, mask: Vec<u8>) -> BoxFuture<'_, Result<Bitmap, PortError>>;
@@ -71,7 +71,7 @@ pub struct RemoteEntry {
     pub modified: Option<String>,
 }
 
-/// The remote storage browser (M7 D11): S3, FTP/FTPS and SFTP in `laqta-upload`.
+/// The remote storage browser: S3, FTP/FTPS and SFTP in `laqta-upload`.
 pub trait RemoteStorage: Send + Sync {
     fn list(&self, dir: String) -> BoxFuture<'_, Result<Vec<RemoteEntry>, PortError>>;
     fn download(&self, path: String, dest: std::path::PathBuf) -> BoxFuture<'_, Result<(), PortError>>;
@@ -82,7 +82,7 @@ pub trait RemoteStorage: Send + Sync {
     fn mkdir(&self, path: String) -> BoxFuture<'_, Result<(), PortError>>;
 }
 
-/// The mouse highlighter (M5 D9): a click-through, always-on-top circle that follows the pointer.
+/// The mouse highlighter: a click-through, always-on-top circle that follows the pointer.
 /// Windows: a layered `WS_EX_TRANSPARENT` window; X11: an override-redirect window with an empty
 /// input shape; Wayland returns `Unsupported` (no global pointer position).
 pub trait PointerHighlighter: Send + Sync {
@@ -90,7 +90,7 @@ pub trait PointerHighlighter: Send + Sync {
     fn is_enabled(&self) -> bool;
 }
 
-/// Synthetic input for scrolling capture (M6 D4): Windows `SendInput`, X11 XTEST; Wayland returns
+/// Synthetic input for scrolling capture: Windows `SendInput`, X11 XTEST; Wayland returns
 /// `Unsupported` (no portal grants input injection without the RemoteDesktop portal).
 pub trait InputSynth: Send + Sync {
     /// Scrolls the window under the point (`x`, `y`) in physical desktop pixels down by `amount` steps.
@@ -109,21 +109,21 @@ impl std::fmt::Debug for WatchHandle {
     }
 }
 
-/// Folder watching (M6 D6): `laqta-library`'s `notify` adapter; the fake drives `laqta-app::watch` tests.
+/// Folder watching: `laqta-library`'s `notify` adapter; the fake drives `laqta-app::watch` tests.
 pub trait FileWatcher: Send + Sync {
     /// Calls `on_file` for files created or modified under `folder` (and its subfolders when
     /// `recursive`), after writes have stopped for a short settle time.
     fn watch(&self, folder: &std::path::Path, recursive: bool, on_file: WatchCallback) -> Result<WatchHandle, PortError>;
 }
 
-/// Run at login (M6 D10): Windows `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, Linux
+/// Run at login: Windows `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, Linux
 /// `~/.config/autostart/laqta.desktop`.
 pub trait Autostart: Send + Sync {
     fn is_enabled(&self) -> Result<bool, PortError>;
     fn set_enabled(&self, enabled: bool, executable: &std::path::Path) -> Result<(), PortError>;
 }
 
-/// "Upload with Laqta" in the file manager and Send To (M6 D11).
+/// "Upload with Laqta" in the file manager and Send To.
 pub trait ShellIntegration: Send + Sync {
     fn is_installed(&self) -> Result<bool, PortError>;
     fn install(&self, executable: &std::path::Path) -> Result<(), PortError>;

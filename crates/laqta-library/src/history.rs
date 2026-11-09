@@ -1,4 +1,4 @@
-//! History in SQLite (ADR 006, M1 D7): entries, tags, a full-text index over file names, and the
+//! History in SQLite (ADR 006): entries, tags, a full-text index over file names, and the
 //! task-event subscriber that writes entries.
 
 use std::fmt;

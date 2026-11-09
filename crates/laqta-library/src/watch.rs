@@ -1,4 +1,4 @@
-//! Folder watching (M6 D6): the `FileWatcher` port over `notify` and `notify-debouncer-full`.
+//! Folder watching: the `FileWatcher` port over `notify` and `notify-debouncer-full`.
 //! The debouncer runs its own thread; this adapter does not use tokio.
 
 use std::collections::HashSet;

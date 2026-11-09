@@ -3,11 +3,11 @@
 #![forbid(unsafe_code)]
 
 pub mod beautify;
-pub mod layout;
 mod bmp;
 mod codecs;
 mod compose;
 pub mod effects;
+pub mod layout;
 mod ops;
 pub mod png;
 pub mod qr;

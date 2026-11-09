@@ -1031,7 +1031,7 @@ impl Editor {
         }
     }
 
-    /// The keyboard map (M3 D7).
+    /// The keyboard map.
     fn key(&mut self, key: EditorKey, m: Mods) -> Option<EditorRequest> {
         if let Some((id, _)) = &self.editing {
             let id = *id;

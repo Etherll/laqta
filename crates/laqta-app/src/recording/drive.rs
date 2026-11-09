@@ -20,7 +20,7 @@ enum Next {
 }
 
 /// Runs one recording until it ends. Pause and resume toggle the encoder, and each second of running emits a
-/// tick. A failed encoder keeps its partial file (M4 D4).
+/// tick. A failed encoder keeps its partial file.
 pub(super) async fn run(app: Arc<App>, id: TaskId, live: Live) {
     // "Highlight the mouse while recording": on for this recording only, unless it was already on.
     let highlight = live.ts.recording.highlight_mouse && !app.ports.highlighter.is_enabled();

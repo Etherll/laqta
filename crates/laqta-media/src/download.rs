@@ -1,4 +1,4 @@
-//! The pinned FFmpeg build (ADR 005, ADR 022, M4 D5). It is downloaded on first use through
+//! The pinned FFmpeg build (ADR 005, ADR 022). It is downloaded on first use through
 //! `laqta-http`'s verified fetch, and only `bin/ffmpeg` and `bin/ffprobe` are extracted, into
 //! `<data>/ffmpeg/bin`.
 
@@ -15,7 +15,7 @@ use crate::locate::{FfmpegPaths, exe_name};
 
 const RELEASE_URL: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/download";
 
-/// The BtbN release the builds come from (M4 D5). It is pinned, never `latest`.
+/// The BtbN release the builds come from. It is pinned, never `latest`.
 const RELEASE_TAG: &str = "autobuild-2026-11-06-12-50";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

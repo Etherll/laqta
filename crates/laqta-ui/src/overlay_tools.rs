@@ -1,4 +1,4 @@
-//! The capture toolbar and in-place annotation on the region overlay (UX1 L1).
+//! The capture toolbar and in-place annotation on the region overlay.
 //!
 //! The editor engine runs here on the selection's pixels, the same way the editor window hosts it
 //! for `EditorHost`, so the overlay and the editor share one tool set. The Region session still

@@ -1,4 +1,4 @@
-//! sway hover targets (ADR 019, M1 D1): the visible windows from sway's IPC, in physical pixels (D2).
+//! sway hover targets (ADR 019): the visible windows from sway's IPC, in physical pixels.
 
 use std::ffi::OsStr;
 use std::fmt::Display;
@@ -37,7 +37,7 @@ fn check_socket(sock: Option<&OsStr>) -> Result<(), PortError> {
     }
 }
 
-/// The window tree, and the largest active output scale to map its logical rects with (D2).
+/// The window tree, and the largest active output scale to map its logical rects with.
 fn snapshot() -> Result<(Node, f32), PortError> {
     check_socket(std::env::var_os("SWAYSOCK").as_deref())?;
     let mut conn = Connection::new().map_err(fail)?;

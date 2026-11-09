@@ -1,7 +1,7 @@
 //! KDE Plasma hover targets and the active window, from KWin's scripting API. KWin has no window
 //! list on D-Bus, so each query loads a one-shot script that reads `workspace` and calls back on
 //! this connection's unique name, then unloads it. Rects come back logical and are mapped to
-//! physical pixels like sway's (D2).
+//! physical pixels like sway's.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -176,12 +176,12 @@ mod tests {
 
     #[test]
     fn lines_become_physical_targets_front_to_back() {
-        let text = "S\t1.25\nW\t0\t0\t2048\t1120\t1\tcom.t3tools.T3Code\tT3 Code\nW\t100\t40\t800\t600\t0\tkitty\tshell\nW\t1\t2\t0\t5\t0\tx\tempty";
+        let text = "S\t1.25\nW\t0\t0\t2048\t1120\t1\torg.gnome.TextEditor\tNotes\nW\t100\t40\t800\t600\t0\tkitty\tshell\nW\t1\t2\t0\t5\t0\tx\tempty";
         let found = parse(text);
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].0.rect, PhysRect { x: 0, y: 0, width: 2560, height: 1400 });
         assert!(found[0].1);
-        assert_eq!((found[0].0.process.as_str(), found[0].0.title.as_str()), ("com.t3tools.T3Code", "T3 Code"));
+        assert_eq!((found[0].0.process.as_str(), found[0].0.title.as_str()), ("org.gnome.TextEditor", "Notes"));
         assert_eq!(found[1].0.rect, PhysRect { x: 125, y: 50, width: 1000, height: 750 });
         assert!(!found[1].1);
     }

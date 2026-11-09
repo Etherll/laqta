@@ -1,4 +1,4 @@
-//! The recording bar (M4): elapsed time, pause/resume, stop, abort, and a border around the
+//! The recording bar: elapsed time, pause/resume, stop, abort, and a border around the
 //! recorded area. Shown on `RecordingStarted`, closed on `RecordingStopped`/`RecordingFailed`.
 
 use gpui::{

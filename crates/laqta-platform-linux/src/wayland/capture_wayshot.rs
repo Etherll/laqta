@@ -27,7 +27,7 @@ fn to_layout(o: &libwayshot::output::OutputInfo) -> OutputLayout {
     }
 }
 
-/// Captures every output into physical virtual-desktop space (D2). An output's scale is its
+/// Captures every output into physical virtual-desktop space. An output's scale is its
 /// captured width over its logical width. The space uses the largest scale, so a frame whose
 /// capture is smaller is resampled to its physical size.
 pub fn capture_all() -> Result<Vec<Frame>, PortError> {

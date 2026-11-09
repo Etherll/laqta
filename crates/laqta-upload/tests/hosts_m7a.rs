@@ -1,4 +1,4 @@
-//! The M7 HO-a hosts (Gist, PrivateBin, Pushbullet, Nextcloud, SendSpace, MediaFire, SMTP) against
+//! The Gist, PrivateBin, Pushbullet, Nextcloud, SendSpace, MediaFire and SMTP hosts against
 //! the local test server with canned replies, plus the pure pieces: the PrivateBin envelope, the
 //! MediaFire signature and the SMTP message. No network.
 #![allow(clippy::unwrap_used)]

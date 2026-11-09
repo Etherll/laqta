@@ -1,6 +1,6 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
 
-//! Watch folders (M6 D6), through the fake watcher: the watches follow the enabled folders, a matching file is uploaded
+//! Watch folders, through the fake watcher: the watches follow the enabled folders, a matching file is uploaded
 //! with the folder's workflow, a folder can move its files into the screenshots folder, and no watch keeps the App alive.
 
 use std::path::{Path, PathBuf};

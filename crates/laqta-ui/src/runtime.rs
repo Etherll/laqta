@@ -341,16 +341,16 @@ pub struct UiServices {
     /// Reads and writes ShareX `.sxie` effect packages (`laqta-import`).
     pub sxie_read: SxieRead,
     pub sxie_write: SxieWrite,
-    /// The S3, FTP and SFTP accounts as remote stores, built from the current settings (M7 D11).
+    /// The S3, FTP and SFTP accounts as remote stores, built from the current settings.
     pub remote_storages: RemoteStores,
     /// The model manager (ADR 023).
     pub models: Arc<dyn ModelService>,
-    /// Update check and install (M6 D12).
+    /// Update check and install.
     pub check_update: UpdateCheck,
     pub install_update: UpdateInstall,
-    /// Run at login (M6 D10).
+    /// Run at login.
     pub autostart: Arc<dyn laqta_ports::Autostart>,
-    /// "Upload with Laqta" in file managers, Send To, and the browser native-messaging host (M6 D11).
+    /// "Upload with Laqta" in file managers, Send To, and the browser native-messaging host.
     pub integration: Arc<dyn laqta_ports::ShellIntegration>,
     /// The font handle shared with the Editor engine (ADR 024).
     pub fonts: laqta_editor::Fonts,

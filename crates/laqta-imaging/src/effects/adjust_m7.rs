@@ -1,4 +1,4 @@
-//! Kernels for the 17 M7 adjustments (X1 batch, M7 D5). Most are per-pixel maps or lookup tables.
+//! Kernels for the 17 adjustments. Most are per-pixel maps or lookup tables.
 //! The local ones (Clarity, Dehaze, Shadows & highlights) use a separable box blur or min filter.
 //! Everything is a pure function of its inputs: rayon only splits rows, and each pixel depends on
 //! its own value or a fixed neighbourhood, so the output doesn't depend on the thread count.

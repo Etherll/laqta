@@ -17,7 +17,7 @@ pub const IMGUR_CLIENT_ID: &str = "laqta-imgur-client-id";
 /// The `SecretStore` key for the signed-in account's token.
 pub const SECRET_KEY: &str = "laqta/imgur";
 
-/// Imgur's endpoints for a signed-in account. The client secret is not set (see the report).
+/// Imgur's endpoints for a signed-in account. The client secret is not set.
 pub fn oauth_config() -> OAuthConfig {
     OAuthConfig {
         auth_url: "https://api.imgur.com/oauth2/authorize".to_owned(),

@@ -20,4 +20,4 @@ Status: accepted (2026-11-07)
 - **A raw Zed git revision:** `gpui-component` would not compile against an arbitrary revision.
 - **Hand-built widgets:** months of work.
 
-**Consequences.** Builds use crates.io only, with no git dependencies. The GPUI pin is risk R3 in ARCHITECTURE.md.
+**Consequences.** Builds use crates.io only, with no git dependencies. The GPUI pin is tracked in the risk register (ARCHITECTURE.md §10).

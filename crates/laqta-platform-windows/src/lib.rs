@@ -1,4 +1,4 @@
-//! Windows adapters for the M0 ports (docs/plan/M0.md §5.3, §5.4).
+//! Windows adapters for the ports.
 //!
 //! Screen capture uses DXGI Desktop Duplication with one D3D11 device per adapter, falling back
 //! to GDI `BitBlt`; HDR outputs are tonemapped to sRGB. Transparent window capture uses GDI over

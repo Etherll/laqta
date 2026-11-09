@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Converts ShareX `.resx` translations into Fluent bundles (M6 D9).
+"""Converts ShareX `.resx` translations into Fluent bundles.
 
 usage: resx-to-ftl.py <dir with Strings.resx and Strings.<lang>.resx> <locales dir>
 

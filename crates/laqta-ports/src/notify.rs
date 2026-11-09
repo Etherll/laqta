@@ -17,7 +17,7 @@ pub struct Toast {
     pub options: ToastOptions,
 }
 
-/// Sounds Laqta plays after events (ShareX's per-event sounds).
+/// Sounds Laqta plays after events.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sound {
     Capture,

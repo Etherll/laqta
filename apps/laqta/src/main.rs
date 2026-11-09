@@ -1,4 +1,4 @@
-//! Composition root (ARCHITECTURE §2.5, M0 §5.5): parses the CLI, claims the single instance,
+//! Composition root (ARCHITECTURE §2.5): parses the CLI, claims the single instance,
 //! builds the runtime and ports, wires every entry point to `App::dispatch`, and runs GPUI.
 
 mod blocking_pool;

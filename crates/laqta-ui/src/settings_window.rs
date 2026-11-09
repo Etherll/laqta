@@ -490,7 +490,7 @@ impl SettingsWindow {
                 group = Some((name, widgets::section(name, cx)));
             }
             let f = on_toggle.clone();
-            let label = if available { label.to_string() } else { format!("{label} (later milestone)") };
+            let label = if available { label.to_string() } else { format!("{label} (coming soon)") };
             let row = widgets::switch_row(
                 SharedString::from(format!("{id_prefix}-{}", flag.bits())),
                 label,

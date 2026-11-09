@@ -1,4 +1,4 @@
-//! Run at login (M6 D10): `laqta.desktop` in the XDG autostart directory. The directory is a field,
+//! Run at login: `laqta.desktop` in the XDG autostart directory. The directory is a field,
 //! so tests use a temp dir; `default()` uses `$XDG_CONFIG_HOME/autostart`.
 
 use std::env;

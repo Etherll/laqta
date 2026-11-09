@@ -1,5 +1,4 @@
-//! Real views on GPUI's test platform: no display, no desktop automation (docs/plan/UI-HARNESS.md
-//! T6). `services()` builds a `UiServices` from the port fakes; `QueuedSpawner` holds compute work
+//! Real views on GPUI's test platform: no display, no desktop automation. `services()` builds a `UiServices` from the port fakes; `QueuedSpawner` holds compute work
 //! until the test runs it, which models a render slower than the input stream.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]

@@ -1,5 +1,5 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
-//! The classic inpainting fallback (M7 D4): fills masked pixels from the boundary inward.
+//! The classic inpainting fallback: fills masked pixels from the boundary inward.
 
 mod support;
 

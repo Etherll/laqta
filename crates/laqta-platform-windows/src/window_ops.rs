@@ -1,4 +1,4 @@
-//! Window tools on Windows (M5 D7): borderless by clearing the caption and sizing-frame styles,
+//! Window tools on Windows: borderless by clearing the caption and sizing-frame styles,
 //! top-most through `SetWindowPos`, and the inspector's properties. Handles come from hover targets.
 
 use laqta_domain::region::HoverTarget;

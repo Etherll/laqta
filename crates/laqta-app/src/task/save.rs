@@ -1,4 +1,4 @@
-//! Choosing file names and writing the saved image and its thumbnail (M1 §4.3). Choosing a name and writing
+//! Choosing file names and writing the saved image and its thumbnail. Choosing a name and writing
 //! it happen under the save slot, so two jobs never pick the same name.
 
 use std::io;
@@ -81,7 +81,7 @@ pub(super) async fn chosen(cx: &Context, path: PathBuf, bytes: Vec<u8>) -> Resul
     Ok(())
 }
 
-/// Picks the file a recording writes (M4 §4.4): the first free name a saved image would get in `dir`, with `ext`.
+/// Picks the file a recording writes: the first free name a saved image would get in `dir`, with `ext`.
 /// It takes the save slot, so two jobs never pick the same name.
 pub(super) async fn recording_output(
     cx: &Context,

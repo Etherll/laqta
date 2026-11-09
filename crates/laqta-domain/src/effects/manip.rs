@@ -1,4 +1,4 @@
-//! Manipulation effects (10 effects). Kernels live in `laqta-imaging::effects`.
+//! Manipulation effects. Kernels live in `laqta-imaging::effects`.
 //!
 //! Conventions: angles are degrees, clockwise on screen. Sizes and offsets are pixels.
 

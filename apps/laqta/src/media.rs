@@ -84,7 +84,7 @@ impl Media for LazyMedia {
     }
 }
 
-/// FFmpeg, or the native Windows recorder when the settings choose it (M7 D10). A recording the
+/// FFmpeg, or the native Windows recorder when the settings choose it. A recording the
 /// native recorder refuses (an area, another codec, the camera, custom arguments) reopens the
 /// screen stream and records with FFmpeg instead.
 pub struct SwitchingMedia {

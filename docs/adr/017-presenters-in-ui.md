@@ -1,6 +1,6 @@
 # ADR 017: Presenters are a GPUI-free module inside laqta-ui
 
-Status: accepted (2026-11-07), revised after the EGM review
+Status: accepted (2026-11-07)
 
 **Context.**
 - A separate `laqta-presenters` crate produced contradictions. It was listed as an outer crate, but the CI guard treated it as inner.

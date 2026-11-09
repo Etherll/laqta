@@ -1,4 +1,4 @@
-//! OCR on first use (ADR 023, M5 D2): asks once, then downloads onnxruntime and the default PP-OCRv5
+//! OCR on first use (ADR 023): asks once, then downloads onnxruntime and the default PP-OCRv5
 //! models through verified fetch and runs them with `laqta-ml`.
 
 use std::path::PathBuf;
@@ -23,7 +23,7 @@ pub struct LazyOcr {
     options: crate::models::SharedModelOptions,
     /// Where the first-use download progress is reported, as toasts.
     notifier: Arc<dyn Notifier>,
-    /// The OS engine (Windows.Media.Ocr) used when the models are declined (M5 D4).
+    /// The OS engine (Windows.Media.Ocr) used when the models are declined.
     fallback: Option<Arc<dyn Ocr>>,
     /// The engine and the (det, rec, provider) it was built for.
     ready: Mutex<Option<(EngineKey, Arc<ModelOcr>)>>,

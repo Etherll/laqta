@@ -1,4 +1,4 @@
-//! Update check and install (M6 D12): the latest GitHub release of the Laqta repository. On Windows
+//! Update check and install: the latest GitHub release of the Laqta repository. On Windows
 //! the Velopack package is fetched through `laqta-http`'s verified fetch, with the hash taken from the
 //! release's `SHA256SUMS`, and applied with Velopack's `Update.exe`. On Linux the caller shows a
 //! notice instead. Nothing here runs the install: `velopack_apply_command` only builds the command.
@@ -18,7 +18,7 @@ use laqta_http::{HttpError, Method, Request};
 pub use release::{Asset, Release, parse_release, parse_sha256sums};
 pub use version::Version;
 
-/// The GitHub repository that publishes Laqta releases. The owner is still to be confirmed (M6 D12),
+/// The GitHub repository that publishes Laqta releases. The owner is still to be confirmed,
 /// so change it here only.
 pub const REPOSITORY: &str = "Etherll/laqta";
 

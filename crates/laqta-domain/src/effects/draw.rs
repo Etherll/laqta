@@ -1,4 +1,4 @@
-//! Drawing effects (8 effects). Kernels live in `laqta-imaging::effects`.
+//! Drawing effects. Kernels live in `laqta-imaging::effects`.
 //!
 //! Conventions: angles are degrees, clockwise on screen. Offsets are pixels, +x right, +y down.
 //! Opacity is 0.0..=1.0.

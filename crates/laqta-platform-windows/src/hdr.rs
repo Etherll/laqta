@@ -1,4 +1,4 @@
-//! HDR readback math: FP16 scRGB desktop pixels to 8-bit sRGB (docs/research/capture.md §2.1). Pure,
+//! HDR readback math: FP16 scRGB desktop pixels to 8-bit sRGB. Pure,
 //! so it builds and is tested on every target.
 
 /// Luminance (in SDR-white units) where the highlight roll-off starts. Everything below it is left alone.

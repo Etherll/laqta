@@ -1,6 +1,6 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
 
-//! M1 dispatcher routes: every capture mode, windows, hotkey toggle, and the routing table.
+//! Dispatcher routes: every capture mode, windows, hotkey toggle, and the routing table.
 
 use std::path::Path;
 use std::sync::Arc;

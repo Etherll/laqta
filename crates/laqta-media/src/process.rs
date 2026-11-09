@@ -1,4 +1,4 @@
-//! The recording process (M4 D3, D4, D7). A segment is one FFmpeg process. Pause ends the segment,
+//! The recording process. A segment is one FFmpeg process. Pause ends the segment,
 //! resume starts another, and stop joins the segments with the concat demuxer (animations are then
 //! converted from a lossless intermediate). FFmpeg reads stdin only when an input uses it, so a
 //! segment ends by EOF on stdin in that case, and by `q` otherwise.
@@ -26,7 +26,7 @@ use crate::{ffmpeg_command, run_blocking, tail};
 
 /// How long a segment gets to finish after its input ends. After this it is killed.
 const FINISH_GRACE: Duration = Duration::from_secs(5);
-/// How long a Windows `ddagrab` start is watched for an early failure (D1).
+/// How long a Windows `ddagrab` start is watched for an early failure.
 const CAPTURE_CHECK: Duration = Duration::from_secs(2);
 const PCM_CHUNK_SAMPLES: usize = 4096;
 
@@ -203,7 +203,7 @@ impl Inner {
         if !windows_target {
             return Ok(());
         }
-        // D1: ddagrab can fail on some adapters. gdigrab takes over when ddagrab exits early.
+        // ddagrab can fail on some adapters. gdigrab takes over when ddagrab exits early.
         let failed = self
             .current
             .as_mut()

@@ -1,4 +1,4 @@
-//! Colour formats, colour text parsing and the picker's history (M5 colour picker). Pure values.
+//! Colour formats, colour text parsing and the picker's history. Pure values.
 
 use std::collections::VecDeque;
 

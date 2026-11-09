@@ -17,7 +17,7 @@ pub struct OsScreenRef(OsScreen);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OsScreen {
     /// A DXGI output: the adapter (enumeration index) that owns it and its index on that adapter,
-    /// and the area to capture relative to the output's top-left corner (M4 D1).
+    /// and the area to capture relative to the output's top-left corner.
     Windows { adapter_index: u32, output_index: u32, offset_x: i32, offset_y: i32, width: u32, height: u32, desktop_x: i32, desktop_y: i32 },
     /// An X11 display (`:0`) and the area in root-window pixels.
     X11 { display: String, x: i32, y: i32, width: u32, height: u32 },

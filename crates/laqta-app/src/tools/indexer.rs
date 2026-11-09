@@ -1,4 +1,4 @@
-//! The directory indexer: a folder tree as text, JSON, XML or HTML (M5 directory indexer).
+//! The directory indexer: a folder tree as text, JSON, XML or HTML.
 
 use std::path::Path;
 

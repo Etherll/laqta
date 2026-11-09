@@ -9,8 +9,8 @@ use laqta_domain::effects::{Adjust, Draw, Effect, EffectItem, Filter, Manip, Pre
 use laqta_import::{ImportError, parse_sxie, parse_sxie_with_warnings, write_sxie};
 use zip::write::SimpleFileOptions;
 
-/// The effects ShareX has a class for: a one-effect package writes. The Laqta-only filters and the
-/// M7 ImageEditor effects are read but never written.
+/// The effects that have an ImageEffectsLib class: a one-effect package writes. The Laqta-only filters and
+/// the ImageEditor effects are read but never written.
 fn has_sharex_class(effect: &Effect) -> bool {
     write_sxie(&Preset { name: "probe".into(), effects: vec![EffectItem { effect: effect.clone(), enabled: true }] }).is_ok()
 }

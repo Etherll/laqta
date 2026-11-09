@@ -1,4 +1,4 @@
-//! Regions inside windows for the hover (docs/plan/LAYOUT.md). The pixel analysis runs per
+//! Regions inside windows for the hover. The pixel analysis runs per
 //! window on the compute pool; this module merges its regions with the hover source's targets.
 
 use laqta_domain::PhysRect;

@@ -372,8 +372,7 @@ fn stop_after_save() {
     });
 }
 
-/// A stop after the save ends the job at its next checkpoint, and `DELETE_FILE` still removes the file (ShareX's
-/// `finally`).
+/// A stop after the save ends the job at its next checkpoint, and `DELETE_FILE` still removes the file.
 #[test]
 fn delete_file_after_stop() {
     in_compute_pool(|| {

@@ -1,4 +1,4 @@
-//! Scrolling capture (M6 D4): select a region, then capture it, scroll the window under it through
+//! Scrolling capture: select a region, then capture it, scroll the window under it through
 //! `InputSynth`, and stitch each frame with `laqta_imaging::stitch` until the page stops moving.
 
 use std::sync::Arc;

@@ -1,4 +1,4 @@
-//! The steps of a Capture job, in order (M1 §4.3, M2 §4, M3 §2, ADR 011). Each step runs only when its flag in
+//! The steps of a Capture job, in order (ADR 011). Each step runs only when its flag in
 //! `settings.after_capture` is set. A stop request is checked before each step. A step that names a file
 //! is skipped quietly when this job saved none. A failed step is reported as `StepFailed` and the job goes
 //! on, except for the pixel work, the save and the upload, whose failure ends the job as `Failed`. A prompt the
@@ -47,7 +47,7 @@ pub(super) async fn capture(
     cx.reporter.status(id, TaskStatus::Working);
     let mut job = Job { cx, id, settings, info, stop, file: None };
     // The outcome is already reported, so there is nothing to do with it here. A panic is not: it ends the job as a
-    // failure that the caller reports (ADR 020), but the file still goes first, as in ShareX's `finally`.
+    // failure that the caller reports (ADR 020), but the file still goes first.
     if let Err(payload) = AssertUnwindSafe(job.run(input)).catch_unwind().await {
         job.finally().await;
         std::panic::resume_unwind(payload);
@@ -65,7 +65,7 @@ pub(super) struct Job {
 }
 
 impl Job {
-    /// The steps, then ShareX's `finally` (the delete), then `Completed` for a job that ran to its last step. The
+    /// The steps, then the delete (`DELETE_FILE`), then `Completed` for a job that ran to its last step. The
     /// delete comes before `Completed`, and after the `Failed` or `Stopped` that a halted job has already reported.
     async fn run(&mut self, input: CaptureImage) -> Step {
         let outcome = self.steps(input).await;
@@ -197,7 +197,7 @@ impl Job {
         }
     }
 
-    /// The steps that work on the composed image, in ShareX's order: the after-capture window, then annotation,
+    /// The steps that work on the composed image, in order: the after-capture window, then annotation,
     /// effects and the beautifier. Each reads the flags when it is reached, so the window's answer counts.
     async fn edit(&mut self, mut image: Bitmap) -> Step<Bitmap> {
         if self.settings.after_capture.contains(AfterCaptureTasks::SHOW_AFTER_CAPTURE_WINDOW) {
@@ -436,7 +436,7 @@ impl Job {
         }
     }
 
-    /// A file a recording session already saved (M4 §4.4), so nothing is written here. Its save is reported as
+    /// A file a recording session already saved, so nothing is written here. Its save is reported as
     /// `Saved`. Then the steps that work on a saved file, as for a saved image: copy the file, copy its path, reveal
     /// it. Then the upload (when the upload flag is set), the after-upload steps and the toast.
     pub(super) async fn saved_file(&mut self, path: PathBuf) -> Step {
@@ -652,7 +652,7 @@ impl Job {
         Ok(())
     }
 
-    /// `REMOVE_BACKGROUND` (M7): the `BackgroundRemover` port. A failure is a step failure and the
+    /// `REMOVE_BACKGROUND`: the `BackgroundRemover` port. A failure is a step failure and the
     /// image is kept.
     async fn remove_background(&self, image: Bitmap) -> Bitmap {
         match self.cx.ports.background.remove(image.clone()).await {
@@ -667,7 +667,7 @@ impl Job {
         }
     }
 
-    /// `ANALYZE_IMAGE` (M7): the configured analyzer's answer to the configured prompt.
+    /// `ANALYZE_IMAGE`: the configured analyzer's answer to the configured prompt.
     async fn analyze(&self, image: &Bitmap) -> Step {
         self.checkpoint()?;
         let prompt = self.cx.settings.get().cloud.analyzer.prompt.clone();
@@ -717,7 +717,7 @@ impl Job {
         Ok(())
     }
 
-    /// `DELETE_FILE` removes the file the job wrote, however the job ended. A
+    /// The `DELETE_FILE` step removes the file the job wrote, however the job ended. A
     /// stop does not skip it, so there is no checkpoint. A file that is already gone is not an error.
     pub(super) async fn finally(&mut self) {
         if !self.settings.after_capture.contains(AfterCaptureTasks::DELETE_FILE) {
@@ -793,7 +793,7 @@ fn quick_menu_flags(choice: usize) -> Option<AfterCaptureTasks> {
     })
 }
 
-/// The name that picks a random preset each time (ShareX's "use random image effect").
+/// The name that picks a random preset each time.
 pub const RANDOM_PRESET: &str = "*";
 
 /// The preset named `name`, the first preset when `name` is empty, or one picked by `roll` for `*`.

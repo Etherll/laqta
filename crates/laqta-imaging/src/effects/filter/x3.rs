@@ -1,4 +1,4 @@
-//! Filters X3 (M7 D5): frames, glitch, optics, prints and scenes. Each kernel is written from the
+//! Filters: frames, glitch, optics, prints and scenes. Each kernel is written from the
 //! effect's name and what it does to an image, and shares the helpers in the parent module. Pixels are
 //! straight RGBA8 in and out. Every kernel is pure and deterministic for its seed.
 

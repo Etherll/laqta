@@ -1,4 +1,4 @@
-//! Tests for the pixel and file tools (M5 D1). Every tool runs inside a compute pool, as `main` runs it.
+//! Tests for the pixel and file tools. Every tool runs inside a compute pool, as `main` runs it.
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
 
 // Tests live in `mod tools` so that `cargo nextest run -p laqta-imaging tools` selects them.

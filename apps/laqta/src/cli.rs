@@ -1,4 +1,4 @@
-//! Command-line arguments (M0 §5.5, M6 D1). Laqta's own `--action <name>` plus ShareX's
+//! Command-line arguments. Laqta's own `--action <name>` plus ShareX's
 //! single-dash flags (`-RectangleRegion`, `-silent`, `-workflow "<name>"`, …) and bare file paths.
 
 use std::path::PathBuf;

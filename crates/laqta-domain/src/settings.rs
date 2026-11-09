@@ -15,7 +15,7 @@ pub struct Settings {
     pub hosts: Vec<crate::hosts::HostAccount>,
     /// External programs for `PERFORM_ACTIONS`.
     pub actions: Vec<crate::workflow::ExternalAction>,
-    /// Image effect presets (ShareX's effect presets; `.sxie` import/export).
+    /// Image effect presets, with `.sxie` import and export.
     pub effect_presets: Vec<crate::effects::Preset>,
     /// Editor tools hidden from the toolbar (tool names, e.g. "Spotlight"); their shortcuts still work.
     pub editor_hidden_tools: Vec<String>,
@@ -27,15 +27,15 @@ pub struct Settings {
     pub history: HistoryOptions,
     pub tray_click: Action,
     pub theme: Theme,
-    /// UI language tag (`de`, `pt-BR`, …); `None` follows the system (M6 D9).
+    /// UI language tag (`de`, `pt-BR`, …); `None` follows the system.
     pub language: Option<String>,
-    /// Watch folders (M6 D6).
+    /// Watch folders.
     pub watch_folders: Vec<WatchFolder>,
-    /// Auto capture (M6 D5).
+    /// Auto capture.
     pub auto_capture: AutoCaptureOptions,
     /// Local models (ADR 023): the model per task, custom models, CPU or GPU.
     pub models: ModelOptions,
-    /// Cloud services (M7 D7): background removal provider and the image analyzer.
+    /// Cloud services: background removal provider and the image analyzer.
     pub cloud: CloudOptions,
 }
 
@@ -181,7 +181,7 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// screenshots_dir = `<pictures>/Laqta`, with ShareX's five default hotkey workflows.
+    /// screenshots_dir = `<pictures>/Laqta`, with five default hotkey workflows.
     pub fn default_for(pictures_dir: PathBuf) -> Settings {
         Settings {
             hosts: Vec::new(),
@@ -239,7 +239,7 @@ impl Settings {
     }
 }
 
-/// ShareX's default hotkey workflows, ids 1..=5.
+/// The default hotkey workflows, ids 1..=5.
 fn default_workflows() -> Vec<Workflow> {
     let entries = [
         (1, Action::PrintScreen, Modifiers::empty()),

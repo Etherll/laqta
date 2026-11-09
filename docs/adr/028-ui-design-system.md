@@ -21,7 +21,7 @@ so `gpui-component` icons did not draw.
   Views compose these instead of styling inline.
 - Inter (body) and Space Grotesk (headings, requested as "Space Grotesk Light" because that is the family name the bundled file reports), both SIL OFL 1.1, are embedded in `laqta-ui` with their
   licence files and registered with GPUI the first time a window is about to open, so the tray-only
-  process never loads them (§1.4, risk R6).
+  process never loads them (ARCHITECTURE.md §1.4).
 - Icons come from `gpui-kit-assets` (Apache-2.0, part of GPUI Kit). `laqta-ui` registers one asset
   source: the Lucide icons the views name plus the kit's default component icons. The crate is
   pinned `=0.9.0` and moves with `gpui-component` (ADR 002).

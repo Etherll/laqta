@@ -284,7 +284,7 @@ mod tests {
         assert!(matches!(Catalog::parse(&text), Err(MlError::Catalog(_))));
     }
 
-    /// The background and inpainting entries, with the URL, size and SHA-256 from M7.md's model table.
+    /// The background and inpainting entries, with the URL, size and SHA-256 pinned here.
     const M7_MODELS: [(&str, &str, u64, &str); 5] = [
         (
             "birefnet-lite",

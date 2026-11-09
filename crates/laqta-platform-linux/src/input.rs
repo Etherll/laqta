@@ -1,4 +1,4 @@
-//! Synthetic input for scrolling capture on X11 (M6 D4): the pointer moves to the region's point,
+//! Synthetic input for scrolling capture on X11: the pointer moves to the region's point,
 //! then wheel notches or arrow and page keys go through XTEST `fake_input`. Wayland has no client
 //! input injection (it needs the RemoteDesktop portal), so every call there is `Unsupported`.
 

@@ -1,10 +1,10 @@
 # ADR 029: Capture toolbar and in-place annotation
 
-Status: accepted (2026-11-09, UX1). Amends ADR 012 (the Region session no longer renders annotations) and ADR 013 (who receives `Fonts`). Replaces the handoff to `EditorHost` that R1 A4 planned for the Region session.
+Status: accepted (2026-11-09). Amends ADR 012 (the Region session no longer renders annotations) and ADR 013 (who receives `Fonts`). Replaces the earlier handoff to `EditorHost` for the Region session.
 
 **Context.**
-- ADR 012 had the Region session render annotations through the Editor engine. `laqta-app` never got the engine or `Fonts`, so the overlay only set an `annotate` flag on the selection and the editor opened afterwards in its own window (review finding arch#6).
-- ShareX, PixPin and Snipaste let the user draw a region and annotate on it in place, with a toolbar beside the selection. The selection stays adjustable until the user chooses what happens to it.
+- ADR 012 had the Region session render annotations through the Editor engine. `laqta-app` never got the engine or `Fonts`, so the overlay only set an `annotate` flag on the selection and the editor opened afterwards in its own window.
+- Annotating a region in place, with a toolbar beside the selection, is the usual flow in capture tools. The selection stays adjustable until the user chooses what happens to it.
 - OCR, background removal, object erase and image analysis were reachable only as separate dispatcher actions, each starting with its own region pick, and the photo window called the AI ports directly.
 
 **Decision.**
@@ -26,12 +26,12 @@ Status: accepted (2026-11-09, UX1). Amends ADR 012 (the Region session no longer
 
 **Rejected.**
 - **The Region session hosting the engine (ADR 012's text).** It needs `Fonts`, the rasterizer and a `laqta-editor` edge inside `laqta-app`, and it would paint no pixels anyway: texture upload and input belong to the view. The pixels pass through the port instead.
-- **Handing the crop to `EditorHost` before the session returns (R1 A4).** It keeps a second window between selecting and finishing, and the selection can't be adjusted while annotating.
+- **Handing the crop to `EditorHost` before the session returns.** It keeps a second window between selecting and finishing, and the selection can't be adjusted while annotating.
 - **A second tool set for the overlay.** The toolbar lists the engine's tools, so a new tool needs no overlay work.
-- **Windows calling the AI ports through `App::ports()`.** That is arch#3.
+- **Windows calling the AI ports through `App::ports()`.** Decision 6 routes every AI call through an `App` method instead.
 
 **Consequences.**
 - A region capture ends with the user's choice in `Selection::action`. The same flags can be set by a workflow, so a toolbar button and a configured after-capture step run the same Task code.
 - Hosting the engine in the overlay makes the overlay adapter heavier. It must stay inside the view rules: the view forwards input and paints, and decisions live in presenters (ADR 017).
 - ADR 012's wording ("annotations already rendered through the Editor engine") and ADR 013's `Fonts` clause (the Region session) no longer hold; both carry an "amended by ADR 029" note.
-- R1 A4 stays open for its other halves: `ANNOTATE_IMAGE` as a Task step that can abort, step order, and a blocking photo editor.
+- Still open: `ANNOTATE_IMAGE` as a Task step that can abort, step order, and a blocking photo editor.

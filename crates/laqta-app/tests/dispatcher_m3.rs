@@ -1,6 +1,6 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types, clippy::unwrap_used)]
 
-//! M3 dispatcher routes: the image editor, the effects window and drag-and-drop open their windows, and the image
+//! Dispatcher routes: the image editor, the effects window and drag-and-drop open their windows, and the image
 //! beautifier picks one image and submits it as a capture. The jobs themselves are traced in `task_golden.rs`.
 
 use std::io::Cursor;

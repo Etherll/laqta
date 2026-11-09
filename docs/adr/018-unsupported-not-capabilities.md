@@ -1,6 +1,6 @@
 # ADR 018: Ports return Unsupported; settings and history are not ports
 
-Status: accepted (2026-11-07), revised after the EGM review
+Status: accepted (2026-11-07)
 
 **Context.**
 - A capabilities struct that every caller checks spreads platform branching everywhere.

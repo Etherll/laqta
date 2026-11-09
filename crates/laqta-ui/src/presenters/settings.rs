@@ -7,7 +7,7 @@ use laqta_domain::{ImageFormat, Settings};
 use laqta_ports::HostInfo;
 
 /// One after-capture option for the settings page. `available` is false for steps whose feature
-/// lands in a later milestone; the UI shows them disabled. `group` is the heading it is listed under.
+/// is not built yet; the UI shows them disabled. `group` is the heading it is listed under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskOption {
     pub flag: AfterCaptureTasks,

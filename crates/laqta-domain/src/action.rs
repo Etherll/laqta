@@ -107,7 +107,7 @@ pub enum ActionCategory {
 }
 
 impl Action {
-    /// English UI label (localized in M6).
+    /// English UI label.
     pub fn label(self) -> &'static str {
         match self {
             Action::FileUpload => "Upload file",

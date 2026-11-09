@@ -68,7 +68,7 @@ dict_url = "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/dab3fe35379
 dict_sha256 = "ccbcc45730b3fbbd9050c5bc74db6a99067141ef1035e3d14889a84a6b9b1aff"
 dict_size_bytes = 2616
 
-# Background removal (ADR 023, M7 D6). BiRefNet and BEN2 take 1024 px inputs, U²-Net-p 320 px.
+# Background removal (ADR 023). BiRefNet and BEN2 take 1024 px inputs, U²-Net-p 320 px.
 # BiRefNet exports several outputs and the last one is the finest, so it reads output -1.
 
 [[model]]
@@ -155,7 +155,7 @@ std = [0.229, 0.224, 0.225]
 output_index = 0
 activation = "minmax"
 
-# Inpainting (ADR 023, M7 D4). The photo editor's inpainting tool runs this model on a crop around
+# Inpainting (ADR 023). The photo editor's inpainting tool runs this model on a crop around
 # the masked area and pastes back only the masked pixels.
 
 [[model]]

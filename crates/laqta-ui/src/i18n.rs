@@ -1,4 +1,4 @@
-//! UI translations (M6 D9). Fluent bundles under `locales/<tag>/laqta.ftl`, generated from ShareX's
+//! UI translations. Fluent bundles under `locales/<tag>/laqta.ftl`, generated from ShareX's
 //! translations by `scripts/resx-to-ftl.py`, so keys are ShareX's resource names. Laqta's own English
 //! text is the fallback: English and any missing key show the string the caller passes.
 

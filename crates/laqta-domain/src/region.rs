@@ -1,4 +1,4 @@
-//! Region selection state machine (ADR 012, M1 §4.1). Pure: no I/O, clock, env or threads.
+//! Region selection state machine (ADR 012). Pure: no I/O, clock, env or threads.
 //!
 //! Rects are half-open: a rect covers `x..right()` and `y..bottom()`. Pointer positions are
 //! clamped to the last pixel inside `bounds`.
@@ -150,7 +150,7 @@ pub enum RegionCommand {
     Cancel,
     Fullscreen,
     ActiveMonitor,
-    /// Confirm, then open the selection in the editor before the after-capture steps (M3 §1.4).
+    /// Confirm, then open the selection in the editor before the after-capture steps.
     Annotate,
     /// Confirm the active region (every region in multi-region mode) with an action. Does nothing
     /// while no region is drawn.

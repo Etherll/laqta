@@ -1,4 +1,4 @@
-//! Window tools (M5 D7): borderless and top-most toggles for the active window, and the window inspector.
+//! Window tools: borderless and top-most toggles for the active window, and the window inspector.
 
 use std::collections::HashSet;
 use std::sync::{Mutex, PoisonError};

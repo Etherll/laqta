@@ -60,7 +60,7 @@ impl AppSpawner {
         if let Some(p) = guard.as_ref() {
             return Ok(p.clone());
         }
-        // Decision (M0): one thread per available hardware thread; std exposes no physical-core
+        // One thread per available hardware thread; std exposes no physical-core
         // count, and the pool only exists while work runs.
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
         let pool = rayon::ThreadPoolBuilder::new()

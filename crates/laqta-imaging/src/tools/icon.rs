@@ -1,4 +1,4 @@
-//! Multi-size ICO icons: encoding one image at several sizes, and decoding ICO files (M5 icon converter).
+//! Multi-size ICO icons: encoding one image at several sizes, and decoding ICO files.
 
 use laqta_domain::Bitmap;
 

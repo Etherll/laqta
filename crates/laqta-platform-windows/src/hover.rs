@@ -1,4 +1,4 @@
-//! Windows hover targets (M1 §4.5): the top-level windows a region selection can snap to, front to
+//! Windows hover targets: the top-level windows a region selection can snap to, front to
 //! back, plus the UI elements of the focused window and the focused window itself.
 
 use std::mem::size_of;

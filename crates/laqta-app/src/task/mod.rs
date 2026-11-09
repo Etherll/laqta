@@ -122,7 +122,7 @@ impl Task {
         self.reporter.emit(event);
     }
 
-    /// The file a recording writes (M4 §4.4): the first free name a saved image would get in `dir`, with `ext`.
+    /// The file a recording writes: the first free name a saved image would get in `dir`, with `ext`.
     pub(crate) async fn recording_output(
         &self,
         settings: &TaskSettings,
