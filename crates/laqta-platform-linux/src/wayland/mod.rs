@@ -1,5 +1,6 @@
 pub mod capture_portal;
 pub mod capture_wayshot;
+pub mod hover_kwin;
 pub mod hover_sway;
 pub mod layout;
 pub mod shortcuts_portal;

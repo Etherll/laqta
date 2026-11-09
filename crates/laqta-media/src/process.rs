@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use laqta_domain::record::RecordSpec;
+use laqta_domain::record::{RecordSpec, VideoCodec};
 use laqta_domain::{Bitmap, PixelFormat};
 use laqta_ports::recording::{FrameSource, OsScreen, PcmSource, RecordingHandle};
 use laqta_ports::{BoxFuture, PortError};
@@ -239,7 +239,7 @@ impl Inner {
                 let Some(stdin) = stdin else {
                     return Err(PortError::Failed("FFmpeg stdin is not piped".into()));
                 };
-                (Some(spawn_feeder(feed, stdin)?), None)
+                (Some(spawn_feeder(feed, stdin, raw_fps(&self.plan.video))?), None)
             }
             None => (None, stdin),
         };
@@ -329,7 +329,8 @@ impl Inner {
 
     /// Joins the finished segments into the output (concat, `-c copy`). Animations are converted
     /// from the joined lossless intermediate. On success the session folder is deleted. On failure
-    /// it stays, and the error names the partial file.
+    /// the error names the partial file: the last segment when the join failed, or the intermediate
+    /// when the conversion did (see `convert_animation`).
     fn join_segments(&mut self) -> Result<PathBuf, PortError> {
         // A segment paused within its first cluster is only a header. Such a file is not joined.
         let usable: Vec<String> = self.segments.iter().filter(|name| self.has_media(name)).cloned().collect();
@@ -345,11 +346,70 @@ impl Inner {
         let concat = argv::concat_args("list.txt", &path_text(&joined), animation.then_some("matroska"));
         self.run_step(&concat, "join the segments", self.session.join(&last))?;
         if animation {
-            let convert = argv::animation_args(self.plan.spec.codec, &joined, &self.output, self.plan.spec.fps);
-            self.run_step(&convert, "convert the animation", joined)?;
+            self.convert_animation(&joined)?;
         }
         let _ = fs::remove_dir_all(&self.session);
         Ok(self.output.clone())
+    }
+
+    /// Converts the lossless `merged` file to the animation at `self.output`. The animation is
+    /// written under a `.part` name and renamed when complete, so a failed or killed conversion
+    /// never leaves a broken file at the output. A GIF takes two runs (palette, then palette use),
+    /// WebP and APNG one.
+    ///
+    /// On failure the `.part` file is deleted and the intermediate is kept as the usable result:
+    /// it moves next to the output as `<output name>.mkv` (`kept_path`), and the error names it.
+    fn convert_animation(&self, merged: &Path) -> Result<(), PortError> {
+        let part = part_path(&self.output);
+        let reason = match self.convert_into(merged, &part) {
+            Ok(()) => match fs::rename(&part, &self.output) {
+                Ok(()) => return Ok(()),
+                Err(err) => format!("rename {} to {}: {err}", part.display(), self.output.display()),
+            },
+            Err(reason) => reason,
+        };
+        let _ = fs::remove_file(&part);
+        let kept = self.keep_intermediate(merged);
+        Err(PortError::Failed(format!("could not convert the animation; the partial recording is {}: {reason}", kept.display())))
+    }
+
+    /// Runs the conversion into `part`. The error is FFmpeg's last lines, or what went wrong.
+    fn convert_into(&self, merged: &Path, part: &Path) -> Result<(), String> {
+        let spec = &self.plan.spec;
+        let palette = self.session.join("palette.png");
+        let runs = match spec.codec {
+            VideoCodec::Gif => {
+                vec![argv::palette_args(merged, spec.fps, &palette), argv::paletteuse_args(merged, &palette, spec.fps, part)]
+            }
+            codec => vec![argv::animation_args(codec, merged, part)],
+        };
+        for args in &runs {
+            let output = run_tool(&self.paths.ffmpeg, args, Some(&self.session)).map_err(|err| err.to_string())?;
+            if !output.status.success() {
+                return Err(tail(&output.stderr));
+            }
+        }
+        match fs::metadata(part) {
+            Ok(meta) if meta.len() > 0 => Ok(()),
+            _ => Err("FFmpeg wrote no frames".to_owned()),
+        }
+    }
+
+    /// Moves the intermediate next to the output and deletes the session folder (with its palette
+    /// and logs). Returns where the intermediate is now. When it cannot be moved, it stays in the
+    /// session folder, which is then kept too.
+    fn keep_intermediate(&self, merged: &Path) -> PathBuf {
+        let kept = kept_path(&self.output);
+        match move_file(merged, &kept) {
+            Ok(()) => {
+                let _ = fs::remove_dir_all(&self.session);
+                kept
+            }
+            Err(err) => {
+                tracing::warn!(%err, to = %kept.display(), "could not move the intermediate next to the output");
+                merged.to_path_buf()
+            }
+        }
     }
 
     /// True when the segment holds at least one video packet.
@@ -407,9 +467,17 @@ fn spawn_ffmpeg(ffmpeg: &Path, args: &[String], log: &Path) -> Result<Child, Por
         .map_err(|err| PortError::Failed(format!("could not start {}: {err}", ffmpeg.display())))
 }
 
+/// The rate FFmpeg reads raw frames at (`-r`), which the feeder paces them to. 0 without them.
+fn raw_fps(video: &VideoInputDesc) -> u32 {
+    match video {
+        VideoInputDesc::RawFrames { fps, .. } => *fps,
+        VideoInputDesc::Target(_) => 0,
+    }
+}
+
 /// Moves the feed onto a thread that writes it to stdin. The thread drops stdin when the feed
-/// stops or ends, which is the end of FFmpeg's input.
-fn spawn_feeder(feed: Feed, stdin: ChildStdin) -> Result<Feeder, PortError> {
+/// stops or ends, which is the end of FFmpeg's input. Frames are paced to `fps`.
+fn spawn_feeder(feed: Feed, stdin: ChildStdin, fps: u32) -> Result<Feeder, PortError> {
     let stop = Arc::new(AtomicBool::new(false));
     let (send, returned) = mpsc::channel();
     let flag = Arc::clone(&stop);
@@ -417,7 +485,7 @@ fn spawn_feeder(feed: Feed, stdin: ChildStdin) -> Result<Feeder, PortError> {
         .name("laqta-ffmpeg-feed".to_owned())
         .spawn(move || {
             let mut feed = feed;
-            feed_stdin(&mut feed, stdin, &flag);
+            feed_stdin(&mut feed, stdin, &flag, fps);
             if let Err(mpsc::SendError(mut feed)) = send.send(feed) {
                 // Nobody waits for the source any more, so stop it here.
                 feed.stop();
@@ -427,25 +495,9 @@ fn spawn_feeder(feed: Feed, stdin: ChildStdin) -> Result<Feeder, PortError> {
     Ok(Feeder { stop, returned })
 }
 
-fn feed_stdin(feed: &mut Feed, mut stdin: ChildStdin, stop: &AtomicBool) {
+fn feed_stdin(feed: &mut Feed, mut stdin: ChildStdin, stop: &AtomicBool, fps: u32) {
     match feed {
-        Feed::Frames(source) => {
-            let mut scratch = Vec::new();
-            while !stop.load(Ordering::SeqCst) {
-                match source.next_frame() {
-                    Ok(Some(frame)) => {
-                        if stdin.write_all(bgra(&frame, &mut scratch)).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(err) => {
-                        tracing::warn!(%err, "the frame source failed");
-                        break;
-                    }
-                }
-            }
-        }
+        Feed::Frames(source) => feed_frames(source.as_mut(), &mut stdin, stop, fps),
         Feed::Pcm(source) => {
             let mut samples = vec![0i16; PCM_CHUNK_SAMPLES];
             let mut bytes = Vec::with_capacity(PCM_CHUNK_SAMPLES * 2);
@@ -468,6 +520,61 @@ fn feed_stdin(feed: &mut Feed, mut stdin: ChildStdin, stop: &AtomicBool) {
                 }
             }
         }
+    }
+}
+
+/// Writes the source's frames at `fps`, whatever rate they arrive at. FFmpeg stamps the n-th frame
+/// at n/fps, so the n-th frame is due at `start + n/fps` (absolute deadlines, no drift). An early
+/// frame waits for its deadline. When the source is late, the latest frame is repeated for the
+/// periods missed, at most `fps` copies at a time.
+fn feed_frames(source: &mut dyn FrameSource, stdin: &mut ChildStdin, stop: &AtomicBool, fps: u32) {
+    let fps = fps.max(1);
+    let period = Duration::from_secs(1) / fps;
+    let mut scratch = Vec::new();
+    // Starts with the first frame, so a resumed segment does not fill the pause.
+    let mut next_due: Option<Instant> = None;
+    while !stop.load(Ordering::SeqCst) {
+        let frame = match source.next_frame() {
+            Ok(Some(frame)) => frame,
+            Ok(None) => return,
+            Err(err) => {
+                tracing::warn!(%err, "the frame source failed");
+                return;
+            }
+        };
+        let due = *next_due.get_or_insert_with(Instant::now);
+        if !sleep_until(due, stop) {
+            return;
+        }
+        let copies = copies_due(due, Instant::now(), period, fps);
+        let pixels = bgra(&frame, &mut scratch);
+        for _ in 0..copies {
+            if stop.load(Ordering::SeqCst) || stdin.write_all(pixels).is_err() {
+                return;
+            }
+        }
+        next_due = Some(due + period * copies);
+    }
+}
+
+/// How many frames to write at `now` for the deadline `due`: one, plus one per whole period
+/// missed, up to `cap`.
+fn copies_due(due: Instant, now: Instant, period: Duration, cap: u32) -> u32 {
+    let missed = now.saturating_duration_since(due).as_nanos() / period.as_nanos().max(1);
+    u32::try_from(missed.saturating_add(1)).unwrap_or(u32::MAX).min(cap)
+}
+
+/// Sleeps until `due`. False when `stop` was set meanwhile.
+fn sleep_until(due: Instant, stop: &AtomicBool) -> bool {
+    loop {
+        if stop.load(Ordering::SeqCst) {
+            return false;
+        }
+        let left = due.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return true;
+        }
+        thread::sleep(left.min(Duration::from_millis(50)));
     }
 }
 
@@ -505,4 +612,57 @@ fn kill_and_reap(child: &mut Child) {
 
 fn path_text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+/// The name an animation is written under until it is complete: `<output name>.part`.
+fn part_path(output: &Path) -> PathBuf {
+    with_suffix(output, ".part")
+}
+
+/// Where a failed animation conversion leaves its lossless intermediate: `<output name>.mkv` in the
+/// output's folder. `laqta-app` (recording/drive.rs) looks for this name to report the partial
+/// file, because `RecordingHandle::stop` has no way to return a path with an error.
+fn kept_path(output: &Path) -> PathBuf {
+    with_suffix(output, ".mkv")
+}
+
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Renames `from` to `to`, or copies and deletes it when they are on different file systems.
+fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    if fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    fs::copy(from, to).inspect_err(|_| {
+        let _ = fs::remove_file(to);
+    })?;
+    let _ = fs::remove_file(from);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copies_follow_the_periods_missed_up_to_the_cap() {
+        let due = Instant::now();
+        let period = Duration::from_millis(100);
+        assert_eq!(copies_due(due, due, period, 10), 1);
+        assert_eq!(copies_due(due, due + Duration::from_millis(99), period, 10), 1);
+        assert_eq!(copies_due(due, due + Duration::from_millis(100), period, 10), 2);
+        assert_eq!(copies_due(due, due + Duration::from_millis(350), period, 10), 4);
+        assert_eq!(copies_due(due, due + Duration::from_secs(60), period, 10), 10);
+    }
+
+    #[test]
+    fn temporary_and_kept_names_sit_next_to_the_output() {
+        let output = Path::new("/videos/Screencast 12-00-00.gif");
+        assert_eq!(part_path(output), Path::new("/videos/Screencast 12-00-00.gif.part"));
+        assert_eq!(kept_path(output), Path::new("/videos/Screencast 12-00-00.gif.mkv"));
+    }
 }

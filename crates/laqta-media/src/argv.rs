@@ -160,25 +160,90 @@ pub fn transcode_args(spec: &TranscodeSpec, input: &Path, output: &Path) -> Vec<
     a.finish()
 }
 
-/// Converts a lossless intermediate to an animation: GIF (two-pass palette), WebP or APNG.
-/// Any other codec falls back to APNG.
-pub fn animation_args(codec: VideoCodec, input: &Path, output: &Path, fps: u32) -> Vec<String> {
+/// A transcode to GIF is two runs, like a recording's: this one writes the clip's palette (same
+/// start, length, scale and rate as the second run), `transcode_gif_args` then maps through it.
+pub fn transcode_palette_args(spec: &TranscodeSpec, input: &Path, palette: &Path) -> Vec<String> {
+    let mut a = Argv::default();
+    a.flag(&COMMON);
+    if let Some(start) = spec.start_secs {
+        a.opt("-ss", seconds(start));
+    }
+    a.flag(&["-i"]).push(input.to_string_lossy().into_owned());
+    if let Some(duration) = spec.duration_secs {
+        a.opt("-t", seconds(duration));
+    }
+    a.opt("-vf", format!("{},palettegen=stats_mode=diff", gif_prefilter(spec)));
+    a.flag(&["-update", "1"]).push(palette.to_string_lossy().into_owned());
+    a.finish()
+}
+
+/// The second run of a transcode to GIF, through the palette from `transcode_palette_args`.
+pub fn transcode_gif_args(spec: &TranscodeSpec, input: &Path, palette: &Path, output: &Path) -> Vec<String> {
+    let mut a = Argv::default();
+    a.flag(&COMMON);
+    if let Some(start) = spec.start_secs {
+        a.opt("-ss", seconds(start));
+    }
+    a.flag(&["-i"]).push(input.to_string_lossy().into_owned());
+    a.flag(&["-i"]).push(palette.to_string_lossy().into_owned());
+    a.opt("-filter_complex", format!("[0:v]{}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5", gif_prefilter(spec)));
+    a.flag(&["-an"]);
+    if let Some(duration) = spec.duration_secs {
+        a.opt("-t", seconds(duration));
+    }
+    for arg in split_args(&spec.extra_args) {
+        a.push(arg);
+    }
+    a.push(output.to_string_lossy().into_owned());
+    a.finish()
+}
+
+fn gif_prefilter(spec: &TranscodeSpec) -> String {
+    let scale_part = spec.width.map(|w| format!("{},", scale(w))).unwrap_or_default();
+    format!("{scale_part}fps={}", spec.fps.unwrap_or(15))
+}
+
+/// Converts a lossless intermediate to a WebP or APNG animation in one run. Any other codec falls
+/// back to APNG. Both stream: their memory stays flat with the clip's length. A GIF is two runs
+/// instead (`palette_args`, then `paletteuse_args`). The container is named, so `output` may carry
+/// any extension (the recorder writes to a `.part` name first).
+pub fn animation_args(codec: VideoCodec, input: &Path, output: &Path) -> Vec<String> {
     let input = input.to_string_lossy().into_owned();
     let output = output.to_string_lossy().into_owned();
     let mut a = Argv::default();
     a.flag(&COMMON).flag(&["-i"]).push(input);
     match codec {
-        VideoCodec::Gif => {
-            a.flag(&["-filter_complex"]).push(gif_filter(None, fps)).flag(&["-f", "gif"]);
-        }
         VideoCodec::WebP => {
-            a.flag(&["-c:v", "libwebp_anim", "-loop", "0", "-lossless", "0", "-q:v", "75"]);
+            a.flag(&["-c:v", "libwebp_anim", "-loop", "0", "-lossless", "0", "-q:v", "75", "-f", "webp"]);
         }
         _ => {
             a.flag(&["-plays", "0", "-f", "apng"]);
         }
     }
     a.push(output);
+    a.finish()
+}
+
+/// The first GIF run: one palette for the whole clip, written as a single-frame PNG. `palettegen`
+/// keeps only a histogram, so the clip is not held in memory (D7).
+pub fn palette_args(input: &Path, fps: u32, output: &Path) -> Vec<String> {
+    let mut a = Argv::default();
+    a.flag(&COMMON).flag(&["-i"]).push(input.to_string_lossy().into_owned());
+    a.opt("-vf", format!("fps={fps},palettegen=stats_mode=diff"));
+    a.flag(&["-update", "1"]).push(output.to_string_lossy().into_owned());
+    a.finish()
+}
+
+/// The second GIF run: maps `input` through the palette in `palette`. One graph with `split`
+/// feeding both `palettegen` and `paletteuse` would buffer every frame (about 9 MB each at
+/// 1920x1188); two runs keep the memory flat. The container is named, so `output` may carry any
+/// extension.
+pub fn paletteuse_args(input: &Path, palette: &Path, fps: u32, output: &Path) -> Vec<String> {
+    let mut a = Argv::default();
+    a.flag(&COMMON).flag(&["-i"]).push(input.to_string_lossy().into_owned());
+    a.flag(&["-i"]).push(palette.to_string_lossy().into_owned());
+    a.opt("-filter_complex", format!("[0:v]fps={fps}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5"));
+    a.flag(&["-f", "gif"]).push(output.to_string_lossy().into_owned());
     a.finish()
 }
 
@@ -586,7 +651,8 @@ fn animation_transcode(a: &mut Argv, codec: VideoCodec, spec: &TranscodeSpec) {
     }
 }
 
-/// One palette for the whole clip: `split` feeds `palettegen`, and `paletteuse` applies it (D7).
+/// One palette for the whole clip in a single graph. The `split` buffers every frame, so the
+/// `Media` adapter runs GIFs as two runs instead (`transcode_palette_args`, `palette_args`).
 fn gif_filter(width: Option<u32>, fps: u32) -> String {
     let scale_part = width.map(|w| format!("{},", scale(w))).unwrap_or_default();
     format!("{scale_part}fps={fps},split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5")
@@ -953,28 +1019,59 @@ mod tests {
     }
 
     #[test]
-    fn gif_two_pass_palette_filter_is_exact() {
-        let args = animation_args(VideoCodec::Gif, Path::new("/work/merged.mkv"), Path::new("/out/clip.gif"), 15);
-        assert!(seq(
-            &args,
-            &[
+    fn gif_palette_run_reads_the_clip_once_and_writes_one_png() {
+        let args = palette_args(Path::new("/work/merged.mkv"), 15, Path::new("/work/palette.png"));
+        assert_eq!(
+            args,
+            [
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostats",
                 "-i",
                 "/work/merged.mkv",
+                "-vf",
+                "fps=15,palettegen=stats_mode=diff",
+                "-update",
+                "1",
+                "/work/palette.png"
+            ]
+        );
+    }
+
+    #[test]
+    fn gif_paletteuse_run_maps_the_clip_through_the_palette() {
+        let args = paletteuse_args(Path::new("/work/merged.mkv"), Path::new("/work/palette.png"), 15, Path::new("/out/clip.gif.part"));
+        assert_eq!(
+            args,
+            [
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostats",
+                "-i",
+                "/work/merged.mkv",
+                "-i",
+                "/work/palette.png",
                 "-filter_complex",
-                "fps=15,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5",
+                "[0:v]fps=15[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5",
                 "-f",
                 "gif",
-                "/out/clip.gif"
+                "/out/clip.gif.part"
             ]
-        ));
+        );
+        // No `split`: it would buffer the whole clip.
+        assert!(!args.iter().any(|arg| arg.contains("split")));
     }
 
     #[test]
     fn webp_and_apng_conversion_args() {
-        let webp = animation_args(VideoCodec::WebP, Path::new("/w/m.mkv"), Path::new("/o/a.webp"), 30);
-        assert!(seq(&webp, &["-c:v", "libwebp_anim", "-loop", "0", "-lossless", "0", "-q:v", "75", "/o/a.webp"]));
-        let apng = animation_args(VideoCodec::Apng, Path::new("/w/m.mkv"), Path::new("/o/a.png"), 30);
-        assert!(seq(&apng, &["-plays", "0", "-f", "apng", "/o/a.png"]));
+        let webp = animation_args(VideoCodec::WebP, Path::new("/w/m.mkv"), Path::new("/o/a.webp.part"));
+        assert!(seq(&webp, &["-c:v", "libwebp_anim", "-loop", "0", "-lossless", "0", "-q:v", "75", "-f", "webp", "/o/a.webp.part"]));
+        let apng = animation_args(VideoCodec::Apng, Path::new("/w/m.mkv"), Path::new("/o/a.png.part"));
+        assert!(seq(&apng, &["-plays", "0", "-f", "apng", "/o/a.png.part"]));
     }
 
     #[test]
@@ -1028,6 +1125,27 @@ mod tests {
                 "/out.gif"
             ]
         ));
+    }
+
+    #[test]
+    fn a_gif_transcode_is_two_runs_with_the_same_trim_and_scale() {
+        let spec = TranscodeSpec {
+            codec: Some(VideoCodec::Gif),
+            fps: Some(10),
+            width: Some(480),
+            start_secs: Some(1.5),
+            duration_secs: Some(3.0),
+            ..TranscodeSpec::default()
+        };
+        let palette = transcode_palette_args(&spec, Path::new("/in.mp4"), Path::new("/p.png"));
+        assert!(
+            seq(&palette, &["-ss", "1.500", "-i", "/in.mp4", "-t", "3.000", "-vf", "scale=480:-2,fps=10,palettegen=stats_mode=diff"]),
+            "{palette:?}"
+        );
+        let gif = transcode_gif_args(&spec, Path::new("/in.mp4"), Path::new("/p.png"), Path::new("/out.gif"));
+        assert!(seq(&gif, &["-ss", "1.500", "-i", "/in.mp4", "-i", "/p.png"]), "{gif:?}");
+        assert!(seq(&gif, &["[0:v]scale=480:-2,fps=10[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5", "-an", "-t", "3.000"]), "{gif:?}");
+        assert_eq!(gif.last().map(String::as_str), Some("/out.gif"));
     }
 
     #[test]

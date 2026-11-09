@@ -18,7 +18,7 @@ use laqta_ports::fakes::{
     ClipboardBehaviour, CountingRng, FakeClipboard, FakeHoverSource, FakeMedia, FakeNotifier, FakeOverlay, FakeScreen, FakeScreenStream,
     FakeShell, FakeToolHost, InlineSpawner, ManualClock,
 };
-use laqta_ports::{AppError, BoxFuture, HostInfo, TaskEvent, TaskId, TaskStatus};
+use laqta_ports::{AppError, BoxFuture, HostInfo, PortError, TaskEvent, TaskId, TaskStatus};
 use tempfile::TempDir;
 
 struct H {
@@ -26,6 +26,8 @@ struct H {
     overlay: Arc<FakeOverlay>,
     spawner: Arc<InlineSpawner>,
     media: Arc<FakeMedia>,
+    stream: Arc<FakeScreenStream>,
+    hover: Arc<FakeHoverSource>,
     clipboard: Arc<FakeClipboard>,
     shell: Arc<FakeShell>,
     notifier: Arc<FakeNotifier>,
@@ -68,8 +70,9 @@ fn window() -> HoverTarget {
 fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
     let overlay = Arc::new(FakeOverlay::default());
     let spawner = Arc::new(InlineSpawner::default());
-    let hover = FakeHoverSource::new(vec![window()]);
+    let hover = Arc::new(FakeHoverSource::new(vec![window()]));
     *hover.active.lock().unwrap() = Some(window());
+    let stream = Arc::new(FakeScreenStream::default());
     let media = Arc::new(FakeMedia::default());
     let clipboard = Arc::new(FakeClipboard::new(ClipboardBehaviour::Succeed));
     let shell = Arc::new(FakeShell::default());
@@ -85,7 +88,7 @@ fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
         prompt: Arc::new(laqta_ports::fakes::FakePrompt::default()),
         editor: Arc::new(laqta_ports::fakes::FakeEditorHost::default()),
         media: media.clone(),
-        stream: Arc::new(FakeScreenStream::default()),
+        stream: stream.clone(),
         ocr: Arc::new(laqta_ports::fakes::FakeOcr::default()),
         window_ops: Arc::new(laqta_ports::fakes::FakeWindowOps::default()),
         input: Arc::new(laqta_ports::fakes::FakeInputSynth::default()),
@@ -95,7 +98,7 @@ fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
         inpainter: Arc::new(laqta_ports::fakes::FakeInpainter),
         watcher: Arc::new(laqta_ports::fakes::FakeFileWatcher::default()),
         uploaders: Arc::new(laqta_ports::fakes::FakeUploaders::default()),
-        hover: Arc::new(hover),
+        hover: hover.clone(),
         notifier: notifier.clone(),
         rng: Arc::new(CountingRng::default()),
         host: HostInfo::default(),
@@ -107,7 +110,7 @@ fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
     edit(&mut settings);
     let app = App::new(ports, settings);
     let events = app.events();
-    H { app, overlay, spawner, media, clipboard, shell, notifier, events, log: Vec::new(), running: Vec::new() }
+    H { app, overlay, spawner, media, stream, hover, clipboard, shell, notifier, events, log: Vec::new(), running: Vec::new() }
 }
 
 /// Polls every spawned future once, keeping the ones that are still running. A driver with nothing due does not
@@ -387,6 +390,7 @@ fn abort_reports_cancelled_and_hands_nothing_to_task() {
         assert!(h.spawner.spawned.lock().unwrap().is_empty());
         assert_eq!(calls(&h), vec!["start X264 4x4".to_owned(), "abort".to_owned()]);
         assert!(!h.app.is_recording());
+        assert!(h.notifier.toasts.lock().unwrap().is_empty(), "an abort is the user's choice, so it shows no toast");
     });
 }
 
@@ -450,6 +454,10 @@ fn crashed_encoder_reports_failure_with_the_partial_file() {
         assert!(!seen.iter().any(|e| matches!(e, TaskEvent::Saved { .. } | TaskEvent::RecordingStopped { .. })));
         assert!(h.spawner.spawned.lock().unwrap().is_empty());
         assert!(!h.app.is_recording());
+        let toasts = h.notifier.toasts.lock().unwrap();
+        assert_eq!(toasts.len(), 1, "a failed recording shows one toast");
+        assert_eq!(toasts[0].title, "Recording failed");
+        assert!(toasts[0].body.contains("recorder stopped"), "the toast says why: {}", toasts[0].body);
     });
 }
 
@@ -495,5 +503,182 @@ fn highlighter_is_on_only_while_recording() {
         h.app.recording_stop();
         settle(&mut h);
         assert!(!h.app.ports().highlighter.is_enabled());
+    });
+}
+
+/// The `RecordingFailed` events in `seen`, as (error, partial).
+fn failures(seen: &[TaskEvent]) -> Vec<(AppError, Option<std::path::PathBuf>)> {
+    seen.iter()
+        .filter_map(|e| match e {
+            TaskEvent::RecordingFailed { error, partial, .. } => Some((error.clone(), partial.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Polls `fut` once and asserts it is waiting.
+fn assert_pending<T>(fut: &mut (impl std::future::Future<Output = T> + Unpin)) {
+    assert!(block_on(poll_once(fut)).is_none(), "the action should still be waiting");
+}
+
+#[test]
+fn an_unsupported_active_window_reports_a_failure_and_a_toast() {
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let mut h = harness(tmp.path(), |s| s.defaults.recording.countdown_secs = 2);
+        *h.hover.active_error.lock().unwrap() = Some(PortError::Unsupported("active window needs sway".into()));
+
+        assert!(matches!(start(&h, Action::ScreenRecorderActiveWindow), Err(AppError::Unsupported(_))));
+
+        let seen = events(&mut h);
+        let failed = failures(&seen);
+        assert_eq!(failed.len(), 1, "exactly one terminal event: {seen:?}");
+        assert!(matches!(&failed[0], (AppError::Unsupported(message), None) if message.contains("needs sway")));
+        assert!(!seen.iter().any(|e| matches!(e, TaskEvent::RecordingCountdown { .. } | TaskEvent::RecordingStarted { .. })));
+        assert!(!h.app.is_recording());
+        assert!(calls(&h).is_empty());
+        let toasts = h.notifier.toasts.lock().unwrap();
+        assert_eq!(toasts.len(), 1);
+        assert_eq!(toasts[0].title, "Recording failed");
+        assert!(toasts[0].body.contains("needs sway"), "the toast says why: {}", toasts[0].body);
+    });
+}
+
+#[test]
+fn a_cancelled_portal_after_the_countdown_ends_with_cancelled_and_no_toast() {
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let mut h = harness(tmp.path(), |s| {
+            custom_region(s);
+            s.defaults.recording.countdown_secs = 2;
+        });
+        *h.stream.fail.lock().unwrap() = Some(PortError::Cancelled);
+
+        assert!(matches!(start(&h, Action::ScreenRecorderCustomRegion), Err(AppError::Cancelled)));
+
+        let seen = events(&mut h);
+        let kinds: Vec<&str> = seen
+            .iter()
+            .map(|e| match e {
+                TaskEvent::RecordingCountdown { seconds_left: 2, .. } => "count 2",
+                TaskEvent::RecordingCountdown { seconds_left: 1, .. } => "count 1",
+                TaskEvent::RecordingFailed { error: AppError::Cancelled, partial: None, .. } => "cancelled",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, vec!["count 2", "count 1", "cancelled"]);
+        assert!(!h.app.is_recording());
+        assert!(h.notifier.toasts.lock().unwrap().is_empty(), "the user closed the portal, so there is nothing to report");
+    });
+}
+
+#[test]
+fn a_failed_stream_open_reports_a_failure_and_a_toast() {
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let mut h = harness(tmp.path(), custom_region);
+        *h.stream.fail.lock().unwrap() = Some(PortError::Failed("the portal is gone".into()));
+
+        assert!(matches!(start(&h, Action::ScreenRecorderCustomRegion), Err(AppError::Io(_))));
+
+        let failed = failures(&events(&mut h));
+        assert!(matches!(failed.as_slice(), [(AppError::Io(message), None)] if message.contains("portal is gone")));
+        assert!(!h.app.is_recording());
+        assert_eq!(h.notifier.toasts.lock().unwrap().len(), 1);
+        assert!(calls(&h).is_empty(), "the encoder never started");
+    });
+}
+
+#[test]
+fn stop_abort_and_a_second_start_each_cancel_a_stream_that_never_opens() {
+    type Cancel = fn(&H);
+    let cancels: [(&str, Cancel); 3] = [
+        ("stop", |h| h.app.recording_stop()),
+        ("abort", |h| h.app.recording_abort()),
+        ("second start", |h| assert_eq!(start(h, Action::ScreenRecorderCustomRegion).unwrap(), Dispatched::Done)),
+    ];
+    for (name, cancel) in cancels {
+        in_pool(|| {
+            let tmp = TempDir::new().unwrap();
+            let mut h = harness(tmp.path(), custom_region);
+            *h.stream.hang.lock().unwrap() = true;
+
+            let mut first = h.app.dispatch(Action::ScreenRecorderCustomRegion, None);
+            assert_pending(&mut first);
+            assert!(h.app.is_recording(), "{name}: the slot is held while the portal is open");
+
+            // Pause and resume mean nothing yet, and must not end the wait.
+            h.app.recording_pause();
+            h.app.recording_resume();
+            assert_pending(&mut first);
+            assert!(h.app.is_recording());
+
+            cancel(&h);
+            assert_eq!(block_on(first).unwrap(), Dispatched::Done, "{name}");
+
+            let seen = events(&mut h);
+            let failed = failures(&seen);
+            assert!(matches!(failed.as_slice(), [(AppError::Cancelled, None)]), "{name}: {seen:?}");
+            assert!(!seen.iter().any(|e| matches!(e, TaskEvent::RecordingStarted { .. } | TaskEvent::Saved { .. })), "{name}");
+            assert!(!h.app.is_recording(), "{name}: the slot is free");
+            assert!(calls(&h).is_empty(), "{name}: the encoder never started");
+            assert!(h.notifier.toasts.lock().unwrap().is_empty(), "{name}: a cancel shows no toast");
+
+            // The next start works.
+            *h.stream.hang.lock().unwrap() = false;
+            assert_eq!(start(&h, Action::ScreenRecorderCustomRegion).unwrap(), Dispatched::Done, "{name}");
+            assert_eq!(calls(&h), vec!["start X264 4x4".to_owned()], "{name}");
+            assert!(h.app.is_recording());
+        });
+    }
+}
+
+#[test]
+fn stop_while_the_area_is_drawn_closes_the_overlay_and_records_nothing() {
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let mut h = harness(tmp.path(), |_| {});
+        let mut fut = h.app.dispatch(Action::ScreenRecorder, None);
+        block_on(async {
+            while !h.overlay.is_open() {
+                assert!(poll_once(&mut fut).await.is_none(), "the action finished before the overlay opened");
+            }
+        });
+
+        h.app.recording_stop();
+        assert_eq!(block_on(fut).unwrap(), Dispatched::Done);
+
+        assert!(!h.overlay.is_open(), "the overlay closes when the start is cancelled");
+        let failed = failures(&events(&mut h));
+        assert!(matches!(failed.as_slice(), [(AppError::Cancelled, None)]));
+        assert!(!h.app.is_recording());
+        assert!(calls(&h).is_empty());
+    });
+}
+
+#[test]
+fn stop_while_the_encoder_starts_saves_nothing() {
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let mut h = harness(tmp.path(), custom_region);
+        *h.media.slow_start.lock().unwrap() = true;
+
+        let mut fut = h.app.dispatch(Action::ScreenRecorderCustomRegion, None);
+        assert_pending(&mut fut);
+        assert_eq!(calls(&h), vec!["start X264 4x4".to_owned()], "the encoder is starting");
+
+        h.app.recording_stop();
+        assert_eq!(block_on(fut).unwrap(), Dispatched::Done);
+        settle(&mut h);
+
+        let seen = events(&mut h);
+        let failed = failures(&seen);
+        assert!(matches!(failed.as_slice(), [(AppError::Cancelled, None)]), "{seen:?}");
+        let kept =
+            |e: &&TaskEvent| matches!(e, TaskEvent::RecordingStarted { .. } | TaskEvent::RecordingStopped { .. } | TaskEvent::Saved { .. });
+        assert!(!seen.iter().any(|e| kept(&e)), "nothing started or saved");
+        assert_eq!(calls(&h), vec!["start X264 4x4".to_owned(), "abort".to_owned()], "the started encoder is aborted, not stopped");
+        assert!(!h.app.is_recording());
+        assert!(h.notifier.toasts.lock().unwrap().is_empty());
     });
 }

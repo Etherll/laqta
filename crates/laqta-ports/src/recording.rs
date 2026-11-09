@@ -35,7 +35,8 @@ impl OsScreenRef {
 }
 
 /// Frames Laqta pumps to the encoder (Wayland PipeWire, Windows WGC). Blocking calls; run them
-/// off the async worker.
+/// off the async worker. Frames arrive at the platform's rate, which may be faster or slower than
+/// `fps()`; the consumer paces them to wall time.
 pub trait FrameSource: Send {
     fn size(&self) -> (u32, u32);
     fn fps(&self) -> u32;

@@ -4825,6 +4825,7 @@ dependencies = [
 name = "laqta"
 version = "0.1.0"
 dependencies = [
+ "async-broadcast",
  "async-executor",
  "async-io",
  "blocking",
@@ -5119,6 +5120,7 @@ dependencies = [
 name = "laqta-ui"
 version = "0.1.0"
 dependencies = [
+ "async-broadcast",
  "fluent-bundle",
  "fluent-syntax",
  "futures-channel",

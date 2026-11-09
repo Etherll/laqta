@@ -143,7 +143,18 @@ fn load_settings(store: &SettingsStore) -> Settings {
         return Settings::default_for(pictures_dir());
     }
     match store.load::<Settings>(SETTINGS_VERSION, &[]) {
-        Ok(s) => s,
+        Ok(mut s) => {
+            // A file without `screenshots_dir` gets the serde default, a relative path that would put captures in
+            // the folder Laqta was started from.
+            if s.screenshots_dir == Settings::default().screenshots_dir {
+                s.screenshots_dir = Settings::default_for(pictures_dir()).screenshots_dir;
+            } else if s.screenshots_dir.is_relative()
+                && let Some(home) = dirs::home_dir()
+            {
+                s.screenshots_dir = home.join(&s.screenshots_dir);
+            }
+            s
+        }
         Err(e) => {
             tracing::error!("settings could not be loaded ({e}); using defaults");
             Settings::default_for(pictures_dir())
@@ -279,8 +290,12 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     // Task events: the log and the history writer.
     let mut events = app.events();
     spawner.spawn(Box::pin(async move {
-        while let Ok(event) = events.recv().await {
-            tracing::info!(?event, "task event");
+        loop {
+            match events.recv().await {
+                Ok(event) => tracing::info!(?event, "task event"),
+                Err(async_broadcast::RecvError::Overflowed(skipped)) => tracing::warn!(skipped, "task events were skipped"),
+                Err(async_broadcast::RecvError::Closed) => break,
+            }
         }
     }));
     if let Some(h) = &history {
@@ -492,8 +507,8 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                     Ok(laqta_ports::TaskEvent::StatusChanged { id, status: laqta_ports::TaskStatus::InQueue }) => {
                         pending.insert(id);
                     }
-                    Ok(_) => {}
-                    Err(_) => break,
+                    Ok(_) | Err(async_broadcast::RecvError::Overflowed(_)) => {}
+                    Err(async_broadcast::RecvError::Closed) => break,
                 }
             }
             let _ = quit_tx.send(());

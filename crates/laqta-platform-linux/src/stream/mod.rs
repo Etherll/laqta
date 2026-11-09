@@ -12,6 +12,7 @@ use laqta_domain::PhysRect;
 use laqta_domain::record::AudioDevice;
 use laqta_ports::{BoxFuture, PortError, RecordingInput, ScreenStream, VideoSource};
 
+use self::pipewire_frames::StartError;
 use crate::session::Session;
 
 /// The `ScreenStream` of the detected session. It keeps the portal's restore token (ADR 019): the
@@ -31,6 +32,14 @@ impl LinuxScreenStream {
         self.token.lock().ok().and_then(|token| token.clone())
     }
 
+    /// Drops the token, so that the next start asks the portal which screen to share. Only the copy
+    /// in memory goes: `on_token` has no way to clear what `main` saved.
+    fn forget_token(&self) {
+        if let Ok(mut current) = self.token.lock() {
+            *current = None;
+        }
+    }
+
     fn remember(&self, token: String) {
         if let Ok(mut current) = self.token.lock() {
             *current = Some(token.clone());
@@ -42,11 +51,21 @@ impl LinuxScreenStream {
         let area = even_area(area)?;
         let token = self.restore_token();
         let mut cast = screencast::start(token.as_deref(), show_cursor).await?;
-        if let Some(next) = cast.restore_token.take() {
+        // Saved only once the stream holds the area, so a token for the wrong screen is not kept.
+        let next = cast.restore_token.take();
+        // Connecting to PipeWire blocks (and so does dropping the frames), so it runs off the async worker.
+        let frames = match blocking::unblock(move || pipewire_frames::PipeWireFrames::start(cast, area, fps)).await {
+            Ok(frames) => frames,
+            Err(StartError::AreaOffStream(message)) => {
+                // The remembered screen is not the one the area is on: ask again next time.
+                self.forget_token();
+                return Err(PortError::Failed(message));
+            }
+            Err(StartError::Other(e)) => return Err(e),
+        };
+        if let Some(next) = next {
             self.remember(next);
         }
-        // Connecting to PipeWire blocks (and so does dropping the frames), so it runs off the async worker.
-        let frames = blocking::unblock(move || pipewire_frames::PipeWireFrames::start(cast, area, fps)).await?;
         Ok(RecordingInput { video: VideoSource::Frames(Box::new(frames)), audio: audio::inputs(audio) })
     }
 }
@@ -79,6 +98,22 @@ fn even_area(area: PhysRect) -> Result<PhysRect, PortError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forgetting_the_token_keeps_the_saved_one_alone() {
+        let saved = Arc::new(Mutex::new(Vec::new()));
+        let on_token: Arc<dyn Fn(String) + Send + Sync> = {
+            let saved = Arc::clone(&saved);
+            Arc::new(move |token| saved.lock().expect("lock").push(token))
+        };
+        let stream = LinuxScreenStream::new(Session::Wayland, Some("old".into()), on_token);
+        assert_eq!(stream.restore_token().as_deref(), Some("old"));
+        stream.forget_token();
+        assert_eq!(stream.restore_token(), None);
+        assert!(saved.lock().expect("lock").is_empty(), "clearing does not call on_token");
+        stream.remember("new".into());
+        assert_eq!(stream.restore_token().as_deref(), Some("new"));
+    }
 
     #[test]
     fn even_area_rounds_down() {

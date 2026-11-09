@@ -44,6 +44,17 @@ pub struct LinuxPorts {
     pub highlighter: Arc<dyn laqta_ports::PointerHighlighter>,
 }
 
+/// sway when its IPC socket is set, KWin on KDE Plasma, else sway's (which reports Unsupported).
+fn wayland_hover() -> Arc<dyn HoverSource> {
+    let sway = std::env::var_os("SWAYSOCK").is_some_and(|s| !s.is_empty());
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").ok();
+    if !sway && wayland::hover_kwin::is_kde(desktop.as_deref()) {
+        Arc::new(wayland::hover_kwin::KwinHover)
+    } else {
+        Arc::new(wayland::hover_sway::SwayHover)
+    }
+}
+
 pub fn ports(session: Session) -> LinuxPorts {
     ports_with_token(session, None, Arc::new(|_: String| {}))
 }
@@ -53,11 +64,9 @@ pub fn ports(session: Session) -> LinuxPorts {
 pub fn ports_with_token(session: Session, restore_token: Option<String>, on_token: Arc<dyn Fn(String) + Send + Sync>) -> LinuxPorts {
     let (screen, hotkeys, hover): (Arc<dyn ScreenSource>, Arc<dyn HotkeyRegistrar>, Arc<dyn HoverSource>) = match session {
         Session::X11 => (Arc::new(x11::capture::X11Screen), Arc::new(x11::hotkeys::X11Hotkeys::default()), Arc::new(x11::hover::X11Hover)),
-        Session::Wayland => (
-            Arc::new(wayland::WaylandScreen),
-            Arc::new(wayland::shortcuts_portal::PortalShortcuts::default()),
-            Arc::new(wayland::hover_sway::SwayHover),
-        ),
+        Session::Wayland => {
+            (Arc::new(wayland::WaylandScreen), Arc::new(wayland::shortcuts_portal::PortalShortcuts::default()), wayland_hover())
+        }
     };
     LinuxPorts {
         screen,

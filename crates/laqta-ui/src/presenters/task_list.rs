@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use laqta_ports::{TaskEvent, TaskId, TaskStatus};
+use laqta_ports::{AppError, TaskEvent, TaskId, TaskStatus};
 
 /// Rows kept in the main window's task list.
 pub const MAX_ROWS: usize = 100;
@@ -142,9 +142,40 @@ impl TaskList {
                 row.url = Some(url.clone());
             }
             TaskEvent::Shortened { url, .. } => row.url = Some(url.clone()),
+            TaskEvent::RecordingCountdown { seconds_left, .. } => {
+                row.title = "Recording".into();
+                row.status = TaskStatus::Preparing;
+                row.detail = format!("Starting in {seconds_left}");
+            }
+            TaskEvent::RecordingStarted { .. } | TaskEvent::RecordingResumed { .. } => {
+                row.title = "Recording".into();
+                row.status = TaskStatus::Working;
+                row.detail = "Recording".into();
+            }
+            TaskEvent::RecordingTick { elapsed_secs, .. } => {
+                row.status = TaskStatus::Working;
+                row.detail = format!("Recording {}:{:02}", elapsed_secs / 60, elapsed_secs % 60);
+            }
+            TaskEvent::RecordingPaused { .. } => row.detail = "Paused".into(),
             TaskEvent::RecordingStopped { path, .. } => {
                 row.title = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 row.path = Some(path.clone());
+                row.status = TaskStatus::Completed;
+                row.detail = "Recorded".into();
+            }
+            TaskEvent::RecordingFailed { error, partial, .. } => {
+                if row.title.starts_with("Task ") {
+                    row.title = "Recording".into();
+                }
+                if matches!(error, AppError::Cancelled) {
+                    row.status = TaskStatus::Stopped;
+                    row.detail = status_label(TaskStatus::Stopped).to_string();
+                } else {
+                    row.status = TaskStatus::Failed;
+                    row.error = Some(error.to_string());
+                    row.detail = format!("Failed: {error}");
+                    row.path = partial.clone().or(row.path.take());
+                }
             }
             TaskEvent::SaveSkipped { path, .. } => row.detail = format!("Skipped: {} exists", path.display()),
             TaskEvent::StepFailed { step, reason, .. } => row.detail = format!("{step} failed: {reason}"),
@@ -220,5 +251,34 @@ mod tests {
             list.apply(&TaskEvent::StatusChanged { id: TaskId(i), status: TaskStatus::InQueue });
         }
         assert_eq!(list.rows().len(), MAX_ROWS);
+    }
+
+    #[test]
+    fn a_recording_row_follows_its_events_and_settles() {
+        let mut list = TaskList::default();
+        let id = TaskId(7);
+        list.apply(&TaskEvent::RecordingCountdown { id, seconds_left: 2 });
+        assert_eq!(list.rows()[0].status, TaskStatus::Preparing);
+        list.apply(&TaskEvent::RecordingStarted { id, area: laqta_domain::geometry::PhysRect::default() });
+        list.apply(&TaskEvent::RecordingTick { id, elapsed_secs: 65 });
+        assert_eq!((list.rows()[0].status, list.rows()[0].detail.as_str()), (TaskStatus::Working, "Recording 1:05"));
+        assert!(list.is_running());
+        list.apply(&TaskEvent::RecordingStopped { id, path: "/v/a.gif".into() });
+        assert_eq!((list.rows()[0].status, list.rows()[0].title.as_str()), (TaskStatus::Completed, "a.gif"));
+        assert!(!list.is_running());
+    }
+
+    #[test]
+    fn a_cancelled_recording_is_stopped_and_a_failed_one_shows_its_error() {
+        let mut list = TaskList::default();
+        list.apply(&TaskEvent::RecordingFailed { id: TaskId(1), error: AppError::Cancelled, partial: None });
+        assert_eq!((list.rows()[0].status, list.rows()[0].title.as_str()), (TaskStatus::Stopped, "Recording"));
+        let error = AppError::Unsupported("no active window".into());
+        list.apply(&TaskEvent::RecordingFailed { id: TaskId(2), error, partial: Some("/v/p.mkv".into()) });
+        let row = &list.rows()[0];
+        assert_eq!(row.status, TaskStatus::Failed);
+        assert!(row.detail.contains("no active window"), "{}", row.detail);
+        assert_eq!(row.path.as_deref(), Some(std::path::Path::new("/v/p.mkv")));
+        assert!(!list.is_running());
     }
 }

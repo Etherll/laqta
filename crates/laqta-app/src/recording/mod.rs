@@ -5,6 +5,10 @@
 //!
 //! One recording runs at a time. Its slot is claimed before the area is chosen, so a second start stops the
 //! recording instead of starting another one.
+//!
+//! After the claim, every start ends in a `RecordingFailed` or a `RecordingStarted`, and the slot is always freed. A
+//! stop or abort that arrives while the area is chosen or the stream opens (a portal dialog nobody answers) cancels
+//! that step instead of waiting for it.
 
 mod drive;
 
@@ -15,11 +19,11 @@ use std::sync::{Arc, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use futures_channel::mpsc;
-use futures_lite::FutureExt;
+use futures_lite::{FutureExt, StreamExt, future};
 use laqta_domain::geometry::PhysRect;
 use laqta_domain::record::{AudioDevice, RecordSpec};
-use laqta_domain::workflow::TaskSettings;
-use laqta_ports::{AppError, RecordingHandle, TaskEvent, TaskId};
+use laqta_domain::workflow::{TaskSettings, ToastOptions};
+use laqta_ports::{AppError, RecordingHandle, TaskEvent, TaskId, Toast};
 
 use crate::dispatcher::{App, Dispatched};
 use crate::files;
@@ -108,25 +112,28 @@ impl App {
         let Some(id) = self.claim(control) else {
             return Ok(Dispatched::Done);
         };
+        let toast = ts.general.toast.clone();
         match self.begin(id, commands, area, gif, ts).await {
             Ok(Some(live)) => {
                 let app = Arc::clone(&self);
+                let toast = live.ts.general.toast.clone();
                 self.ports.spawner.spawn(Box::pin(async move {
                     // A panic in the driver ends the recording as a failure and frees the slot (ADR 020).
                     if let Err(payload) = AssertUnwindSafe(drive::run(Arc::clone(&app), id, live)).catch_unwind().await {
                         app.release(id);
-                        app.emit(TaskEvent::RecordingFailed { id, error: AppError::Panic(panic_message(&*payload)), partial: None });
+                        app.emit_failed(id, AppError::Panic(panic_message(&*payload)), None, &toast);
                     }
                 }));
                 Ok(Dispatched::Done)
             }
             Ok(None) => {
                 self.release(id);
-                self.emit(TaskEvent::RecordingFailed { id, error: AppError::Cancelled, partial: None });
+                self.emit_failed(id, AppError::Cancelled, None, &toast);
                 Ok(Dispatched::Done)
             }
             Err(error) => {
                 self.release(id);
+                self.emit_failed(id, error.clone(), None, &toast);
                 Err(error)
             }
         }
@@ -156,7 +163,20 @@ impl App {
         ts: TaskSettings,
     ) -> Result<Option<Live>, AppError> {
         let (codec, fps) = if gif { (ts.recording.gif_codec, ts.recording.gif_fps) } else { (ts.recording.codec, ts.recording.fps) };
-        let rect = self.choose_area(area, &ts).await?;
+        // Whether the area is drawn, so a stop while choosing has an overlay of this recording's to close.
+        let draws = match area {
+            Area::Region => true,
+            Area::LastRecording => self.last_recording_area.lock().unwrap_or_else(PoisonError::into_inner).is_none(),
+            Area::ActiveWindow | Area::CustomRegion => false,
+        };
+        let Some(chosen) = unless_stopped(&mut commands, self.choose_area(area, &ts)).await else {
+            // Dropping the choice leaves a drawn area's overlay open.
+            if draws {
+                self.ports.overlay.close();
+            }
+            return Ok(None);
+        };
+        let rect = chosen?;
         if stop_requested(&mut commands) {
             return Ok(None);
         }
@@ -167,14 +187,28 @@ impl App {
                 return Ok(None);
             }
         }
-        let devices = self.audio_devices(&ts).await;
-        let input = self.ports.stream.open(rect, ts.recording.show_cursor, fps, &devices).await.map_err(AppError::from)?;
+        // The output is prepared before the stream opens, so no error path below drops an open stream.
         let dir = self.settings.get().screenshots_dir_for(&ts);
         let output = self.task.recording_output(&ts, &dir, (rect.width, rect.height), codec.extension()).await?;
         if let Some(folder) = output.parent() {
             files::create_dir_all(self.ports.spawner.as_ref(), folder.to_path_buf())
                 .await
                 .map_err(|error| AppError::Io(error.to_string()))?;
+        }
+        let opened = unless_stopped(&mut commands, async {
+            let devices = self.audio_devices(&ts).await;
+            let input = self.ports.stream.open(rect, ts.recording.show_cursor, fps, &devices).await.map_err(AppError::from)?;
+            Ok::<_, AppError>((devices, input))
+        })
+        .await;
+        let Some(opened) = opened else {
+            return Ok(None);
+        };
+        let (devices, input) = opened?;
+        if stop_requested(&mut commands) {
+            // Closing a stream blocks (PipeWire, the portal), so it is dropped off the async worker.
+            self.ports.spawner.run_blocking(Box::new(move || drop(input))).await;
+            return Ok(None);
         }
         let spec = RecordSpec {
             area: rect,
@@ -187,6 +221,11 @@ impl App {
             camera: ts.recording.camera.enabled.then(|| ts.recording.camera.clone()),
         };
         let handle = self.ports.media.start(input, spec, output.clone()).await.map_err(AppError::from)?;
+        if stop_requested(&mut commands) {
+            // The stop came while the encoder started. It is not dropped midway; it is stopped here, and its file goes.
+            let _ = handle.abort().await;
+            return Ok(None);
+        }
         self.emit(TaskEvent::RecordingStarted { id, area: rect });
         *self.last_recording_area.lock().unwrap_or_else(PoisonError::into_inner) = Some(rect);
         let fixed_secs = ts.recording.fixed_duration_secs;
@@ -259,6 +298,25 @@ impl App {
     fn emit(&self, event: TaskEvent) {
         self.task.emit(event);
     }
+
+    /// Reports the recording `id` as failed: the event, and a toast unless the user cancelled it. The toast names
+    /// the error. A toast that cannot be shown is logged.
+    fn emit_failed(&self, id: TaskId, error: AppError, partial: Option<PathBuf>, options: &ToastOptions) {
+        if !matches!(error, AppError::Cancelled) {
+            let toast = Toast {
+                title: "Recording failed".to_owned(),
+                body: error.to_string(),
+                image: None,
+                path: None,
+                url: None,
+                options: options.clone(),
+            };
+            if let Err(error) = self.ports.notifier.toast(toast) {
+                tracing::warn!(%error, "recording: the failure notice was not shown");
+            }
+        }
+        self.emit(TaskEvent::RecordingFailed { id, error, partial });
+    }
 }
 
 /// The area with an even width and height: an odd side loses its last pixel. An area with a zero side is an error.
@@ -279,6 +337,26 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
     } else {
         "panic".to_owned()
     }
+}
+
+/// Resolves when a stop or abort arrives, or when the channel closes. Pause and resume are dropped: nothing is
+/// recording yet.
+async fn wait_for_stop(commands: &mut mpsc::UnboundedReceiver<Control>) {
+    while let Some(control) = commands.next().await {
+        if matches!(control, Control::Stop | Control::Abort) {
+            return;
+        }
+    }
+}
+
+/// Runs `work` unless a stop or abort arrives first. `None` means the stop won, and `work` was dropped (a portal
+/// request in `work` goes with it). `commands` is only borrowed, so it works afterwards.
+async fn unless_stopped<T>(commands: &mut mpsc::UnboundedReceiver<Control>, work: impl Future<Output = T>) -> Option<T> {
+    future::or(async { Some(work.await) }, async {
+        wait_for_stop(commands).await;
+        None
+    })
+    .await
 }
 
 /// Whether a stop or abort is waiting. Pause and resume are dropped: nothing is recording yet.

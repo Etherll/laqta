@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use laqta_domain::record::RecordSpec;
+use laqta_domain::record::{RecordSpec, VideoCodec};
 use laqta_ports::recording::{AudioInput, Media, MediaInfo, RecordingHandle, RecordingInput, TranscodeSpec, VideoSource};
 use laqta_ports::{BoxFuture, PortError};
 use serde::Deserialize;
@@ -65,9 +65,13 @@ impl Media for FfmpegMedia {
         let input = input.to_owned();
         let output = output.to_owned();
         run_blocking(move || {
-            let args = argv::transcode_args(&spec, &input, &output);
-            let result = run_tool(&paths.ffmpeg, &args, None)?;
-            ensure_success(&result, "transcode")?;
+            if spec.codec == Some(VideoCodec::Gif) && !spec.single_frame {
+                transcode_gif(&paths.ffmpeg, &spec, &input, &output)?;
+            } else {
+                let args = argv::transcode_args(&spec, &input, &output);
+                let result = run_tool(&paths.ffmpeg, &args, None)?;
+                ensure_success(&result, "transcode")?;
+            }
             if output.is_file() { Ok(()) } else { Err(PortError::Failed(format!("transcode wrote no file at {}", output.display()))) }
         })
     }
@@ -82,6 +86,20 @@ impl Media for FfmpegMedia {
             parse_probe(&result.stdout, size)
         })
     }
+}
+
+/// A GIF in two runs (palette, then the GIF), so memory stays flat with the clip's length. The
+/// palette sits next to the output and is removed either way.
+fn transcode_gif(ffmpeg: &Path, spec: &TranscodeSpec, input: &Path, output: &Path) -> Result<(), PortError> {
+    let mut name = output.file_name().unwrap_or_default().to_os_string();
+    name.push(".palette.png");
+    let palette = output.with_file_name(name);
+    let result = run_tool(ffmpeg, &argv::transcode_palette_args(spec, input, &palette), None)
+        .and_then(|r| ensure_success(&r, "transcode palette"))
+        .and_then(|()| run_tool(ffmpeg, &argv::transcode_gif_args(spec, input, &palette, output), None))
+        .and_then(|r| ensure_success(&r, "transcode"));
+    let _ = std::fs::remove_file(&palette);
+    result
 }
 
 /// The recording inputs as FFmpeg sees them, and the one stdin source they share, if any.

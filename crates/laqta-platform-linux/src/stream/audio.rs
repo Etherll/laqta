@@ -19,9 +19,26 @@ pub fn list_devices() -> Result<Vec<AudioDevice>, PortError> {
     Ok(parse_short(&pactl(&["list", "short", "sources"])?))
 }
 
-/// One `AudioInput::Device` per requested device.
+/// The pulse source for "whatever plays on the default output". The server resolves it to the default
+/// sink's monitor when the stream connects, on PipeWire's pulse server and on stock PulseAudio alike.
+const DEFAULT_MONITOR: &str = "@DEFAULT_MONITOR@";
+
+/// One `AudioInput::Device` per requested device, with its pulse source name in `id`.
+///
+/// `open` calls this on an async worker, so it never runs `pactl`: the server resolves
+/// `@DEFAULT_MONITOR@` itself, to the same source `pactl get-default-sink` + `.monitor` names.
 pub fn inputs(devices: &[AudioDevice]) -> Vec<AudioInput> {
-    devices.iter().cloned().map(AudioInput::Device).collect()
+    devices.iter().map(|device| AudioInput::Device(source(device))).collect()
+}
+
+/// The device with the pulse source that records it. System sound without a monitor source of its own
+/// (the app's generic "loopback" request, which no pulse source is named after) records the default
+/// output's monitor; a listed `.monitor` source and every microphone keep their id.
+fn source(device: &AudioDevice) -> AudioDevice {
+    if device.loopback && !device.id.ends_with(".monitor") {
+        return AudioDevice { id: DEFAULT_MONITOR.to_owned(), ..device.clone() };
+    }
+    device.clone()
 }
 
 fn pactl(args: &[&str]) -> Result<String, PortError> {
@@ -225,6 +242,38 @@ mod tests {
         assert_eq!(devices[0].id, devices[0].name);
         assert!(!devices[0].loopback);
         assert!(devices[1].loopback);
+    }
+
+    fn pulse_id(input: &AudioInput) -> &str {
+        match input {
+            AudioInput::Device(device) => device.id.as_str(),
+            AudioInput::Pcm(_) => "",
+        }
+    }
+
+    #[test]
+    fn audio_loopback_request_records_the_default_monitor() {
+        let system = AudioDevice { id: "loopback".into(), name: "loopback".into(), loopback: true };
+        let mic = AudioDevice { id: "alsa_input.usb.analog-stereo".into(), name: "USB Mic".into(), loopback: false };
+        let inputs = inputs(&[mic, system]);
+        assert_eq!(pulse_id(&inputs[0]), "alsa_input.usb.analog-stereo");
+        assert_eq!(pulse_id(&inputs[1]), "@DEFAULT_MONITOR@");
+        let AudioInput::Device(mapped) = &inputs[1] else { panic!("not a device") };
+        assert!(mapped.loopback);
+        assert_eq!(mapped.name, "loopback");
+    }
+
+    #[test]
+    fn audio_listed_monitor_source_keeps_its_id() {
+        let listed = device("bluez_output.X.1.monitor".into(), Some("Monitor of Headset".into()));
+        assert!(listed.loopback);
+        assert_eq!(source(&listed), listed);
+    }
+
+    #[test]
+    fn audio_microphone_named_loopback_is_not_remapped() {
+        let mic = AudioDevice { id: "loopback".into(), name: "x".into(), loopback: false };
+        assert_eq!(source(&mic), mic);
     }
 
     #[test]

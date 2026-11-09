@@ -17,6 +17,7 @@ path = "src/main.rs"
 default = []
 
 [dependencies]
+async-broadcast.workspace = true
 laqta-cloud.workspace = true
 laqta-domain.workspace = true
 laqta-ports.workspace = true

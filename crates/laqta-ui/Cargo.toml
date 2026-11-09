@@ -10,6 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+async-broadcast.workspace = true
 laqta-photo.workspace = true
 sysinfo.workspace = true
 fluent-bundle.workspace = true

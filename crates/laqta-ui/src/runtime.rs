@@ -381,8 +381,18 @@ pub fn run(services: UiServices, rx: UiReceiver) {
         // Task events feed the task list; this task sleeps until an event arrives.
         let mut events = services.app.events();
         cx.spawn(async move |cx: &mut AsyncApp| {
-            while let Ok(event) = events.recv().await {
-                let event: TaskEvent = event;
+            loop {
+                // A slow reader skips what the channel dropped and carries on.
+                let event: TaskEvent = match events.recv().await {
+                    Ok(event) => event,
+                    Err(async_broadcast::RecvError::Overflowed(skipped)) => {
+                        tracing::warn!(skipped, "ui: task events were skipped");
+                        // The skipped events may have ended a recording: do not leave its bar up.
+                        cx.update(crate::recording_bar::resync);
+                        continue;
+                    }
+                    Err(async_broadcast::RecvError::Closed) => break,
+                };
                 {
                     let e = event.clone();
                     cx.update(|cx| crate::recording_bar::on_event(&e, cx));

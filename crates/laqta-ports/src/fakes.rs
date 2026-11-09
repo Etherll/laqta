@@ -323,14 +323,20 @@ impl Overlay for FakeOverlay {
 pub struct FakeHoverSource {
     pub targets: Mutex<Result<Vec<HoverTarget>, PortError>>,
     pub active: Mutex<Option<HoverTarget>>,
+    /// When set, `active_window` fails with this error.
+    pub active_error: Mutex<Option<PortError>>,
 }
 
 impl FakeHoverSource {
     pub fn new(targets: Vec<HoverTarget>) -> Self {
-        FakeHoverSource { targets: Mutex::new(Ok(targets)), active: Mutex::new(None) }
+        FakeHoverSource { targets: Mutex::new(Ok(targets)), active: Mutex::new(None), active_error: Mutex::new(None) }
     }
     pub fn unsupported() -> Self {
-        FakeHoverSource { targets: Mutex::new(Err(PortError::Unsupported("hover targets".into()))), active: Mutex::new(None) }
+        FakeHoverSource {
+            targets: Mutex::new(Err(PortError::Unsupported("hover targets".into()))),
+            active: Mutex::new(None),
+            active_error: Mutex::new(None),
+        }
     }
 }
 
@@ -340,8 +346,11 @@ impl HoverSource for FakeHoverSource {
         Box::pin(async move { r })
     }
     fn active_window(&self) -> BoxFuture<'_, Result<Option<HoverTarget>, PortError>> {
-        let r = self.active.lock().unwrap().clone();
-        Box::pin(async move { Ok(r) })
+        let r = match self.active_error.lock().unwrap().clone() {
+            Some(error) => Err(error),
+            None => Ok(self.active.lock().unwrap().clone()),
+        };
+        Box::pin(async move { r })
     }
 }
 
@@ -614,11 +623,13 @@ impl crate::FrameSource for FakeFrames {
     }
 }
 
-/// Opens `FakeFrames` (or fails), and lists fixed devices.
+/// Opens `FakeFrames` (or fails, or never answers), and lists fixed devices.
 #[derive(Debug, Default)]
 pub struct FakeScreenStream {
     pub fail: Mutex<Option<PortError>>,
     pub opened: Mutex<Vec<laqta_domain::geometry::PhysRect>>,
+    /// When true, `open` never completes, like a portal dialog nobody answers.
+    pub hang: Mutex<bool>,
 }
 
 impl crate::ScreenStream for FakeScreenStream {
@@ -630,6 +641,9 @@ impl crate::ScreenStream for FakeScreenStream {
         _audio: &[laqta_domain::record::AudioDevice],
     ) -> BoxFuture<'_, Result<crate::RecordingInput, PortError>> {
         self.opened.lock().unwrap().push(area);
+        if *self.hang.lock().unwrap() {
+            return Box::pin(std::future::pending());
+        }
         let r = match self.fail.lock().unwrap().clone() {
             Some(e) => Err(e),
             None => Ok(crate::RecordingInput {
@@ -650,6 +664,8 @@ impl crate::ScreenStream for FakeScreenStream {
 pub struct FakeMedia {
     pub calls: Arc<Mutex<Vec<String>>>,
     pub crash: Mutex<bool>,
+    /// When true, `start` returns `Pending` once before it completes, so a test can act while the encoder starts.
+    pub slow_start: Mutex<bool>,
 }
 
 #[derive(Debug)]
@@ -692,7 +708,13 @@ impl crate::Media for FakeMedia {
         self.calls.lock().unwrap().push(format!("start {:?} {}x{}", spec.codec, spec.area.width, spec.area.height));
         let h: Box<dyn crate::RecordingHandle> =
             Box::new(FakeHandle { calls: self.calls.clone(), output, crashed: *self.crash.lock().unwrap() });
-        Box::pin(async move { Ok(h) })
+        let slow = *self.slow_start.lock().unwrap();
+        Box::pin(async move {
+            if slow {
+                YieldOnce(false).await;
+            }
+            Ok(h)
+        })
     }
     fn transcode(&self, input: &Path, output: &Path, _spec: crate::TranscodeSpec) -> BoxFuture<'_, Result<(), PortError>> {
         self.calls.lock().unwrap().push(format!("transcode {} {}", input.display(), output.display()));
@@ -710,6 +732,21 @@ impl crate::Media for FakeMedia {
                 size_bytes: 1000,
             })
         })
+    }
+}
+
+/// Returns `Pending` on its first poll (and wakes itself), then completes.
+struct YieldOnce(bool);
+
+impl std::future::Future for YieldOnce {
+    type Output = ();
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        if self.0 {
+            return std::task::Poll::Ready(());
+        }
+        self.0 = true;
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
     }
 }
 
