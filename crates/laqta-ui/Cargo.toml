@@ -36,3 +36,4 @@ laqta-imaging.workspace = true
 
 [dev-dependencies]
 laqta-ports = { workspace = true, features = ["fakes"] }
+rayon.workspace = true

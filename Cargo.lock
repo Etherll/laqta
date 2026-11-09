@@ -4934,6 +4934,7 @@ dependencies = [
  "laqta-library",
  "laqta-photo",
  "laqta-ports",
+ "rayon",
  "rfd",
  "serde_json",
  "smallvec",
