@@ -2,6 +2,8 @@
 //! against a fake primary bound at `$XDG_RUNTIME_DIR/laqta.sock`, and records what it forwards. The
 //! secondary path returns before any window, tray or hotkey is created. As a guard, the child gets no
 //! display, no session bus, `LAQTA_NO_GPUI=1` and a scratch HOME, and is killed after a timeout.
+// The fake primary is a Unix socket in a scratch directory; on Windows the IPC uses named pipes.
+#![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::{Path, PathBuf};

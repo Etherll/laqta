@@ -50,10 +50,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with: { tool: "cargo-nextest@0.9.151" }
-      - run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS xvfb x11-xserver-utils
+      - run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS xvfb x11-xserver-utils ffmpeg
       - name: Start a virtual X display
         run: |
-          Xvfb :99 -screen 0 1920x1080x24 &
+          # -noreset keeps the root colour set below after the last client disconnects.
+          Xvfb :99 -screen 0 1920x1080x24 -noreset &
           sleep 2
           DISPLAY=:99 xsetroot -solid "#336699"
       - run: cargo nextest run --workspace --profile ci

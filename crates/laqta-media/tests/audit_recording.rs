@@ -1,6 +1,8 @@
 //! Checks for the recording argument lists. They run the argument lists `laqta_media::argv` builds against the
 //! local `ffmpeg`, with OS inputs (pulse, v4l2, raw stdin) swapped for `lavfi` test sources so no
 //! screen, camera or microphone is opened. They need `ffmpeg` and `ffprobe` on PATH and fail without.
+// The inputs swapped out are the Linux ones, so the checks run on Unix only.
+#![cfg(unix)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

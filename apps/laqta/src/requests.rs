@@ -83,9 +83,8 @@ mod tests {
         assert!(matches!(route(Request::Upload("/a/b.SXCU".into()), &s), Ok(Route::ImportUploader(_))));
         assert!(matches!(route(Request::Upload("/a/b.sxie".into()), &s), Ok(Route::ImportEffect(_))));
         assert!(matches!(route(Request::Upload("/a/b.sxb".into()), &s), Ok(Route::ImportBackup(_))));
-        assert!(
-            matches!(route(Request::Upload("/a/b.png".into()), &s), Ok(Route::Upload(UploadSource::File(p), None)) if p == Path::new("/a/b.png"))
-        );
+        let png = if cfg!(windows) { r"C:\a\b.png" } else { "/a/b.png" };
+        assert!(matches!(route(Request::Upload(png.into()), &s), Ok(Route::Upload(UploadSource::File(p), None)) if p == Path::new(png)));
         assert!(matches!(route(Request::ShortenUrl("https://x".into()), &s), Ok(Route::Upload(UploadSource::ShortenUrl(_), None))));
         assert!(matches!(route(Request::UploadText("hi".into()), &s), Ok(Route::Upload(UploadSource::Text(_), None))));
     }

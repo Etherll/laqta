@@ -1,6 +1,8 @@
 //! Integration tests run the real `laqta-nmh` binary against a fake running Laqta bound at
 //! `$XDG_RUNTIME_DIR/laqta.sock`. Messages use ShareX's `NativeMessagingAction` numbers
 //! (None=0, UploadImage=1, UploadVideo=2, UploadAudio=3, UploadText=4, ShortenURL=5).
+// The fake primary is a Unix socket in a scratch directory; on Windows the IPC uses named pipes.
+#![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::io::Write;

@@ -47,12 +47,15 @@ pub fn summary(settings: &Settings, home: Option<&Path>) -> String {
 mod tests {
     use super::*;
 
+    // The expected text uses Unix paths.
+    #[cfg(unix)]
     #[test]
     fn defaults_save_and_copy_with_home_shortened() {
         let s = Settings::default_for("/home/u/Pictures".into());
         assert_eq!(summary(&s, Some(Path::new("/home/u"))), "Save to ~/Pictures/Laqta · copy to clipboard");
     }
 
+    #[cfg(unix)]
     #[test]
     fn upload_mentions_the_link_and_other_folders_stay_absolute() {
         let mut s = Settings::default_for("/data/shots".into());
