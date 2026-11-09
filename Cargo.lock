@@ -3479,7 +3479,7 @@ dependencies = [
  "libc",
  "log",
  "notify-rust",
- "oo7",
+ "oo7 0.6.0",
  "open",
  "parking_lot",
  "raw-window-handle",
@@ -5086,7 +5086,7 @@ dependencies = [
  "laqta-domain",
  "laqta-ports",
  "libwayshot",
- "oo7",
+ "oo7 0.7.0",
  "pipewire",
  "png 0.18.1",
  "swayipc",
@@ -6553,6 +6553,38 @@ dependencies = [
  "zbus_macros 5.19.0",
  "zeroize",
  "zvariant",
+]
+
+[[package]]
+name = "oo7"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dcdb85efa0c7d561dda91c7b9dd81564c63a0e875c6590663dc1972867b1e335"
+dependencies = [
+ "aes 0.9.4",
+ "ashpd 0.14.0",
+ "async-fs",
+ "async-io",
+ "async-lock",
+ "blocking",
+ "cbc 0.2.1",
+ "endi",
+ "futures-lite",
+ "futures-util",
+ "getrandom 0.4.3",
+ "hex",
+ "hkdf 0.13.0",
+ "md-5 0.11.0",
+ "num",
+ "num-bigint-dig",
+ "pbkdf2 0.13.0",
+ "serde",
+ "serde_bytes",
+ "sha2 0.11.1",
+ "subtle",
+ "zbus 6.2.1",
+ "zeroize",
+ "zgvariant",
 ]
 
 [[package]]
@@ -9714,8 +9746,10 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -11793,6 +11827,8 @@ dependencies = [
  "serde",
  "serde_repr",
  "socket2",
+ "tokio",
+ "tracing",
  "uds_windows",
  "uuid",
  "windows-sys 0.61.2",
@@ -12063,6 +12099,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "zgvariant"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5576e785f58266b3c26ef3b35d5914991981226733376d8ce34d185c0fccb240"
+dependencies = [
+ "endi",
+ "serde",
+ "serde_bytes",
+ "winnow 1.0.5",
+ "zbus_utils",
+ "zcheapstr",
+ "zgvariant_derive",
+]
+
+[[package]]
+name = "zgvariant_derive"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd6ca94bb7097734710aa30f08cc9979045b220e743ca3a5d6cda1bed58396e9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+ "zbus_utils",
+]
+
+[[package]]
 name = "zip"
 version = "9.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12114,6 +12177,7 @@ dependencies = [
  "futures-io",
  "rustix 1.1.6",
  "socket2",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
