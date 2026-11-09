@@ -1,7 +1,10 @@
 name: Release
 
 # Pushing a version tag (v0.1.0, v0.2.0-beta.1, …) builds Laqta for Linux and Windows and attaches
-# the archives to a draft GitHub release. Review the draft, then publish it.
+# the packages to a draft GitHub release. Review the draft, then publish it.
+#
+# Asset names carry no version, so the README can link to releases/latest/download/<name>:
+#   laqta-windows-x64.zip, laqta-linux-x86_64.tar.gz, laqta-linux-amd64.deb (each with a .sha256)
 on:
   push:
     tags: ["v*"]
@@ -25,19 +28,34 @@ jobs:
           sudo apt-get update && sudo apt-get install -y
           libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev libxcb1-dev
           libfontconfig-dev libfreetype-dev libdbus-1-dev libpipewire-0.3-dev libclang-dev pkg-config
+      - uses: taiki-e/install-action@v2
+        with: { tool: "cargo-deb@3.8.0" }
+      - name: Check the tag matches the version in Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "laqta") | .version')
+          if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $version in Cargo.toml"
+            exit 1
+          fi
       - run: cargo build --release --locked -p laqta -p laqta-nmh
       - name: Package
         run: |
-          name="laqta-${GITHUB_REF_NAME}-linux-x86_64"
-          mkdir -p "dist/$name"
-          cp target/release/laqta target/release/laqta-nmh LICENSE README.md "dist/$name/"
-          cp -r assets/icon "dist/$name/icons"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
-          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          mkdir -p dist
+          dir="laqta-${GITHUB_REF_NAME}-linux-x86_64"
+          mkdir -p "dist/$dir"
+          cp target/release/laqta target/release/laqta-nmh LICENSE README.md "dist/$dir/"
+          cp packaging/linux/io.github.etherll.Laqta.desktop "dist/$dir/"
+          cp -r assets/icon "dist/$dir/icons"
+          tar -C dist -czf dist/laqta-linux-x86_64.tar.gz "$dir"
+          rm -rf "dist/$dir"
+          # The .deb takes its version from Cargo.toml and its dependencies from dpkg-shlibdeps.
+          cargo deb -p laqta --no-build -o dist/laqta-linux-amd64.deb
+          cd dist && for f in *.tar.gz *.deb; do sha256sum "$f" > "$f.sha256"; done
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: dist/*.tar.gz*
+          path: dist/*
 
   windows:
     name: Build (Windows x64)
@@ -54,16 +72,17 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          $name = "laqta-$env:GITHUB_REF_NAME-windows-x64"
-          New-Item -ItemType Directory -Force "dist/$name" | Out-Null
-          Copy-Item target/release/laqta.exe, target/release/laqta-nmh.exe, LICENSE, README.md "dist/$name/"
-          Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
-          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name.zip" | Out-File -Encoding ascii "dist/$name.zip.sha256"
+          $dir = "laqta-$env:GITHUB_REF_NAME-windows-x64"
+          New-Item -ItemType Directory -Force "dist/$dir" | Out-Null
+          Copy-Item target/release/laqta.exe, target/release/laqta-nmh.exe, LICENSE, README.md "dist/$dir/"
+          Compress-Archive -Path "dist/$dir" -DestinationPath "dist/laqta-windows-x64.zip"
+          Remove-Item -Recurse "dist/$dir"
+          $hash = (Get-FileHash "dist/laqta-windows-x64.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  laqta-windows-x64.zip" | Out-File -Encoding ascii "dist/laqta-windows-x64.zip.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: dist/*.zip*
+          path: dist/*
 
   release:
     name: Draft the GitHub release

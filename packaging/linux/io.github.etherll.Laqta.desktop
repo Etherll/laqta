@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Laqta
+GenericName=Screen Capture
+Comment=Capture, record, mark up and share your screen
+Exec=/usr/bin/laqta %F
+Icon=io.github.etherll.Laqta
+Terminal=false
+Categories=Graphics;Utility;
+Keywords=screenshot;screen recording;capture;annotate;upload;
+StartupWMClass=io.github.etherll.Laqta

@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+description = "Screen capture, recording, annotation and upload for Windows and Linux"
 
 [lints]
 workspace = true
@@ -58,3 +59,30 @@ laqta-platform-linux.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 laqta-platform-windows.workspace = true
+
+# `cargo deb -p laqta` (release workflow) builds the Debian package.
+[package.metadata.deb]
+name = "laqta"
+maintainer = "Etherll <61019402+Etherll@users.noreply.github.com>"
+copyright = "Etherll and Laqta contributors"
+license-file = ["../../LICENSE", "0"]
+section = "graphics"
+priority = "optional"
+depends = "$auto"
+extended-description = """\
+Laqta takes screenshots and screen recordings, lets you mark them up, and uploads them \
+wherever you want, starting from one shortcut. It imports ShareX settings, uploaders, \
+effects, backups and history."""
+assets = [
+    ["target/release/laqta", "usr/bin/", "755"],
+    ["target/release/laqta-nmh", "usr/bin/", "755"],
+    ["../../packaging/linux/io.github.etherll.Laqta.desktop", "usr/share/applications/", "644"],
+    ["../../assets/icon/laqta-16.png", "usr/share/icons/hicolor/16x16/apps/io.github.etherll.Laqta.png", "644"],
+    ["../../assets/icon/laqta-32.png", "usr/share/icons/hicolor/32x32/apps/io.github.etherll.Laqta.png", "644"],
+    ["../../assets/icon/laqta-64.png", "usr/share/icons/hicolor/64x64/apps/io.github.etherll.Laqta.png", "644"],
+    ["../../assets/icon/laqta-128.png", "usr/share/icons/hicolor/128x128/apps/io.github.etherll.Laqta.png", "644"],
+    ["../../assets/icon/laqta-256.png", "usr/share/icons/hicolor/256x256/apps/io.github.etherll.Laqta.png", "644"],
+    ["../../assets/icon/laqta-512.png", "usr/share/icons/hicolor/512x512/apps/io.github.etherll.Laqta.png", "644"],
+    ["../../assets/icon/laqta.svg", "usr/share/icons/hicolor/scalable/apps/io.github.etherll.Laqta.svg", "644"],
+    ["../../README.md", "usr/share/doc/laqta/README.md", "644"],
+]
