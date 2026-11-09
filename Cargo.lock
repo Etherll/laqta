@@ -5124,6 +5124,7 @@ dependencies = [
  "futures-channel",
  "futures-lite",
  "gpui-component",
+ "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-platform",
  "image",

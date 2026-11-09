@@ -5,8 +5,10 @@ use gpui::{
     AnyWindowHandle, App, AppContext as _, Bounds, Context, IntoElement, ParentElement as _, Render, Styled as _, Window,
     WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, point, px, size,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::{ActiveTheme as _, Root, Sizable as _};
+use gpui_component::{ActiveTheme as _, Root};
+
+use crate::theme::{radius, text};
+use crate::widgets::{self, Pill};
 use laqta_domain::geometry::PhysRect;
 use laqta_ports::TaskEvent;
 
@@ -153,24 +155,25 @@ fn start(area: PhysRect, cx: &mut App) {
 struct BorderStrip;
 
 impl Render for BorderStrip {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().bg(gpui::rgb(0xef4444))
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().bg(cx.theme().danger)
     }
 }
 
 impl Render for Countdown {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(80.))
-            .bg(gpui::hsla(0.0, 0.0, 0.0, 0.7))
+            .rounded(radius::PILL)
+            .bg(gpui::black().opacity(0.7))
             .text_color(gpui::white())
+            .font_family(text::HEADING_FONT)
+            .font_weight(gpui::FontWeight::SEMIBOLD)
             .text_size(px(72.))
             .child(self.seconds.to_string())
-            .text_color(cx.theme().background)
     }
 }
 
@@ -180,26 +183,36 @@ impl Render for Bar {
         let (a1, a2, a3) = (app.clone(), app.clone(), app.clone());
         let paused = self.paused;
         let time = format!("{:02}:{:02}", self.elapsed / 60, self.elapsed % 60);
+        let t = cx.theme();
+        let x = crate::theme::extra(cx);
+        // Paused reads as amber plus the word, so colour is never the only cue.
+        let (dot, state) = if paused { (gpui::rgb(0xEAB308).into(), "Paused") } else { (t.danger, "REC") };
         div()
             .size_full()
             .flex()
             .flex_row()
             .items_center()
             .gap(px(6.))
-            .px(px(8.))
-            .rounded(px(8.))
-            .bg(cx.theme().background)
+            .pl(px(14.))
+            .pr(px(4.))
+            .rounded(radius::PILL)
+            .bg(x.card)
             .border_1()
-            .border_color(cx.theme().border)
-            .child(div().w(px(10.)).h(px(10.)).rounded(px(5.)).bg(if paused { gpui::rgb(0xeab308) } else { gpui::rgb(0xef4444) }))
-            .child(div().w(px(56.)).text_sm().child(time))
-            .child(
-                Button::new("pause")
-                    .label(if paused { "Resume" } else { "Pause" })
-                    .small()
-                    .on_click(move |_, _, _| if paused { a1.recording_resume() } else { a1.recording_pause() }),
-            )
-            .child(Button::new("stop").label("Stop").small().primary().on_click(move |_, _, _| a2.recording_stop()))
-            .child(Button::new("abort").label("Abort").small().ghost().on_click(move |_, _, _| a3.recording_abort()))
+            .border_color(x.ring)
+            .font_family(text::UI_FONT)
+            .text_color(t.foreground)
+            .child(div().size(px(8.)).rounded(radius::PILL).bg(dot))
+            .child(div().text_size(px(11.)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(t.muted_foreground).child(state))
+            .child(div().w(px(48.)).text_size(text::LABEL).font_weight(gpui::FontWeight::MEDIUM).child(time))
+            .child(widgets::pill(
+                "pause",
+                if paused { "Resume" } else { "Pause" },
+                Pill::Default,
+                true,
+                move |_, _, _| if paused { a1.recording_resume() } else { a1.recording_pause() },
+                cx,
+            ))
+            .child(widgets::pill("stop", "Stop", Pill::Dark, true, move |_, _, _| a2.recording_stop(), cx))
+            .child(widgets::pill("abort", "Abort", Pill::Ghost, true, move |_, _, _| a3.recording_abort(), cx))
     }
 }

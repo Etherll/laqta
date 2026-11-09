@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, AppContext as _, ClipboardItem, Context, IntoElement, ParentElement as _, Render, RenderImage, Styled as _, TitlebarOptions,
-    Window, WindowBounds, WindowOptions, div, img, px, size,
+    App, AppContext as _, ClipboardItem, Context, IntoElement, ParentElement as _, Render, RenderImage, Styled as _, Window, WindowBounds,
+    WindowOptions, div, img, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::{ActiveTheme as _, Root};
@@ -25,9 +25,12 @@ fn qr_image(url: &str) -> Option<Arc<RenderImage>> {
 }
 
 pub(crate) fn open(url: String, qr: bool, cx: &mut App) {
+    crate::theme::ensure_fonts(cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(520.), px(if qr { 560. } else { 200. })), cx)),
-        titlebar: Some(TitlebarOptions { title: Some(if qr { "QR code" } else { "Upload finished" }.into()), ..Default::default() }),
+        titlebar: Some(crate::chrome::titlebar(if qr { "QR code" } else { "Upload finished" })),
+        window_decorations: crate::chrome::decorations(),
+        app_owns_titlebar_drag: true,
         app_id: Some("laqta".into()),
         focus: true,
         ..Default::default()
@@ -47,14 +50,25 @@ struct UrlWindow {
 }
 
 impl Render for UrlWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let shell = cx.global::<UiState>().services.shell.clone();
         let (u1, u2) = (self.url.clone(), self.url.clone());
         let mut body = div().flex_1().flex().flex_col().gap(px(10.)).p(px(14.)).items_center();
         if let Some(q) = &self.qr {
-            body = body.child(img(q.clone()).w(px(360.)).h(px(360.)));
+            body = body.child(img(q.clone()).w(px(360.)).h(px(360.)).rounded(crate::theme::radius::LG));
         }
-        body = body.child(div().p(px(6.)).rounded(px(4.)).bg(cx.theme().secondary).w_full().truncate().child(self.url.clone()));
+        // A one-line URL box is a pill, like every one-line control.
+        body = body.child(
+            div()
+                .h(crate::theme::CONTROL_H)
+                .px(px(14.))
+                .flex()
+                .items_center()
+                .rounded(crate::theme::radius::PILL)
+                .bg(cx.theme().secondary)
+                .w_full()
+                .child(div().truncate().text_size(crate::theme::text::LABEL).child(self.url.clone())),
+        );
         let footer = div()
             .flex()
             .flex_row()
@@ -68,6 +82,7 @@ impl Render for UrlWindow {
                 let _ = shell.open_url(&u2);
             }))
             .child(Button::new("close").label("Close").ghost().on_click(|_, window, _| window.remove_window()));
-        widgets::page(cx).child(body).child(footer)
+        let title = if self.qr.is_some() { "QR code" } else { "Upload finished" };
+        crate::chrome::rounded(widgets::page(cx), window).child(crate::chrome::TitleBar::new().title(title).flat()).child(body).child(footer)
     }
 }

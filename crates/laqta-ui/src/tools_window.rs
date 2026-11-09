@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use gpui::{
     App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, RenderImage,
-    SharedString, Styled as _, TitlebarOptions, Window, WindowBounds, WindowOptions, div, img, px, size,
+    SharedString, Styled as _, Window, WindowBounds, WindowOptions, div, img, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputState};
@@ -257,7 +257,9 @@ pub(crate) fn open(kind: ToolKind, cx: &mut App) {
     let big = matches!(kind, ToolKind::ImageViewer | ToolKind::ImageComparer | ToolKind::MonitorTest | ToolKind::IndexFolder);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(if big { 960. } else { 680. }), px(if big { 720. } else { 560. })), cx)),
-        titlebar: Some(TitlebarOptions { title: Some(title(kind).into()), ..Default::default() }),
+        titlebar: Some(crate::chrome::titlebar(title(kind))),
+        window_decorations: crate::chrome::decorations(),
+        app_owns_titlebar_drag: true,
         app_id: Some("laqta".into()),
         focus: true,
         ..Default::default()
@@ -659,13 +661,20 @@ fn rate(bytes: u64) -> String {
 }
 
 impl Render for ToolsWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sp = spec(self.kind);
-        let mut body = div().flex().flex_col().gap(px(8.)).p(px(14.)).child(widgets::muted(sp.help, cx));
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .gap(crate::theme::space::S3)
+            .px(crate::theme::space::S8)
+            .pt(crate::theme::space::S6)
+            .pb(crate::theme::space::S8)
+            .child(div().pb(crate::theme::space::S2).child(widgets::page_title(title(self.kind), sp.help, cx)));
 
         if self.kind == ToolKind::MonitorTest {
             let (colour, name) = TEST_COLOURS[self.colour_step % TEST_COLOURS.len()];
-            return widgets::page(cx).child(
+            return crate::chrome::rounded(widgets::page(cx), window).child(crate::chrome::TitleBar::new().title(title(self.kind)).flat()).child(
                 div()
                     .id("monitor-test")
                     .flex_1()
@@ -711,7 +720,7 @@ impl Render for ToolsWindow {
                         .child(div().w(px(110.)).child(crate::presenters::history::format_size(*ttx))),
                 );
             }
-            return widgets::page(cx).child(body.child(table));
+            return crate::chrome::rounded(widgets::page(cx), window).child(crate::chrome::TitleBar::new().title(title(self.kind)).flat()).child(body.child(table));
         }
 
         if sp.pick != Pick::Nothing {
@@ -800,17 +809,17 @@ impl Render for ToolsWindow {
                 div()
                     .flex()
                     .justify_center()
-                    .p(px(8.))
+                    .p(px(12.))
                     .bg(cx.theme().secondary)
-                    .rounded(px(6.))
-                    .child(img(image.clone()).max_w_full().max_h(px(420.))),
+                    .rounded(crate::theme::radius::CARD)
+                    .child(img(image.clone()).max_w_full().max_h(px(420.)).rounded(crate::theme::radius::MD)),
             );
         }
         if !self.output.is_empty() {
             body = body.child(
                 div()
-                    .p(px(8.))
-                    .rounded(px(6.))
+                    .p(px(12.))
+                    .rounded(crate::theme::radius::LG)
                     .bg(cx.theme().secondary)
                     .font_family("monospace")
                     .text_sm()
@@ -818,6 +827,8 @@ impl Render for ToolsWindow {
                     .child(self.output.clone()),
             );
         }
-        widgets::page(cx).child(div().flex_1().overflow_y_scrollbar().child(body))
+        crate::chrome::rounded(widgets::page(cx), window)
+            .child(crate::chrome::TitleBar::new().title(title(self.kind)).flat())
+            .child(div().flex_1().overflow_y_scrollbar().child(body))
     }
 }

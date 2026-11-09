@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Context, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, ParentElement as _, Render, RenderImage, ScrollEvent, Styled as _, TitlebarOptions, Window, WindowBounds,
-    WindowDecorations, WindowKind, WindowOptions, div, img, px, size,
+    MouseDownEvent, ParentElement as _, Render, RenderImage, ScrollEvent, Styled as _, Window, WindowBounds, WindowDecorations, WindowKind,
+    WindowOptions, div, img, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::scroll::ScrollableElement as _;
@@ -112,7 +112,9 @@ impl Render for PinView {
 pub(crate) fn show_text(title: String, text: String, cx: &mut App) {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(560.), px(420.)), cx)),
-        titlebar: Some(TitlebarOptions { title: Some(title.clone().into()), ..Default::default() }),
+        titlebar: Some(crate::chrome::titlebar(title.clone())),
+        window_decorations: crate::chrome::decorations(),
+        app_owns_titlebar_drag: true,
         app_id: Some("laqta".into()),
         focus: true,
         ..Default::default()
@@ -131,12 +133,21 @@ struct TextView {
 }
 
 impl Render for TextView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let copy = self.text.clone();
-        widgets::page(cx)
-            .child(div().flex_1().overflow_y_scrollbar().p(px(14.)).child(
-                div().p(px(8.)).rounded(px(6.)).bg(cx.theme().secondary).font_family("monospace").text_sm().child(self.text.clone()),
-            ))
+        crate::chrome::rounded(widgets::page(cx), window)
+            .child(crate::chrome::TitleBar::new().title(self.title.clone()).flat())
+            .child(
+                div().flex_1().overflow_y_scrollbar().p(px(14.)).child(
+                    div()
+                        .p(px(12.))
+                        .rounded(crate::theme::radius::LG)
+                        .bg(cx.theme().secondary)
+                        .font_family("monospace")
+                        .text_sm()
+                        .child(self.text.clone()),
+                ),
+            )
             .child(
                 div()
                     .flex()

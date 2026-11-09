@@ -149,24 +149,47 @@ impl ToastView {
 impl Render for ToastView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let o = self.toast.options.clone();
+        let x = crate::theme::extra(cx);
+        let t = cx.theme();
         let mut body = div()
             .id("laqta-toast")
             .size_full()
             .flex()
             .flex_col()
-            .gap(px(6.))
-            .p(px(10.))
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            .gap(px(10.))
+            .p(px(12.))
+            .pb(px(14.))
+            .rounded(crate::theme::radius::TOAST)
+            .bg(x.card)
+            .text_color(t.foreground)
+            .font_family(crate::theme::text::UI_FONT)
             .border_1()
-            .border_color(cx.theme().border)
+            .border_color(x.ring)
             .cursor_pointer();
         if let Some(image) = &self.image {
-            body = body.child(div().flex_1().flex().justify_center().overflow_hidden().child(img(image.clone()).max_h_full().max_w_full()));
+            body = body.child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .rounded(crate::theme::radius::MD)
+                    .bg(t.muted)
+                    .flex()
+                    .justify_center()
+                    .overflow_hidden()
+                    .child(img(image.clone()).max_h_full().max_w_full().rounded(crate::theme::radius::MD)),
+            );
         }
-        body = body
-            .child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).child(self.toast.title.clone()))
-            .child(div().text_xs().text_color(cx.theme().muted_foreground).truncate().child(self.toast.body.clone()));
+        body = body.child(
+            div()
+                .px(px(4.))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(div().text_size(px(14.)).font_weight(gpui::FontWeight::MEDIUM).child(self.toast.title.clone()))
+                .child(
+                    div().text_size(crate::theme::text::CAPTION).text_color(t.muted_foreground).truncate().child(self.toast.body.clone()),
+                ),
+        );
         let (l, r, m) = (o.left_click, o.right_click, o.middle_click);
         let body = body
             .on_click(cx.listener(move |this, _, window, cx| this.click(l, window, cx)))

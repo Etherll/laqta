@@ -3,8 +3,8 @@
 
 use futures_channel::oneshot;
 use gpui::{
-    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, TitlebarOptions, Window,
-    WindowBounds, WindowKind, WindowOptions, div, px, size,
+    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Window, WindowBounds,
+    WindowKind, WindowOptions, div, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputState};
@@ -43,7 +43,9 @@ pub(crate) fn open(title: String, kind: PromptKind, reply: Reply, cx: &mut App) 
     };
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(width), px(height)), cx)),
-        titlebar: Some(TitlebarOptions { title: Some(SharedString::from(title.clone())), ..Default::default() }),
+        titlebar: Some(crate::chrome::titlebar(SharedString::from(title.clone()))),
+        window_decorations: crate::chrome::decorations(),
+        app_owns_titlebar_drag: true,
         kind: WindowKind::Dialog,
         focus: true,
         app_id: Some("laqta".into()),
@@ -99,7 +101,7 @@ impl Drop for PromptWindow {
 }
 
 impl Render for PromptWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut body = div()
             .flex_1()
             .flex()
@@ -140,8 +142,15 @@ impl Render for PromptWindow {
                 );
             }
             PromptKind::Show { text } => {
-                body = body
-                    .child(div().flex_1().overflow_y_scrollbar().p(px(6.)).rounded(px(4.)).bg(cx.theme().secondary).child(text.clone()));
+                body = body.child(
+                    div()
+                        .flex_1()
+                        .overflow_y_scrollbar()
+                        .p(px(12.))
+                        .rounded(crate::theme::radius::LG)
+                        .bg(cx.theme().secondary)
+                        .child(text.clone()),
+                );
                 footer = footer.child(
                     Button::new("ok").label("Close").primary().on_click(cx.listener(|this, _, w, _| this.answer(Ok(Answer::Ok), w))),
                 );
@@ -238,6 +247,6 @@ impl Render for PromptWindow {
                     );
             }
         }
-        widgets::page(cx).child(body).child(footer)
+        crate::chrome::rounded(widgets::page(cx), window).child(crate::chrome::TitleBar::new().title(self.title.clone()).flat()).child(body).child(footer)
     }
 }

@@ -568,6 +568,7 @@ Full records are in [`adr/`](adr/).
 | [025](adr/025-windows-tls-and-sftp.md) | Windows uses SChannel for HTTP TLS and the system OpenSSH `sftp.exe` for SFTP; Linux keeps rustls and `russh` | `cargo-xwin` with the Windows SDK; GNU-only Windows checks |
 | [026](adr/026-windows-sqlite.md) | Linux bundles SQLite; Windows links a static vcpkg SQLite with FTS5 | bundling SQLite on Windows (needs the MSVC C runtime headers on the checking machine) |
 | [027](adr/027-photo-uses-editor.md) | `laqta-photo` depends on `laqta-editor` for fonts and text layout (its rasterizer is private, so shapes and brushes use tiny-skia directly) | a copy of those parts in `laqta-photo`; a shared third crate |
+| [028](adr/028-ui-design-system.md) | One design system in `laqta-ui`: theme tokens, shared components, bundled Inter and Space Grotesk, `gpui-kit-assets` icons, a custom titlebar | inline styling per window; a design-system crate; the platform UI font; the system titlebar |
 
 ---
 

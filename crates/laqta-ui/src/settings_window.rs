@@ -3,14 +3,14 @@
 //! differences from the defaults (ADR 008).
 
 use gpui::{
-    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, TitlebarOptions, Window,
-    WindowBounds, WindowOptions, div, px, size,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
+    Render, SharedString, Styled as _, Window, WindowBounds, WindowOptions, div, px, size,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::ScrollableElement as _;
-use gpui_component::{ActiveTheme as _, Disableable as _, Root, Selectable as _, Sizable as _};
+use gpui_component::select::{Select, SelectEvent, SelectState};
+use gpui_component::switch::Switch;
+use gpui_component::{ActiveTheme as _, Root};
 use laqta_domain::capture::RegionMouseAction;
 use laqta_domain::geometry::PhysRect;
 use laqta_domain::hotkey::KeyChord;
@@ -18,23 +18,32 @@ use laqta_domain::settings::Theme;
 use laqta_domain::workflow::{AfterCaptureTasks, FileExistsAction, ToastPlacement, Workflow};
 use laqta_domain::{Action, ImageFormat, Settings, WorkflowId};
 
+use crate::assets::IconName;
 use crate::presenters::settings::{self as present, TaskOption};
 use crate::runtime::{UiState, activate};
-use crate::widgets;
+use crate::theme::{space, text};
+use crate::widgets::{self, Pill, Slot, Tone};
 
 pub(crate) fn open(cx: &mut App) {
     if activate(cx.global::<UiState>().settings, cx) {
         return;
     }
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(920.), px(700.)), cx)),
-        titlebar: Some(TitlebarOptions { title: Some("Laqta settings".into()), ..Default::default() }),
+        window_bounds: Some(WindowBounds::centered(size(px(1040.), px(760.)), cx)),
+        window_min_size: Some(size(px(720.), px(480.))),
+        titlebar: Some(crate::chrome::titlebar("Laqta settings")),
+        window_decorations: crate::chrome::decorations(),
+        app_owns_titlebar_drag: true,
         app_id: Some("laqta".into()),
         ..Default::default()
     };
     match cx.open_window(options, |window, cx| {
         let view = cx.new(|cx| SettingsWindow::new(window, cx));
-        cx.new(|cx| Root::new(view, window, cx))
+        let focus = view.read(cx).focus.clone();
+        let root = cx.new(|cx| Root::new(view, window, cx));
+        // Focus the page after Root, which takes focus when it is built, so Tab reaches it.
+        window.focus(&focus, cx);
+        root
     }) {
         Ok(handle) => cx.global_mut::<UiState>().settings = Some(handle.into()),
         Err(e) => tracing::error!("settings window failed: {e:#}"),
@@ -66,19 +75,19 @@ enum Page {
     Data,
 }
 
-const PAGES: [(Page, &str); 12] = [
-    (Page::General, "General"),
-    (Page::AfterCapture, "After capture"),
-    (Page::Image, "Image"),
-    (Page::Naming, "File naming"),
-    (Page::Capture, "Capture"),
-    (Page::Workflows, "Hotkeys and workflows"),
-    (Page::Uploads, "Uploads"),
-    (Page::Recording, "Recording"),
-    (Page::Automation, "Automation"),
-    (Page::Models, "Models"),
-    (Page::Integration, "Integration"),
-    (Page::Data, "Data"),
+const PAGES: [(Page, &str, IconName); 12] = [
+    (Page::General, "General", IconName::SlidersHorizontal),
+    (Page::AfterCapture, "After capture", IconName::ListChecks),
+    (Page::Image, "Image format", IconName::Image),
+    (Page::Naming, "File naming", IconName::Type),
+    (Page::Capture, "Capture", IconName::Crop),
+    (Page::Workflows, "Shortcuts", IconName::Keyboard),
+    (Page::Uploads, "Uploads", IconName::CloudUpload),
+    (Page::Recording, "Recording", IconName::Video),
+    (Page::Automation, "Automation", IconName::Timer),
+    (Page::Models, "AI features", IconName::Sparkles),
+    (Page::Integration, "Integration", IconName::Plug),
+    (Page::Data, "Backup and import", IconName::Database),
 ];
 
 struct WorkflowInputs {
@@ -108,7 +117,6 @@ struct SettingsWindow {
     workflows: Vec<WorkflowInputs>,
     clipboard_format: Entity<InputState>,
     retries: Entity<InputState>,
-    dest_kind: DestKind,
     hosts: Vec<Vec<(&'static str, bool, Entity<InputState>)>>,
     rec: RecordingInputs,
     auto_interval: Entity<InputState>,
@@ -125,6 +133,8 @@ struct SettingsWindow {
     cloud: [Entity<InputState>; 5],
     /// The last update check's message, and whether it can be installed from here.
     update: Option<(String, bool)>,
+    focus: FocusHandle,
+    language: Entity<SelectState<Vec<SharedString>>>,
 }
 
 struct RecordingInputs {
@@ -148,6 +158,7 @@ fn text_input(value: impl Into<SharedString>, window: &mut Window, cx: &mut Cont
 impl SettingsWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let draft = cx.global::<UiState>().services.app.settings();
+        let language = Self::language_select(draft.language.as_deref(), window, cx);
         let d = &draft.defaults;
         let mut this = SettingsWindow {
             dir: text_input(draft.screenshots_dir.display().to_string(), window, cx),
@@ -172,9 +183,10 @@ impl SettingsWindow {
             workflows: Vec::new(),
             clipboard_format: text_input(d.upload.clipboard_format.clone(), window, cx),
             retries: text_input(d.upload.retries.to_string(), window, cx),
-            dest_kind: DestKind::Image,
             hosts: Vec::new(),
             update: None,
+            focus: cx.focus_handle(),
+            language,
             rec: RecordingInputs {
                 fps: text_input(d.recording.fps.to_string(), window, cx),
                 gif_fps: text_input(d.recording.gif_fps.to_string(), window, cx),
@@ -372,6 +384,48 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// A switch row that writes one draft field.
+    fn sw(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        description: Option<&str>,
+        on: bool,
+        set: impl Fn(&mut Self, bool) + 'static,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let description = description.map(|d| SharedString::from(d.to_string()));
+        widgets::switch_row(
+            id,
+            label,
+            description,
+            on,
+            cx.listener(move |this, v: &bool, _, cx| {
+                set(this, *v);
+                cx.notify();
+            }),
+            cx,
+        )
+    }
+
+    /// One option of a [`widgets::choice`] that writes one draft field.
+    fn opt(
+        &self,
+        label: impl Into<SharedString>,
+        selected: bool,
+        set: impl Fn(&mut Self) + 'static,
+        cx: &mut Context<Self>,
+    ) -> widgets::Choice {
+        widgets::Choice::new(
+            label,
+            selected,
+            cx.listener(move |this, _, _, cx| {
+                set(this);
+                cx.notify();
+            }),
+        )
+    }
+
     fn after_capture_list(
         &self,
         id_prefix: &str,
@@ -379,108 +433,147 @@ impl SettingsWindow {
         on_toggle: impl Fn(&mut Self, AfterCaptureTasks, bool) + Clone + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        let mut list = div().flex().flex_col().gap(px(6.));
-        for TaskOption { flag, label, available } in present::after_capture_options() {
+        let mut list = div().flex().flex_col().gap(px(36.));
+        let mut group: Option<(&'static str, gpui::Div)> = None;
+        for TaskOption { flag, label, available, group: name } in present::after_capture_options() {
+            if group.as_ref().map(|(g, _)| *g) != Some(name) {
+                if let Some((_, g)) = group.take() {
+                    list = list.child(g);
+                }
+                group = Some((name, widgets::section(name, cx)));
+            }
             let f = on_toggle.clone();
             let label = if available { label.to_string() } else { format!("{label} (later milestone)") };
-            list = list.child(
-                Checkbox::new(SharedString::from(format!("{id_prefix}-{}", flag.bits())))
-                    .label(label)
-                    .checked(flags.contains(flag))
-                    .disabled(!available)
-                    .on_click(cx.listener(move |this, checked: &bool, _, cx| {
-                        f(this, flag, *checked);
-                        cx.notify();
-                    })),
+            let row = widgets::switch_row(
+                SharedString::from(format!("{id_prefix}-{}", flag.bits())),
+                label,
+                None::<&str>,
+                flags.contains(flag),
+                cx.listener(move |this, checked: &bool, _, cx| {
+                    f(this, flag, *checked);
+                    cx.notify();
+                }),
+                cx,
             );
+            group = group.map(|(g, d)| (g, d.child(row)));
+        }
+        if let Some((_, g)) = group {
+            list = list.child(g);
         }
         list
     }
-
     fn general(&self, cx: &mut Context<Self>) -> gpui::Div {
         let data_dir = cx.global::<UiState>().services.data_dir.display().to_string();
-        let theme_button = |id: &'static str, label: &'static str, t: Theme, this: &Self, cx: &mut Context<Self>| {
-            Button::new(id).label(label).selected(this.draft.theme == t).on_click(cx.listener(move |this, _, _, cx| {
-                this.draft.theme = t;
-                cx.notify();
-            }))
-        };
-        let placement_button = |id: &'static str, label: &'static str, p: ToastPlacement, this: &Self, cx: &mut Context<Self>| {
-            Button::new(id).label(label).selected(this.draft.defaults.general.toast.placement == p).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.draft.defaults.general.toast.placement = p;
-                    cx.notify();
-                },
-            ))
-        };
-        widgets::section("General", cx)
-            .child(widgets::row("Screenshots folder", Input::new(&self.dir), cx))
-            .child(widgets::row(
-                "Theme",
-                div()
-                    .flex()
-                    .gap(px(6.))
-                    .child(theme_button("theme-system", "System", Theme::System, self, cx))
-                    .child(theme_button("theme-light", "Light", Theme::Light, self, cx))
-                    .child(theme_button("theme-dark", "Dark", Theme::Dark, self, cx)),
-                cx,
-            ))
-            .child(widgets::row("Language", self.language_picker(cx), cx))
-            .child(widgets::row("Updates", self.updates_row(cx), cx))
-            .child(widgets::muted("Translations come from ShareX's translators; text they don't cover stays in English. The tray menu changes after a restart.", cx))
+        let theme = [("System", Theme::System), ("Light", Theme::Light), ("Dark", Theme::Dark)]
+            .into_iter()
+            .map(|(label, t)| self.opt(label, self.draft.theme == t, move |this| this.draft.theme = t, cx))
+            .collect();
+        let placement = [
+            ("Top left", ToastPlacement::TopLeft),
+            ("Top right", ToastPlacement::TopRight),
+            ("Bottom left", ToastPlacement::BottomLeft),
+            ("Bottom right", ToastPlacement::BottomRight),
+        ]
+        .into_iter()
+        .map(|(label, p)| {
+            let on = self.draft.defaults.general.toast.placement == p;
+            self.opt(label, on, move |this| this.draft.defaults.general.toast.placement = p, cx)
+        })
+        .collect();
+        let g = &self.draft.defaults.general;
+        let update_note = self.update.as_ref().map(|(m, _)| m.clone()).unwrap_or_else(|| "Laqta checks GitHub for a newer version.".into());
+        page()
             .child(
-                Checkbox::new("show-toast").label("Show a toast after capture").checked(self.draft.defaults.general.show_toast).on_click(
-                    cx.listener(|this, c: &bool, _, cx| {
-                        this.draft.defaults.general.show_toast = *c;
-                        cx.notify();
-                    }),
-                ),
-            )
-            .child(widgets::row("Toast duration (ms)", Input::new(&self.toast_ms), cx))
-            .child(widgets::row(
-                "Toast position",
-                div()
-                    .flex()
-                    .gap(px(6.))
-                    .child(placement_button("tp-tl", "Top left", ToastPlacement::TopLeft, self, cx))
-                    .child(placement_button("tp-tr", "Top right", ToastPlacement::TopRight, self, cx))
-                    .child(placement_button("tp-bl", "Bottom left", ToastPlacement::BottomLeft, self, cx))
-                    .child(placement_button("tp-br", "Bottom right", ToastPlacement::BottomRight, self, cx)),
-                cx,
-            ))
-            .child(Checkbox::new("history").label("Keep history").checked(self.draft.history.enabled).on_click(cx.listener(
-                |this, c: &bool, _, cx| {
-                    this.draft.history.enabled = *c;
-                    cx.notify();
-                },
-            )))
-            .child(widgets::muted(format!("Data folder: {data_dir}"), cx))
-            .child(
-                Checkbox::new("snd-capture")
-                    .label("Play a sound after capture")
-                    .checked(self.draft.defaults.general.play_sound_after_capture)
-                    .on_click(cx.listener(|this, c: &bool, _, cx| {
-                        this.draft.defaults.general.play_sound_after_capture = *c;
-                        cx.notify();
-                    })),
+                widgets::section("Appearance", cx)
+                    .child(widgets::row_with("Theme", None::<&str>, Slot::Hug, widgets::choice("theme", theme, cx), cx))
+                    .child(widgets::row_with(
+                        "Language",
+                        Some("Some text may still be in English. The tray menu changes after a restart."),
+                        Slot::Field,
+                        self.language_picker(cx),
+                        cx,
+                    )),
             )
             .child(
-                Checkbox::new("snd-task")
-                    .label("Play a sound when a task finishes or fails")
-                    .checked(self.draft.defaults.general.play_sound_after_task)
-                    .on_click(cx.listener(|this, c: &bool, _, cx| {
-                        this.draft.defaults.general.play_sound_after_task = *c;
-                        cx.notify();
-                    })),
+                widgets::section("Storage", cx)
+                    .child(widgets::row_with(
+                        "Screenshots folder",
+                        Some("Where captures are saved."),
+                        Slot::Field,
+                        Input::new(&self.dir),
+                        cx,
+                    ))
+                    .child(self.sw(
+                        "history",
+                        "Keep history",
+                        Some(&format!("A list of your captures and uploads, stored in {data_dir}.")),
+                        self.draft.history.enabled,
+                        |this, v| this.draft.history.enabled = v,
+                        cx,
+                    )),
             )
-            .child(widgets::row("Custom capture sound (file)", Input::new(&self.sound_capture), cx))
-            .child(widgets::row("Custom task sound (file)", Input::new(&self.sound_task), cx))
-            .child(widgets::row("Custom error sound (file)", Input::new(&self.sound_error), cx))
+            .child(
+                widgets::section("Notifications", cx)
+                    .child(self.sw(
+                        "show-toast",
+                        "Show a notification after capture",
+                        Some("A small preview in the corner of the screen."),
+                        g.show_toast,
+                        |this, v| this.draft.defaults.general.show_toast = v,
+                        cx,
+                    ))
+                    .child(widgets::row_with("Show it for", Some("Milliseconds."), Slot::Number, Input::new(&self.toast_ms), cx))
+                    .child(widgets::row_with("Position", None::<&str>, Slot::Hug, widgets::choice("toast-pos", placement, cx), cx)),
+            )
+            .child(
+                widgets::section("Sounds", cx)
+                    .child(self.sw(
+                        "snd-capture",
+                        "Play a sound after capture",
+                        None,
+                        g.play_sound_after_capture,
+                        |this, v| this.draft.defaults.general.play_sound_after_capture = v,
+                        cx,
+                    ))
+                    .child(self.sw(
+                        "snd-task",
+                        "Play a sound when a task finishes or fails",
+                        None,
+                        g.play_sound_after_task,
+                        |this, v| this.draft.defaults.general.play_sound_after_task = v,
+                        cx,
+                    ))
+                    .child(widgets::row_with(
+                        "Capture sound",
+                        Some("A sound file. Leave empty for the built-in one."),
+                        Slot::Field,
+                        Input::new(&self.sound_capture),
+                        cx,
+                    ))
+                    .child(widgets::row_with(
+                        "Task finished sound",
+                        Some("Leave empty for the built-in one."),
+                        Slot::Field,
+                        Input::new(&self.sound_task),
+                        cx,
+                    ))
+                    .child(widgets::row_with(
+                        "Error sound",
+                        Some("Leave empty for the built-in one."),
+                        Slot::Field,
+                        Input::new(&self.sound_error),
+                        cx,
+                    )),
+            )
+            .child(widgets::section("Updates", cx).child(widgets::action_row("Updates", Some(update_note), self.updates_row(cx), cx)))
     }
-
     fn updates_row(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let mut row = div().flex().flex_wrap().items_center().gap(px(8.)).child(
-            Button::new("update-check").label("Check for updates").on_click(cx.listener(|this, _, _, cx| {
+        let mut row = div().flex().items_center().gap(space::S2).child(widgets::pill(
+            "update-check",
+            "Check now",
+            Pill::Default,
+            false,
+            cx.listener(|this, _, _, cx| {
                 this.update = Some(("Checking…".into(), false));
                 cx.notify();
                 let check = cx.global::<UiState>().services.check_update.clone();
@@ -493,59 +586,63 @@ impl SettingsWindow {
                     });
                 })
                 .detach();
-            })),
-        );
-        if let Some((msg, installable)) = &self.update {
-            if *installable {
-                row = row.child(Button::new("update-install").label("Install and restart").primary().on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.update = Some(("Downloading the update…".into(), false));
-                        cx.notify();
-                        let install = cx.global::<UiState>().services.install_update.clone();
-                        let task = cx.background_spawn(async move { install().await });
-                        cx.spawn(async move |this, cx| {
-                            let r = task.await;
-                            let _ = this.update(cx, |this, cx| {
-                                if let Err(e) = r {
-                                    this.update = Some((format!("Update failed: {e}"), false));
-                                    cx.notify();
-                                }
-                            });
-                        })
-                        .detach();
-                    },
-                )));
-            }
-            row = row.child(widgets::muted(msg.clone(), cx));
+            }),
+            cx,
+        ));
+        if let Some((_, true)) = &self.update {
+            row = row.child(widgets::pill(
+                "update-install",
+                "Install and restart",
+                Pill::Primary,
+                false,
+                cx.listener(|this, _, _, cx| {
+                    this.update = Some(("Downloading the update…".into(), false));
+                    cx.notify();
+                    let install = cx.global::<UiState>().services.install_update.clone();
+                    let task = cx.background_spawn(async move { install().await });
+                    cx.spawn(async move |this, cx| {
+                        let r = task.await;
+                        let _ = this.update(cx, |this, cx| {
+                            if let Err(e) = r {
+                                this.update = Some((format!("Update failed: {e}"), false));
+                                cx.notify();
+                            }
+                        });
+                    })
+                    .detach();
+                }),
+                cx,
+            ));
         }
         row
     }
-
-    fn language_picker(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let mut list = div().flex().flex_wrap().gap(px(4.));
-        let current = self.draft.language.clone();
-        list = list.child(Button::new("lang-system").label("System").small().selected(current.is_none()).on_click(cx.listener(
-            |this, _, _, cx| {
-                this.draft.language = None;
+    /// A searchable language dropdown; "System" follows the OS locale.
+    fn language_select(current: Option<&str>, window: &mut Window, cx: &mut Context<Self>) -> Entity<SelectState<Vec<SharedString>>> {
+        let names: Vec<SharedString> = std::iter::once(SharedString::from("System"))
+            .chain(crate::i18n::LOCALES.iter().map(|(_, name, _)| SharedString::from(*name)))
+            .collect();
+        let current_name = current
+            .and_then(|tag| crate::i18n::LOCALES.iter().find(|(t, _, _)| *t == tag))
+            .map(|(_, name, _)| SharedString::from(*name))
+            .unwrap_or_else(|| "System".into());
+        let state = cx.new(|cx| {
+            let mut state = SelectState::new(names, None, window, cx).searchable(true);
+            state.set_selected_value(&current_name, window, cx);
+            state
+        });
+        cx.subscribe_in(&state, window, |this, _, ev: &SelectEvent<Vec<SharedString>>, _, cx| {
+            if let SelectEvent::Confirm(Some(name)) = ev {
+                this.draft.language = crate::i18n::LOCALES.iter().find(|(_, n, _)| *n == name.as_ref()).map(|(tag, _, _)| tag.to_string());
                 cx.notify();
-            },
-        )));
-        for (tag, name, _) in crate::i18n::LOCALES {
-            let tag: &'static str = tag;
-            list = list.child(
-                Button::new(SharedString::from(format!("lang-{tag}")))
-                    .label(*name)
-                    .small()
-                    .selected(current.as_deref() == Some(tag))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.draft.language = Some(tag.to_string());
-                        cx.notify();
-                    })),
-            );
-        }
-        list
+            }
+        })
+        .detach();
+        state
     }
 
+    fn language_picker(&self, _cx: &mut Context<Self>) -> gpui::Div {
+        div().w_full().child(Select::new(&self.language).search_placeholder("Search languages"))
+    }
     fn rebuild_watch_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let folders = self.draft.watch_folders.clone();
         self.watch = folders
@@ -557,230 +654,248 @@ impl SettingsWindow {
     fn recording(&self, cx: &mut Context<Self>) -> gpui::Div {
         use laqta_domain::record::VideoCodec;
         let r = &self.draft.defaults.recording;
-        let codec_buttons = |gif: bool, this: &Self, cx: &mut Context<Self>| {
-            let mut list = div().flex().flex_wrap().gap(px(4.));
-            for c in VideoCodec::ALL.into_iter().filter(|c| matches!(c, VideoCodec::Gif | VideoCodec::WebP | VideoCodec::Apng) == gif) {
-                let current = if gif { this.draft.defaults.recording.gif_codec } else { this.draft.defaults.recording.codec };
-                list = list.child(
-                    Button::new(SharedString::from(format!("codec-{gif}-{c:?}"))).label(c.label()).small().selected(current == c).on_click(
-                        cx.listener(move |this, _, _, cx| {
+        let codecs = |gif: bool, this: &Self, cx: &mut Context<Self>| {
+            let current = if gif { this.draft.defaults.recording.gif_codec } else { this.draft.defaults.recording.codec };
+            let opts = VideoCodec::ALL
+                .into_iter()
+                .filter(|c| matches!(c, VideoCodec::Gif | VideoCodec::WebP | VideoCodec::Apng) == gif)
+                .map(|c| {
+                    this.opt(
+                        c.label(),
+                        current == c,
+                        move |this| {
                             if gif {
                                 this.draft.defaults.recording.gif_codec = c;
                             } else {
                                 this.draft.defaults.recording.codec = c;
                             }
-                            cx.notify();
-                        }),
-                    ),
-                );
-            }
-            list
+                        },
+                        cx,
+                    )
+                })
+                .collect();
+            widgets::choice(if gif { "gif-codec" } else { "video-codec" }, opts, cx)
         };
-        let check = |id: &'static str,
-                     label: &'static str,
-                     on: bool,
-                     f: fn(&mut laqta_domain::record::RecordingSettings, bool),
-                     cx: &mut Context<Self>| {
-            Checkbox::new(id).label(label).checked(on).on_click(cx.listener(move |this, c: &bool, _, cx| {
-                f(&mut this.draft.defaults.recording, *c);
-                cx.notify();
-            }))
+        use laqta_domain::record::{CameraShape as S, Corner as C, RecorderBackend as B};
+        let cam = &r.camera;
+        let shapes = [(S::Circle, "Circle"), (S::RoundedRectangle, "Rounded"), (S::Rectangle, "Rectangle")]
+            .into_iter()
+            .map(|(v, l)| self.opt(l, cam.shape == v, move |this| this.draft.defaults.recording.camera.shape = v, cx))
+            .collect();
+        let corners =
+            [(C::TopLeft, "Top left"), (C::TopRight, "Top right"), (C::BottomLeft, "Bottom left"), (C::BottomRight, "Bottom right")]
+                .into_iter()
+                .map(|(v, l)| self.opt(l, cam.corner == v, move |this| this.draft.defaults.recording.camera.corner = v, cx))
+                .collect();
+        let backends = [(B::Ffmpeg, "FFmpeg"), (B::Native, "Native (Windows)")]
+            .into_iter()
+            .map(|(v, l)| self.opt(l, r.backend == v, move |this| this.draft.defaults.recording.backend = v, cx))
+            .collect();
+        let rec = |f: fn(&mut laqta_domain::record::RecordingSettings, bool)| {
+            move |this: &mut Self, v: bool| f(&mut this.draft.defaults.recording, v)
         };
-        widgets::section("Recording", cx)
-            .child(widgets::row("Video codec", codec_buttons(false, self, cx), cx))
-            .child(widgets::row("Animated image codec", codec_buttons(true, self, cx), cx))
-            .child(widgets::row("Frame rate (video)", Input::new(&self.rec.fps), cx))
-            .child(widgets::row("Frame rate (GIF)", Input::new(&self.rec.gif_fps), cx))
-            .child(widgets::row("Quality (CRF, empty = codec default)", Input::new(&self.rec.crf), cx))
-            .child(check("rec-cursor", "Record the mouse cursor", r.show_cursor, |r, c| r.show_cursor = c, cx))
-            .child(check("rec-border", "Show a border around the recorded area", r.show_border, |r, c| r.show_border = c, cx))
-            .child(check(
-                "rec-highlight",
-                "Highlight the mouse while recording (X11, Windows)",
-                r.highlight_mouse,
-                |r, c| r.highlight_mouse = c,
-                cx,
-            ))
-            .child(check("rec-system-audio", "Record system audio", r.record_system_audio, |r, c| r.record_system_audio = c, cx))
-            .child(widgets::row("Microphone (device name, empty = none)", Input::new(&self.rec.microphone), cx))
-            .child(widgets::row("Countdown before start (s)", Input::new(&self.rec.countdown), cx))
-            .child(widgets::row("Stop after (s, 0 = off)", Input::new(&self.rec.duration), cx))
-            .child(widgets::row("Extra FFmpeg arguments", Input::new(&self.rec.args), cx))
-            .child(widgets::row("FFmpeg path (empty = find or download)", Input::new(&self.rec.ffmpeg), cx))
-            .child(widgets::row("Recorder", self.backend_buttons(cx), cx))
-            .child(div().h(px(8.)))
-            .child(check("rec-camera", "Show the camera over the recording", r.camera.enabled, |r, c| r.camera.enabled = c, cx))
-            .child(widgets::row("Camera (device; empty = first camera on Linux)", Input::new(&self.rec.camera_device), cx))
-            .child(widgets::row("Camera shape", self.camera_buttons(cx), cx))
-            .child(widgets::row("Camera size (% of width)", Input::new(&self.rec.camera_size), cx))
-    }
-
-    fn backend_buttons(&self, cx: &mut Context<Self>) -> gpui::Div {
-        use laqta_domain::record::RecorderBackend as B;
-        let mut row = div().flex().gap(px(4.));
-        for (b, label) in [(B::Ffmpeg, "FFmpeg"), (B::Native, "Native (Windows)")] {
-            row = row.child(
-                Button::new(SharedString::from(format!("backend-{b:?}")))
-                    .label(label)
-                    .small()
-                    .selected(self.draft.defaults.recording.backend == b)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.draft.defaults.recording.backend = b;
-                        cx.notify();
-                    })),
-            );
-        }
-        row
-    }
-
-    fn camera_buttons(&self, cx: &mut Context<Self>) -> gpui::Div {
-        use laqta_domain::record::{CameraShape as S, Corner as C};
-        let cam = &self.draft.defaults.recording.camera;
-        let mut row = div().flex().flex_wrap().gap(px(4.));
-        for (s, label) in [(S::Circle, "Circle"), (S::RoundedRectangle, "Rounded"), (S::Rectangle, "Rectangle")] {
-            row = row.child(
-                Button::new(SharedString::from(format!("camshape-{s:?}"))).label(label).small().selected(cam.shape == s).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.draft.defaults.recording.camera.shape = s;
-                        cx.notify();
-                    }),
-                ),
-            );
-        }
-        for (c, label) in [(C::TopLeft, "↖"), (C::TopRight, "↗"), (C::BottomLeft, "↙"), (C::BottomRight, "↘")] {
-            row = row.child(
-                Button::new(SharedString::from(format!("camcorner-{c:?}"))).label(label).small().selected(cam.corner == c).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.draft.defaults.recording.camera.corner = c;
-                        cx.notify();
-                    }),
-                ),
-            );
-        }
-        row
+        page()
+            .child(
+                widgets::section("Video", cx)
+                    .child(widgets::row_with("Format", None::<&str>, Slot::Hug, codecs(false, self, cx), cx))
+                    .child(widgets::row_with("Frame rate", Some("Frames per second."), Slot::Number, Input::new(&self.rec.fps), cx))
+                    .child(widgets::row_with(
+                        "Quality",
+                        Some("CRF: lower means better quality and bigger files. Leave empty for the format's default."),
+                        Slot::Number,
+                        Input::new(&self.rec.crf),
+                        cx,
+                    )),
+            )
+            .child(
+                widgets::section("GIF and animated images", cx)
+                    .child(widgets::row_with("Format", None::<&str>, Slot::Hug, codecs(true, self, cx), cx))
+                    .child(widgets::row_with("Frame rate", Some("Frames per second."), Slot::Number, Input::new(&self.rec.gif_fps), cx)),
+            )
+            .child(
+                widgets::section("While recording", cx)
+                    .child(self.sw("rec-cursor", "Record the mouse cursor", None, r.show_cursor, rec(|r, c| r.show_cursor = c), cx))
+                    .child(self.sw(
+                        "rec-border",
+                        "Show a border around the recorded area",
+                        None,
+                        r.show_border,
+                        rec(|r, c| r.show_border = c),
+                        cx,
+                    ))
+                    .child(self.sw(
+                        "rec-highlight",
+                        "Highlight the mouse",
+                        Some("X11 and Windows."),
+                        r.highlight_mouse,
+                        rec(|r, c| r.highlight_mouse = c),
+                        cx,
+                    ))
+                    .child(self.sw(
+                        "rec-system-audio",
+                        "Record system audio",
+                        None,
+                        r.record_system_audio,
+                        rec(|r, c| r.record_system_audio = c),
+                        cx,
+                    ))
+                    .child(widgets::row_with(
+                        "Microphone",
+                        Some("Device name. Leave empty to record no microphone."),
+                        Slot::Field,
+                        Input::new(&self.rec.microphone),
+                        cx,
+                    ))
+                    .child(widgets::row_with(
+                        "Countdown",
+                        Some("Seconds before recording starts."),
+                        Slot::Number,
+                        Input::new(&self.rec.countdown),
+                        cx,
+                    ))
+                    .child(widgets::row_with(
+                        "Stop after",
+                        Some("Seconds. 0 records until you stop it."),
+                        Slot::Number,
+                        Input::new(&self.rec.duration),
+                        cx,
+                    )),
+            )
+            .child(
+                widgets::section("Camera", cx)
+                    .child(self.sw(
+                        "rec-camera",
+                        "Show the camera over the recording",
+                        None,
+                        cam.enabled,
+                        rec(|r, c| r.camera.enabled = c),
+                        cx,
+                    ))
+                    .child(widgets::row_with(
+                        "Camera",
+                        Some("Device name. Leave empty for the first camera (Linux)."),
+                        Slot::Field,
+                        Input::new(&self.rec.camera_device),
+                        cx,
+                    ))
+                    .child(widgets::row_with("Shape", None::<&str>, Slot::Hug, widgets::choice("cam-shape", shapes, cx), cx))
+                    .child(widgets::row_with("Corner", None::<&str>, Slot::Hug, widgets::choice("cam-corner", corners, cx), cx))
+                    .child(widgets::row_with(
+                        "Size",
+                        Some("Percent of the recording's width."),
+                        Slot::Number,
+                        Input::new(&self.rec.camera_size),
+                        cx,
+                    )),
+            )
+            .child(
+                widgets::section("Advanced", cx)
+                    .child(widgets::row_with(
+                        "Recorder",
+                        Some("Native uses Windows' own recorder; FFmpeg works everywhere."),
+                        Slot::Hug,
+                        widgets::choice("backend", backends, cx),
+                        cx,
+                    ))
+                    .child(widgets::row_with("Extra FFmpeg arguments", None::<&str>, Slot::Field, Input::new(&self.rec.args), cx))
+                    .child(widgets::row_with(
+                        "FFmpeg location",
+                        Some("Leave empty to find it, or download it on first use."),
+                        Slot::Field,
+                        Input::new(&self.rec.ffmpeg),
+                        cx,
+                    )),
+            )
     }
 
     fn automation(&self, cx: &mut Context<Self>) -> gpui::Div {
         use laqta_domain::capture::ScrollMethod;
         let running = cx.global::<UiState>().services.app.auto_capture_running();
-        let mut actions = div().flex().flex_wrap().gap(px(4.));
-        for a in [Action::PrintScreen, Action::ActiveMonitor, Action::ActiveWindow, Action::CustomRegion, Action::LastRegion] {
-            actions = actions.child(
-                Button::new(SharedString::from(format!("auto-{a:?}")))
-                    .label(crate::i18n::action_label(a))
-                    .small()
-                    .selected(self.draft.auto_capture.action == a)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.draft.auto_capture.action = a;
-                        cx.notify();
-                    })),
-            );
-        }
-        let mut methods = div().flex().flex_wrap().gap(px(4.));
-        for (m, label) in [
+        let actions = [
+            (Action::PrintScreen, "Entire screen"),
+            (Action::ActiveMonitor, "Active monitor"),
+            (Action::ActiveWindow, "Active window"),
+            (Action::CustomRegion, "Custom area"),
+            (Action::LastRegion, "Last area"),
+        ]
+        .into_iter()
+        .map(|(a, l)| self.opt(l, self.draft.auto_capture.action == a, move |this| this.draft.auto_capture.action = a, cx))
+        .collect();
+        let methods = [
             (ScrollMethod::MouseWheel, "Mouse wheel"),
             (ScrollMethod::DownArrow, "Down arrow"),
             (ScrollMethod::PageDown, "Page Down"),
-            (ScrollMethod::ScrollMessage, "Scroll message (Windows)"),
-        ] {
-            methods = methods.child(
-                Button::new(SharedString::from(format!("scroll-{m:?}")))
-                    .label(label)
-                    .small()
-                    .selected(self.draft.defaults.capture.scrolling.method == m)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.draft.defaults.capture.scrolling.method = m;
-                        cx.notify();
-                    })),
-            );
-        }
-        let mut watch = div().flex().flex_col().gap(px(8.));
+            (ScrollMethod::ScrollMessage, "Scroll command (Windows only)"),
+        ]
+        .into_iter()
+        .map(|(m, l)| {
+            let on = self.draft.defaults.capture.scrolling.method == m;
+            self.opt(l, on, move |this| this.draft.defaults.capture.scrolling.method = m, cx)
+        })
+        .collect();
+        let toggle = widgets::pill(
+            "auto-toggle",
+            if running { "Stop" } else { "Start" },
+            if running { Pill::Default } else { Pill::Dark },
+            false,
+            cx.listener(move |this, _, _, cx| {
+                if !running {
+                    this.save(cx);
+                }
+                let services = cx.global::<UiState>().services.clone();
+                (services.dispatch)(if running { Action::StopAutoCapture } else { Action::StartAutoCapture });
+                cx.notify();
+            }),
+            cx,
+        );
+        let mut watch = div().flex().flex_col().gap(space::S3);
         for (i, (folder, (dir, filter))) in self.draft.watch_folders.iter().zip(&self.watch).enumerate() {
             watch = watch.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.))
-                    .p(px(8.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .child(widgets::row("Folder", Input::new(dir), cx))
-                    .child(widgets::row("Files (e.g. *.png;*.jpg)", Input::new(filter), cx))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap(px(12.))
-                            .child(Checkbox::new(SharedString::from(format!("wf-on-{i}"))).label("On").checked(folder.enabled).on_click(
-                                cx.listener(move |this, c: &bool, _, cx| {
-                                    this.draft.watch_folders[i].enabled = *c;
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(
-                                Checkbox::new(SharedString::from(format!("wf-sub-{i}")))
-                                    .label("Include subfolders")
-                                    .checked(folder.include_subfolders)
-                                    .on_click(cx.listener(move |this, c: &bool, _, cx| {
-                                        this.draft.watch_folders[i].include_subfolders = *c;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Checkbox::new(SharedString::from(format!("wf-move-{i}")))
-                                    .label("Move into the screenshots folder")
-                                    .checked(folder.move_to_screenshots)
-                                    .on_click(cx.listener(move |this, c: &bool, _, cx| {
-                                        this.draft.watch_folders[i].move_to_screenshots = *c;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(div().flex_1())
-                            .child(Button::new(SharedString::from(format!("wf-rm-{i}"))).label("Remove").small().ghost().on_click(
-                                cx.listener(move |this, _, window, cx| {
-                                    let _ = this.collect(cx);
-                                    this.draft.watch_folders.remove(i);
-                                    this.rebuild_watch_inputs(window, cx);
-                                    cx.notify();
-                                }),
-                            )),
-                    ),
+                entity_card(cx)
+                    .child(widgets::row_with("Folder", None::<&str>, Slot::Field, Input::new(dir), cx))
+                    .child(widgets::row_with("Files", Some("Patterns such as *.png;*.jpg."), Slot::Field, Input::new(filter), cx))
+                    .child(self.sw_dyn(
+                        format!("wf-on-{i}"),
+                        "Watch this folder",
+                        folder.enabled,
+                        move |this, v| this.draft.watch_folders[i].enabled = v,
+                        cx,
+                    ))
+                    .child(self.sw_dyn(
+                        format!("wf-sub-{i}"),
+                        "Include subfolders",
+                        folder.include_subfolders,
+                        move |this, v| this.draft.watch_folders[i].include_subfolders = v,
+                        cx,
+                    ))
+                    .child(self.sw_dyn(
+                        format!("wf-move-{i}"),
+                        "Move files into the screenshots folder",
+                        folder.move_to_screenshots,
+                        move |this, v| this.draft.watch_folders[i].move_to_screenshots = v,
+                        cx,
+                    ))
+                    .child(div().flex().justify_end().child(widgets::pill(
+                        SharedString::from(format!("wf-rm-{i}")),
+                        "Remove folder",
+                        Pill::Ghost,
+                        true,
+                        cx.listener(move |this, _, window, cx| {
+                            let _ = this.collect(cx);
+                            this.draft.watch_folders.remove(i);
+                            this.rebuild_watch_inputs(window, cx);
+                            cx.notify();
+                        }),
+                        cx,
+                    ))),
             );
         }
-        widgets::section("Auto capture", cx)
-            .child(widgets::muted("Captures on a timer until you stop it (tray, hotkey, or here).", cx))
-            .child(widgets::row("Capture", actions, cx))
-            .child(widgets::row("Every (seconds)", Input::new(&self.auto_interval), cx))
-            .child(widgets::row("Times (0 = until stopped)", Input::new(&self.auto_count), cx))
-            .child(Button::new("auto-toggle").label(if running { "Stop auto capture" } else { "Save and start auto capture" }).on_click(
-                cx.listener(move |this, _, _, cx| {
-                    if !running {
-                        this.save(cx);
-                    }
-                    let services = cx.global::<UiState>().services.clone();
-                    (services.dispatch)(if running { Action::StopAutoCapture } else { Action::StartAutoCapture });
-                    cx.notify();
-                }),
-            ))
-            .child(div().h(px(12.)))
-            .child(widgets::section("Scrolling capture", cx))
-            .child(widgets::muted(
-                "Select the scrolling area; Laqta scrolls it and stitches the frames. On Wayland you scroll yourself.",
-                cx,
-            ))
-            .child(widgets::row("Scroll with", methods, cx))
-            .child(widgets::row("Wait before the first frame (ms)", Input::new(&self.scroll[0]), cx))
-            .child(widgets::row("Wait after each scroll (ms)", Input::new(&self.scroll[1]), cx))
-            .child(widgets::row("Stop after (frames)", Input::new(&self.scroll[2]), cx))
-            .child(widgets::row("Steps per scroll", Input::new(&self.scroll[3]), cx))
-            .child(widgets::row("Fixed rows at the top (px)", Input::new(&self.scroll[4]), cx))
-            .child(widgets::row("Fixed rows at the bottom (px)", Input::new(&self.scroll[5]), cx))
-            .child(div().h(px(12.)))
-            .child(widgets::section("Watch folders", cx))
-            .child(widgets::muted("New files in these folders are uploaded with your default upload settings.", cx))
-            .child(watch)
-            .child(Button::new("wf-add").label("Add folder…").on_click(cx.listener(|_this, _, _, cx| {
+        let add_folder = widgets::pill(
+            "wf-add",
+            "Add folder…",
+            Pill::Default,
+            false,
+            cx.listener(|_this, _, _, cx| {
                 let task =
                     cx.background_spawn(async move { rfd::AsyncFileDialog::new().pick_folder().await.map(|f| f.path().to_path_buf()) });
                 cx.spawn(async move |this, cx| {
@@ -794,39 +909,121 @@ impl SettingsWindow {
                     }
                 })
                 .detach();
-            })))
+            }),
+            cx,
+        );
+        page()
+            .child(
+                widgets::section("Timed capture", cx)
+                    .child(widgets::row_with("Capture", None::<&str>, Slot::Hug, widgets::choice("auto-action", actions, cx), cx))
+                    .child(widgets::row_with("Every", Some("Seconds between captures."), Slot::Number, Input::new(&self.auto_interval), cx))
+                    .child(widgets::row_with(
+                        "Stop after",
+                        Some("Number of captures. 0 keeps going until you stop it."),
+                        Slot::Number,
+                        Input::new(&self.auto_count),
+                        cx,
+                    ))
+                    .child(widgets::action_row(
+                        if running { "Timed capture is running" } else { "Timed capture is off" },
+                        Some(if running { "Stop it here, from the tray or with its hotkey." } else { "Start saves these settings first." }),
+                        toggle,
+                        cx,
+                    )),
+            )
+            .child(
+                widgets::section("Scrolling capture", cx)
+                    .child(
+                        widgets::muted(
+                            "Select the area to scroll; Laqta scrolls it and stitches the frames. On Wayland you scroll yourself.",
+                            cx,
+                        )
+                        .pb(space::S2),
+                    )
+                    .child(widgets::row_with("Scroll with", None::<&str>, Slot::Hug, widgets::choice("scroll-method", methods, cx), cx))
+                    .child(widgets::row_with(
+                        "Wait before the first frame",
+                        Some("Milliseconds."),
+                        Slot::Number,
+                        Input::new(&self.scroll[0]),
+                        cx,
+                    ))
+                    .child(widgets::row_with(
+                        "Wait after each scroll",
+                        Some("Milliseconds."),
+                        Slot::Number,
+                        Input::new(&self.scroll[1]),
+                        cx,
+                    ))
+                    .child(widgets::row_with("Stop after", Some("Number of scrolls."), Slot::Number, Input::new(&self.scroll[2]), cx))
+                    .child(widgets::row_with("Steps per scroll", None::<&str>, Slot::Number, Input::new(&self.scroll[3]), cx))
+                    .child(widgets::row_with(
+                        "Ignore a fixed header",
+                        Some("Pixels at the top that don't scroll, like a sticky menu bar."),
+                        Slot::Number,
+                        Input::new(&self.scroll[4]),
+                        cx,
+                    ))
+                    .child(widgets::row_with(
+                        "Ignore a fixed footer",
+                        Some("Pixels at the bottom that don't scroll."),
+                        Slot::Number,
+                        Input::new(&self.scroll[5]),
+                        cx,
+                    )),
+            )
+            .child(
+                widgets::section("Watch folders", cx)
+                    .child(widgets::muted("New files in these folders are uploaded with your upload settings.", cx).pb(space::S2))
+                    .child(watch)
+                    .child(div().pt(space::S3).child(add_folder)),
+            )
     }
 
+    /// A switch row whose id is built at run time (one per list item).
+    fn sw_dyn(
+        &self,
+        id: String,
+        label: &'static str,
+        on: bool,
+        set: impl Fn(&mut Self, bool) + 'static,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        widgets::switch_row(
+            SharedString::from(id),
+            label,
+            None::<&str>,
+            on,
+            cx.listener(move |this, v: &bool, _, cx| {
+                set(this, *v);
+                cx.notify();
+            }),
+            cx,
+        )
+    }
     fn models_page(&self, cx: &mut Context<Self>) -> gpui::Div {
-        use laqta_domain::settings::ModelProvider;
-        let mut providers = div().flex().gap(px(4.));
-        for (p, label) in
-            [(ModelProvider::Auto, "Automatic"), (ModelProvider::Cpu, "CPU"), (ModelProvider::Gpu, "GPU (runs on the CPU in this build)")]
-        {
-            providers = providers.child(
-                Button::new(SharedString::from(format!("prov-{p:?}")))
-                    .label(label)
-                    .small()
-                    .selected(self.draft.models.provider == p)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.draft.models.provider = p;
-                        cx.notify();
-                    })),
-            );
-        }
-        let mut section = widgets::section("Models", cx)
-            .child(widgets::muted("Local models for text recognition, background removal and inpainting. Files are checked against pinned hashes. This build ships the CPU version of ONNX Runtime, so every model runs on the CPU.", cx))
-            .child(widgets::row("Run on", providers, cx));
+        use laqta_domain::settings::{BackgroundProvider, ModelProvider};
+        let providers = [(ModelProvider::Auto, "Automatic"), (ModelProvider::Cpu, "CPU"), (ModelProvider::Gpu, "GPU")]
+            .into_iter()
+            .map(|(p, l)| self.opt(l, self.draft.models.provider == p, move |this| this.draft.models.provider = p, cx))
+            .collect();
+        let mut page = page().child(widgets::section("Processing", cx).child(widgets::row_with(
+            "Run models on",
+            Some("This build ships the CPU version of ONNX Runtime, so every model runs on the CPU for now."),
+            Slot::Hug,
+            widgets::choice("provider", providers, cx),
+            cx,
+        )));
         for (task, label) in [
             ("ocr-det", "Text detection"),
             ("ocr-rec", "Text recognition"),
             ("background", "Background removal"),
-            ("inpaint", "Inpainting (photo editor)"),
+            ("inpaint", "Object removal (photo editor)"),
         ] {
             let rows: Vec<_> = self.model_rows.iter().filter(|r| r.task == task).cloned().collect();
-            section = section.child(div().pt(px(8.)).font_weight(gpui::FontWeight::SEMIBOLD).child(label));
+            let mut section = widgets::section(label, cx);
             if rows.is_empty() {
-                section = section.child(widgets::muted("No models for this task in this build.", cx));
+                section = section.child(widgets::muted("No models for this in this build.", cx));
             }
             let chosen = match task {
                 "ocr-det" => self.draft.models.ocr_det.clone(),
@@ -834,128 +1031,130 @@ impl SettingsWindow {
                 "background" => self.draft.models.background.clone(),
                 _ => None,
             };
+            let choosable = rows.len() > 1;
             for (i, row) in rows.into_iter().enumerate() {
                 let id = row.id.clone();
                 let selected = chosen.as_deref() == Some(id.as_str()) || (chosen.is_none() && i == 0);
                 let size = crate::presenters::history::format_size(row.size_bytes);
-                let mut line = div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(
-                        Button::new(SharedString::from(format!("use-{id}")))
-                            .label(if selected { "In use" } else { "Use" })
-                            .small()
-                            .selected(selected)
-                            .on_click(cx.listener({
-                                let id = id.clone();
-                                let task = task.to_owned();
-                                move |this, _, _, cx| {
-                                    let slot = match task.as_str() {
-                                        "ocr-det" => &mut this.draft.models.ocr_det,
-                                        "ocr-rec" => &mut this.draft.models.ocr_rec,
-                                        "background" => &mut this.draft.models.background,
-                                        // One inpainting model: nothing to choose.
-                                        _ => return,
-                                    };
-                                    *slot = Some(id.clone());
-                                    cx.notify();
-                                }
-                            })),
-                    )
-                    .child(div().flex_1().flex().flex_col().child(row.name.clone()).child(widgets::muted(
-                        format!(
-                            "{size}{}{}",
-                            if row.licence.is_empty() { String::new() } else { format!(" · {}", row.licence) },
-                            if row.commercial { "" } else { " · non-commercial" }
-                        ),
-                        cx,
-                    )));
+                let meta = format!(
+                    "{size}{}{}",
+                    if row.licence.is_empty() { String::new() } else { format!(" · {}", row.licence) },
+                    if row.commercial { "" } else { " · non-commercial" }
+                );
+                let mut controls = div().flex().items_center().gap(space::S2);
                 if let Some(st) = self.model_status.get(&id) {
-                    line = line.child(widgets::muted(st.clone(), cx));
+                    controls = controls.child(widgets::muted(st.clone(), cx));
                 }
-                line = if row.installed {
-                    line.child(Button::new(SharedString::from(format!("rm-{id}"))).label("Remove").small().ghost().on_click(cx.listener({
-                        let id = id.clone();
-                        move |this, _, _, cx| {
-                            let services = cx.global::<UiState>().services.clone();
-                            if let Err(e) = services.models.remove(&id) {
-                                this.model_status.insert(id.clone(), e);
+                if selected && choosable {
+                    controls = controls.child(widgets::badge("In use", Tone::Success, cx));
+                } else if choosable {
+                    controls = controls.child(widgets::pill(
+                        SharedString::from(format!("use-{id}")),
+                        "Use",
+                        Pill::Ghost,
+                        true,
+                        cx.listener({
+                            let id = id.clone();
+                            let task = task.to_owned();
+                            move |this, _, _, cx| {
+                                let slot = match task.as_str() {
+                                    "ocr-det" => &mut this.draft.models.ocr_det,
+                                    "ocr-rec" => &mut this.draft.models.ocr_rec,
+                                    "background" => &mut this.draft.models.background,
+                                    // One object-removal model: nothing to choose.
+                                    _ => return,
+                                };
+                                *slot = Some(id.clone());
+                                cx.notify();
                             }
-                            if row.custom {
-                                this.draft.models.custom.retain(|c| c.id != id);
+                        }),
+                        cx,
+                    ));
+                }
+                controls = if row.installed {
+                    controls.child(widgets::pill(
+                        SharedString::from(format!("rm-{id}")),
+                        "Remove",
+                        Pill::Default,
+                        true,
+                        cx.listener({
+                            let id = id.clone();
+                            move |this, _, _, cx| {
+                                let services = cx.global::<UiState>().services.clone();
+                                if let Err(e) = services.models.remove(&id) {
+                                    this.model_status.insert(id.clone(), e);
+                                }
+                                if row.custom {
+                                    this.draft.models.custom.retain(|c| c.id != id);
+                                }
+                                this.model_rows = services.models.rows();
+                                cx.notify();
                             }
-                            this.model_rows = services.models.rows();
-                            cx.notify();
-                        }
-                    })))
+                        }),
+                        cx,
+                    ))
                 } else if row.available {
-                    line.child(Button::new(SharedString::from(format!("dl-{id}"))).label("Download").small().on_click(cx.listener({
-                        let id = id.clone();
-                        move |this, _, _, cx| this.download_model(id.clone(), cx)
-                    })))
+                    controls.child(widgets::pill(
+                        SharedString::from(format!("dl-{id}")),
+                        format!("Download ({size})"),
+                        Pill::Default,
+                        true,
+                        cx.listener({
+                            let id = id.clone();
+                            move |this, _, _, cx| this.download_model(id.clone(), cx)
+                        }),
+                        cx,
+                    ))
                 } else {
-                    line.child(widgets::muted("not yet available", cx))
+                    controls.child(widgets::muted("Not available yet", cx))
                 };
-                section = section.child(line);
+                section = section.child(widgets::row_with(row.name.clone(), Some(meta), Slot::Hug, controls, cx));
             }
+            page = page.child(section);
         }
         let families = cx.global::<UiState>().services.models.families();
-        let mut fam = div().flex().flex_wrap().gap(px(4.));
-        for (i, (task, family)) in families.iter().enumerate() {
-            fam = fam.child(
-                Button::new(SharedString::from(format!("fam-{i}")))
-                    .label(format!("{family} ({task})"))
-                    .small()
-                    .selected(self.custom_family == i)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.custom_family = i;
-                        cx.notify();
-                    })),
-            );
-        }
-        section
-            .child(div().pt(px(8.)).font_weight(gpui::FontWeight::SEMIBOLD).child("Custom model"))
-            .child(widgets::muted(
-                "Add your own ONNX file for a supported family; it is checked against the family's inputs and outputs.",
-                cx,
-            ))
-            .child(widgets::row("Family", fam, cx))
-            .child(widgets::row("Name", Input::new(&self.custom_name), cx))
-            .child(
-                Button::new("custom-add").label("Choose ONNX file…").on_click(cx.listener(move |this, _, _, cx| this.add_custom_model(cx))),
-            )
-            .child(div().h(px(12.)))
-            .child(widgets::section("Cloud", cx))
-            .child(widgets::muted("Background removal can use remove.bg instead of a local model (needs an API key).", cx))
-            .child(widgets::row("Remove backgrounds with", self.bg_provider_buttons(cx), cx))
-            .child(widgets::row("remove.bg API key", Input::new(&self.cloud[4]), cx))
-            .child(widgets::muted(
-                "Analyze image sends the capture to an OpenAI-compatible endpoint: OpenAI, Gemini (https://generativelanguage.googleapis.com/v1beta/openai), OpenRouter (https://openrouter.ai/api/v1), Ollama or LM Studio (http://localhost:…/v1).",
-                cx,
-            ))
-            .child(widgets::row("Endpoint (base URL)", Input::new(&self.cloud[0]), cx))
-            .child(widgets::row("Model", Input::new(&self.cloud[1]), cx))
-            .child(widgets::row("Prompt", Input::new(&self.cloud[2]), cx))
-            .child(widgets::row("API key (empty for local servers)", Input::new(&self.cloud[3]), cx))
-    }
-
-    fn bg_provider_buttons(&self, cx: &mut Context<Self>) -> gpui::Div {
-        use laqta_domain::settings::BackgroundProvider as B;
-        let mut row = div().flex().gap(px(4.));
-        for (b, label) in [(B::Local, "Local model"), (B::RemoveBg, "remove.bg")] {
-            row = row.child(
-                Button::new(SharedString::from(format!("bgp-{b:?}")))
-                    .label(label)
-                    .small()
-                    .selected(self.draft.cloud.background == b)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.draft.cloud.background = b;
-                        cx.notify();
-                    })),
-            );
-        }
-        row
+        let fam = families
+            .iter()
+            .enumerate()
+            .map(|(i, (task, family))| {
+                self.opt(format!("{family} ({task})"), self.custom_family == i, move |this| this.custom_family = i, cx)
+            })
+            .collect();
+        let bg = [(BackgroundProvider::Local, "On this computer"), (BackgroundProvider::RemoveBg, "remove.bg")]
+            .into_iter()
+            .map(|(b, l)| self.opt(l, self.draft.cloud.background == b, move |this| this.draft.cloud.background = b, cx))
+            .collect();
+        page.child(
+            widgets::section("Your own model", cx)
+                .child(widgets::muted("Add an ONNX file for a supported model family. Laqta checks its inputs and outputs before using it.", cx).pb(space::S2))
+                .child(widgets::row_with("Family", None::<&str>, Slot::Field, widgets::choice("family", fam, cx), cx))
+                .child(widgets::row_with("Name", None::<&str>, Slot::Field, Input::new(&self.custom_name), cx))
+                .child(widgets::action_row(
+                    "Model file",
+                    Some("Pick the .onnx file."),
+                    widgets::pill("custom-add", "Choose file…", Pill::Default, false, cx.listener(move |this, _, _, cx| this.add_custom_model(cx)), cx),
+                    cx,
+                )),
+        )
+        .child(
+            widgets::section("Background removal service", cx)
+                .child(widgets::row_with("Remove backgrounds", None::<&str>, Slot::Hug, widgets::choice("bg-provider", bg, cx), cx))
+                .child(widgets::row_with("remove.bg API key", Some("Only needed for remove.bg."), Slot::Field, Input::new(&self.cloud[4]), cx)),
+        )
+        .child(
+            widgets::section("Describe image with AI", cx)
+                .child(
+                    widgets::muted(
+                        "Sends the capture to an OpenAI-compatible service: OpenAI, Gemini, OpenRouter, or a local Ollama or LM Studio server.",
+                        cx,
+                    )
+                    .pb(space::S2),
+                )
+                .child(widgets::row_with("Service address", Some("The base URL, such as http://localhost:11434/v1."), Slot::Field, Input::new(&self.cloud[0]), cx))
+                .child(widgets::row_with("Model", None::<&str>, Slot::Field, Input::new(&self.cloud[1]), cx))
+                .child(widgets::row_with("Prompt", None::<&str>, Slot::Field, Input::new(&self.cloud[2]), cx))
+                .child(widgets::row_with("API key", Some("Leave empty for local servers."), Slot::Field, Input::new(&self.cloud[3]), cx)),
+        )
     }
 
     fn download_model(&mut self, id: String, cx: &mut Context<Self>) {
@@ -1038,84 +1237,118 @@ impl SettingsWindow {
         let services = &cx.global::<UiState>().services;
         let autostart = services.autostart.is_enabled();
         let shell = services.integration.is_installed();
-        let mut section = widgets::section("Integration", cx);
-        section =
-            match autostart {
-                Ok(on) => {
-                    section.child(Checkbox::new("autostart").label("Run Laqta when I sign in (starts in the tray)").checked(on).on_click(
-                        cx.listener(|this, c: &bool, _, cx| {
-                            let services = cx.global::<UiState>().services.clone();
+        let startup = match autostart {
+            Ok(on) => widgets::switch_row(
+                "autostart",
+                "Start Laqta when I sign in",
+                Some("Laqta starts in the tray. Applies now."),
+                on,
+                cx.listener(|this, c: &bool, _, cx| {
+                    let services = cx.global::<UiState>().services.clone();
+                    let r = std::env::current_exe()
+                        .map_err(|e| e.to_string())
+                        .and_then(|exe| services.autostart.set_enabled(*c, &exe).map_err(|e| e.to_string()));
+                    this.report(
+                        r.map(
+                            |()| if *c { "Laqta will start when you sign in.".into() } else { "Laqta will not start at sign-in.".into() },
+                        ),
+                        cx,
+                    );
+                }),
+                cx,
+            ),
+            Err(e) => widgets::row_with("Start Laqta when I sign in", Some(format!("Not available here: {e}")), Slot::Hug, div(), cx),
+        };
+        let file_manager = match shell {
+            Ok(installed) => widgets::action_row(
+                "“Upload with Laqta” menu item",
+                Some("Adds it to the file manager's right-click menu and to Send To. Applies now."),
+                widgets::pill(
+                    "shell-toggle",
+                    if installed { "Remove" } else { "Add" },
+                    Pill::Default,
+                    false,
+                    cx.listener(move |this, _, _, cx| {
+                        let services = cx.global::<UiState>().services.clone();
+                        if installed {
+                            let r = services.integration.uninstall().map_err(|e| e.to_string());
+                            this.report(r.map(|()| "Removed from the file manager.".into()), cx);
+                        } else {
                             let r = std::env::current_exe()
                                 .map_err(|e| e.to_string())
-                                .and_then(|exe| services.autostart.set_enabled(*c, &exe).map_err(|e| e.to_string()));
-                            this.report(
-                                r.map(|()| {
-                                    if *c { "Laqta will start when you sign in.".into() } else { "Laqta will not start at sign-in.".into() }
-                                }),
-                                cx,
-                            );
-                        }),
-                    ))
-                }
-                Err(e) => section.child(widgets::muted(format!("Run at sign-in is not available: {e}"), cx)),
-            };
-        section = section.child(widgets::muted("Adds “Upload with Laqta” to the file manager’s menu and to Send To.", cx));
-        section = match shell {
-            Ok(true) => {
-                section.child(Button::new("shell-off").label("Remove “Upload with Laqta”").on_click(cx.listener(|this, _, _, cx| {
-                    let r = cx.global::<UiState>().services.integration.uninstall().map_err(|e| e.to_string());
-                    this.report(r.map(|()| "Removed from the file manager.".into()), cx);
-                })))
-            }
-            Ok(false) => section.child(Button::new("shell-on").label("Add “Upload with Laqta”").on_click(cx.listener(|this, _, _, cx| {
-                let services = cx.global::<UiState>().services.clone();
-                let r = std::env::current_exe()
-                    .map_err(|e| e.to_string())
-                    .and_then(|exe| services.integration.install(&exe).map_err(|e| e.to_string()));
-                this.report(r.map(|()| "Added to the file manager. Some file managers show it after a restart.".into()), cx);
-            }))),
-            Err(e) => section.child(widgets::muted(format!("File manager integration is not available: {e}"), cx)),
-        };
-        section
-            .child(widgets::muted("Lets the ShareX browser extension (Chrome, Firefox) send pages, images and links to Laqta.", cx))
-            .child(Button::new("nmh").label("Register the browser extension host").on_click(cx.listener(|this, _, _, cx| {
-                let services = cx.global::<UiState>().services.clone();
-                let r = std::env::current_exe().map_err(|e| e.to_string()).and_then(|exe| {
-                    let nmh = exe.with_file_name(if cfg!(windows) { "laqta-nmh.exe" } else { "laqta-nmh" });
-                    if !nmh.exists() {
-                        return Err(format!("{} is missing", nmh.display()));
-                    }
-                    services.integration.install_native_messaging(&nmh).map_err(|e| e.to_string())
-                });
-                this.report(r.map(|()| "Browser extension host registered.".into()), cx);
-            })))
-    }
-
-    fn data(&self, cx: &mut Context<Self>) -> gpui::Div {
-        widgets::section("Data", cx)
-            .child(widgets::muted("Back up or move your settings, history and custom uploaders as one archive.", cx))
-            .child(
-                div()
-                    .flex()
-                    .gap(px(8.))
-                    .child(Button::new("export").label("Export settings…").on_click(cx.listener(|this, _, _, cx| this.export_archive(cx))))
-                    .child(Button::new("import").label("Import settings…").on_click(cx.listener(|this, _, _, cx| this.import_archive(cx)))),
-            )
-            .child(widgets::muted("Bring in the capture history of an existing ShareX install (History.json).", cx))
-            .child(Button::new("sharex-history").label("Import ShareX history…").on_click(cx.listener(|this, _, _, cx| this.import_sharex(cx))))
-            .child(widgets::muted(
-                "Bring over an existing ShareX setup: workflows and hotkeys, custom uploaders, accounts, effect presets and history. Pick the ShareX folder (Documents\\ShareX) or a .sxb backup.",
+                                .and_then(|exe| services.integration.install(&exe).map_err(|e| e.to_string()));
+                            this.report(r.map(|()| "Added to the file manager. Some file managers show it after a restart.".into()), cx);
+                        }
+                    }),
+                    cx,
+                ),
                 cx,
-            ))
+            ),
+            Err(e) => widgets::row_with("“Upload with Laqta” menu item", Some(format!("Not available here: {e}")), Slot::Hug, div(), cx),
+        };
+        page().child(widgets::section("Startup", cx).child(startup)).child(widgets::section("File manager", cx).child(file_manager)).child(
+            widgets::section("Browser", cx).child(widgets::action_row(
+                "Browser extension",
+                Some("Lets the ShareX browser extension (Chrome, Firefox) send pages, images and links to Laqta."),
+                widgets::pill(
+                    "nmh",
+                    "Connect",
+                    Pill::Default,
+                    false,
+                    cx.listener(|this, _, _, cx| {
+                        let services = cx.global::<UiState>().services.clone();
+                        let r = std::env::current_exe().map_err(|e| e.to_string()).and_then(|exe| {
+                            let nmh = exe.with_file_name(if cfg!(windows) { "laqta-nmh.exe" } else { "laqta-nmh" });
+                            if !nmh.exists() {
+                                return Err(format!("{} is missing", nmh.display()));
+                            }
+                            services.integration.install_native_messaging(&nmh).map_err(|e| e.to_string())
+                        });
+                        this.report(r.map(|()| "Browser extension connected.".into()), cx);
+                    }),
+                    cx,
+                ),
+                cx,
+            )),
+        )
+    }
+    fn data(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let two = |a: AnyElement, b: AnyElement| div().flex().gap(space::S2).child(a).child(b);
+        page()
             .child(
-                div()
-                    .flex()
-                    .gap(px(8.))
-                    .child(Button::new("sharex-folder").label("Import ShareX folder…").on_click(cx.listener(|this, _, _, cx| this.import_sharex_config(true, cx))))
-                    .child(Button::new("sharex-backup").label("Import ShareX backup (.sxb)…").on_click(cx.listener(|this, _, _, cx| this.import_sharex_config(false, cx)))),
+                widgets::section("Backup", cx).child(widgets::action_row(
+                    "Settings backup",
+                    Some("Your settings, history and custom uploaders in one archive."),
+                    two(
+                        widgets::pill("export", "Export…", Pill::Default, false, cx.listener(|this, _, _, cx| this.export_archive(cx)), cx)
+                            .into_any_element(),
+                        widgets::pill("import", "Import…", Pill::Default, false, cx.listener(|this, _, _, cx| this.import_archive(cx)), cx)
+                            .into_any_element(),
+                    ),
+                    cx,
+                )),
+            )
+            .child(
+                widgets::section("Import from ShareX", cx)
+                    .child(widgets::action_row(
+                        "ShareX setup",
+                        Some("Shortcuts, custom uploaders, accounts, effect presets and history. Pick the ShareX folder (Documents\\ShareX) or a .sxb backup."),
+                        two(
+                            widgets::pill("sharex-folder", "Folder…", Pill::Default, false, cx.listener(|this, _, _, cx| this.import_sharex_config(true, cx)), cx)
+                                .into_any_element(),
+                            widgets::pill("sharex-backup", "Backup…", Pill::Default, false, cx.listener(|this, _, _, cx| this.import_sharex_config(false, cx)), cx)
+                                .into_any_element(),
+                        ),
+                        cx,
+                    ))
+                    .child(widgets::action_row(
+                        "ShareX history only",
+                        Some("The capture history file (History.json)."),
+                        widgets::pill("sharex-history", "Choose file…", Pill::Default, false, cx.listener(|this, _, _, cx| this.import_sharex(cx)), cx),
+                        cx,
+                    )),
             )
     }
-
     fn import_sharex_config(&mut self, folder: bool, cx: &mut Context<Self>) {
         let services = cx.global::<UiState>().services.clone();
         let task = cx.background_spawn(async move {
@@ -1165,92 +1398,120 @@ impl SettingsWindow {
     fn uploads(&self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
         let services = cx.global::<UiState>().services.clone();
         let u = &self.draft.defaults.upload;
-        let mut kinds = div().flex().gap(px(6.));
-        for (k, label) in [
-            (DestKind::Image, "Images"),
-            (DestKind::Text, "Text"),
-            (DestKind::File, "Files"),
-            (DestKind::Shortener, "URL shortener"),
-            (DestKind::Sharer, "URL sharing"),
+        let destinations = services.uploaders.destination_list();
+        let mut dest = widgets::section("Destinations", cx);
+        for (kind, label, description) in [
+            (DestKind::Image, "Images", "Captures and image files."),
+            (DestKind::Text, "Text", "Text and code you upload."),
+            (DestKind::File, "Other files", "Everything else."),
+            (DestKind::Shortener, "Link shortener", "Used when “Shorten the link” is on."),
+            (DestKind::Sharer, "Share to", "Used when “Share the link” is on."),
         ] {
-            kinds =
-                kinds.child(Button::new(SharedString::from(format!("dk-{label}"))).label(label).selected(self.dest_kind == k).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.dest_kind = k;
-                        cx.notify();
-                    }),
-                ));
-        }
-        let current = match self.dest_kind {
-            DestKind::Image => u.image_destination.clone(),
-            DestKind::Text => u.text_destination.clone(),
-            DestKind::File => u.file_destination.clone(),
-            DestKind::Shortener => u.url_shortener.clone(),
-            DestKind::Sharer => u.url_sharer.clone(),
-        };
-        let choices: Vec<(String, String)> = match self.dest_kind {
-            DestKind::Shortener => present::shortener_choices(&services.uploaders.destination_list(), &self.draft.hosts),
-            DestKind::Sharer => present::SHARERS.iter().map(|(id, n)| (id.to_string(), n.to_string())).collect(),
-            _ => services.uploaders.destination_list(),
-        };
-        let mut list = div().flex().flex_wrap().gap(px(6.)).max_h(px(220.)).overflow_y_scrollbar();
-        for (id, name) in choices {
-            let selected = id == current;
-            let kind = self.dest_kind;
-            list = list.child(Button::new(SharedString::from(format!("dest-{id}"))).label(name).small().selected(selected).on_click(
-                cx.listener(move |this, _, _, cx| {
-                    let u = &mut this.draft.defaults.upload;
-                    match kind {
-                        DestKind::Image => u.image_destination = id.clone(),
-                        DestKind::Text => u.text_destination = id.clone(),
-                        DestKind::File => u.file_destination = id.clone(),
-                        DestKind::Shortener => u.url_shortener = id.clone(),
-                        DestKind::Sharer => u.url_sharer = id.clone(),
-                    }
-                    cx.notify();
-                }),
+            let current = match kind {
+                DestKind::Image => u.image_destination.clone(),
+                DestKind::Text => u.text_destination.clone(),
+                DestKind::File => u.file_destination.clone(),
+                DestKind::Shortener => u.url_shortener.clone(),
+                DestKind::Sharer => u.url_sharer.clone(),
+            };
+            let choices: Vec<(String, String)> = match kind {
+                DestKind::Shortener => present::shortener_choices(&destinations, &self.draft.hosts),
+                DestKind::Sharer => present::SHARERS.iter().map(|(id, n)| (id.to_string(), n.to_string())).collect(),
+                _ => destinations.clone(),
+            };
+            let opts = choices
+                .into_iter()
+                .map(|(id, name)| {
+                    let selected = id == current;
+                    self.opt(
+                        name,
+                        selected,
+                        move |this| {
+                            let u = &mut this.draft.defaults.upload;
+                            match kind {
+                                DestKind::Image => u.image_destination = id.clone(),
+                                DestKind::Text => u.text_destination = id.clone(),
+                                DestKind::File => u.file_destination = id.clone(),
+                                DestKind::Shortener => u.url_shortener = id.clone(),
+                                DestKind::Sharer => u.url_sharer = id.clone(),
+                            }
+                        },
+                        cx,
+                    )
+                })
+                .collect();
+            dest = dest.child(widgets::row_with(
+                label,
+                Some(description),
+                Slot::Field,
+                widgets::dropdown(format!("dest-{label}"), opts, cx),
+                cx,
             ));
         }
-        let mut after = div().flex().flex_col().gap(px(6.));
+        let mut after = widgets::section("After upload", cx);
         for (flag, label) in present::after_upload_options() {
-            after = after.child(
-                Checkbox::new(SharedString::from(format!("au-{}", flag.bits())))
-                    .label(label)
-                    .checked(self.draft.defaults.after_upload.contains(flag))
-                    .on_click(cx.listener(move |this, v: &bool, _, cx| {
-                        this.draft.defaults.after_upload.set(flag, *v);
-                        cx.notify();
-                    })),
-            );
+            after = after.child(self.sw_dyn(
+                format!("au-{}", flag.bits()),
+                label,
+                self.draft.defaults.after_upload.contains(flag),
+                move |this, v| this.draft.defaults.after_upload.set(flag, v),
+                cx,
+            ));
         }
-        let mut accounts = div().flex().flex_col().gap(px(8.));
+        after = after
+            .child(widgets::row_with(
+                "Copied text",
+                Some("What “Copy the link” puts on the clipboard. $url is the link; $shorturl and $deletionurl also work."),
+                Slot::Field,
+                Input::new(&self.clipboard_format),
+                cx,
+            ))
+            .child(widgets::row_with("Format", None::<&str>, Slot::Hug, self.clipboard_presets(cx), cx))
+            .child(widgets::row_with(
+                "Retries",
+                Some("How many times to retry after a network error."),
+                Slot::Number,
+                Input::new(&self.retries),
+                cx,
+            ));
+        let mut accounts = widgets::section("Accounts", cx);
+        if self.draft.hosts.is_empty() {
+            accounts =
+                accounts.child(widgets::muted("Add an account for hosts that need a sign-in, such as S3, FTP or Imgur.", cx).pb(space::S2));
+        }
         for (i, (account, inputs)) in self.draft.hosts.iter().zip(&self.hosts).enumerate() {
-            let mut card = div().flex().flex_col().gap(px(4.)).p(px(8.)).rounded(px(6.)).bg(cx.theme().secondary).child(
+            let mut card = entity_card(cx).child(
                 div()
                     .flex()
-                    .flex_row()
                     .items_center()
-                    .child(div().flex_1().font_weight(gpui::FontWeight::SEMIBOLD).child(account.kind.label()))
-                    .child(Button::new(SharedString::from(format!("host-rm-{i}"))).label("Remove").ghost().small().on_click(cx.listener(
-                        move |this, _, window, cx| {
+                    .pb(space::S1)
+                    .child(div().flex_1().text_size(text::BODY).font_weight(FontWeight::MEDIUM).child(account.kind.label()))
+                    .child(widgets::pill(
+                        SharedString::from(format!("host-rm-{i}")),
+                        "Remove",
+                        Pill::Ghost,
+                        true,
+                        cx.listener(move |this, _, window, cx| {
                             if i < this.draft.hosts.len() {
                                 this.draft.hosts.remove(i);
                                 this.rebuild_host_inputs(window, cx);
                             }
                             cx.notify();
-                        },
-                    ))),
+                        }),
+                        cx,
+                    )),
             );
-            for ((key, _secret, input), field) in inputs.iter().zip(account.kind.fields()) {
-                let _ = key;
-                card = card.child(widgets::row(field.label, Input::new(input), cx));
+            for ((_key, _secret, input), field) in inputs.iter().zip(account.kind.fields()) {
+                card = card.child(widgets::row_with(field.label, None::<&str>, Slot::Field, Input::new(input), cx));
             }
             accounts = accounts.child(card);
         }
-        let mut add = div().flex().flex_wrap().gap(px(6.)).child(widgets::muted("Add an account:", cx));
-        for kind in laqta_domain::hosts::HostKind::ALL {
-            add =
-                add.child(Button::new(SharedString::from(format!("host-add-{}", kind.id()))).label(kind.label()).small().ghost().on_click(
+        let add_opts = laqta_domain::hosts::HostKind::ALL
+            .into_iter()
+            .map(|kind| {
+                widgets::Choice::new(
+                    kind.label(),
+                    false,
                     cx.listener(move |this, _, window, cx| {
                         if this.collect(cx).is_ok() {
                             this.draft.hosts.push(laqta_domain::hosts::HostAccount::new(kind));
@@ -1258,53 +1519,62 @@ impl SettingsWindow {
                         }
                         cx.notify();
                     }),
-                ));
-        }
-        widgets::section("Uploads", cx)
-            .child(widgets::row("Choose a destination for", kinds, cx))
-            .child(list)
-            .child(
-                Checkbox::new("upload-after-capture")
-                    .label("Upload after capture")
-                    .checked(self.draft.defaults.after_capture.contains(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST))
-                    .on_click(cx.listener(|this, v: &bool, _, cx| {
-                        this.draft.defaults.after_capture.set(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST, *v);
-                        cx.notify();
-                    })),
-            )
-            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("After upload"))
+                )
+            })
+            .collect();
+        accounts = accounts.child(div().pt(space::S3).child(widgets::menu_button("host-add", "Add account", add_opts)));
+        page()
+            .child(widgets::section("Upload", cx).child(self.sw(
+                "upload-after-capture",
+                "Upload after capture",
+                Some("Sends each capture to the image destination below."),
+                self.draft.defaults.after_capture.contains(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST),
+                |this, v| this.draft.defaults.after_capture.set(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST, v),
+                cx,
+            )))
+            .child(dest)
             .child(after)
-            .child(widgets::row("Copied text ($url, $shorturl, $deletionurl, …)", Input::new(&self.clipboard_format), cx))
-            .child(self.clipboard_presets(cx))
-            .child(widgets::row("Retries on network errors", Input::new(&self.retries), cx))
-            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Accounts"))
             .child(accounts)
-            .child(add)
             .child(
-                Button::new("import-sxcu")
-                    .label("Import custom uploader (.sxcu)…")
-                    .on_click(cx.listener(|this, _, _, cx| this.import_sxcu(cx))),
-            )
-            .child(
-                Button::new("remote-browser")
-                    .label("Browse remote storage (S3, FTP, SFTP)…")
-                    .on_click(|_, _, cx| crate::remote_window::open(cx)),
+                widgets::section("More", cx)
+                    .child(widgets::action_row(
+                        "Custom uploader",
+                        Some("Add a host from a .sxcu file."),
+                        widgets::pill(
+                            "import-sxcu",
+                            "Import…",
+                            Pill::Default,
+                            false,
+                            cx.listener(|this, _, _, cx| this.import_sxcu(cx)),
+                            cx,
+                        ),
+                        cx,
+                    ))
+                    .child(widgets::action_row(
+                        "Remote storage",
+                        Some("Browse and manage files on S3, FTP or SFTP."),
+                        widgets::pill("remote-browser", "Browse…", Pill::Default, false, |_, _, cx| crate::remote_window::open(cx), cx),
+                        cx,
+                    )),
             )
     }
-
-    fn clipboard_presets(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let mut row = div().flex().flex_wrap().gap(px(6.)).child(widgets::muted("Presets:", cx));
-        for (i, (label, template)) in present::CLIPBOARD_FORMATS.into_iter().enumerate() {
-            row = row.child(Button::new(SharedString::from(format!("cf-{i}"))).label(label).small().ghost().on_click(cx.listener(
-                move |this, _, window, cx| {
-                    this.clipboard_format.update(cx, |input, cx| input.set_value(template, window, cx));
-                    cx.notify();
-                },
-            )));
-        }
-        row
+    fn clipboard_presets(&self, cx: &mut Context<Self>) -> AnyElement {
+        let current = Self::value(&self.clipboard_format, cx);
+        let opts = present::CLIPBOARD_FORMATS
+            .into_iter()
+            .map(|(label, template)| {
+                widgets::Choice::new(
+                    label,
+                    current == template,
+                    cx.listener(move |this, _, window, cx| {
+                        this.clipboard_format.update(cx, |input, cx| input.set_value(template, window, cx));
+                        cx.notify();
+                    }),
+                )
+            })
+            .collect();
+        widgets::dropdown("clip-format", opts, cx)
     }
-
     fn import_sxcu(&mut self, cx: &mut Context<Self>) {
         let add = cx.global::<UiState>().services.add_custom_uploader.clone();
         let task = cx.background_spawn(async move {
@@ -1398,200 +1668,288 @@ impl SettingsWindow {
     }
 
     fn image(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let mut formats = div().flex().flex_wrap().gap(px(6.));
-        for f in ImageFormat::ALL {
-            formats = formats.child(
-                Button::new(SharedString::from(format!("fmt-{}", f.extension())))
-                    .label(present::format_label(f))
-                    .selected(self.draft.defaults.image.format == f)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.draft.defaults.image.format = f;
-                        cx.notify();
-                    })),
-            );
-        }
-        let mut exists = div().flex().gap(px(6.));
-        for (a, label) in
-            [(FileExistsAction::AppendNumber, "Add a number"), (FileExistsAction::Overwrite, "Overwrite"), (FileExistsAction::Skip, "Skip")]
-        {
-            exists = exists.child(
-                Button::new(SharedString::from(format!("exists-{label}")))
-                    .label(label)
-                    .selected(self.draft.defaults.image.file_exists == a)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.draft.defaults.image.file_exists = a;
-                        cx.notify();
-                    })),
-            );
-        }
-        widgets::section("Image", cx)
-            .child(widgets::row("Format", formats, cx))
-            .child(widgets::row("JPEG quality (1–100)", Input::new(&self.jpeg_quality), cx))
-            .child(widgets::row("Use JPEG above (KB, empty = never)", Input::new(&self.auto_jpeg), cx))
-            .child(widgets::row("If the file exists", exists, cx))
-            .child(widgets::row("Thumbnail width (px)", Input::new(&self.thumb_w), cx))
-            .child(widgets::row("Thumbnail height (px, 0 = keep ratio)", Input::new(&self.thumb_h), cx))
+        let formats = ImageFormat::ALL
+            .into_iter()
+            .map(|f| {
+                self.opt(
+                    present::format_label(f),
+                    self.draft.defaults.image.format == f,
+                    move |this| this.draft.defaults.image.format = f,
+                    cx,
+                )
+            })
+            .collect();
+        let exists = [
+            (FileExistsAction::AppendNumber, "Add a number"),
+            (FileExistsAction::Overwrite, "Overwrite"),
+            (FileExistsAction::Skip, "Skip"),
+        ]
+        .into_iter()
+        .map(|(a, l)| self.opt(l, self.draft.defaults.image.file_exists == a, move |this| this.draft.defaults.image.file_exists = a, cx))
+        .collect();
+        page()
+            .child(
+                widgets::section("Format", cx)
+                    .child(widgets::row_with("Save as", None::<&str>, Slot::Field, widgets::dropdown("format", formats, cx), cx))
+                    .child(widgets::row_with(
+                        "JPEG quality",
+                        Some("1 to 100. Higher looks better and makes bigger files."),
+                        Slot::Number,
+                        Input::new(&self.jpeg_quality),
+                        cx,
+                    ))
+                    .child(widgets::row_with(
+                        "Switch to JPEG above",
+                        Some("Kilobytes. A PNG bigger than this is saved as JPEG instead. Leave empty to never switch."),
+                        Slot::Number,
+                        Input::new(&self.auto_jpeg),
+                        cx,
+                    ))
+                    .child(widgets::row_with("If the file exists", None::<&str>, Slot::Hug, widgets::choice("exists", exists, cx), cx)),
+            )
+            .child(
+                widgets::section("Thumbnails", cx)
+                    .child(widgets::row_with("Width", Some("Pixels."), Slot::Number, Input::new(&self.thumb_w), cx))
+                    .child(widgets::row_with(
+                        "Height",
+                        Some("Pixels. 0 keeps the aspect ratio."),
+                        Slot::Number,
+                        Input::new(&self.thumb_h),
+                        cx,
+                    )),
+            )
     }
-
     fn naming(&self, cx: &mut Context<Self>) -> gpui::Div {
         let services = &cx.global::<UiState>().services;
         let (now, host) = (services.clock.now(), services.host.clone());
         let preview = |input: &Entity<InputState>, cx: &App| present::name_preview(&Self::value(input, cx), now, &host);
         let (p1, p2, p3) = (preview(&self.pattern, cx), preview(&self.window_pattern, cx), preview(&self.subfolder, cx));
-        widgets::section("File naming", cx)
-            .child(widgets::row("Name pattern", Input::new(&self.pattern), cx))
-            .child(widgets::muted(format!("Preview: {p1}"), cx))
-            .child(widgets::row("Name pattern for windows", Input::new(&self.window_pattern), cx))
-            .child(widgets::muted(format!("Preview: {p2}"), cx))
-            .child(widgets::row("Subfolder pattern", Input::new(&self.subfolder), cx))
-            .child(widgets::muted(format!("Preview: {p3}"), cx))
-            .child(widgets::muted(
-                "Tokens: %y %yy %mo %mon %mon2 %d %h %mi %s %ms %pm %w %w2 %wy %unix %t %pn %i %ia %iAa %ib %ix %rn %ra %rna %rx %guid %radjective %ranimal %remoji %rf %width %height %un %uln %cn %n. Add {n} to repeat random tokens or pad counters.",
-                cx,
-            ))
+        let token = |group: &'static str, items: &'static str| {
+            div()
+                .flex()
+                .gap(space::S3)
+                .py(px(6.))
+                .child(div().w(px(140.)).flex_none().text_size(text::LABEL).font_weight(FontWeight::MEDIUM).child(group))
+                .child(div().flex_1().text_size(text::LABEL).text_color(cx.theme().muted_foreground).child(items))
+        };
+        page()
+            .child(
+                widgets::section("Names", cx)
+                    .child(widgets::row_with("File name", Some(format!("Preview: {p1}")), Slot::Field, Input::new(&self.pattern), cx))
+                    .child(widgets::row_with("File name for window captures", Some(format!("Preview: {p2}")), Slot::Field, Input::new(&self.window_pattern), cx))
+                    .child(widgets::row_with("Subfolder", Some(format!("Preview: {p3}")), Slot::Field, Input::new(&self.subfolder), cx)),
+            )
+            .child(
+                widgets::section("Tokens you can use", cx)
+                    .child(token("Date and time", "%y year · %mo month · %d day · %h hour · %mi minute · %s second · %ms millisecond · %unix Unix time · also %yy %mon %mon2 %pm %w %w2 %wy"))
+                    .child(token("Window", "%t window title · %pn process name"))
+                    .child(token("Counter", "%i · also %ia %iAa %ib %ix"))
+                    .child(token("Random", "%rn number · %ra letters and digits · %guid · %radjective · %ranimal · %remoji · also %rna %rx %rf"))
+                    .child(token("Image and system", "%width · %height · %un user name · %cn computer name · also %uln %n"))
+                    .child(widgets::muted("Add {n} to repeat a random token or pad a counter, for example %rn{4}.", cx).pt(space::S2)),
+            )
     }
-
     fn capture(&self, cx: &mut Context<Self>) -> gpui::Div {
         let c = &self.draft.defaults.capture;
         let r = &c.region;
-        let check = |id: &'static str, label: &'static str, on: bool, set: fn(&mut Settings, bool), cx: &mut Context<Self>| {
-            Checkbox::new(id).label(label).checked(on).on_click(cx.listener(move |this, v: &bool, _, cx| {
-                set(&mut this.draft, *v);
-                cx.notify();
-            }))
-        };
-        widgets::section("Capture", cx)
-            .child(widgets::row("Delay before capture (ms)", Input::new(&self.delay), cx))
-            .child(check("cursor", "Show the mouse cursor", c.show_cursor, |s, v| s.defaults.capture.show_cursor = v, cx))
-            .child(check("multi", "Allow several regions", r.multi_region, |s, v| s.defaults.capture.region.multi_region = v, cx))
-            .child(check("snap", "Snap to windows", r.snap_to_windows, |s, v| s.defaults.capture.region.snap_to_windows = v, cx))
-            .child(check("magnifier", "Show the magnifier", r.show_magnifier, |s, v| s.defaults.capture.region.show_magnifier = v, cx))
-            .child(check("crosshair", "Show crosshair lines", r.show_crosshair, |s, v| s.defaults.capture.region.show_crosshair = v, cx))
-            .child(check("info", "Show position and colour", r.show_info, |s, v| s.defaults.capture.region.show_info = v, cx))
-            .child(check(
-                "transparent",
-                "Capture windows with transparency (rounded corners, shadows)",
-                c.transparent_window,
-                |s, v| s.defaults.capture.transparent_window = v,
-                cx,
-            ))
-            .child(widgets::row(
-                "Right click in the overlay",
-                self.mouse_actions("rc", r.right_click, |s, a| s.defaults.capture.region.right_click = a, cx),
-                cx,
-            ))
-            .child(widgets::row(
-                "Middle click in the overlay",
-                self.mouse_actions("mc", r.middle_click, |s, a| s.defaults.capture.region.middle_click = a, cx),
-                cx,
-            ))
-            .child(widgets::row("Custom region (x, y, width, height)", Input::new(&self.custom_region), cx))
-            .child(widgets::row("Window title for \"Capture window by title\"", Input::new(&self.window_title), cx))
+        page()
+            .child(
+                widgets::section("Capture", cx)
+                    .child(widgets::row_with(
+                        "Delay",
+                        Some("Milliseconds to wait before capturing."),
+                        Slot::Number,
+                        Input::new(&self.delay),
+                        cx,
+                    ))
+                    .child(self.sw(
+                        "cursor",
+                        "Show the mouse cursor",
+                        None,
+                        c.show_cursor,
+                        |this, v| this.draft.defaults.capture.show_cursor = v,
+                        cx,
+                    ))
+                    .child(self.sw(
+                        "transparent",
+                        "Keep window transparency",
+                        Some("Keeps rounded corners and shadows when capturing a window."),
+                        c.transparent_window,
+                        |this, v| this.draft.defaults.capture.transparent_window = v,
+                        cx,
+                    )),
+            )
+            .child(
+                widgets::section("Selection screen", cx)
+                    .child(self.sw(
+                        "multi",
+                        "Allow several regions",
+                        Some("Select more than one area in one capture."),
+                        r.multi_region,
+                        |this, v| this.draft.defaults.capture.region.multi_region = v,
+                        cx,
+                    ))
+                    .child(self.sw(
+                        "snap",
+                        "Snap to windows",
+                        None,
+                        r.snap_to_windows,
+                        |this, v| this.draft.defaults.capture.region.snap_to_windows = v,
+                        cx,
+                    ))
+                    .child(self.sw(
+                        "magnifier",
+                        "Show the magnifier",
+                        None,
+                        r.show_magnifier,
+                        |this, v| this.draft.defaults.capture.region.show_magnifier = v,
+                        cx,
+                    ))
+                    .child(self.sw(
+                        "crosshair",
+                        "Show crosshair lines",
+                        None,
+                        r.show_crosshair,
+                        |this, v| this.draft.defaults.capture.region.show_crosshair = v,
+                        cx,
+                    ))
+                    .child(self.sw(
+                        "info",
+                        "Show position and colour",
+                        None,
+                        r.show_info,
+                        |this, v| this.draft.defaults.capture.region.show_info = v,
+                        cx,
+                    ))
+                    .child(widgets::row_with(
+                        "Right-click",
+                        None::<&str>,
+                        Slot::Field,
+                        widgets::dropdown(
+                            "rc",
+                            self.mouse_actions(r.right_click, |s, a| s.defaults.capture.region.right_click = a, cx),
+                            cx,
+                        ),
+                        cx,
+                    ))
+                    .child(widgets::row_with(
+                        "Middle-click",
+                        None::<&str>,
+                        Slot::Field,
+                        widgets::dropdown(
+                            "mc",
+                            self.mouse_actions(r.middle_click, |s, a| s.defaults.capture.region.middle_click = a, cx),
+                            cx,
+                        ),
+                        cx,
+                    )),
+            )
+            .child(
+                widgets::section("Fixed areas", cx)
+                    .child(widgets::row_with(
+                        "Custom area",
+                        Some("x, y, width, height in pixels, used by “Capture custom region”."),
+                        Slot::Field,
+                        Input::new(&self.custom_region),
+                        cx,
+                    ))
+                    .child(widgets::row_with(
+                        "Window title",
+                        Some("Used by “Capture window by title”."),
+                        Slot::Field,
+                        Input::new(&self.window_title),
+                        cx,
+                    )),
+            )
     }
-
     fn mouse_actions(
         &self,
-        id: &str,
         current: RegionMouseAction,
         set: fn(&mut Settings, RegionMouseAction),
         cx: &mut Context<Self>,
-    ) -> gpui::Div {
-        let mut row = div().flex().flex_wrap().gap(px(6.));
-        for (a, label) in [
-            (RegionMouseAction::None, "Nothing"),
-            (RegionMouseAction::CancelCapture, "Cancel"),
-            (RegionMouseAction::RemoveShapeOrCancel, "Remove region or cancel"),
-            (RegionMouseAction::RemoveShape, "Remove region"),
-            (RegionMouseAction::CaptureFullscreen, "Capture fullscreen"),
-            (RegionMouseAction::CaptureActiveMonitor, "Capture monitor"),
-            (RegionMouseAction::ConfirmSelection, "Confirm"),
-        ] {
-            row = row.child(Button::new(SharedString::from(format!("{id}-{a:?}"))).label(label).small().selected(current == a).on_click(
-                cx.listener(move |this, _, _, cx| {
-                    set(&mut this.draft, a);
-                    cx.notify();
-                }),
-            ));
-        }
-        row
+    ) -> Vec<widgets::Choice> {
+        [
+            (RegionMouseAction::None, "Do nothing"),
+            (RegionMouseAction::CancelCapture, "Cancel the capture"),
+            (RegionMouseAction::RemoveShapeOrCancel, "Remove the region, or cancel"),
+            (RegionMouseAction::RemoveShape, "Remove the region"),
+            (RegionMouseAction::CaptureFullscreen, "Capture the whole screen"),
+            (RegionMouseAction::CaptureActiveMonitor, "Capture the monitor"),
+            (RegionMouseAction::ConfirmSelection, "Confirm the selection"),
+        ]
+        .into_iter()
+        .map(|(a, l)| self.opt(l, current == a, move |this| set(&mut this.draft, a), cx))
+        .collect()
     }
-
     fn workflows_page(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let mut page = widgets::section("Hotkeys and workflows", cx).child(widgets::muted(
-            "Each workflow runs an action, optionally with its own settings. Type a hotkey such as Ctrl+Shift+PrintScreen; leave it empty for none.",
+        let mut top = widgets::section("Shortcuts", cx).child(self.sw(
+            "disable-hotkeys",
+            "Turn off all shortcuts",
+            Some("Laqta stops listening for its global hotkeys until you turn this off."),
+            self.draft.disable_hotkeys,
+            |this, v| this.draft.disable_hotkeys = v,
             cx,
         ));
-        if self.draft.disable_hotkeys {
-            page = page.child(div().text_color(cx.theme().danger).child("Hotkeys are turned off."));
-        }
-        page = page.child(Checkbox::new("disable-hotkeys").label("Turn off all hotkeys").checked(self.draft.disable_hotkeys).on_click(
-            cx.listener(|this, v: &bool, _, cx| {
-                this.draft.disable_hotkeys = *v;
-                cx.notify();
-            }),
-        ));
         for c in present::hotkey_conflicts(&self.draft) {
-            page = page.child(div().text_color(cx.theme().danger).child(c));
+            top = top.child(widgets::notice(c, false, cx).py(space::S1));
         }
+        let mut list = div().flex().flex_col().gap(space::S3);
         for (i, (w, inputs)) in self.draft.workflows.iter().zip(&self.workflows).enumerate() {
             let overrides = present::overridden_labels(&w.patch);
-            let mut card = div()
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .p(px(8.))
-                .rounded(px(6.))
-                .bg(cx.theme().secondary)
+            let mut card = entity_card(cx)
                 .child(
                     div()
                         .flex()
-                        .flex_row()
                         .items_center()
-                        .gap(px(8.))
-                        .child(div().w(px(220.)).child(Input::new(&inputs.name)))
-                        .child(div().w(px(200.)).child(Input::new(&inputs.hotkey)))
-                        .child(Checkbox::new(SharedString::from(format!("wf-en-{i}"))).label("On").checked(w.enabled).on_click(
-                            cx.listener(move |this, v: &bool, _, cx| {
+                        .gap(space::S3)
+                        .child(div().flex_1().min_w_0().child(Input::new(&inputs.name)))
+                        .child(div().w(px(200.)).flex_none().child(Input::new(&inputs.hotkey)))
+                        .child(Switch::new(SharedString::from(format!("wf-en-{i}"))).checked(w.enabled).on_click(cx.listener(
+                            move |this, v: &bool, _, cx| {
                                 if let Some(w) = this.draft.workflows.get_mut(i) {
                                     w.enabled = *v;
                                 }
                                 cx.notify();
-                            }),
-                        ))
-                        .child(div().flex_1())
-                        .child(Button::new(SharedString::from(format!("wf-rm-{i}"))).label("Remove").ghost().on_click(cx.listener(
-                            move |this, _, window, cx| {
+                            },
+                        )))
+                        .child(widgets::pill(
+                            SharedString::from(format!("wf-rm-{i}")),
+                            "Remove",
+                            Pill::Ghost,
+                            true,
+                            cx.listener(move |this, _, window, cx| {
                                 if this.collect(cx).is_ok() && i < this.draft.workflows.len() {
                                     this.draft.workflows.remove(i);
                                     this.rebuild_workflow_inputs(window, cx);
                                 }
                                 cx.notify();
-                            },
-                        ))),
+                            }),
+                            cx,
+                        )),
                 )
                 .child(widgets::muted(
                     format!(
-                        "Action: {}{}",
+                        "Runs: {}{}",
                         w.action.label(),
-                        if overrides.is_empty() { String::new() } else { format!(" · Overrides: {}", overrides.join(", ")) }
+                        if overrides.is_empty() { String::new() } else { format!(" · Own settings: {}", overrides.join(", ")) }
                     ),
                     cx,
                 ));
             let overriding = w.patch.after_capture.is_some();
-            card = card.child(
-                Checkbox::new(SharedString::from(format!("wf-ov-{i}")))
-                    .label("Use its own after-capture tasks")
-                    .checked(overriding)
-                    .on_click(cx.listener(move |this, v: &bool, _, cx| {
-                        let defaults = this.draft.defaults.after_capture;
-                        if let Some(w) = this.draft.workflows.get_mut(i) {
-                            w.patch.after_capture = v.then_some(defaults);
-                        }
-                        cx.notify();
-                    })),
-            );
+            card = card.child(self.sw_dyn(
+                format!("wf-ov-{i}"),
+                "Use its own after-capture steps",
+                overriding,
+                move |this, v| {
+                    let defaults = this.draft.defaults.after_capture;
+                    if let Some(w) = this.draft.workflows.get_mut(i) {
+                        w.patch.after_capture = v.then_some(defaults);
+                    }
+                },
+                cx,
+            ));
             if let Some(flags) = w.patch.after_capture {
-                card = card.child(div().pl(px(24.)).child(self.after_capture_list(
+                card = card.child(div().pl(space::S4).pt(space::S2).child(self.after_capture_list(
                     &format!("wf-{i}"),
                     flags,
                     move |this, flag, on| {
@@ -1602,64 +1960,63 @@ impl SettingsWindow {
                     cx,
                 )));
             }
-            page = page.child(card);
+            list = list.child(card);
         }
-        let mut add = div().flex().flex_wrap().gap(px(6.)).child(widgets::muted("Add:", cx));
-        for action in [
+        let add_opts = [
             Action::RectangleRegion,
             Action::PrintScreen,
             Action::ActiveWindow,
             Action::ActiveMonitor,
             Action::LastRegion,
             Action::CustomRegion,
-        ] {
-            add = add.child(
-                Button::new(SharedString::from(format!("add-{action:?}"))).label(crate::i18n::action_label(action)).ghost().on_click(
-                    cx.listener(move |this, _, window, cx| {
-                        if this.collect(cx).is_ok() {
-                            let id = this.draft.workflows.iter().map(|w| w.id.0).max().unwrap_or(0) + 1;
-                            this.draft.workflows.push(Workflow {
-                                id: WorkflowId(id),
-                                name: action.label().to_string(),
-                                action,
-                                hotkey: None,
-                                enabled: true,
-                                patch: Default::default(),
-                            });
-                            this.rebuild_workflow_inputs(window, cx);
-                        }
-                        cx.notify();
-                    }),
-                ),
-            );
-        }
-        page.child(add)
+        ]
+        .into_iter()
+        .map(|action| {
+            widgets::Choice::new(
+                crate::i18n::action_label(action),
+                false,
+                cx.listener(move |this, _, window, cx| {
+                    if this.collect(cx).is_ok() {
+                        let id = this.draft.workflows.iter().map(|w| w.id.0).max().unwrap_or(0) + 1;
+                        this.draft.workflows.push(Workflow {
+                            id: WorkflowId(id),
+                            name: action.label().to_string(),
+                            action,
+                            hotkey: None,
+                            enabled: true,
+                            patch: Default::default(),
+                        });
+                        this.rebuild_workflow_inputs(window, cx);
+                    }
+                    cx.notify();
+                }),
+            )
+        })
+        .collect();
+        page().child(top).child(widgets::section("Your shortcuts", cx).child(list).child(div().pt(space::S3).child(widgets::menu_button(
+            "wf-add",
+            "Add shortcut",
+            add_opts,
+        ))))
     }
 }
 
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut nav = div().w(px(200.)).flex().flex_col().gap(px(4.)).p(px(12.)).border_r_1().border_color(cx.theme().border);
-        for (page, label) in PAGES {
-            nav = nav.child(
-                Button::new(SharedString::from(format!("nav-{label}"))).label(label).ghost().selected(self.page == page).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.page = page;
-                        cx.notify();
-                    }),
-                ),
-            );
+        let mut nav = div().w(px(232.)).flex_none().flex().flex_col().gap(px(2.)).p(space::S3).pt(space::S1);
+        for (page, label, glyph) in PAGES {
+            let listener = cx.listener(move |this, _, _, cx| {
+                this.page = page;
+                cx.notify();
+            });
+            nav = nav.child(widgets::nav_row(SharedString::from(format!("nav-{label}")), glyph, label, self.page == page, listener, cx));
         }
+        let (title, description) = page_header(self.page);
         let content = match self.page {
             Page::General => self.general(cx),
             Page::AfterCapture => {
                 let flags = self.draft.defaults.after_capture;
-                widgets::section("After capture (defaults)", cx).child(self.after_capture_list(
-                    "ac",
-                    flags,
-                    |this, f, on| this.draft.defaults.after_capture.set(f, on),
-                    cx,
-                ))
+                self.after_capture_list("ac", flags, |this, f, on| this.draft.defaults.after_capture.set(f, on), cx)
             }
             Page::Image => self.image(cx),
             Page::Naming => self.naming(cx),
@@ -1672,25 +2029,77 @@ impl Render for SettingsWindow {
             Page::Integration => self.integration(cx),
             Page::Data => self.data(cx),
         };
-        let mut footer = div().flex().flex_row().items_center().gap(px(8.)).p(px(12.)).border_t_1().border_color(cx.theme().border);
-        if let Some((ok, msg)) = &self.message {
-            footer = footer.child(div().text_color(if *ok { cx.theme().foreground } else { cx.theme().danger }).child(msg.clone()));
-        }
-        footer = footer
-            .child(div().flex_1())
-            .child(Button::new("close").label("Close").on_click(|_, window, _| window.remove_window()))
-            .child(Button::new("save").label("Save").primary().on_click(cx.listener(|this, _, _, cx| this.save(cx))));
-        widgets::page(cx)
+        let mut footer = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(space::S2)
+            .px(space::S6)
+            .py(space::S3)
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .rounded_br(crate::chrome::corners(window).bottom_right);
+        footer = match &self.message {
+            Some((ok, msg)) => footer.child(widgets::notice(msg.clone(), *ok, cx).flex_1().min_w_0().truncate()),
+            None => footer.child(div().flex_1()),
+        };
+        footer = footer.child(widgets::pill("save", "Save", Pill::Dark, false, cx.listener(|this, _, _, cx| this.save(cx)), cx));
+        let settings_label = div().font_family(text::HEADING_FONT).font_weight(FontWeight::SEMIBOLD).text_size(px(17.)).child("Settings");
+        let body = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
             .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_row()
-                    .overflow_hidden()
-                    .child(nav)
-                    .child(div().flex_1().p(px(12.)).overflow_y_scrollbar().child(content)),
+                div().id("settings-scroll").flex_1().overflow_y_scrollbar().child(
+                    div()
+                        .max_w(px(780.))
+                        .mx_auto()
+                        .px(space::S8)
+                        .pt(space::S6)
+                        .pb(space::S10)
+                        .flex()
+                        .flex_col()
+                        .child(widgets::settings_header(title, description, cx))
+                        .child(content),
+                ),
             )
-            .child(footer)
+            .child(footer);
+        widgets::tab_keys(crate::chrome::rounded(widgets::page(cx), window).bg(cx.theme().sidebar), &self.focus)
+            .child(crate::chrome::TitleBar::new().leading(settings_label, px(232.)))
+            .child(
+                div().flex_1().min_h_0().flex().child(nav).child(crate::chrome::sheet(window, cx).flex_1().min_w_0().h_full().flex().child(body)),
+            )
+    }
+}
+
+/// A settings page body: sections stacked with room between them.
+fn page() -> gpui::Div {
+    div().flex().flex_col().gap(px(36.))
+}
+
+/// A card for one item in a list the user builds (an account, a shortcut, a watched folder).
+fn entity_card(cx: &App) -> gpui::Div {
+    let x = crate::theme::extra(cx);
+    div().flex().flex_col().gap(px(2.)).px(space::S5).py(space::S4).rounded(crate::theme::radius::CARD).border_1().border_color(x.ring)
+}
+
+/// Each page's title and the one line that says what it is for.
+fn page_header(page: Page) -> (&'static str, &'static str) {
+    match page {
+        Page::General => ("General", "Appearance, where captures are saved, notifications and updates."),
+        Page::AfterCapture => ("After capture", "What Laqta does with every capture. A shortcut can use its own steps instead."),
+        Page::Image => ("Image format", "File format, quality and thumbnails for saved captures."),
+        Page::Naming => ("File naming", "How saved files and their folders are named."),
+        Page::Capture => ("Capture", "What the selection screen shows and how it responds to clicks."),
+        Page::Workflows => ("Shortcuts", "Global hotkeys. Type a key combination such as Ctrl+Shift+PrintScreen; leave it empty for none."),
+        Page::Uploads => ("Uploads", "Where uploads go and what is copied when they finish."),
+        Page::Recording => ("Recording", "Screen recording to video and GIF."),
+        Page::Automation => ("Automation", "Timed captures, scrolling captures and folders that upload new files."),
+        Page::Models => ("AI features", "Text recognition, background removal and image descriptions."),
+        Page::Integration => ("Integration", "Start-up, the file manager menu and the browser extension."),
+        Page::Data => ("Backup and import", "Back up your settings or bring them over from ShareX."),
     }
 }
 

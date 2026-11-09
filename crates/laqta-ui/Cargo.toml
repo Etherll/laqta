@@ -24,6 +24,7 @@ laqta-editor.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 gpui-component.workspace = true
+gpui-kit-assets.workspace = true
 tracing.workspace = true
 image.workspace = true
 smallvec.workspace = true

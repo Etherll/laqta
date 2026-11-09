@@ -4,22 +4,25 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, TitlebarOptions, Window,
-    WindowBounds, WindowOptions, div, px, size,
+    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Window, WindowBounds,
+    WindowOptions, div, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::ScrollableElement as _;
-use gpui_component::{ActiveTheme as _, Disableable as _, Root, Selectable as _, Sizable as _};
+use gpui_component::{ActiveTheme as _, Disableable as _, Icon, Root, Selectable as _, Sizable as _};
 use laqta_ports::{RemoteEntry, RemoteStorage};
 
+use crate::assets::IconName;
 use crate::runtime::UiState;
 use crate::widgets;
 
 pub(crate) fn open(cx: &mut App) {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(820.), px(620.)), cx)),
-        titlebar: Some(TitlebarOptions { title: Some("Remote storage".into()), ..Default::default() }),
+        titlebar: Some(crate::chrome::titlebar("Remote storage")),
+        window_decorations: crate::chrome::decorations(),
+        app_owns_titlebar_drag: true,
         app_id: Some("laqta".into()),
         focus: true,
         ..Default::default()
@@ -179,7 +182,7 @@ impl RemoteWindow {
 }
 
 impl Render for RemoteWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut accounts = div().flex().flex_wrap().gap(px(4.));
         for (i, (label, _)) in self.stores.iter().enumerate() {
             accounts = accounts.child(
@@ -224,14 +227,27 @@ impl Render for RemoteWindow {
             let (open, dl, rn, del) = (e.clone(), e.clone(), e.clone(), e.clone());
             let mut row = div().flex().items_center().gap(px(6.)).py(px(2.)).border_b_1().border_color(cx.theme().border);
             row = if e.is_dir {
-                row.child(Button::new(SharedString::from(format!("open-{i}"))).label(format!("📁 {}", e.name)).small().ghost().on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.dir = open.path.clone();
-                        this.refresh(cx);
-                    }),
-                ))
+                row.child(
+                    Button::new(SharedString::from(format!("open-{i}")))
+                        .label(e.name.clone())
+                        .icon(Icon::new(IconName::Folder))
+                        .small()
+                        .ghost()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.dir = open.path.clone();
+                            this.refresh(cx);
+                        })),
+                )
             } else {
-                row.child(div().px(px(8.)).child(format!("📄 {}", e.name)))
+                row.child(
+                    div()
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(widgets::icon(IconName::File, cx.theme().muted_foreground))
+                        .child(e.name.clone()),
+                )
             };
             row =
                 row.child(div().flex_1()).child(widgets::muted(size, cx)).child(widgets::muted(e.modified.clone().unwrap_or_default(), cx));
@@ -261,7 +277,7 @@ impl Render for RemoteWindow {
                 );
             list = list.child(row);
         }
-        widgets::page(cx).child(
+        crate::chrome::rounded(widgets::page(cx), window).child(crate::chrome::TitleBar::new().title("Remote storage").flat()).child(
             div()
                 .flex_1()
                 .flex()

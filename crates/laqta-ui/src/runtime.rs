@@ -354,7 +354,7 @@ impl gpui::Global for UiState {}
 /// Runs GPUI on the current (main) thread until a `Quit` command arrives. Opens no window by itself.
 pub fn run(services: UiServices, rx: UiReceiver) {
     // Laqta lives in the tray: closing the last window must not quit it.
-    gpui_platform::application().with_quit_mode(gpui::QuitMode::Explicit).run(move |cx: &mut App| {
+    gpui_platform::application().with_assets(crate::assets::Assets).with_quit_mode(gpui::QuitMode::Explicit).run(move |cx: &mut App| {
         gpui_component::init(cx);
         crate::theme::apply(services.app.settings().theme, cx);
         let tasks = cx.new(|_| TaskList::default());
@@ -408,6 +408,10 @@ pub fn run(services: UiServices, rx: UiReceiver) {
 }
 
 fn handle(cmd: UiCommand, cx: &mut App) {
+    // The first command that can open a window loads the UI fonts; a tray-only process never does.
+    if !matches!(cmd, UiCommand::UpdateOverlay(_) | UiCommand::CloseOverlay | UiCommand::ClosePins | UiCommand::Quit) {
+        crate::theme::ensure_fonts(cx);
+    }
     match cmd {
         UiCommand::ShowOverlay { frames, view, on_input } => overlay::show(frames, view, on_input, cx),
         UiCommand::UpdateOverlay(view) => overlay::update(view, cx),

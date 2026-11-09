@@ -7,6 +7,8 @@ pub mod i18n;
 pub mod presenters;
 
 mod actions_toolbar;
+mod chrome;
+mod assets;
 mod editor_window;
 mod effects_window;
 mod history_window;

@@ -7,52 +7,54 @@ use laqta_domain::{ImageFormat, Settings};
 use laqta_ports::HostInfo;
 
 /// One after-capture option for the settings page. `available` is false for steps whose feature
-/// lands in a later milestone; the UI shows them disabled.
+/// lands in a later milestone; the UI shows them disabled. `group` is the heading it is listed under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskOption {
     pub flag: AfterCaptureTasks,
     pub label: &'static str,
     pub available: bool,
+    pub group: &'static str,
 }
 
+/// The after-capture steps in the order the settings page lists them, grouped by what they do.
 pub fn after_capture_options() -> Vec<TaskOption> {
-    let o = |flag, label, available| TaskOption { flag, label, available };
+    let o = |group, flag, label| TaskOption { flag, label, available: true, group };
     vec![
-        o(AfterCaptureTasks::SAVE_IMAGE_TO_FILE, "Save image to file", true),
-        o(AfterCaptureTasks::COPY_IMAGE_TO_CLIPBOARD, "Copy image to clipboard", true),
-        o(AfterCaptureTasks::SAVE_THUMBNAIL_IMAGE_TO_FILE, "Save thumbnail image to file", true),
-        o(AfterCaptureTasks::COPY_FILE_TO_CLIPBOARD, "Copy file to clipboard", true),
-        o(AfterCaptureTasks::COPY_FILE_PATH_TO_CLIPBOARD, "Copy file path to clipboard", true),
-        o(AfterCaptureTasks::COPY_FOLDER_PATH_TO_CLIPBOARD, "Copy folder path to clipboard", true),
-        o(AfterCaptureTasks::SHOW_IN_EXPLORER, "Show file in file manager", true),
-        o(AfterCaptureTasks::DELETE_FILE, "Delete file locally", true),
-        o(AfterCaptureTasks::SAVE_IMAGE_TO_FILE_WITH_DIALOG, "Save image to file as…", true),
-        o(AfterCaptureTasks::SHOW_QUICK_TASK_MENU, "Show quick task menu", true),
-        o(AfterCaptureTasks::SHOW_AFTER_CAPTURE_WINDOW, "Show after capture window", true),
-        o(AfterCaptureTasks::ANNOTATE_IMAGE, "Open in image editor", true),
-        o(AfterCaptureTasks::BEAUTIFY_IMAGE, "Beautify image", true),
-        o(AfterCaptureTasks::ADD_IMAGE_EFFECTS, "Add image effects", true),
-        o(AfterCaptureTasks::OPEN_IN_PHOTO_EDITOR, "Open in photo editor", true),
-        o(AfterCaptureTasks::PIN_TO_SCREEN, "Pin to screen", true),
-        o(AfterCaptureTasks::SEND_IMAGE_TO_PRINTER, "Print image", true),
-        o(AfterCaptureTasks::PERFORM_ACTIONS, "Perform actions", true),
-        o(AfterCaptureTasks::SCAN_QR_CODE, "Scan QR code", true),
-        o(AfterCaptureTasks::DO_OCR, "Recognize text (OCR)", true),
-        o(AfterCaptureTasks::SHOW_BEFORE_UPLOAD_WINDOW, "Show before upload window", true),
-        o(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST, "Upload image to host", true),
-        o(AfterCaptureTasks::ANALYZE_IMAGE, "Analyze image", true),
-        o(AfterCaptureTasks::REMOVE_BACKGROUND, "Remove background", true),
+        o("Save", AfterCaptureTasks::SAVE_IMAGE_TO_FILE, "Save to the screenshots folder"),
+        o("Save", AfterCaptureTasks::SAVE_IMAGE_TO_FILE_WITH_DIALOG, "Ask where to save"),
+        o("Save", AfterCaptureTasks::SAVE_THUMBNAIL_IMAGE_TO_FILE, "Also save a thumbnail"),
+        o("Save", AfterCaptureTasks::DELETE_FILE, "Delete the saved file afterwards"),
+        o("Copy", AfterCaptureTasks::COPY_IMAGE_TO_CLIPBOARD, "Copy the image"),
+        o("Copy", AfterCaptureTasks::COPY_FILE_TO_CLIPBOARD, "Copy the file"),
+        o("Copy", AfterCaptureTasks::COPY_FILE_PATH_TO_CLIPBOARD, "Copy the file path"),
+        o("Copy", AfterCaptureTasks::COPY_FOLDER_PATH_TO_CLIPBOARD, "Copy the folder path"),
+        o("Edit", AfterCaptureTasks::ANNOTATE_IMAGE, "Open in the image editor"),
+        o("Edit", AfterCaptureTasks::OPEN_IN_PHOTO_EDITOR, "Open in the photo editor"),
+        o("Edit", AfterCaptureTasks::BEAUTIFY_IMAGE, "Add a background and padding"),
+        o("Edit", AfterCaptureTasks::ADD_IMAGE_EFFECTS, "Apply image effects"),
+        o("Edit", AfterCaptureTasks::REMOVE_BACKGROUND, "Remove the background"),
+        o("Share", AfterCaptureTasks::SHOW_BEFORE_UPLOAD_WINDOW, "Ask before uploading"),
+        o("Share", AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST, "Upload"),
+        o("Share", AfterCaptureTasks::SEND_IMAGE_TO_PRINTER, "Print"),
+        o("Other", AfterCaptureTasks::SHOW_AFTER_CAPTURE_WINDOW, "Show the after-capture window"),
+        o("Other", AfterCaptureTasks::SHOW_QUICK_TASK_MENU, "Show the quick task menu"),
+        o("Other", AfterCaptureTasks::SHOW_IN_EXPLORER, "Show the file in the file manager"),
+        o("Other", AfterCaptureTasks::PIN_TO_SCREEN, "Pin to the screen"),
+        o("Other", AfterCaptureTasks::DO_OCR, "Recognize text (OCR)"),
+        o("Other", AfterCaptureTasks::SCAN_QR_CODE, "Scan QR codes"),
+        o("Other", AfterCaptureTasks::ANALYZE_IMAGE, "Describe the image with AI"),
+        o("Other", AfterCaptureTasks::PERFORM_ACTIONS, "Run custom actions"),
     ]
 }
 
 pub fn after_upload_options() -> Vec<(AfterUploadTasks, &'static str)> {
     vec![
-        (AfterUploadTasks::COPY_URL_TO_CLIPBOARD, "Copy URL to clipboard"),
-        (AfterUploadTasks::USE_URL_SHORTENER, "Shorten URL"),
-        (AfterUploadTasks::SHARE_URL, "Share URL"),
-        (AfterUploadTasks::OPEN_URL, "Open URL"),
-        (AfterUploadTasks::SHOW_QR_CODE, "Show QR code"),
-        (AfterUploadTasks::SHOW_AFTER_UPLOAD_WINDOW, "Show after upload window"),
+        (AfterUploadTasks::COPY_URL_TO_CLIPBOARD, "Copy the link"),
+        (AfterUploadTasks::USE_URL_SHORTENER, "Shorten the link"),
+        (AfterUploadTasks::SHARE_URL, "Share the link"),
+        (AfterUploadTasks::OPEN_URL, "Open the link"),
+        (AfterUploadTasks::SHOW_QR_CODE, "Show a QR code"),
+        (AfterUploadTasks::SHOW_AFTER_UPLOAD_WINDOW, "Show the after-upload window"),
     ]
 }
 
@@ -166,7 +168,7 @@ pub fn name_preview(pattern: &str, now: jiff::civil::DateTime, host: &HostInfo) 
 pub fn hotkey_conflicts(settings: &Settings) -> Vec<String> {
     let bindings: Vec<(KeyChord, usize)> =
         settings.workflows.iter().enumerate().filter(|(_, w)| w.enabled).filter_map(|(i, w)| w.hotkey.map(|h| (h, i))).collect();
-    find_conflicts(&bindings).into_iter().map(|(chord, idx)| format!("{chord} is used by {} workflows", idx.len())).collect()
+    find_conflicts(&bindings).into_iter().map(|(chord, idx)| format!("{chord} is used by {} shortcuts", idx.len())).collect()
 }
 
 #[cfg(test)]
@@ -190,7 +192,7 @@ mod tests {
         let mut s = Settings::default_for("/p".into());
         assert!(hotkey_conflicts(&s).is_empty());
         s.workflows[1].hotkey = s.workflows[0].hotkey;
-        assert_eq!(hotkey_conflicts(&s), vec!["PrintScreen is used by 2 workflows".to_string()]);
+        assert_eq!(hotkey_conflicts(&s), vec!["PrintScreen is used by 2 shortcuts".to_string()]);
     }
 
     #[test]

@@ -6,7 +6,9 @@ use gpui::{
     WindowKind, WindowOptions, div, point, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::{ActiveTheme as _, Root, Sizable as _};
+use gpui_component::{ActiveTheme as _, Icon, Root, Sizable as _};
+
+use crate::assets::IconName;
 use laqta_domain::Action;
 
 use crate::runtime::UiState;
@@ -65,9 +67,10 @@ impl Render for ActionsToolbar {
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(4.))
-            .p(px(8.))
-            .bg(cx.theme().background)
+            .gap(px(2.))
+            .p(px(6.))
+            .bg(crate::theme::extra(cx).card)
+            .font_family(crate::theme::text::UI_FONT)
             .border_1()
             .border_color(cx.theme().border);
         for (i, action) in DEFAULT_ACTIONS.into_iter().enumerate() {
@@ -75,6 +78,7 @@ impl Render for ActionsToolbar {
             bar = bar.child(
                 Button::new(SharedString::from(format!("act-{i}")))
                     .label(short_label(action))
+                    .icon(Icon::new(action_icon(action)))
                     .small()
                     .ghost()
                     .tooltip(crate::i18n::action_label(action))
@@ -82,6 +86,20 @@ impl Render for ActionsToolbar {
             );
         }
         bar
+    }
+}
+
+fn action_icon(a: Action) -> IconName {
+    match a {
+        Action::RectangleRegion => IconName::Crop,
+        Action::PrintScreen => IconName::Monitor,
+        Action::ActiveWindow => IconName::AppWindow,
+        Action::ScreenRecorder => IconName::Video,
+        Action::ScreenColorPicker => IconName::Pipette,
+        Action::ClipboardUpload => IconName::Clipboard,
+        Action::OpenHistory => IconName::LayoutGrid,
+        Action::OpenMainWindow => IconName::House,
+        _ => IconName::Sparkles,
     }
 }
 

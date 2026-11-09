@@ -6,28 +6,45 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures_channel::oneshot;
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui::{
-    App, AppContext as _, ClipboardItem, Context, Div, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage, SharedString,
-    StatefulInteractiveElement as _, Styled as _, TitlebarOptions, Window, WindowBounds, WindowOptions, div, img, px, size,
+    App, AppContext as _, Bounds, ClipboardItem, Context, Div, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, WindowBounds, WindowOptions, div, img, prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::{ActiveTheme as _, Disableable as _, Root, Selectable as _, Sizable as _};
+use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_component::{ActiveTheme as _, Icon, Root};
 use laqta_domain::color::Rgba;
 use laqta_domain::{Bitmap, ImageFormat, PixelFormat};
 use laqta_editor::{Chrome, Command, Editor, EditorInput, EditorKey, EditorRequest, Mods, PointerButton, Tool};
 use laqta_ports::PortError;
 use smallvec::SmallVec;
 
+use crate::assets::IconName;
+use crate::chrome;
 use crate::presenters::editor_interaction::{EditorInteraction, Step};
+use crate::presenters::editor_toolbar;
 use crate::presenters::render_gate::ComputeFn;
 use crate::runtime::UiState;
+use crate::theme::{self, radius, space, text};
+use crate::widgets;
 
 pub(crate) type EditReply = oneshot::Sender<Result<Bitmap, PortError>>;
 
-const TOOLBAR_H: f32 = 84.0;
-const FOOTER_H: f32 = 52.0;
-const PAD: f32 = 12.0;
+/// The tool rail: two columns of tool buttons.
+const RAIL_W: f32 = 88.0;
+/// The properties bar over the stage.
+const TOPBAR_H: f32 = 52.0;
+/// The action bar under the stage.
+const FOOTER_H: f32 = 60.0;
+/// Space between the stage edge and the window's right edge.
+const GUTTER: f32 = 10.0;
+/// Space around the image inside the stage. The bottom keeps the zoom controls off the image.
+const PAD: f32 = 28.0;
+const PAD_BOTTOM: f32 = 76.0;
 
 const PALETTE: [Rgba; 10] = [
     Rgba::rgb(0xef, 0x44, 0x44),
@@ -77,7 +94,9 @@ pub(crate) fn open(image: Option<Bitmap>, reply: Option<EditReply>, path: Option
     };
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(1180.), px(820.)), cx)),
-        titlebar: Some(TitlebarOptions { title: Some("Laqta editor".into()), ..Default::default() }),
+        titlebar: Some(chrome::titlebar("Laqta editor")),
+        window_decorations: chrome::decorations(),
+        app_owns_titlebar_drag: true,
         app_id: Some("laqta".into()),
         focus: true,
         window_min_size: Some(size(px(720.), px(480.))),
@@ -129,7 +148,10 @@ struct EditorWindow {
     message: Option<String>,
     zoom: f32,
     emoji_open: bool,
-    customising: bool,
+    /// The stage's bounds from the last frame; the canvas is laid out inside them.
+    stage: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The message the dismiss timer is running for.
+    toast_for: Option<String>,
 }
 
 /// The compute pool as the presenters take it. A panic drops the work's result sender, so the
@@ -175,7 +197,8 @@ impl EditorWindow {
             message: None,
             zoom: 1.0,
             emoji_open: false,
-            customising: false,
+            stage: Rc::new(Cell::new(None)),
+            toast_for: None,
         };
         if this.interaction.initial() {
             this.start_render(cx);
@@ -396,24 +419,75 @@ impl EditorWindow {
         self.command(Command::SetStyle(style), window, cx);
     }
 
-    /// Window position → image pixels.
-    fn to_image(&self, pos: gpui::Point<Pixels>, window: &Window) -> (f32, f32) {
-        let (ox, oy, z) = self.layout(window);
-        ((f32::from(pos.x) - ox) / z, (f32::from(pos.y) - oy) / z)
+    /// The stage's origin in the window and its size. Before the first frame, an estimate.
+    fn stage_rect(&self, window: &Window) -> (f32, f32, f32, f32) {
+        if let Some(b) = self.stage.get() {
+            return (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height));
+        }
+        let vp = window.viewport_size();
+        let top = f32::from(chrome::TITLE_BAR_H) + TOPBAR_H;
+        (RAIL_W, top, f32::from(vp.width) - RAIL_W - GUTTER, f32::from(vp.height) - top - FOOTER_H)
     }
 
-    /// The canvas origin in the window and the zoom that fits it.
+    /// Window position → image pixels.
+    fn to_image(&self, pos: gpui::Point<Pixels>, window: &Window) -> (f32, f32) {
+        let (sx, sy, _, _) = self.stage_rect(window);
+        let (ox, oy, z) = self.layout(window);
+        ((f32::from(pos.x) - sx - ox) / z, (f32::from(pos.y) - sy - oy) / z)
+    }
+
+    /// The canvas origin inside the stage and the zoom: fit to the stage, times the user's zoom.
     fn layout(&self, window: &Window) -> (f32, f32, f32) {
-        let vp = window.viewport_size();
-        let (w, h) = (f32::from(vp.width), f32::from(vp.height));
+        let (_, _, w, h) = self.stage_rect(window);
         let (cw, ch) = (self.chrome.canvas.0.max(1) as f32, self.chrome.canvas.1.max(1) as f32);
         let avail_w = (w - 2.0 * PAD).max(1.0);
-        let avail_h = (h - TOOLBAR_H - FOOTER_H - 2.0 * PAD).max(1.0);
+        let avail_h = (h - PAD - PAD_BOTTOM).max(1.0);
         let fit = (avail_w / cw).min(avail_h / ch).min(1.0);
         let z = (fit * self.zoom).max(0.05);
         let ox = PAD + (avail_w - cw * z).max(0.0) / 2.0;
-        let oy = TOOLBAR_H + PAD + (avail_h - ch * z).max(0.0) / 2.0;
+        let oy = PAD + (avail_h - ch * z).max(0.0) / 2.0;
         (ox, oy, z)
+    }
+
+    fn pick_tool(&mut self, t: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        match t {
+            Tool::Image => self.pick_image(window, cx),
+            Tool::Emoji => {
+                self.emoji_open = !self.emoji_open;
+                cx.notify();
+            }
+            _ => self.select_tool(t, window, cx),
+        }
+    }
+
+    /// Switches tools on the UI thread: `SetTool` only changes engine state, so it needs neither
+    /// the compute pool nor a wait, and a tool key never blocks the window.
+    fn select_tool(&mut self, t: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        self.emoji_open = false;
+        let ed = self.interaction.editor();
+        let out = ed.lock().unwrap_or_else(|p| p.into_inner()).execute(Command::SetTool(t));
+        let step = self.interaction.after_output(out);
+        self.apply(step, window, cx);
+    }
+
+    /// Clears a message a few seconds after it appears.
+    fn dismiss_later(&mut self, cx: &mut Context<Self>) {
+        if self.message == self.toast_for {
+            return;
+        }
+        self.toast_for = self.message.clone();
+        let Some(shown) = self.message.clone() else { return };
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(3200)).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.message.as_deref() == Some(shown.as_str()) {
+                    this.message = None;
+                    this.toast_for = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 }
 
@@ -450,29 +524,38 @@ fn editor_key(key: &str) -> Option<EditorKey> {
     })
 }
 
-fn tool_label(t: Tool) -> &'static str {
+fn tool_icon(t: Tool) -> IconName {
     match t {
-        Tool::Select => "Select",
-        Tool::Rectangle => "Rect",
-        Tool::Ellipse => "Ellipse",
-        Tool::Line => "Line",
-        Tool::Arrow => "Arrow",
-        Tool::Freehand => "Pen",
-        Tool::Text => "Text",
-        Tool::SpeechBalloon => "Balloon",
-        Tool::Step => "Step",
-        Tool::Image => "Image",
-        Tool::Clone => "Clone",
-        Tool::Emoji => "Emoji",
-        Tool::Cursor => "Cursor",
-        Tool::Highlight => "Highlight",
-        Tool::SmartEraser => "Eraser",
-        Tool::Blur => "Blur",
-        Tool::Pixelate => "Pixelate",
-        Tool::Magnify => "Magnify",
-        Tool::Spotlight => "Spotlight",
-        Tool::Crop => "Crop",
-        Tool::CutOut => "Cut out",
+        Tool::Select => IconName::MousePointer2,
+        Tool::Rectangle => IconName::Square,
+        Tool::Ellipse => IconName::Circle,
+        Tool::Line => IconName::Slash,
+        Tool::Arrow => IconName::MoveUpRight,
+        Tool::Freehand => IconName::PenLine,
+        Tool::Text => IconName::Type,
+        Tool::SpeechBalloon => IconName::MessageSquare,
+        Tool::Step => IconName::ListOrdered,
+        Tool::Image => IconName::ImagePlus,
+        Tool::Clone => IconName::Stamp,
+        Tool::Emoji => IconName::FaceSlightlySmiling,
+        Tool::Cursor => IconName::MousePointer,
+        Tool::Highlight => IconName::Highlighter,
+        Tool::SmartEraser => IconName::Eraser,
+        Tool::Blur => IconName::Droplet,
+        Tool::Pixelate => IconName::Grid3x3,
+        Tool::Magnify => IconName::ZoomIn,
+        Tool::Spotlight => IconName::Flashlight,
+        Tool::Crop => IconName::Crop,
+        Tool::CutOut => IconName::Scissors,
+    }
+}
+
+/// "Rectangle  R" for a tooltip.
+fn tool_tip(t: Tool) -> String {
+    let name = editor_toolbar::label(t);
+    match editor_toolbar::shortcut(t) {
+        Some(k) => format!("{name}  ·  {}", k.to_ascii_uppercase()),
+        None => name.to_string(),
     }
 }
 
@@ -486,209 +569,320 @@ fn abs(x: f32, y: f32, w: f32, h: f32) -> Div {
     div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h))
 }
 
-impl Render for EditorWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (ox, oy, z) = self.layout(window);
-        let (cw, ch) = (self.chrome.canvas.0 as f32 * z, self.chrome.canvas.1 as f32 * z);
-        let chrome = self.chrome.clone();
+/// Keeps a click on a floating control from reaching the canvas under it.
+fn stop_canvas(el: Div) -> Div {
+    el.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+}
 
-        // Tools (the user can hide some; the gear toggles customisation).
+impl EditorWindow {
+    fn rail(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let hidden = cx.global::<UiState>().services.app.settings().editor_hidden_tools;
-        let customising = self.customising;
-        let mut tools = div().flex().flex_row().flex_wrap().gap(px(2.));
-        for (i, t) in Tool::ALL.into_iter().enumerate() {
-            let is_hidden = hidden.iter().any(|h| h == t.name());
-            if customising {
-                tools = tools.child(
-                    Button::new(SharedString::from(format!("vis-{i}"))).label(tool_label(t)).small().selected(!is_hidden).on_click(
-                        cx.listener(move |_, _, _, cx| {
-                            let services = cx.global::<UiState>().services.clone();
-                            let mut s = services.app.settings();
-                            if is_hidden {
-                                s.editor_hidden_tools.retain(|h| h != t.name());
-                            } else {
-                                s.editor_hidden_tools.push(t.name().to_string());
-                            }
-                            let _ = (services.save_settings)(s);
-                            cx.notify();
-                        }),
-                    ),
-                );
-                continue;
-            }
-            if is_hidden {
-                continue;
-            }
-            tools = tools.child(
-                Button::new(SharedString::from(format!("tool-{i}"))).label(tool_label(t)).small().selected(chrome.tool == t).on_click(
-                    cx.listener(move |this, _, window, cx| match t {
-                        Tool::Image => this.pick_image(window, cx),
-                        Tool::Emoji => {
-                            this.emoji_open = !this.emoji_open;
-                            cx.notify();
-                        }
-                        _ => this.command(Command::SetTool(t), window, cx),
-                    }),
-                ),
-            );
-        }
-        // Style: colour, size, fill.
-        let mut colors = div().flex().flex_row().gap(px(3.)).items_center();
-        for (i, c) in PALETTE.into_iter().enumerate() {
-            let selected = chrome.style.border_color == c;
-            colors = colors.child(
-                div()
-                    .id(("col", i))
-                    .w(px(18.))
-                    .h(px(18.))
-                    .rounded(px(9.))
-                    .bg(rgba(c))
-                    .border_2()
-                    .border_color(if selected { cx.theme().foreground } else { cx.theme().border })
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, window, cx| this.set_style(|s| s.border_color = c, window, cx))),
-            );
-        }
-        let size_label = format!("{:.0}px", chrome.style.border_size);
-        let fill_on = chrome.style.fill_color.a > 0;
-        let style_bar = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(6.))
-            .child(colors)
-            .child(
-                Button::new("thinner")
-                    .label("−")
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|this, _, w, cx| this.set_style(|s| s.border_size = (s.border_size - 1.0).max(1.0), w, cx))),
-            )
-            .child(div().text_xs().child(size_label))
-            .child(
-                Button::new("thicker")
-                    .label("+")
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|this, _, w, cx| this.set_style(|s| s.border_size = (s.border_size + 1.0).min(40.0), w, cx))),
-            )
-            .child(Button::new("fill").label("Fill").small().selected(fill_on).on_click(cx.listener(|this, _, w, cx| {
-                this.set_style(
-                    |s| {
-                        s.fill_color = if s.fill_color.a > 0 { Rgba::TRANSPARENT } else { Rgba { a: 96, ..s.border_color } };
-                    },
-                    w,
-                    cx,
-                )
-            })))
-            .child(
-                Button::new("shadow")
-                    .label("Shadow")
-                    .small()
-                    .selected(chrome.style.shadow)
-                    .on_click(cx.listener(|this, _, w, cx| this.set_style(|s| s.shadow = !s.shadow, w, cx))),
-            )
-            .child(
-                Button::new("font-")
-                    .label("A−")
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|this, _, w, cx| this.set_style(|s| s.font.size = (s.font.size - 2.0).max(8.0), w, cx))),
-            )
-            .child(
-                Button::new("font+")
-                    .label("A+")
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|this, _, w, cx| this.set_style(|s| s.font.size = (s.font.size + 2.0).min(200.0), w, cx))),
-            )
-            .child(div().w(px(12.)))
-            .child(
-                Button::new("undo")
-                    .label("Undo")
-                    .small()
-                    .disabled(!chrome.can_undo)
-                    .on_click(cx.listener(|this, _, w, cx| this.command(Command::Undo, w, cx))),
-            )
-            .child(
-                Button::new("redo")
-                    .label("Redo")
-                    .small()
-                    .disabled(!chrome.can_redo)
-                    .on_click(cx.listener(|this, _, w, cx| this.command(Command::Redo, w, cx))),
-            )
-            .child(
-                Button::new("rotl")
-                    .label("⟲")
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|this, _, w, cx| this.command(Command::Rotate90 { clockwise: false }, w, cx))),
-            )
-            .child(
-                Button::new("rotr")
-                    .label("⟳")
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|this, _, w, cx| this.command(Command::Rotate90 { clockwise: true }, w, cx))),
-            )
-            .child(
-                Button::new("flip")
-                    .label("Flip")
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|this, _, w, cx| this.command(Command::Flip { horizontal: true }, w, cx))),
-            )
-            .child(
-                Button::new("autocrop")
-                    .label("Auto crop")
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|this, _, w, cx| this.command(Command::AutoCrop, w, cx))),
-            )
-            .child(self.effects_menu(cx))
-            .child(div().flex_1())
-            .child(Button::new("customise").label(if self.customising { "Done" } else { "Customise" }).small().ghost().on_click(
-                cx.listener(|this, _, _, cx| {
-                    this.customising = !this.customising;
-                    cx.notify();
-                }),
-            ))
-            .child(Button::new("zoom-").label("−").small().ghost().on_click(cx.listener(|this, _, _, cx| {
-                this.zoom = (this.zoom / 1.25).max(0.1);
-                cx.notify();
-            })))
-            .child(div().text_xs().child(format!("{:.0}%", z * 100.0)))
-            .child(Button::new("zoom+").label("+").small().ghost().on_click(cx.listener(|this, _, _, cx| {
-                this.zoom = (this.zoom * 1.25).min(8.0);
-                cx.notify();
-            })));
-
-        let mut toolbar = div()
+        let active = self.chrome.tool;
+        let emoji_open = self.emoji_open;
+        let mut rail = div()
+            .id("tool-rail")
+            .w(px(RAIL_W))
+            .h_full()
+            .flex_none()
             .flex()
             .flex_col()
-            .gap(px(4.))
-            .p(px(6.))
-            .h(px(TOOLBAR_H))
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(tools)
-            .child(style_bar);
-        if self.emoji_open {
-            let mut row = div().flex().flex_row().gap(px(4.));
-            for (i, e) in EMOJI.into_iter().enumerate() {
-                row = row.child(
-                    Button::new(SharedString::from(format!("emoji-{i}")))
-                        .label(e)
-                        .small()
-                        .ghost()
-                        .on_click(cx.listener(move |this, _, w, cx| this.emoji(e, w, cx))),
-                );
+            .items_center()
+            .pt(px((TOPBAR_H - 34.0) / 2.0))
+            .pb(space::S3)
+            .overflow_y_scroll();
+        for (gi, group) in editor_toolbar::groups(&hidden).into_iter().enumerate() {
+            if gi > 0 {
+                rail = rail.child(widgets::divider_h(cx).w(px(56.)));
             }
-            toolbar = toolbar.child(row);
+            let mut grid = div().w(px(72.)).flex().flex_wrap().gap(px(4.));
+            for t in group.tools {
+                let on = t == active || (t == Tool::Emoji && emoji_open);
+                grid = grid.child(widgets::icon_button(
+                    SharedString::from(format!("tool-{}", t.name())),
+                    tool_icon(t),
+                    tool_tip(t),
+                    on,
+                    cx.listener(move |this, _, window, cx| this.pick_tool(t, window, cx)),
+                    cx,
+                ));
+            }
+            rail = rail.child(grid);
+        }
+        let entity = cx.entity().downgrade();
+        let customise =
+            Button::new("customise-tools").icon(Icon::new(IconName::Settings2)).ghost().tooltip("Show or hide tools").dropdown_menu(
+                move |mut menu, _, _| {
+                    menu = menu.item(PopupMenuItem::label("Show on the rail"));
+                    for t in editor_toolbar::hideable() {
+                        let shown = !hidden.iter().any(|h| h == t.name());
+                        let entity = entity.clone();
+                        menu = menu.item(PopupMenuItem::new(editor_toolbar::label(t)).checked(shown).on_click(move |_, _, cx| {
+                            let services = cx.global::<UiState>().services.clone();
+                            let mut s = services.app.settings();
+                            if shown {
+                                s.editor_hidden_tools.push(t.name().to_string());
+                            } else {
+                                s.editor_hidden_tools.retain(|h| h != t.name());
+                            }
+                            let _ = (services.save_settings)(s);
+                            let _ = entity.update(cx, |_, cx| cx.notify());
+                        }));
+                    }
+                    menu
+                },
+            );
+        rail.child(div().flex_1().min_h(space::S3)).child(customise)
+    }
+
+    fn topbar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let chrome = &self.chrome;
+        let controls = editor_toolbar::style_controls(chrome.tool);
+        let undo = widgets::icon_button(
+            "undo",
+            IconName::Undo2,
+            "Undo  ·  Ctrl+Z",
+            false,
+            cx.listener(|this, _, w, cx| {
+                if this.chrome.can_undo {
+                    this.command(Command::Undo, w, cx)
+                }
+            }),
+            cx,
+        )
+        .when(!chrome.can_undo, |d| d.opacity(0.35));
+        let redo = widgets::icon_button(
+            "redo",
+            IconName::Redo2,
+            "Redo  ·  Ctrl+Y",
+            false,
+            cx.listener(|this, _, w, cx| {
+                if this.chrome.can_redo {
+                    this.command(Command::Redo, w, cx)
+                }
+            }),
+            cx,
+        )
+        .when(!chrome.can_redo, |d| d.opacity(0.35));
+
+        let mut props = div().flex_1().min_w_0().h_full().flex().items_center().gap(space::S2).overflow_hidden().child(
+            div()
+                .flex_none()
+                .pr(space::S1)
+                .text_size(text::LABEL)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(editor_toolbar::label(chrome.tool)),
+        );
+        if controls.color {
+            let mut track =
+                div().flex().flex_none().items_center().gap(px(1.)).p(px(3.)).rounded(radius::PILL).bg(cx.theme().foreground.opacity(0.06));
+            for (i, c) in PALETTE.into_iter().enumerate() {
+                track = track.child(widgets::swatch(
+                    ("col", i),
+                    rgba(c),
+                    chrome.style.border_color == c,
+                    cx.listener(move |this, _, window, cx| this.set_style(|s| s.border_color = c, window, cx)),
+                    cx,
+                ));
+            }
+            props = props.child(track).child(widgets::divider_v(cx));
+        }
+        if controls.stroke {
+            props = props.child(widgets::stepper(
+                "stroke",
+                "Width",
+                "Line width",
+                format!("{:.0} px", chrome.style.border_size),
+                cx.listener(|this, _, w, cx| this.set_style(|s| s.border_size = (s.border_size - 1.0).max(1.0), w, cx)),
+                cx.listener(|this, _, w, cx| this.set_style(|s| s.border_size = (s.border_size + 1.0).min(40.0), w, cx)),
+                cx,
+            ));
+        }
+        if controls.font {
+            props = props.child(widgets::stepper(
+                "font",
+                "Size",
+                "Text size",
+                format!("{:.0}", chrome.style.font.size),
+                cx.listener(|this, _, w, cx| this.set_style(|s| s.font.size = (s.font.size - 2.0).max(8.0), w, cx)),
+                cx.listener(|this, _, w, cx| this.set_style(|s| s.font.size = (s.font.size + 2.0).min(200.0), w, cx)),
+                cx,
+            ));
+        }
+        if controls.fill || controls.shadow {
+            props = props.child(widgets::divider_v(cx));
+        }
+        if controls.fill {
+            let fill_on = chrome.style.fill_color.a > 0;
+            props = props.child(widgets::toggle_chip(
+                "fill",
+                IconName::PaintBucket,
+                "Fill",
+                fill_on,
+                cx.listener(|this, _, w, cx| {
+                    this.set_style(
+                        |s| s.fill_color = if s.fill_color.a > 0 { Rgba::TRANSPARENT } else { Rgba { a: 96, ..s.border_color } },
+                        w,
+                        cx,
+                    )
+                }),
+                cx,
+            ));
+        }
+        if controls.shadow {
+            let on = chrome.style.shadow;
+            props = props.child(widgets::toggle_chip(
+                "shadow",
+                IconName::Blend,
+                "Shadow",
+                on,
+                cx.listener(|this, _, w, cx| this.set_style(|s| s.shadow = !s.shadow, w, cx)),
+                cx,
+            ));
+        }
+        if controls == editor_toolbar::StyleControls::default() {
+            props = props.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space::S2)
+                    .text_size(text::LABEL)
+                    .text_color(cx.theme().muted_foreground)
+                    .child(div().truncate().child(editor_toolbar::hint(chrome.tool))),
+            );
         }
 
-        // Canvas with chrome.
-        let mut canvas = div().absolute().left(px(ox)).top(px(oy)).w(px(cw)).h(px(ch)).bg(cx.theme().secondary);
+        div()
+            .h(px(TOPBAR_H))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(space::S1)
+            .pr(px(GUTTER))
+            .child(undo)
+            .child(redo)
+            .child(widgets::divider_v(cx).mx(space::S2))
+            .child(props)
+            .child(self.image_menu(cx))
+    }
+
+    /// Rotate, flip, auto crop and the effect presets: things done to the whole image.
+    fn image_menu(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let presets = cx.global::<UiState>().services.app.settings().effect_presets;
+        let entity = cx.entity().downgrade();
+        Button::new("image-menu").label("Image").icon(Icon::new(IconName::WandSparkles)).ghost().dropdown_caret(true).dropdown_menu(
+            move |mut menu, _, _| {
+                let run = |c: Command| {
+                    let entity = entity.clone();
+                    move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
+                        let c = c.clone();
+                        let _ = entity.update(cx, |this, cx| this.command(c, window, cx));
+                    }
+                };
+                menu = menu
+                    .item(
+                        PopupMenuItem::new("Rotate left")
+                            .icon(Icon::new(IconName::RotateCcw))
+                            .on_click(run(Command::Rotate90 { clockwise: false })),
+                    )
+                    .item(
+                        PopupMenuItem::new("Rotate right")
+                            .icon(Icon::new(IconName::RotateCw))
+                            .on_click(run(Command::Rotate90 { clockwise: true })),
+                    )
+                    .item(
+                        PopupMenuItem::new("Flip horizontally")
+                            .icon(Icon::new(IconName::FlipHorizontal2))
+                            .on_click(run(Command::Flip { horizontal: true })),
+                    )
+                    .item(
+                        PopupMenuItem::new("Flip vertically")
+                            .icon(Icon::new(IconName::FlipVertical2))
+                            .on_click(run(Command::Flip { horizontal: false })),
+                    )
+                    .item(PopupMenuItem::new("Auto crop").icon(Icon::new(IconName::Scan)).on_click(run(Command::AutoCrop)))
+                    .separator()
+                    .item(PopupMenuItem::label("Apply an effect preset"));
+                if presets.is_empty() {
+                    menu = menu.item(PopupMenuItem::new("No presets yet").disabled(true));
+                }
+                for (i, p) in presets.iter().enumerate() {
+                    let name = if p.name.is_empty() { format!("Preset {}", i + 1) } else { p.name.clone() };
+                    menu = menu
+                        .item(PopupMenuItem::new(name).icon(Icon::new(IconName::Sparkles)).on_click(run(Command::ApplyEffect(p.clone()))));
+                }
+                menu
+            },
+        )
+    }
+
+    fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let chrome = &self.chrome;
+        let t = cx.theme();
+        let n = chrome.annotation_count;
+        let status =
+            format!("{} × {} px  ·  {} {}", chrome.canvas.0, chrome.canvas.1, n, if n == 1 { "annotation" } else { "annotations" });
+        let continuing = self.reply.is_some();
+        let mut actions = div()
+            .flex()
+            .items_center()
+            .gap(space::S2)
+            .child(widgets::pill("copy", "Copy", widgets::Pill::Default, false, cx.listener(|this, _, _, cx| this.copy(cx)), cx))
+            .child(widgets::pill("upload", "Upload", widgets::Pill::Default, false, cx.listener(|this, _, _, cx| this.upload(cx)), cx))
+            .child(widgets::pill("saveas", "Save as…", widgets::Pill::Default, false, cx.listener(|this, _, _, cx| this.save(true, cx)), cx));
+        actions = if continuing {
+            actions
+                .child(widgets::pill("save", "Save", widgets::Pill::Default, false, cx.listener(|this, _, _, cx| this.save(false, cx)), cx))
+                .child(widgets::pill("continue", "Done", widgets::Pill::Primary, false, cx.listener(|this, _, w, _| this.finish(w)), cx))
+        } else {
+            actions.child(widgets::pill(
+                "save",
+                "Save",
+                widgets::Pill::Primary,
+                false,
+                cx.listener(|this, _, _, cx| this.save(false, cx)),
+                cx,
+            ))
+        };
+        div()
+            .h(px(FOOTER_H))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(space::S3)
+            .pr(px(GUTTER + 6.0))
+            .pl(space::S1)
+            .child(div().flex_1().min_w_0().truncate().text_size(text::LABEL).text_color(t.muted_foreground).child(status))
+            .child(actions)
+    }
+
+    fn stage(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let (ox, oy, z) = self.layout(window);
+        let (cw, ch) = (self.chrome.canvas.0 as f32 * z, self.chrome.canvas.1 as f32 * z);
+        let chrome = &self.chrome;
+        let t = cx.theme().clone();
+        let x = theme::extra(cx);
+
+        // Records the stage's bounds for the next frame's layout and pointer mapping.
+        let cell = self.stage.clone();
+        let tracker = gpui::canvas(
+            move |bounds, window, _| {
+                if cell.get() != Some(bounds) {
+                    cell.set(Some(bounds));
+                    window.refresh();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
+
+        let mut canvas = div().absolute().left(px(ox)).top(px(oy)).w(px(cw)).h(px(ch)).bg(t.secondary).shadow(vec![gpui::BoxShadow {
+            color: gpui::black().opacity(if t.is_dark() { 0.55 } else { 0.18 }),
+            offset: gpui::point(px(0.), px(12.)),
+            blur_radius: px(40.),
+            spread_radius: px(0.),
+            inset: false,
+        }]);
         if let Some(p) = &self.picture {
             canvas = canvas.child(img(p.clone()).absolute().left_0().top_0().w(px(cw)).h(px(ch)));
         }
@@ -705,71 +899,175 @@ impl Render for EditorWindow {
             );
         }
         for (_, p) in &chrome.handles {
-            canvas = canvas.child(abs(p.x * z - 4.0, p.y * z - 4.0, 8.0, 8.0).bg(gpui::white()).border_1().border_color(sel));
+            canvas =
+                canvas.child(abs(p.x * z - 4.5, p.y * z - 4.5, 9.0, 9.0).rounded(px(2.)).bg(gpui::white()).border_1().border_color(sel));
         }
         if let Some(c) = chrome.caret {
-            canvas = canvas.child(abs(c.x * z, c.y * z, 2.0, chrome.style.font.size * z).bg(cx.theme().foreground));
+            canvas = canvas.child(abs(c.x * z, c.y * z, 2.0, chrome.style.font.size * z).bg(t.foreground));
         }
 
-        let mut footer = div()
+        let zoom = stop_canvas(widgets::floating(cx))
             .absolute()
-            .left_0()
-            .bottom_0()
-            .w_full()
-            .h(px(FOOTER_H))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(8.))
-            .px(px(12.))
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background);
-        footer = footer.child(
-            div().text_xs().text_color(cx.theme().muted_foreground).child(
-                self.message
-                    .clone()
-                    .unwrap_or_else(|| format!("{}×{} · {} annotations", chrome.canvas.0, chrome.canvas.1, chrome.annotation_count)),
-            ),
-        );
-        footer = footer
-            .child(div().flex_1())
-            .child(Button::new("copy").label("Copy").on_click(cx.listener(|this, _, _, cx| this.copy(cx))))
-            .child(Button::new("upload").label("Upload").on_click(cx.listener(|this, _, _, cx| this.upload(cx))))
-            .child(Button::new("save").label("Save").on_click(cx.listener(|this, _, _, cx| this.save(false, cx))))
-            .child(Button::new("saveas").label("Save as…").on_click(cx.listener(|this, _, _, cx| this.save(true, cx))));
-        if self.reply.is_some() {
-            footer =
-                footer.child(Button::new("continue").label("Continue").primary().on_click(cx.listener(|this, _, w, _| this.finish(w))));
-        } else {
-            footer = footer.child(Button::new("close").label("Close").on_click(|_, w, _| w.remove_window()));
-        }
+            .right(space::S4)
+            .bottom(space::S4)
+            .child(widgets::icon_button(
+                "zoom-out",
+                IconName::ZoomOut,
+                "Zoom the view out",
+                false,
+                cx.listener(|this, _, _, cx| {
+                    this.zoom = (this.zoom / 1.25).max(0.1);
+                    cx.notify();
+                }),
+                cx,
+            ))
+            .child(
+                div()
+                    .min_w(px(46.))
+                    .text_center()
+                    .text_size(px(12.5))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(format!("{:.0}%", z * 100.0)),
+            )
+            .child(widgets::icon_button(
+                "zoom-in",
+                IconName::ZoomIn,
+                "Zoom the view in",
+                false,
+                cx.listener(|this, _, _, cx| {
+                    this.zoom = (this.zoom * 1.25).min(8.0);
+                    cx.notify();
+                }),
+                cx,
+            ))
+            .child(widgets::divider_v(cx))
+            .child(widgets::icon_button(
+                "zoom-fit",
+                IconName::Maximize,
+                "Fit to window",
+                self.zoom == 1.0,
+                cx.listener(|this, _, _, cx| {
+                    this.zoom = 1.0;
+                    cx.notify();
+                }),
+                cx,
+            ));
 
-        div()
-            .id("laqta-editor")
-            .track_focus(&self.focus)
-            .size_full()
+        let mut stage = div()
+            .id("stage")
             .relative()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            .text_sm()
-            .child(toolbar)
+            .flex_1()
+            .min_h_0()
+            .mr(px(GUTTER))
+            .rounded(radius::LG)
+            .bg(x.stage)
+            .overflow_hidden()
+            .child(tracker)
             .child(canvas)
-            .child(footer)
-            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
-                let (x, y) = this.to_image(ev.position, window);
-                this.input(EditorInput::PointerMove { x, y, mods: mods(&ev.modifiers) }, window, cx);
-            }))
+            .child(zoom)
             .on_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| {
-                let y_win = f32::from(ev.position.y);
-                if y_win < TOOLBAR_H || y_win > f32::from(window.viewport_size().height) - FOOTER_H {
-                    return;
-                }
                 if let Some(b) = button(ev.button) {
                     window.focus(&this.focus, cx);
                     let (x, y) = this.to_image(ev.position, window);
                     this.input(EditorInput::PointerDown { x, y, button: b, mods: mods(&ev.modifiers) }, window, cx);
                 }
+            }));
+
+        if self.emoji_open {
+            let mut grid = div().w(px(6. * 40.)).flex().flex_wrap().gap(px(4.));
+            for (i, e) in EMOJI.into_iter().enumerate() {
+                let wash = x.wash;
+                grid = grid.child(
+                    div()
+                        .id(("emoji", i))
+                        .size(px(36.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(radius::MD)
+                        .text_size(px(20.))
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(wash))
+                        .child(e)
+                        .on_click(cx.listener(move |this, _, w, cx| this.emoji(e, w, cx))),
+                );
+            }
+            let panel = stop_canvas(div())
+                .absolute()
+                .left(space::S4)
+                .top(space::S4)
+                .p(space::S3)
+                .flex()
+                .flex_col()
+                .gap(space::S2)
+                .rounded(radius::XL)
+                .bg(t.sidebar)
+                .border_1()
+                .border_color(t.foreground.opacity(0.1))
+                .child(
+                    div()
+                        .text_size(text::CAPTION)
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(t.muted_foreground)
+                        .child("Pick an emoji"),
+                )
+                .child(grid);
+            stage = stage.child(panel);
+        }
+
+        if let Some(m) = self.message.clone() {
+            self.dismiss_later(cx);
+            stage = stage.child(
+                div().absolute().top(space::S4).left_0().right_0().flex().justify_center().child(
+                    widgets::floating(cx)
+                        .px(space::S4)
+                        .py(space::S2)
+                        .gap(space::S2)
+                        .text_size(text::LABEL)
+                        .child(widgets::icon(IconName::Info, t.muted_foreground))
+                        .child(m),
+                ),
+            );
+        }
+        stage
+    }
+}
+
+impl Render for EditorWindow {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let title = match &self.path {
+            Some(p) => p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Editor".into()),
+            None => "Editor".to_string(),
+        };
+        let rail = self.rail(cx);
+        let topbar = self.topbar(cx);
+        let stage = self.stage(window, cx);
+        let footer = self.footer(cx);
+
+        chrome::rounded(div(), window)
+            .id("laqta-editor")
+            .track_focus(&self.focus)
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(t.sidebar)
+            .text_color(t.foreground)
+            .font_family(text::UI_FONT)
+            .text_size(text::BODY)
+            .child(chrome::TitleBar::new().title(title))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_row()
+                    .child(rail)
+                    .child(div().flex_1().min_w_0().flex().flex_col().child(topbar).child(stage).child(footer)),
+            )
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
+                let (x, y) = this.to_image(ev.position, window);
+                this.input(EditorInput::PointerMove { x, y, mods: mods(&ev.modifiers) }, window, cx);
             }))
             .capture_any_mouse_up(cx.listener(|this, ev: &MouseUpEvent, window, cx| {
                 if let Some(b) = button(ev.button) {
@@ -786,27 +1084,21 @@ impl Render for EditorWindow {
                     this.input(EditorInput::Text(ch), window, cx);
                     return;
                 }
-                if let Some(key) = editor_key(ev.keystroke.key.as_str()) {
+                // Single-key tool shortcuts, when no text is being typed.
+                let key = ev.keystroke.key.as_str();
+                if !this.chrome.editing_text
+                    && !m.ctrl
+                    && !m.alt
+                    && !m.shift
+                    && key.chars().count() == 1
+                    && let Some(t) = key.chars().next().and_then(editor_toolbar::tool_for_key)
+                {
+                    this.select_tool(t, window, cx);
+                    return;
+                }
+                if let Some(key) = editor_key(key) {
                     this.input(EditorInput::Key { key, mods: m }, window, cx);
                 }
             }))
-    }
-}
-
-impl EditorWindow {
-    fn effects_menu(&self, cx: &mut Context<Self>) -> Div {
-        let presets = cx.global::<UiState>().services.app.settings().effect_presets;
-        let mut row = div().flex().flex_row().gap(px(2.));
-        for (i, p) in presets.into_iter().enumerate().take(6) {
-            let name = if p.name.is_empty() { format!("Preset {}", i + 1) } else { p.name.clone() };
-            row = row.child(
-                Button::new(SharedString::from(format!("fx-{i}")))
-                    .label(name)
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(move |this, _, w, cx| this.command(Command::ApplyEffect(p.clone()), w, cx))),
-            );
-        }
-        row
     }
 }
