@@ -22,6 +22,7 @@ env:
   LINUX_DEPS: >-
     libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev libxcb1-dev
     libfontconfig-dev libfreetype-dev libdbus-1-dev libpipewire-0.3-dev libclang-dev pkg-config
+    libegl-dev libgbm-dev libdrm-dev
 
 jobs:
   lint:
