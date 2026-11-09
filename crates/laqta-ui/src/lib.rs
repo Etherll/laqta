@@ -26,4 +26,7 @@ mod tray_popup;
 mod url_window;
 mod widgets;
 
+#[cfg(test)]
+mod headless_tests;
+
 pub use runtime::{ModelProgress, ModelRow, ModelService, UiHandle, UiReceiver, UiServices, run};

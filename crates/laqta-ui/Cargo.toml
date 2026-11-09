@@ -35,5 +35,7 @@ jiff.workspace = true
 laqta-imaging.workspace = true
 
 [dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
 laqta-ports = { workspace = true, features = ["fakes"] }
 rayon.workspace = true
+tempfile.workspace = true
