@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_channel::oneshot;
+use futures_lite::FutureExt;
 use laqta_domain::Bitmap;
 use laqta_domain::effects::Preset;
 use laqta_domain::workflow::{AfterCaptureTasks, AfterUploadTasks, TaskSettings};
@@ -44,9 +45,13 @@ pub(super) async fn capture(
 ) {
     cx.reporter.status(id, TaskStatus::Preparing);
     cx.reporter.status(id, TaskStatus::Working);
-    let mut job = Job { cx, id, settings, info, stop };
-    // The outcome is already reported, so there is nothing to do with it here.
-    let _ = job.run(input).await;
+    let mut job = Job { cx, id, settings, info, stop, file: None };
+    // The outcome is already reported, so there is nothing to do with it here. A panic is not: it ends the job as a
+    // failure that the caller reports (ADR 020), but the file still goes first, as in ShareX's `finally`.
+    if let Err(payload) = AssertUnwindSafe(job.run(input)).catch_unwind().await {
+        job.finally().await;
+        std::panic::resume_unwind(payload);
+    }
 }
 
 pub(super) struct Job {
@@ -55,10 +60,23 @@ pub(super) struct Job {
     pub(super) settings: TaskSettings,
     pub(super) info: CaptureInfo,
     pub(super) stop: Arc<AtomicBool>,
+    /// The file this job wrote and later steps use. `DELETE_FILE` removes it when the job ends, whatever the outcome.
+    pub(super) file: Option<PathBuf>,
 }
 
 impl Job {
+    /// The steps, then ShareX's `finally` (the delete), then `Completed` for a job that ran to its last step. The
+    /// delete comes before `Completed`, and after the `Failed` or `Stopped` that a halted job has already reported.
     async fn run(&mut self, input: CaptureImage) -> Step {
+        let outcome = self.steps(input).await;
+        self.finally().await;
+        if outcome.is_ok() {
+            self.complete();
+        }
+        outcome
+    }
+
+    async fn steps(&mut self, input: CaptureImage) -> Step {
         self.quick_task_menu().await?;
         let input = if needs_pixels(self.settings.after_capture) {
             let composed = self.compose(input).await?;
@@ -93,6 +111,7 @@ impl Job {
             // With both saves set, both files are written. The plain save is the file the later steps use.
             saved_file = saved_file.or(chosen);
         }
+        self.file = saved_file.as_ref().map(|saved| saved.path.clone());
         // An action that writes an output file hands it on: the later steps, and the upload, use that file.
         let mut uploaded_output = None;
         if flags.contains(AfterCaptureTasks::PERFORM_ACTIONS) {
@@ -101,6 +120,7 @@ impl Job {
                 && let Some(output) = self.perform_actions(&path).await?
             {
                 saved_file = Some(SavedFile { path: output.clone() });
+                self.file = Some(output.clone());
                 uploaded_output = Some(output);
             }
         }
@@ -148,7 +168,7 @@ impl Job {
             self.analyze(&image).await?;
         }
 
-        // The upload phase. A failure or a stop keeps the saved file: nothing is deleted on that path.
+        // The upload phase. A failure or a stop ends the job here, and `finally` still deletes the file.
         let url = match for_upload {
             Some(encoded) => self.upload_image(encoded, size, saved, uploaded_output, thumbnail_path).await?,
             None => None,
@@ -157,10 +177,6 @@ impl Job {
         if let Some(preview) = preview {
             self.toast(saved, Some(preview), url)?;
         }
-        if flags.contains(AfterCaptureTasks::DELETE_FILE) {
-            self.delete(saved).await?;
-        }
-        self.complete();
         Ok(())
     }
 
@@ -701,17 +717,25 @@ impl Job {
         Ok(())
     }
 
-    async fn delete(&self, saved: Option<&SavedFile>) -> Step {
-        let Some(saved) = saved else { return Ok(()) };
-        self.checkpoint()?;
-        match files::remove(self.cx.ports.spawner.as_ref(), saved.path.clone()).await {
-            Ok(()) => self.emit(TaskEvent::Deleted { id: self.id, path: saved.path.clone() }),
+    /// `DELETE_FILE` removes the file the job wrote, however the job ended. A
+    /// stop does not skip it, so there is no checkpoint. A file that is already gone is not an error.
+    pub(super) async fn finally(&mut self) {
+        if !self.settings.after_capture.contains(AfterCaptureTasks::DELETE_FILE) {
+            return;
+        }
+        let Some(path) = self.file.take() else { return };
+        let spawner = self.cx.ports.spawner.as_ref();
+        if !files::exists(spawner, path.clone()).await {
+            return;
+        }
+        match files::remove(spawner, path.clone()).await {
+            Ok(()) => self.emit(TaskEvent::Deleted { id: self.id, path }),
             Err(error) => self.step_failed("delete", error),
         }
-        Ok(())
     }
 
-    /// Stops the job when a stop was requested. Emits `Stopping`, then `Stopped`, and leaves any saved file.
+    /// Stops the job when a stop was requested. Emits `Stopping`, then `Stopped`. A saved file stays, unless
+    /// `DELETE_FILE` is set: `finally` removes it.
     pub(super) fn checkpoint(&self) -> Step {
         if !self.stop.load(Ordering::SeqCst) {
             return Ok(());

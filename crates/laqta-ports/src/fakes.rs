@@ -392,6 +392,8 @@ pub struct FakeToolHost {
     /// Sizes of pinned images.
     pub pins: Mutex<Vec<(u32, u32)>>,
     pub texts: Mutex<Vec<(String, String)>>,
+    /// Each `show_ocr`: the image's size and the result. It is not also recorded in `texts`.
+    pub ocr: Mutex<Vec<((u32, u32), crate::OcrResult)>>,
 }
 
 impl crate::ToolHost for FakeToolHost {
@@ -413,6 +415,10 @@ impl crate::ToolHost for FakeToolHost {
     }
     fn show_text(&self, title: &str, text: &str) -> Result<(), PortError> {
         self.texts.lock().unwrap().push((title.to_owned(), text.to_owned()));
+        Ok(())
+    }
+    fn show_ocr(&self, image: Bitmap, result: crate::OcrResult) -> Result<(), PortError> {
+        self.ocr.lock().unwrap().push(((image.width(), image.height()), result));
         Ok(())
     }
 }
@@ -976,5 +982,36 @@ impl crate::RemoteStorage for FakeRemoteStorage {
     }
     fn mkdir(&self, _path: String) -> BoxFuture<'_, Result<(), PortError>> {
         Box::pin(async { Ok(()) })
+    }
+}
+
+/// Records the history edits it is asked for. `fail` makes each call return that error instead.
+#[derive(Debug, Default)]
+pub struct FakeHistoryEdit {
+    /// `(id, tags)` per `set_tags` call.
+    pub tagged: Mutex<Vec<(i64, Vec<String>)>>,
+    pub deleted: Mutex<Vec<i64>>,
+    pub fail: Mutex<Option<PortError>>,
+}
+
+impl FakeHistoryEdit {
+    fn refused(&self) -> Result<(), PortError> {
+        match self.fail.lock().unwrap().clone() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+impl crate::HistoryEdit for FakeHistoryEdit {
+    fn set_tags(&self, id: i64, tags: &[String]) -> Result<(), PortError> {
+        self.refused()?;
+        self.tagged.lock().unwrap().push((id, tags.to_vec()));
+        Ok(())
+    }
+    fn delete(&self, id: i64) -> Result<(), PortError> {
+        self.refused()?;
+        self.deleted.lock().unwrap().push(id);
+        Ok(())
     }
 }

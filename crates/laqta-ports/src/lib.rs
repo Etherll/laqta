@@ -2,6 +2,7 @@
 
 pub mod desktop;
 pub mod error;
+pub mod history;
 pub mod notify;
 pub mod overlay;
 pub mod recording;
@@ -16,6 +17,7 @@ pub mod fakes;
 
 pub use desktop::{ActionCallback, Clipboard, ClipboardContent, HotkeyRegistrar, Shell, Tray, TrayItem, TrayMenu};
 pub use error::PortError;
+pub use history::HistoryEdit;
 pub use notify::{HostInfo, Notifier, Rng, Sound, Toast};
 pub use overlay::{EditorHost, HoverSource, InputCallback, Overlay, RegionView, ToolHost, ToolKind, ToolWindow};
 pub use recording::{

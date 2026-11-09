@@ -119,6 +119,7 @@ pub use theme::*;
 pub use time::{calendar, date_picker, time_field};
 pub use title_bar::*;
 pub use virtual_list::{VirtualList, VirtualListScrollHandle, h_virtual_list, v_virtual_list};
+pub use root::{is_window_blank, set_window_blank};
 pub use window_border::{WindowBorder, window_border, window_corner_radii, window_paddings};
 pub use window_ext::WindowExt;
 

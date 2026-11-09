@@ -31,7 +31,7 @@ pub(crate) fn open(images_only: bool, cx: &mut App) {
         titlebar: Some(crate::chrome::titlebar("Laqta history")),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,
-        app_id: Some("laqta".into()),
+        app_id: Some(crate::APP_ID.into()),
         ..Default::default()
     };
     match cx.open_window(options, |window, cx| {
@@ -73,6 +73,7 @@ impl HistoryWindow {
             }
         })
         .detach();
+        crate::vanish::restore_on_activation(window, cx).detach();
         let mut this = HistoryWindow {
             search,
             tags,
@@ -128,9 +129,9 @@ impl HistoryWindow {
     fn save_tags(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.editing_tags.take() else { return };
         let tags = history::parse_tags(&self.tags.read(cx).value());
-        let Some(store) = cx.global::<UiState>().services.history.clone() else { return self.reload(cx) };
-        // SQLite writes run off the UI thread; the list reloads once the write is in.
-        let task = cx.background_spawn(async move { store.set_tags(id, &tags).map_err(|e| e.to_string()) });
+        // The write goes through the app (off the UI thread); the list reloads once it is in.
+        let write = cx.global::<UiState>().services.app.history_set_tags(id, tags);
+        let task = cx.background_spawn(async move { write.await.map_err(|e| e.to_string()) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
@@ -145,8 +146,8 @@ impl HistoryWindow {
 
     /// Removes the history entry only; the file stays where it is.
     fn delete(&mut self, id: i64, cx: &mut Context<Self>) {
-        let Some(store) = cx.global::<UiState>().services.history.clone() else { return self.reload(cx) };
-        let task = cx.background_spawn(async move { store.delete(id).map_err(|e| e.to_string()) });
+        let write = cx.global::<UiState>().services.app.history_delete(id);
+        let task = cx.background_spawn(async move { write.await.map_err(|e| e.to_string()) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
@@ -322,9 +323,8 @@ impl Render for HistoryWindow {
                         "Capture a region",
                         Pill::Primary,
                         false,
-                        move |_, window, _| {
-                            window.minimize_window();
-                            dispatch(laqta_domain::Action::RectangleRegion);
+                        move |_, window, cx| {
+                            crate::vanish::then_dispatch(laqta_domain::Action::RectangleRegion, dispatch.clone(), window, cx);
                         },
                         cx,
                     )),
@@ -385,7 +385,7 @@ impl Render for HistoryWindow {
             };
             match image {
                 Some(image) => frame.child(img(image).size_full().rounded(r).object_fit(gpui::ObjectFit::Cover)),
-                None => frame.child(div().text_size(px(11.)).text_color(t.muted_foreground).child(row.kind)),
+                None => frame.child(div().text_size(text::CAPTION).text_color(t.muted_foreground).child(row.kind)),
             }
         };
 
@@ -412,7 +412,7 @@ impl Render for HistoryWindow {
                             .gap(px(1.))
                             .child(div().text_size(text::LABEL).font_weight(FontWeight::MEDIUM).child(r.when.clone()))
                             .child(
-                                div().truncate().text_size(px(12.)).text_color(t.muted_foreground).child(
+                                div().truncate().text_size(text::SMALL).text_color(t.muted_foreground).child(
                                     [r.dimensions.clone(), r.size.clone()]
                                         .into_iter()
                                         .filter(|s| !s.is_empty())
@@ -466,7 +466,7 @@ impl Render for HistoryWindow {
                             .flex()
                             .flex_col()
                             .gap(px(2.))
-                            .child(div().truncate().text_size(px(14.)).font_weight(FontWeight::MEDIUM).child(r.title.clone()))
+                            .child(div().truncate().text_size(text::ROW).font_weight(FontWeight::MEDIUM).child(r.title.clone()))
                             .child(div().truncate().text_size(text::LABEL).text_color(t.muted_foreground).child(meta.join(" · ")))
                             .when(!r.tags.is_empty(), |d| {
                                 let mut chips = div().flex().gap(space::S1).pt(px(2.));

@@ -114,7 +114,16 @@ pub enum RegionMouseAction {
 #[serde(default)]
 pub struct RegionCaptureOptions {
     pub multi_region: bool,
+    /// Keep a drawn or clicked region as an adjustable selection with the capture tools beside it,
+    /// instead of capturing as soon as the mouse is released.
+    pub show_tools_after_select: bool,
+    /// The bar at the top of the selection screen: screenshot or video, region, full screen or
+    /// monitor, edit after capture, colour picker, text capture and close.
+    pub show_mode_bar: bool,
     pub snap_to_windows: bool,
+    /// Also snap to the regions inside a window (sidebars, panels, text boxes), found from the
+    /// screenshot's pixels and merged with the accessibility tree.
+    pub detect_regions: bool,
     pub show_magnifier: bool,
     pub magnifier_pixels: u32,
     pub show_crosshair: bool,
@@ -133,7 +142,10 @@ impl Default for RegionCaptureOptions {
     fn default() -> Self {
         RegionCaptureOptions {
             multi_region: false,
+            show_tools_after_select: true,
+            show_mode_bar: true,
             snap_to_windows: true,
+            detect_regions: true,
             show_magnifier: true,
             magnifier_pixels: 15,
             show_crosshair: false,
@@ -157,6 +169,20 @@ mod tests {
         assert_eq!(options.min_size, 7);
         assert_eq!(options.right_click, RegionMouseAction::RemoveShapeOrCancel);
         assert_eq!(options.middle_click, RegionMouseAction::CancelCapture);
+    }
+
+    #[test]
+    fn tools_after_select_defaults_on_and_round_trips() {
+        let old: RegionCaptureOptions = serde_json::from_str(r#"{"min_size": 7}"#).expect("old settings still load");
+        assert!(old.show_tools_after_select, "settings saved before the option existed get the tools");
+        assert!(old.show_mode_bar, "and the mode bar");
+
+        let off: RegionCaptureOptions = serde_json::from_str(r#"{"show_tools_after_select": false}"#).expect("explicit value loads");
+        assert!(!off.show_tools_after_select);
+
+        let json = serde_json::to_string(&off).expect("serialises");
+        let back: RegionCaptureOptions = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(back, off);
     }
 
     #[test]

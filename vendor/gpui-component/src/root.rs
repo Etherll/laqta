@@ -18,6 +18,29 @@ use gpui::{
 use gpui_base::{TextSelection, TextSelectionScopeId, motion::Presence};
 use std::{any::TypeId, cell::Cell, rc::Rc};
 
+/// Laqta patch: windows that draw nothing, frame and shadow included, so a compositor animating
+/// them (minimizing before a capture) has nothing to show.
+#[derive(Default)]
+struct BlankWindows(std::collections::HashSet<gpui::WindowId>);
+
+impl gpui::Global for BlankWindows {}
+
+/// Laqta patch: makes `window` draw nothing, or draw again, from its next frame.
+pub fn set_window_blank(window: &mut Window, blank: bool, cx: &mut App) {
+    let id = window.window_handle().window_id();
+    let set = &mut cx.default_global::<BlankWindows>().0;
+    let changed = if blank { set.insert(id) } else { set.remove(&id) };
+    if changed {
+        window.refresh();
+    }
+}
+
+/// Laqta patch: whether `window` draws nothing.
+pub fn is_window_blank(window: &Window, cx: &App) -> bool {
+    cx.try_global::<BlankWindows>()
+        .is_some_and(|set| set.0.contains(&window.window_handle().window_id()))
+}
+
 pub(crate) fn init(cx: &mut App) {
     gpui_base::Root::register_plugin::<WindowState>(cx, WindowState::new);
 }
@@ -735,10 +758,13 @@ impl gpui_base::RootPlugin for WindowState {
         &self,
         surface: gpui::AnyElement,
         _root: &gpui_base::Root,
-        _window: &mut Window,
-        _cx: &mut App,
+        window: &mut Window,
+        cx: &mut App,
     ) -> impl IntoElement {
-        window_border().child(surface)
+        if is_window_blank(window, cx) {
+            return div().into_any_element();
+        }
+        window_border().child(surface).into_any_element()
     }
 }
 

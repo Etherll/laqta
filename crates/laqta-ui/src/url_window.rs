@@ -25,7 +25,7 @@ pub(crate) fn open(url: String, qr: bool, cx: &mut App) {
         titlebar: Some(crate::chrome::titlebar(if qr { "QR code" } else { "Upload finished" })),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,
-        app_id: Some("laqta".into()),
+        app_id: Some(crate::APP_ID.into()),
         focus: true,
         ..Default::default()
     };
@@ -77,6 +77,9 @@ impl Render for UrlWindow {
             }))
             .child(Button::new("close").label("Close").ghost().on_click(|_, window, _| window.remove_window()));
         let title = if self.qr.is_some() { "QR code" } else { "Upload finished" };
-        crate::chrome::rounded(widgets::page(cx), window).child(crate::chrome::TitleBar::new().title(title).flat()).child(body).child(footer)
+        crate::chrome::rounded(widgets::page(cx), window)
+            .child(crate::chrome::TitleBar::new().title(title).flat())
+            .child(body)
+            .child(footer)
     }
 }

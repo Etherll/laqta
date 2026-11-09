@@ -249,7 +249,7 @@ pub(crate) fn open(kind: ToolKind, cx: &mut App) {
         titlebar: Some(crate::chrome::titlebar(title(kind))),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,
-        app_id: Some("laqta".into()),
+        app_id: Some(crate::APP_ID.into()),
         focus: true,
         ..Default::default()
     };
@@ -670,25 +670,31 @@ impl Render for ToolsWindow {
 
         if self.kind == ToolKind::MonitorTest {
             let (colour, name) = TEST_COLOURS[self.colour_step % TEST_COLOURS.len()];
-            return crate::chrome::rounded(widgets::page(cx), window).child(crate::chrome::TitleBar::new().title(title(self.kind)).flat()).child(
-                div()
-                    .id("monitor-test")
-                    .flex_1()
-                    .flex()
-                    .items_end()
-                    .justify_center()
-                    .p(px(12.))
-                    .bg(gpui::rgb(colour))
-                    .text_color(if colour == 0xffffff || colour == 0xffff00 || colour == 0x00ffff { gpui::black() } else { gpui::white() })
-                    .child(format!("{name} — click for the next colour"))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.colour_step += 1;
-                            cx.notify();
-                        }),
-                    ),
-            );
+            return crate::chrome::rounded(widgets::page(cx), window)
+                .child(crate::chrome::TitleBar::new().title(title(self.kind)).flat())
+                .child(
+                    div()
+                        .id("monitor-test")
+                        .flex_1()
+                        .flex()
+                        .items_end()
+                        .justify_center()
+                        .p(px(12.))
+                        .bg(gpui::rgb(colour))
+                        .text_color(if colour == 0xffffff || colour == 0xffff00 || colour == 0x00ffff {
+                            gpui::black()
+                        } else {
+                            gpui::white()
+                        })
+                        .child(format!("{name} — click for the next colour"))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.colour_step += 1;
+                                cx.notify();
+                            }),
+                        ),
+                );
         }
         if self.kind == ToolKind::NetworkMonitor {
             let mut table = div().flex().flex_col().gap(px(4.)).text_sm();
@@ -716,7 +722,9 @@ impl Render for ToolsWindow {
                         .child(div().w(px(110.)).child(crate::presenters::history::format_size(*ttx))),
                 );
             }
-            return crate::chrome::rounded(widgets::page(cx), window).child(crate::chrome::TitleBar::new().title(title(self.kind)).flat()).child(body.child(table));
+            return crate::chrome::rounded(widgets::page(cx), window)
+                .child(crate::chrome::TitleBar::new().title(title(self.kind)).flat())
+                .child(body.child(table));
         }
 
         if sp.pick != Pick::Nothing {

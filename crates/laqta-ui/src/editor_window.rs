@@ -16,7 +16,7 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_component::{ActiveTheme as _, Icon, Root};
+use gpui_component::{ActiveTheme as _, Disableable as _, Icon, Root};
 use laqta_domain::color::Rgba;
 use laqta_domain::{Bitmap, ImageFormat};
 use laqta_editor::{Chrome, Command, Editor, EditorInput, EditorKey, EditorRequest, Mods, PointerButton, Tool};
@@ -110,7 +110,7 @@ pub(crate) fn open(image: Option<Bitmap>, reply: Option<EditReply>, path: Option
         titlebar: Some(chrome::titlebar("Laqta editor")),
         window_decorations: chrome::decorations(),
         app_owns_titlebar_drag: true,
-        app_id: Some("laqta".into()),
+        app_id: Some(crate::APP_ID.into()),
         focus: true,
         window_min_size: Some(size(px(720.), px(480.))),
         ..Default::default()
@@ -133,7 +133,7 @@ pub(crate) fn open_file(path: Option<PathBuf>, cx: &mut App) {
 }
 
 /// Converts a rendered canvas for GPUI on the compute pool (a 4K copy and channel swap).
-async fn compute_picture(compute: &ComputeFn, bitmap: Bitmap) -> Option<Arc<RenderImage>> {
+pub(crate) async fn compute_picture(compute: &ComputeFn, bitmap: Bitmap) -> Option<Arc<RenderImage>> {
     crate::presenters::render_gate::compute(compute, move || to_render_image(&bitmap)).await.flatten()
 }
 
@@ -156,6 +156,49 @@ struct EditorWindow {
     stage: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The message the dismiss timer is running for.
     toast_for: Option<String>,
+    /// A smart tool at work ("Removing the background…"); others wait for it.
+    busy: Option<&'static str>,
+}
+
+/// The editor's AI tools, run on the whole current image.
+#[derive(Clone, Copy, Debug)]
+enum Smart {
+    CopyText,
+    RemoveBackground,
+    /// Fill the box (image pixels) with what the model thinks is behind it.
+    Erase(laqta_domain::geometry::PhysRect),
+    Describe,
+}
+
+impl Smart {
+    fn busy(self) -> &'static str {
+        match self {
+            Smart::CopyText => "Reading the text…",
+            Smart::RemoveBackground => "Removing the background…",
+            Smart::Erase(_) => "Erasing…",
+            Smart::Describe => "Describing the image…",
+        }
+    }
+}
+
+/// What a smart tool hands back to the window.
+enum SmartResult {
+    Text { image: Bitmap, text: String },
+    Description { image: Bitmap, text: String },
+    Image(Bitmap),
+}
+
+/// A mask the size of the image, set inside `rect`: one byte per pixel, row-major.
+fn rect_mask(width: u32, height: u32, rect: laqta_domain::geometry::PhysRect) -> Vec<u8> {
+    let mut mask = vec![0u8; width as usize * height as usize];
+    let x0 = rect.x.clamp(0, width as i32) as usize;
+    let y0 = rect.y.clamp(0, height as i32) as usize;
+    let x1 = (rect.x + rect.width as i32).clamp(0, width as i32) as usize;
+    let y1 = (rect.y + rect.height as i32).clamp(0, height as i32) as usize;
+    for row in mask.chunks_exact_mut(width as usize).take(y1).skip(y0) {
+        row[x0..x1].fill(255);
+    }
+    mask
 }
 
 /// The compute pool as the presenters take it. A panic drops the work's result sender, so the
@@ -206,6 +249,7 @@ impl EditorWindow {
             emoji_open: false,
             stage: Rc::new(Cell::new(None)),
             toast_for: None,
+            busy: None,
         };
         if this.interaction.initial() {
             this.start_render(cx);
@@ -250,6 +294,10 @@ impl EditorWindow {
 
     /// Pointer, key and text input: the engine runs inline (state math only); rendering is async.
     fn input(&mut self, input: EditorInput, window: &mut Window, cx: &mut Context<Self>) {
+        // A smart tool replaces the whole image when it lands; edits made meanwhile would be lost.
+        if self.busy.is_some() {
+            return;
+        }
         let step = self.interaction.input(input);
         self.apply(step, window, cx);
     }
@@ -286,6 +334,7 @@ impl EditorWindow {
             EditorRequest::Save => self.save(false, cx),
             EditorRequest::SaveAs => self.save(true, cx),
             EditorRequest::Continue => self.finish(window),
+            EditorRequest::EraseObject { rect } => self.smart(Smart::Erase(rect), window, cx),
         }
     }
 
@@ -380,6 +429,64 @@ impl EditorWindow {
             Err(e) => format!("Upload failed: {e}"),
         });
         cx.notify();
+    }
+
+    /// Runs a smart tool on the current image: export on the compute pool, the model through
+    /// `App`, then the result back into the editor (an undoable step) or a text window.
+    fn smart(&mut self, op: Smart, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            return;
+        }
+        self.busy = Some(op.busy());
+        cx.notify();
+        let app = cx.global::<UiState>().services.app.clone();
+        let prompt = app.settings().cloud.analyzer.prompt.clone();
+        let editor = self.interaction.editor();
+        let export =
+            crate::presenters::render_gate::compute(&self.compute, move || editor.lock().unwrap_or_else(|p| p.into_inner()).export());
+        let work = cx.background_spawn(async move {
+            let image = export.await.ok_or_else(|| "Couldn't read the image.".to_string())?;
+            let fail = |e: laqta_ports::AppError| e.to_string();
+            Ok::<_, String>(match op {
+                Smart::CopyText => {
+                    let text = app.recognize_text(image.clone()).await.map_err(fail)?.text();
+                    SmartResult::Text { image, text }
+                }
+                Smart::RemoveBackground => SmartResult::Image(app.remove_background(image).await.map_err(fail)?),
+                Smart::Erase(rect) => {
+                    let mask = rect_mask(image.width(), image.height(), rect);
+                    SmartResult::Image(app.erase(image, mask).await.map_err(fail)?)
+                }
+                Smart::Describe => {
+                    let text = app.analyze(image.clone(), prompt).await.map_err(fail)?;
+                    SmartResult::Description { image, text }
+                }
+            })
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = work.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.busy = None;
+                match result {
+                    Ok(SmartResult::Image(image)) => this.command(Command::ReplaceImage(image), window, cx),
+                    Ok(SmartResult::Text { image, text }) => {
+                        let copied = !text.trim().is_empty();
+                        if copied {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                        }
+                        let title = "Text capture".into();
+                        crate::text_window::open(crate::text_window::TextResult { title, image: Some(image), text, copied }, cx);
+                    }
+                    Ok(SmartResult::Description { image, text }) => {
+                        let title = "Image description".into();
+                        crate::text_window::open(crate::text_window::TextResult { title, image: Some(image), text, copied: false }, cx);
+                    }
+                    Err(e) => this.message = Some(e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn pick_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -498,11 +605,11 @@ impl EditorWindow {
     }
 }
 
-fn mods(m: &gpui::Modifiers) -> Mods {
+pub(crate) fn mods(m: &gpui::Modifiers) -> Mods {
     Mods { shift: m.shift, ctrl: m.control || m.platform, alt: m.alt }
 }
 
-fn button(b: MouseButton) -> Option<PointerButton> {
+pub(crate) fn button(b: MouseButton) -> Option<PointerButton> {
     match b {
         MouseButton::Left => Some(PointerButton::Left),
         MouseButton::Right => Some(PointerButton::Right),
@@ -511,7 +618,7 @@ fn button(b: MouseButton) -> Option<PointerButton> {
     }
 }
 
-fn editor_key(key: &str) -> Option<EditorKey> {
+pub(crate) fn editor_key(key: &str) -> Option<EditorKey> {
     Some(match key {
         "delete" => EditorKey::Delete,
         "backspace" => EditorKey::Backspace,
@@ -548,6 +655,7 @@ fn tool_icon(t: Tool) -> IconName {
         Tool::Cursor => IconName::MousePointer,
         Tool::Highlight => IconName::Highlighter,
         Tool::SmartEraser => IconName::Eraser,
+        Tool::ObjectEraser => IconName::WandSparkles,
         Tool::Blur => IconName::Droplet,
         Tool::Pixelate => IconName::Grid3x3,
         Tool::Magnify => IconName::ZoomIn,
@@ -769,14 +877,50 @@ impl EditorWindow {
             .child(redo)
             .child(widgets::divider_v(cx).mx(space::S2))
             .child(props)
+            .child(self.smart_menu(cx))
             .child(self.image_menu(cx))
+    }
+
+    /// The AI tools: read the text, cut out the subject, erase an object, describe the image.
+    fn smart_menu(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let entity = cx.entity().downgrade();
+        let busy = self.busy.is_some();
+        Button::new("smart-menu")
+            .label("AI tools")
+            .icon(Icon::new(IconName::Sparkles))
+            .ghost()
+            .dropdown_caret(true)
+            .disabled(busy)
+            .dropdown_menu(move |menu, _, _| {
+                let run = |op: Smart| {
+                    let entity = entity.clone();
+                    move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
+                        let _ = entity.update(cx, |this, cx| this.smart(op, window, cx));
+                    }
+                };
+                let erase = {
+                    let entity = entity.clone();
+                    move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
+                        let _ = entity.update(cx, |this, cx| this.pick_tool(Tool::ObjectEraser, window, cx));
+                    }
+                };
+                menu.item(PopupMenuItem::new("Copy text").icon(Icon::new(IconName::ScanText)).on_click(run(Smart::CopyText)))
+                    .item(
+                        PopupMenuItem::new("Remove background")
+                            .icon(Icon::new(IconName::WandSparkles))
+                            .on_click(run(Smart::RemoveBackground)),
+                    )
+                    .item(PopupMenuItem::new("Erase an object").icon(Icon::new(IconName::Eraser)).on_click(erase))
+                    .separator()
+                    .item(PopupMenuItem::new("Describe the image").icon(Icon::new(IconName::Eye)).on_click(run(Smart::Describe)))
+            })
     }
 
     /// Rotate, flip, auto crop and the effect presets: things done to the whole image.
     fn image_menu(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let presets = cx.global::<UiState>().services.app.settings().effect_presets;
         let entity = cx.entity().downgrade();
-        Button::new("image-menu").label("Image").icon(Icon::new(IconName::WandSparkles)).ghost().dropdown_caret(true).dropdown_menu(
+        Button::new("image-menu").label("Image").icon(Icon::new(IconName::Image)).ghost().dropdown_caret(true).dropdown_menu(
             move |mut menu, _, _| {
                 let run = |c: Command| {
                     let entity = entity.clone();
@@ -835,7 +979,14 @@ impl EditorWindow {
             .gap(space::S2)
             .child(widgets::pill("copy", "Copy", widgets::Pill::Default, false, cx.listener(|this, _, _, cx| this.copy(cx)), cx))
             .child(widgets::pill("upload", "Upload", widgets::Pill::Default, false, cx.listener(|this, _, _, cx| this.upload(cx)), cx))
-            .child(widgets::pill("saveas", "Save as…", widgets::Pill::Default, false, cx.listener(|this, _, _, cx| this.save(true, cx)), cx));
+            .child(widgets::pill(
+                "saveas",
+                "Save as…",
+                widgets::Pill::Default,
+                false,
+                cx.listener(|this, _, _, cx| this.save(true, cx)),
+                cx,
+            ));
         actions = if continuing {
             actions
                 .child(widgets::pill("save", "Save", widgets::Pill::Default, false, cx.listener(|this, _, _, cx| this.save(false, cx)), cx))
@@ -859,6 +1010,7 @@ impl EditorWindow {
             .pr(px(GUTTER + 6.0))
             .pl(space::S1)
             .child(div().flex_1().min_w_0().truncate().text_size(text::LABEL).text_color(t.muted_foreground).child(status))
+            .when_some(self.busy, |d, busy| d.child(widgets::badge(busy, widgets::Tone::Busy, cx)))
             .child(actions)
     }
 
@@ -893,17 +1045,13 @@ impl EditorWindow {
         if let Some(p) = &self.picture {
             canvas = canvas.child(img(p.clone()).absolute().left_0().top_0().w(px(cw)).h(px(ch)));
         }
-        let sel = rgba(Rgba::rgb(0x3b, 0x82, 0xf6));
+        let sel = theme::extra(cx).info;
         if let Some(r) = chrome.selection {
             canvas = canvas.child(abs(r.x * z, r.y * z, r.w * z, r.h * z).border_1().border_color(sel));
         }
         if let Some(r) = chrome.pending {
-            canvas = canvas.child(
-                abs(r.x * z, r.y * z, r.w * z, r.h * z)
-                    .border_1()
-                    .border_color(sel)
-                    .bg(rgba(Rgba { a: 40, ..Rgba::rgb(0x3b, 0x82, 0xf6) })),
-            );
+            canvas =
+                canvas.child(abs(r.x * z, r.y * z, r.w * z, r.h * z).border_1().border_color(sel).bg(theme::extra(cx).info.opacity(0.16)));
         }
         for (_, p) in &chrome.handles {
             canvas =
@@ -932,7 +1080,7 @@ impl EditorWindow {
                 div()
                     .min_w(px(46.))
                     .text_center()
-                    .text_size(px(12.5))
+                    .text_size(text::SMALL)
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(format!("{:.0}%", z * 100.0)),
             )
@@ -1107,5 +1255,19 @@ impl Render for EditorWindow {
                     this.input(EditorInput::Key { key, mods: m }, window, cx);
                 }
             }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use laqta_domain::geometry::PhysRect;
+
+    use super::rect_mask;
+
+    #[test]
+    fn the_erase_mask_covers_the_box_clamped_to_the_image() {
+        let mask = rect_mask(4, 3, PhysRect { x: 1, y: 1, width: 10, height: 1 });
+        assert_eq!(mask, vec![0, 0, 0, 0, 0, 255, 255, 255, 0, 0, 0, 0]);
+        assert!(rect_mask(4, 3, PhysRect { x: -5, y: 9, width: 2, height: 2 }).iter().all(|b| *b == 0));
     }
 }

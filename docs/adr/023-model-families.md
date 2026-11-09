@@ -52,7 +52,7 @@ Status: accepted (2026-11-07, owner request). The initial family list follows
 
 5. **Runtime.**
    - Model and onnxruntime downloads go through `laqta-http`'s verified fetch (ADR 024).
-   - `ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic"] }`, an exact pin (owner decision). Upgrades are deliberate and run the family golden tests. The onnxruntime library is downloaded on first use from a pinned
+   - `ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic", "ndarray", "std"] }`, an exact pin (owner decision). Upgrades are deliberate and run the family golden tests. The onnxruntime library is downloaded on first use from a pinned
      build with a pinned hash: the CPU build by default, and the DirectML build on Windows when the
      user picks GPU.
    - The execution provider is a setting: Auto, CPU or GPU. Auto falls back to CPU when a GPU
@@ -93,6 +93,8 @@ Status: accepted (2026-11-07, owner request). The initial family list follows
 | O1: PP-OCR (DBNet detection + CTC recognition) | OCR | PP-OCRv5 mobile and server detection, per-script recognition models with pinned dictionaries | Apache-2.0. ONNX files from the oar-ocr or RapidOCR mirrors. PP-OCRv6 is added when ONNX exports exist |
 | B: rembg U²-Net / IS-Net, min-max output | background removal | u2net, u2netp (5 MB), silueta, IS-Net; RMBG-1.4 as a custom model only | Parametric. IS-Net ships only once its weights licence is settled: the DIS repo says Apache-2.0, the ONNX mirror says AGPL-3.0 |
 | C: MODNet | background removal (portraits) | MODNet | Apache-2.0, 13 MB fp16. The output is already alpha |
+
+Built so far: family A as `matting-parametric` (entries `birefnet-lite`, `birefnet-lite-fp16` as the default, and `ben2-base`), family B only as that family's min-max activation (entry `u2netp`), O1 as the two families `o1-det` and `o1-rec` (one file, `families/o1.rs`), and `lama` for inpainting (entry `big-lama`). Not built: family C (MODNet) and the u2net, silueta and IS-Net entries.
 
 Not in the first wave: InSPyReNet (no official ONNX), withoutbg (a four-model pipeline), SAM-family
 models (need prompts), and transformer OCR (the PP-OCR Latin model covers it).

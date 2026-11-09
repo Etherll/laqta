@@ -144,7 +144,7 @@ impl Task {
     }
 
     /// Stops a job. A queued job is reported `Stopped` now and never runs. A running job stops at its next
-    /// checkpoint and keeps any file it has already saved. False when the job is unknown or has finished.
+    /// checkpoint and keeps any file it has already saved, unless the job has `DELETE_FILE`. False when the job is unknown or has finished.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn stop(&self, id: TaskId) -> bool {
         match self.jobs.request_stop(id) {

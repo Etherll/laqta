@@ -2,9 +2,11 @@
 //! private `files` module (ADR 024).
 #![forbid(unsafe_code)]
 
+mod ai;
 mod auto_capture;
 mod dispatcher;
 mod files;
+mod history;
 mod images;
 mod recording;
 mod region;
@@ -14,7 +16,7 @@ mod tool_routes;
 mod tools;
 mod watch;
 
-pub use dispatcher::{App, Dispatched, Ports};
+pub use dispatcher::{ActionInput, App, Dispatched, Ports};
 pub use region::Selection;
 pub use task::TaskJob;
 pub use task::UploadSource;

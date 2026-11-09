@@ -62,7 +62,7 @@ impl App {
 
     async fn select_on_screen(&self, ts: &TaskSettings) -> Result<Selection, AppError> {
         let frames = self.frames(ts).await?;
-        region::select(&self.ports, frames, &ts.capture.region).await
+        region::pick(&self.ports, frames, &ts.capture.region).await
     }
 
     fn show(&self, title: &str, text: &str) -> Result<Dispatched, AppError> {
@@ -113,12 +113,22 @@ impl App {
         Some(r)
     }
 
+    /// Screen colour picker: click a pixel; its hex is copied and the colour picker shows it
+    /// (a text window where there is no picker).
     async fn screen_color(&self, ts: &TaskSettings) -> Result<Dispatched, AppError> {
-        let sel = self.select_on_screen(ts).await?;
-        let formats = crate::tools::ColorFormats::from_rgba(centre_pixel(&sel));
+        let frames = self.frames(ts).await?;
+        let sel = region::pick_color(&self.ports, frames, &ts.capture.region).await?;
+        let color = centre_pixel(&sel);
+        let formats = crate::tools::ColorFormats::from_rgba(color);
         let _ = self.ports.clipboard.set_text(&formats.hex);
-        let text = [&formats.hex, &formats.rgb, &formats.hsl, &formats.hsv, &formats.cmyk, &formats.decimal].map(|s| s.as_str()).join("\n");
-        self.show("Screen colour (hex copied)", &text)
+        match self.ports.tools.show_color(color) {
+            Err(laqta_ports::PortError::Unsupported(_)) => {
+                let text =
+                    [&formats.hex, &formats.rgb, &formats.hsl, &formats.hsv, &formats.cmyk, &formats.decimal].map(|s| s.as_str()).join("\n");
+                self.show("Screen colour (hex copied)", &text)
+            }
+            other => other.map(|()| Dispatched::Done).map_err(AppError::from),
+        }
     }
 
     async fn ruler(&self, ts: &TaskSettings) -> Result<Dispatched, AppError> {
@@ -164,12 +174,13 @@ impl App {
 
     async fn ocr_region(&self, ts: &TaskSettings) -> Result<Dispatched, AppError> {
         let sel = self.select_on_screen(ts).await?;
-        let result = crate::tools::ocr_image(&self.ports, sel.image, "").await?;
+        let result = self.recognize_text(sel.image.clone()).await?;
         let text = result.text();
         if !text.is_empty() {
             let _ = self.ports.clipboard.set_text(&text);
         }
-        self.show("Recognised text (copied)", if text.is_empty() { "No text found." } else { &text })
+        self.ports.tools.show_ocr(sel.image, result).map_err(AppError::from)?;
+        Ok(Dispatched::Done)
     }
 
     /// Analyze image: a region, then the analyzer's answer in a text window (copied).

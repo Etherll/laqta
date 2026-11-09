@@ -1,4 +1,4 @@
-//! Pin to screen (M5) and tool text results. A pin is a borderless pop-up window showing an image:
+//! Pin to screen (M5). A pin is a borderless pop-up window showing an image:
 //! drag to move, scroll to zoom, double-click, right-click or Escape to close.
 
 use std::sync::Arc;
@@ -8,12 +8,7 @@ use gpui::{
     MouseDownEvent, ParentElement as _, Render, RenderImage, ScrollEvent, Styled as _, Window, WindowBounds, WindowDecorations, WindowKind,
     WindowOptions, div, img, px, size,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::scroll::ScrollableElement as _;
-use gpui_component::{ActiveTheme as _, Root};
 use laqta_domain::Bitmap;
-
-use crate::widgets;
 
 /// Open pins, so "close all" can find them.
 #[derive(Default)]
@@ -72,7 +67,7 @@ impl Render for PinView {
             .track_focus(&self.focus)
             .size_full()
             .border_1()
-            .border_color(gpui::rgb(0x3b82f6))
+            .border_color(crate::theme::extra(cx).info)
             .child(img(self.image.clone()).w(px(w)).h(px(h)))
             .on_mouse_down(MouseButton::Left, |ev: &MouseDownEvent, window, _| {
                 if ev.click_count >= 2 {
@@ -96,63 +91,5 @@ impl Render for PinView {
                     cx.notify();
                 }
             }))
-    }
-}
-
-pub(crate) fn show_text(title: String, text: String, cx: &mut App) {
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(560.), px(420.)), cx)),
-        titlebar: Some(crate::chrome::titlebar(title.clone())),
-        window_decorations: crate::chrome::decorations(),
-        app_owns_titlebar_drag: true,
-        app_id: Some("laqta".into()),
-        focus: true,
-        ..Default::default()
-    };
-    if let Err(e) = cx.open_window(options, |window, cx| {
-        let view = cx.new(|_| TextView { title, text });
-        cx.new(|cx| Root::new(view, window, cx))
-    }) {
-        tracing::warn!("text window failed: {e:#}");
-    }
-}
-
-struct TextView {
-    title: String,
-    text: String,
-}
-
-impl Render for TextView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let copy = self.text.clone();
-        crate::chrome::rounded(widgets::page(cx), window)
-            .child(crate::chrome::TitleBar::new().title(self.title.clone()).flat())
-            .child(
-                div().flex_1().overflow_y_scrollbar().p(px(14.)).child(
-                    div()
-                        .p(px(12.))
-                        .rounded(crate::theme::radius::LG)
-                        .bg(cx.theme().secondary)
-                        .font_family("monospace")
-                        .text_sm()
-                        .child(self.text.clone()),
-                ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap(px(8.))
-                    .p(px(10.))
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(widgets::muted(self.title.clone(), cx))
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("copy")
-                            .label("Copy")
-                            .on_click(move |_, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))),
-                    )
-                    .child(Button::new("close").label("Close").primary().on_click(|_, w, _| w.remove_window())),
-            )
     }
 }

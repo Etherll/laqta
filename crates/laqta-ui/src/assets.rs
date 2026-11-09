@@ -34,6 +34,7 @@ gpui_kit_assets::icon_assets!(
         Crop,
         Database,
         Droplet,
+        Ellipsis,
         Eraser,
         ExternalLink,
         Eye,
@@ -75,6 +76,7 @@ gpui_kit_assets::icon_assets!(
         PaintBucket,
         Pause,
         PenLine,
+        Pin,
         Pipette,
         Plug,
         Plus,
@@ -85,6 +87,7 @@ gpui_kit_assets::icon_assets!(
         Save,
         Scan,
         ScanLine,
+        ScanText,
         Scissors,
         Search,
         Settings,
@@ -95,6 +98,7 @@ gpui_kit_assets::icon_assets!(
         Square,
         SquareDashed,
         SquareDashedMousePointer,
+        SquarePen,
         Stamp,
         Tag,
         Timer,
@@ -112,10 +116,16 @@ gpui_kit_assets::icon_assets!(
     ]
 );
 
+/// The app icon, for the titlebar wordmark. 64 px, drawn at 18 so it stays sharp at 2× and up.
+pub(crate) const BRAND_MARK: &str = "brand/laqta-64.png";
+
 pub(crate) struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if path == BRAND_MARK {
+            return Ok(Some(Cow::Borrowed(include_bytes!("../../../assets/icon/laqta-64.png"))));
+        }
         match ViewIcons.load(path)? {
             Some(bytes) => Ok(Some(bytes)),
             None => gpui_kit_assets::Assets.load(path),

@@ -4,10 +4,11 @@
 use std::path::PathBuf;
 use std::sync::{Arc, PoisonError};
 
+use laqta_domain::Action;
 use laqta_domain::settings::WatchFolder;
 use laqta_ports::WatchCallback;
 
-use crate::dispatcher::App;
+use crate::dispatcher::{ActionInput, App};
 use crate::files;
 
 impl App {
@@ -45,7 +46,7 @@ impl App {
 
     /// One file from a watched folder. It runs only when the name matches the folder's filter. A folder that moves
     /// its files moves this one into the screenshots folder first, and the moved file is the one uploaded. A file
-    /// that cannot be moved is logged and not uploaded.
+    /// that cannot be moved is logged and not uploaded. The upload is a `FileUpload` dispatch.
     async fn watched_file(self: &Arc<Self>, path: PathBuf, folder: WatchFolder) {
         let Some(name) = path.file_name().map(|name| name.to_string_lossy().into_owned()) else { return };
         if !matches_filter(&folder.filter, &name) {
@@ -63,7 +64,10 @@ impl App {
         } else {
             path
         };
-        self.upload_files(vec![path], folder.workflow);
+        // The file goes through `dispatch` like any other delivery (ADR 015), with the folder's workflow.
+        if let Err(error) = self.dispatch_with(Action::FileUpload, ActionInput::Files(vec![path.clone()]), folder.workflow).await {
+            tracing::warn!(file = %path.display(), %error, "watched file not uploaded");
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 //! The Editor engine (ADR 013): one deep module behind every annotation surface.
 //!
 //! Input events and commands go in; dirty rects, rendered pixels and a chrome description come
-//! out. The document (base image plus annotations), the 21 tools, undo and redo, the
+//! out. The document (base image plus annotations), the 22 tools, undo and redo, the
 //! per-annotation effect cache and the `tiny-skia` renderer are all private. Export is the same
 //! renderer at full resolution (ADR 003). Fonts are injected (ADR 024).
 //!
@@ -146,6 +146,10 @@ pub enum Command {
     },
     /// Pastes a picture centred on the canvas.
     Paste(Bitmap),
+    /// Swaps the base image for `bitmap` and sizes the canvas to it. The annotations are
+    /// flattened away like any destructive operation; one undo restores the old image and them.
+    /// Used when the host edited the pixels elsewhere (AI erase, background removal).
+    ReplaceImage(Bitmap),
 }
 
 /// Something the UI should do (save, copy, close) after a keyboard shortcut.
@@ -154,6 +158,12 @@ pub enum EditorRequest {
     Save,
     SaveAs,
     Continue,
+    /// The Object eraser tool was released over `rect` (image pixels, clamped to the canvas,
+    /// never empty). The host builds the mask, runs the erase and answers with
+    /// `Command::ReplaceImage`.
+    EraseObject {
+        rect: PhysRect,
+    },
 }
 
 /// What the UI paints around the image. Data only.
@@ -162,7 +172,7 @@ pub struct Chrome {
     pub tool: Tool,
     pub style: Style,
     pub canvas: (u32, u32),
-    /// Bounds of the selected annotation.
+    /// Bounds of the selected annotation, or the box being dragged with the Object eraser.
     pub selection: Option<RectF>,
     pub handles: Vec<(Handle, PointF)>,
     /// A crop or cut-out rect waiting for Enter.
@@ -380,7 +390,7 @@ impl Editor {
             tool: self.tool,
             style: self.style.clone(),
             canvas: (self.base.w, self.base.h),
-            selection: sel.map(|a| a.kind.bounds()),
+            selection: sel.map(|a| a.kind.bounds()).or_else(|| self.rubber_band()),
             handles: sel.map(|a| a.kind.handles()).unwrap_or_default(),
             pending: self.pending.map(|(_, r)| r),
             caret,
@@ -569,6 +579,10 @@ impl Editor {
                 let rect = RectF::new((self.base.w as f32 - w) / 2.0, (self.base.h as f32 - h) / 2.0, w, h);
                 self.add(AnnotationKind::Image { rect, bitmap: Picture(bitmap) });
             }
+            Command::ReplaceImage(bitmap) => {
+                self.finish_editing();
+                self.commit_base(Img::from_bitmap(&bitmap));
+            }
         }
     }
 
@@ -631,7 +645,12 @@ impl Editor {
     fn destructive(&mut self, op: impl FnOnce(&Img) -> Img) {
         self.finish_editing();
         let flat = Img::from_bitmap(&self.export());
-        let result = op(&flat);
+        self.commit_base(op(&flat));
+    }
+
+    /// Makes `result` the base, drops the annotations and records one undo step holding the old
+    /// base and annotations. An empty image changes nothing.
+    fn commit_base(&mut self, result: Img) {
         if result.w == 0 || result.h == 0 {
             return;
         }
@@ -741,10 +760,7 @@ impl Editor {
                 self.pointer_move(PointF::new(x, y), mods);
                 None
             }
-            EditorInput::PointerUp { x, y, button, mods } => {
-                self.pointer_up(PointF::new(x, y), button, mods);
-                None
-            }
+            EditorInput::PointerUp { x, y, button, mods } => self.pointer_up(PointF::new(x, y), button, mods),
             EditorInput::Key { key, mods } => self.key(key, mods),
             EditorInput::Text(s) => {
                 self.type_text(&s);
@@ -857,13 +873,13 @@ impl Editor {
         }
     }
 
-    fn pointer_up(&mut self, p: PointF, button: PointerButton, mods: Mods) {
+    fn pointer_up(&mut self, p: PointF, button: PointerButton, mods: Mods) -> Option<EditorRequest> {
         if button != PointerButton::Left {
-            return;
+            return None;
         }
         self.pointer_move(p, mods);
         match std::mem::replace(&mut self.gesture, Gesture::Idle) {
-            Gesture::Drawing { start, current, shift } => self.finish_drawing(start, current, shift),
+            Gesture::Drawing { start, current, shift } => return self.finish_drawing(start, current, shift),
             Gesture::Freehand { points } => {
                 self.add(AnnotationKind::Freehand { points });
             }
@@ -879,6 +895,7 @@ impl Editor {
             }
             Gesture::Idle => {}
         }
+        None
     }
 
     /// End point adjusted for Shift (squares and 45° lines).
@@ -935,10 +952,27 @@ impl Editor {
         }
     }
 
-    fn finish_drawing(&mut self, start: PointF, current: PointF, shift: bool) {
+    /// The box being dragged with the Object eraser. It is chrome only: the tool never draws a
+    /// draft or leaves an annotation.
+    fn rubber_band(&self) -> Option<RectF> {
+        match (&self.gesture, self.tool) {
+            (Gesture::Drawing { start, current, shift }, Tool::ObjectEraser) => {
+                Some(RectF::from_points(*start, self.constrained(*start, *current, *shift)))
+            }
+            _ => None,
+        }
+    }
+
+    fn finish_drawing(&mut self, start: PointF, current: PointF, shift: bool) -> Option<EditorRequest> {
         let end = self.constrained(start, current, shift);
         let r = RectF::from_points(start, end);
         let tiny = r.w < 2.0 && r.h < 2.0;
+        if self.tool == Tool::ObjectEraser {
+            if tiny {
+                return None;
+            }
+            return geom::intersect(r.to_phys(), self.canvas()).map(|rect| EditorRequest::EraseObject { rect });
+        }
         match self.tool {
             Tool::Crop | Tool::CutOut => {
                 if !tiny {
@@ -961,6 +995,7 @@ impl Editor {
                 }
             }
         }
+        None
     }
 
     fn apply_pending(&mut self) {
@@ -1039,24 +1074,7 @@ impl Editor {
             EditorKey::Char('s') if m.ctrl && m.shift => return Some(EditorRequest::SaveAs),
             EditorKey::Char('s') if m.ctrl => return Some(EditorRequest::Save),
             EditorKey::Char(c) if !m.ctrl && !m.alt => {
-                let tool = match c {
-                    'v' | '1' => Some(Tool::Select),
-                    'r' | '2' => Some(Tool::Rectangle),
-                    'e' | '3' => Some(Tool::Ellipse),
-                    'l' | '4' => Some(Tool::Line),
-                    'a' | '5' => Some(Tool::Arrow),
-                    'f' | '6' => Some(Tool::Freehand),
-                    't' | '7' => Some(Tool::Text),
-                    's' | '8' => Some(Tool::SpeechBalloon),
-                    'i' | '9' => Some(Tool::Step),
-                    'b' => Some(Tool::Blur),
-                    'p' => Some(Tool::Pixelate),
-                    'h' => Some(Tool::Highlight),
-                    'm' => Some(Tool::Magnify),
-                    'c' => Some(Tool::Crop),
-                    _ => None,
-                };
-                if let Some(t) = tool {
+                if let Some(t) = Tool::from_key(c) {
                     self.apply_command(Command::SetTool(t));
                 }
             }

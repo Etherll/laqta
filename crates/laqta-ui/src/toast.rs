@@ -174,7 +174,7 @@ impl Render for ToastView {
                 .flex()
                 .flex_col()
                 .gap(px(2.))
-                .child(div().text_size(px(14.)).font_weight(gpui::FontWeight::MEDIUM).child(self.toast.title.clone()))
+                .child(div().text_size(crate::theme::text::ROW).font_weight(gpui::FontWeight::MEDIUM).child(self.toast.title.clone()))
                 .child(
                     div().text_size(crate::theme::text::CAPTION).text_color(t.muted_foreground).truncate().child(self.toast.body.clone()),
                 ),

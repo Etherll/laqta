@@ -1,10 +1,15 @@
 #![allow(clippy::unwrap_used)]
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use futures_lite::future::block_on;
 use jiff::civil::{DateTime, date};
 use laqta_domain::history::{HistoryItem, HistoryKind, HistoryQuery, HistoryStats, NewHistoryItem};
 use laqta_library::{History, LibraryError};
+use laqta_ports::fakes::{InlineSpawner, ManualClock};
+use laqta_ports::{BoxFuture, Clock};
 
 fn new_item(time: DateTime, kind: HistoryKind, file_name: &str) -> NewHistoryItem {
     NewHistoryItem {
@@ -334,4 +339,95 @@ fn domain_types_serialize_times_as_iso_text() {
     // A query written without the optional bounds still reads.
     let bare: HistoryQuery = serde_json::from_value(serde_json::json!({ "offset": 0, "limit": 0 })).unwrap();
     assert_eq!(bare, HistoryQuery::default());
+}
+
+/// Runs every future the spawner holds: the release timers.
+fn run_timers(spawner: &InlineSpawner) -> usize {
+    let timers = spawner.take_spawned();
+    let count = timers.len();
+    for timer in timers {
+        block_on(timer);
+    }
+    count
+}
+
+#[test]
+fn an_idle_connection_is_released_and_the_next_call_reopens_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = History::open(&dir.path().join("history.db")).unwrap();
+    let start = date(2026, 11, 7).at(14, 3, 22, 0);
+    let clock = Arc::new(ManualClock::new(start));
+    let spawner = Arc::new(InlineSpawner::default());
+    let id = db.add(&new_item(start, HistoryKind::Text, "kept.txt")).unwrap();
+
+    db.release_when_idle(clock.clone(), spawner.clone());
+    assert!(db.connected(), "the connection stays open until the timer says it was idle");
+    assert_eq!(spawner.spawned.lock().unwrap().len(), 1, "one timer exists while the connection is held");
+    db.stats().unwrap();
+    assert_eq!(spawner.spawned.lock().unwrap().len(), 1, "a use does not arm a second timer");
+
+    // The timer sleeps on the Clock port and releases once a full minute passed without a use.
+    let idle_minute = db.get(id).unwrap().unwrap();
+    assert_eq!(idle_minute.file_name, "kept.txt");
+    assert_eq!(run_timers(&spawner), 1);
+    assert!(!db.connected(), "the idle connection was released");
+    assert_eq!(clock.now(), start.checked_add(Duration::from_secs(120)).unwrap(), "the use during the first minute cost a second sleep");
+
+    // The next call opens the file again, with the data in it, and arms a new timer.
+    assert_eq!(db.get(id).unwrap().unwrap().file_name, "kept.txt");
+    assert!(db.connected());
+    assert_eq!(spawner.spawned.lock().unwrap().len(), 1);
+    assert_eq!(run_timers(&spawner), 1);
+    assert!(!db.connected());
+    assert_eq!(run_timers(&spawner), 0, "with nothing held there is no timer, so no wakeups");
+}
+
+/// A clock that runs a hook during its first sleep, so a test can use the history while the release timer waits.
+struct HookClock {
+    inner: ManualClock,
+    sleeps: Mutex<u32>,
+    first_sleep: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl Clock for HookClock {
+    fn now(&self) -> DateTime {
+        self.inner.now()
+    }
+    fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()> {
+        *self.sleeps.lock().unwrap() += 1;
+        if let Some(hook) = self.first_sleep.lock().unwrap().take() {
+            hook();
+        }
+        self.inner.sleep(duration)
+    }
+}
+
+#[test]
+fn a_use_while_the_timer_sleeps_keeps_the_connection_for_another_minute() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(History::open(&dir.path().join("history.db")).unwrap());
+    let used = Arc::clone(&db);
+    let clock = Arc::new(HookClock {
+        inner: ManualClock::new(date(2026, 11, 7).at(14, 3, 22, 0)),
+        sleeps: Mutex::new(0),
+        first_sleep: Mutex::new(Some(Box::new(move || {
+            used.stats().unwrap();
+        }))),
+    });
+    let spawner = Arc::new(InlineSpawner::default());
+
+    db.release_when_idle(clock.clone(), spawner.clone());
+    assert_eq!(run_timers(&spawner), 1);
+
+    assert_eq!(*clock.sleeps.lock().unwrap(), 2, "the use woke the first sleep into a second one");
+    assert!(!db.connected(), "and the connection went once the second minute passed idle");
+}
+
+#[test]
+fn an_in_memory_history_is_never_released() {
+    let db = History::open_in_memory().unwrap();
+    let spawner = Arc::new(InlineSpawner::default());
+    db.release_when_idle(Arc::new(ManualClock::new(date(2026, 11, 7).at(14, 3, 22, 0))), spawner.clone());
+    assert_eq!(run_timers(&spawner), 0, "dropping the connection would drop the data");
+    assert!(db.connected());
 }

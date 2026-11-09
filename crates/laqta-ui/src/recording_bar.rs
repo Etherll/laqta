@@ -186,7 +186,8 @@ fn countdown(seconds: u32, cx: &mut App) {
     }
     if let Ok(handle) = cx.open_window(popup(Place::Center, size(px(160.), px(160.)), cx), |window, cx| {
         let view = cx.new(|_| Countdown { seconds });
-        cx.new(|cx| Root::new(view, window, cx))
+        // The view is rounded: keep the root's square theme background out of the corners.
+        cx.new(|cx| Root::new(view, window, cx).bg(gpui::transparent_black()))
     }) {
         cx.global_mut::<UiState>().recording.countdown = Some(handle.into());
     }
@@ -216,7 +217,8 @@ fn start(area: PhysRect, cx: &mut App) {
     let mut windows = RecordingWindows::default();
     if let Ok(handle) = cx.open_window(popup(place, bar, cx), |window, cx| {
         let view = cx.new(|_| Bar { elapsed: 0, paused: false, area, border, border_scale: None });
-        cx.new(|cx| Root::new(view, window, cx))
+        // The view is rounded: keep the root's square theme background out of the corners.
+        cx.new(|cx| Root::new(view, window, cx).bg(gpui::transparent_black()))
     }) {
         windows.bar = Some(handle.into());
     }
@@ -314,7 +316,7 @@ impl Render for Bar {
         let t = cx.theme();
         let x = crate::theme::extra(cx);
         // Paused reads as amber plus the word, so colour is never the only cue.
-        let (dot, state) = if paused { (gpui::rgb(0xEAB308).into(), "Paused") } else { (t.danger, "REC") };
+        let (dot, state) = if paused { (x.warning, "Paused") } else { (t.danger, "REC") };
         div()
             .size_full()
             .flex()
@@ -330,7 +332,7 @@ impl Render for Bar {
             .font_family(text::UI_FONT)
             .text_color(t.foreground)
             .child(div().size(px(8.)).rounded(radius::PILL).bg(dot))
-            .child(div().text_size(px(11.)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(t.muted_foreground).child(state))
+            .child(div().text_size(text::CAPTION).font_weight(gpui::FontWeight::SEMIBOLD).text_color(t.muted_foreground).child(state))
             .child(div().w(px(48.)).text_size(text::LABEL).font_weight(gpui::FontWeight::MEDIUM).child(time))
             .child(widgets::pill(
                 "pause",

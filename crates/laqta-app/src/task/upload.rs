@@ -49,7 +49,7 @@ pub(super) struct Sent {
 pub(super) async fn run(cx: Context, id: TaskId, source: UploadSource, settings: TaskSettings, stop: Arc<AtomicBool>) {
     cx.reporter.status(id, TaskStatus::Preparing);
     cx.reporter.status(id, TaskStatus::Working);
-    let mut job = Job { cx, id, settings, info: CaptureInfo::default(), stop };
+    let mut job = Job { cx, id, settings, info: CaptureInfo::default(), stop, file: None };
     // The outcome is already reported, so there is nothing to do with it here.
     let _ = job.run_upload(source).await;
 }

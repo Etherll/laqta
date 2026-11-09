@@ -1,17 +1,17 @@
 # ADR 016: Recording consumes a ScreenStream
 
-Status: accepted (2026-11-07), revised after the EGM review and ADR 024; re-confirmed 2026-11-07 by the trade-offs review
+Status: accepted (2026-11-07), revised after the EGM review and ADR 024; re-confirmed 2026-11-07 by the trade-offs review; corrected 2026-11-09 (Windows sources, who reads `OsScreenRef`)
 
 **Context.**
 - Recording needs frames over time, not stills, and the first plan had `laqta-media` call the platform's still-capture code.
 - Audio capture also lives in the platform crates.
 - Stock FFmpeg builds cannot reliably read a PipeWire node from the ScreenCast portal.
 
-**Decision.** The platform module provides a `ScreenStream` (in `laqta-ports`), described in Laqta's own terms, with no FFmpeg vocabulary (ADR 024).
+**Decision.** The platform module provides a `ScreenStream` (in `laqta-ports`), described in Laqta's own terms (ADR 024). FFmpeg vocabulary stays out of it, with one exception: the user's custom encoder arguments travel as opaque text (`RecordSpec::custom_args`, `TranscodeSpec::extra_args`) and only `laqta-media` reads them. The record settings also still name FFmpeg directly (`ffmpeg_path`, `RecorderBackend::Ffmpeg`; review finding arch#13).
 
 - **Video is one of two kinds:**
-  - `Frames`: a frame source that Laqta pulls from. This is the WGC frame pool on Windows and PipeWire frames on Wayland.
-  - `Target`: a screen target (monitor, window or region in physical pixels) that the recorder may capture itself. Used on Windows and X11. It carries a sealed `OsScreenRef`, either a Windows output (adapter LUID and output index) or an X11 display and screen. Only the platform adapter creates it; the application passes it through unread; `laqta-media` reads it to build `ddagrab` or `x11grab` input. This is an accepted, contained coupling between two adapters. It names OS concepts, not FFmpeg ones.
+  - `Frames`: a frame source that Laqta pulls from. This is PipeWire frames on Wayland. The Windows adapter always returns `Target`; Windows.Graphics.Capture runs only inside the native recorder (a `Media` adapter), not as a `Frames` source.
+  - `Target`: a screen target (monitor, window or region in physical pixels) that the recorder may capture itself. Used on Windows and X11. It carries an `OsScreenRef`, either a Windows output (adapter index in enumeration order, and output index) or an X11 display and screen. Only the platform adapter creates it; the application passes it through unread; `laqta-media` reads it to build `ddagrab` or `x11grab` input, and the Windows native recorder reads it too. This is an accepted, contained coupling between adapters. It names OS concepts, not FFmpeg ones. The type is not sealed: its constructor is a public function hidden from the docs.
 - **Audio inputs are a list of:**
   - `Device`: an audio device ID and the OS's name for it, as listed by the platform module: the WASAPI friendly name on Windows, which `dshow` accepts, and the PulseAudio source name on Linux.
   - `Pcm`: a PCM source the platform module captures, used for Windows system audio through WASAPI (the `wasapi` crate).

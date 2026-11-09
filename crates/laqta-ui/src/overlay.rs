@@ -6,13 +6,14 @@ use std::sync::Arc;
 
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Bounds, Context, Div, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage,
-    StatefulInteractiveElement as _, Styled as _, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, img,
-    point, prelude::FluentBuilder as _, px, size,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage, ScrollDelta,
+    ScrollEvent, Styled as _, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, img, point,
+    prelude::FluentBuilder as _, px, size,
 };
 use laqta_domain::geometry::PhysRect;
-use laqta_domain::region::{Button, KeyMods, RegionCommand, RegionInput, RegionKey};
+use laqta_domain::region::{Button, KeyMods, RegionInput, RegionKey, TargetKind};
 use laqta_domain::{Bitmap, Frame, PixelFormat};
+use laqta_editor::EditorInput;
 use laqta_ports::{InputCallback, RegionView};
 
 use crate::runtime::UiState;
@@ -23,6 +24,13 @@ pub(crate) struct OverlayWindows {
     windows: Vec<AnyWindowHandle>,
 }
 
+impl OverlayWindows {
+    #[cfg(test)]
+    pub(crate) fn model(&self) -> Option<Entity<OverlayModel>> {
+        self.model.clone()
+    }
+}
+
 struct MonitorImage {
     rect: PhysRect,
     image: Arc<RenderImage>,
@@ -31,8 +39,14 @@ struct MonitorImage {
 
 pub(crate) struct OverlayModel {
     monitors: Vec<MonitorImage>,
-    view: RegionView,
-    on_input: InputCallback,
+    pub(crate) view: RegionView,
+    pub(crate) on_input: InputCallback,
+    /// The editor engine over the settled selection (`overlay_tools`).
+    pub(crate) annot: Option<crate::overlay_tools::Annot>,
+    /// The drawing tool in use; `None` is the region tool (adjust the selection).
+    pub(crate) tool: Option<laqta_editor::Tool>,
+    /// The mode bar's Text button is on: the next settled selection copies its text.
+    pub(crate) text_mode: bool,
 }
 
 /// Converts each frame for GPUI, off the GPUI thread: `UiHandle::show` calls this on the caller's
@@ -84,12 +98,20 @@ pub(crate) fn show(frames: Vec<Frame>, images: Vec<Option<Arc<RenderImage>>>, vi
         .filter_map(|(f, image)| Some(MonitorImage { rect: f.monitor.rect, image: image?, bitmap: f.image.clone() }))
         .collect();
     let count = monitors.len();
-    let model = cx.new(|_| OverlayModel { monitors, view, on_input });
+    let model = cx.new(|_| OverlayModel { monitors, view, on_input, annot: None, tool: None, text_mode: false });
     let mut windows = Vec::new();
     for index in 0..count {
         let bounds = display_bounds.get(index).copied().flatten();
-        match open_window(model.clone(), index, bounds, cx) {
+        match open_window(model.clone(), index, bounds, overlay_kind(), cx) {
             Ok(w) => windows.push(w),
+            // A compositor without layer-shell (GNOME): fall back to a fullscreen window (ADR 019).
+            Err(e) if !matches!(overlay_kind(), WindowKind::PopUp) => {
+                tracing::warn!("overlay layer surface {index} failed ({e:#}); using a fullscreen window");
+                match open_window(model.clone(), index, bounds, WindowKind::PopUp, cx) {
+                    Ok(w) => windows.push(w),
+                    Err(e) => tracing::error!("overlay window {index} failed: {e:#}"),
+                }
+            }
             Err(e) => tracing::error!("overlay window {index} failed: {e:#}"),
         }
     }
@@ -106,13 +128,13 @@ fn open_window(
     model: Entity<OverlayModel>,
     index: usize,
     bounds: Option<Bounds<Pixels>>,
+    kind: WindowKind,
     cx: &mut App,
 ) -> anyhow_like::Result<AnyWindowHandle> {
     let bounds = bounds.unwrap_or_else(|| {
         let r = model.read(cx).monitors[index].rect;
         Bounds { origin: point(px(r.x as f32), px(r.y as f32)), size: size(px(r.width as f32), px(r.height as f32)) }
     });
-    let kind = overlay_kind();
     let options = WindowOptions {
         titlebar: None,
         window_bounds: Some(if matches!(kind, WindowKind::PopUp) {
@@ -169,6 +191,7 @@ pub(crate) fn update(view: RegionView, cx: &mut App) {
     if let Some(model) = model {
         model.update(cx, |m, cx| {
             m.view = view;
+            m.sync_annot(cx);
             cx.notify();
         });
     }
@@ -200,6 +223,20 @@ struct OverlayView {
     model: Entity<OverlayModel>,
     index: usize,
     focus: FocusHandle,
+    /// Wheel travel not yet sent, in notches; touchpads scroll in fractions of one.
+    wheel: f32,
+}
+
+/// Pixels of touchpad scrolling that count as one wheel notch.
+const PIXELS_PER_NOTCH: f32 = 40.0;
+
+/// Adds `delta` notches to `acc` and returns the whole notches to send (positive grows the hover),
+/// keeping the remainder.
+fn wheel_steps(acc: &mut f32, delta: f32) -> i32 {
+    *acc += delta;
+    let steps = acc.trunc();
+    *acc -= steps;
+    steps as i32
 }
 
 const SELECTION: u32 = 0x3d8bfd;
@@ -214,7 +251,7 @@ fn color(rgb: u32, alpha: f32) -> Hsla {
 impl OverlayView {
     fn new(model: Entity<OverlayModel>, index: usize, cx: &mut Context<Self>) -> Self {
         cx.observe(&model, |_, _, cx| cx.notify()).detach();
-        OverlayView { model, index, focus: cx.focus_handle() }
+        OverlayView { model, index, focus: cx.focus_handle(), wheel: 0.0 }
     }
 
     fn send(&self, input: RegionInput, cx: &App) {
@@ -248,6 +285,7 @@ fn region_key(key: &str) -> Option<RegionKey> {
         "down" => RegionKey::Down,
         "delete" | "backspace" => RegionKey::Delete,
         "tab" => RegionKey::Tab,
+        "space" => RegionKey::Space,
         _ => return None,
     })
 }
@@ -319,25 +357,75 @@ impl Render for OverlayView {
             None => root = root.child(div().absolute().left_0().top_0().size_full().bg(dim)),
         }
 
+        // Once a selection settles, window snapping and the magnifier step aside for the tools.
+        let settled = view.selected.is_some();
         if view.drawing.is_none()
+            && !settled
+            && !view.pick_point
             && let Some(t) = &view.hovered
         {
-            root = root.child(boxed(&local(t.rect)).border_2().border_color(color(HOVER, 1.0)).bg(color(HOVER, 0.12)));
+            let l = local(t.rect);
+            if t.kind == TargetKind::Element {
+                // A region inside a window: a thinner outline, a lighter tint, and its size, since
+                // nested regions are told apart by size. The wheel grows it to the enclosing one.
+                root = root.child(boxed(&l).border_1().border_color(color(HOVER, 0.95)).bg(color(HOVER, 0.08)));
+                let y = if l.y >= 30.0 { l.y - 28.0 } else { l.y + l.h + 4.0 };
+                let at = crate::presenters::capture_toolbar::Rect { x: l.x.max(4.0), y, w: 96.0, h: 24.0 };
+                root = root.child(crate::overlay_tools::size_badge(t.rect, at));
+            } else {
+                root = root.child(boxed(&l).border_2().border_color(color(HOVER, 1.0)).bg(color(HOVER, 0.12)));
+            }
+        }
+        // The annotation canvas sits under the selection's border and handles.
+        if view.selected.is_some()
+            && let Some(a) = &model.annot
+            && let Some(canvas) = crate::overlay_tools::canvas(
+                a,
+                |r| {
+                    let l = local(r);
+                    crate::presenters::capture_toolbar::Rect { x: l.x, y: l.y, w: l.w, h: l.h }
+                },
+                s,
+            )
+        {
+            root = root.child(canvas);
         }
         for (i, r) in view.regions.iter().enumerate() {
             let active = Some(i) == view.active;
             root = root.child(boxed(&local(*r)).border_2().border_color(color(SELECTION, if active { 1.0 } else { 0.7 })));
         }
         if let Some(d) = view.drawing {
-            root = root.child(boxed(&local(d)).border_2().border_color(color(SELECTION, 1.0)));
+            let l = local(d);
+            root = root.child(boxed(&l).border_2().border_color(color(SELECTION, 1.0)));
+            // The size follows the rectangle while it is drawn.
+            if d.width > 0 && d.height > 0 {
+                let y = if l.y >= 32.0 { l.y - 30.0 } else { l.y + l.h + 6.0 };
+                let at = crate::presenters::capture_toolbar::Rect { x: l.x.max(4.0), y, w: 96.0, h: 24.0 };
+                root = root.child(crate::overlay_tools::size_badge(d, at));
+            }
         }
-        for (_, h) in &view.handles {
-            root = root.child(boxed(&local(*h)).bg(gpui::white()).border_1().border_color(color(SELECTION, 1.0)));
+        // A locked selection (annotations on it) can't be resized, so its handles go. Handles are
+        // drawn as 10px dots centred on the session's (smaller) hit rects, easy to see and grab.
+        for (_, h) in view.handles.iter().filter(|_| !view.locked) {
+            let l = local(*h);
+            let (cx_l, cy_l) = (l.x + l.w / 2.0, l.y + l.h / 2.0);
+            root = root.child(
+                div()
+                    .absolute()
+                    .left(px(cx_l - 5.0))
+                    .top(px(cy_l - 5.0))
+                    .size(px(10.))
+                    .rounded(crate::theme::radius::PILL)
+                    .bg(gpui::white())
+                    .border_2()
+                    .border_color(color(SELECTION, 1.0))
+                    .shadow_sm(),
+            );
         }
 
         let (cx_phys, cy_phys) = view.cursor;
         let cursor_here = cx_phys >= origin.x && cx_phys < origin.right() && cy_phys >= origin.y && cy_phys < origin.bottom();
-        if cursor_here {
+        if cursor_here && !settled {
             let lx = (cx_phys - origin.x) as f32 / s;
             let ly = (cy_phys - origin.y) as f32 / s;
             if view.show_crosshair {
@@ -349,128 +437,253 @@ impl Render for OverlayView {
             root = root.child(magnifier_and_info(view, mon, lx, ly, win_w, win_h, s));
         }
 
-        // The toolbar sits at the top centre of the first monitor; its clicks don't reach the canvas.
-        if self.index == 0 {
-            let annotate_on = view.annotate;
-            let mut bar = div()
-                .id("laqta-overlay-toolbar")
-                .absolute()
-                .top(px(12.))
-                .left(px(win_w / 2.0 - 235.0))
-                .w(px(470.))
-                .flex()
-                .flex_row()
-                .gap(px(4.))
-                .p(px(4.))
-                .rounded(px(8.))
-                .bg(color(0x1f1f1f, 0.92))
-                .text_color(gpui::white())
-                .text_sm()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-            for (i, (label, cmd)) in [
-                ("Capture", RegionCommand::Confirm),
-                ("Annotate", RegionCommand::Annotate),
-                ("Fullscreen", RegionCommand::Fullscreen),
-                ("Monitor", RegionCommand::ActiveMonitor),
-                ("Cancel", RegionCommand::Cancel),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                bar = bar.child(
-                    div()
-                        .id(("tb", i))
-                        .flex_1()
-                        .flex()
-                        .justify_center()
-                        .py(px(6.))
-                        .rounded(px(6.))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(color(0xffffff, 0.15)))
-                        .when(cmd == RegionCommand::Annotate && annotate_on, |d| d.bg(color(0x3b82f6, 0.85)))
-                        .child(label)
-                        .on_click(cx.listener(move |this, _, _, cx| this.send(RegionInput::Command(cmd), cx))),
+        // In-place annotation and the capture toolbar, on the monitor that holds the selection.
+        if let Some(sel) = view.selected {
+            let to_local = |r: PhysRect| {
+                let l = local(r);
+                crate::presenters::capture_toolbar::Rect { x: l.x, y: l.y, w: l.w, h: l.h }
+            };
+            let (cx_sel, cy_sel) = (sel.x + sel.width as i32 / 2, sel.y + sel.height as i32 / 2);
+            let holds = cx_sel >= origin.x && cx_sel < origin.right() && cy_sel >= origin.y && cy_sel < origin.bottom();
+            if holds || (self.index == 0 && !model.monitors.iter().any(|m| contains(m.rect, (cx_sel, cy_sel)))) {
+                let sel_l = to_local(sel);
+                let screen = (win_w, win_h);
+                let (at, side) = crate::presenters::capture_toolbar::place(
+                    sel_l,
+                    (crate::overlay_tools::bar_width(), crate::overlay_tools::BAR_H),
+                    screen,
                 );
+                let badge = crate::presenters::capture_toolbar::badge(sel_l, side, (96.0, 24.0), screen);
+                root = root.child(crate::overlay_tools::size_badge(sel, badge));
+                if model.toolbar_shown() {
+                    root = root.child(crate::overlay_tools::toolbar(&self.model, at, cx));
+                }
             }
-            root = root.child(bar);
+        } else if view.pick_point {
+            if contains(origin, view.cursor) {
+                root = root.child(crate::overlay_tools::hint(
+                    win_w,
+                    "Click to pick a colour  ·  Arrow keys move one pixel  ·  Enter picks  ·  Esc closes",
+                ));
+            }
+        } else if self.index == 0 && view.regions.is_empty() && view.drawing.is_none() && !view.mode_bar {
+            root = root.child(crate::overlay_tools::hint(
+                win_w,
+                "Drag to select, or click a window or a part of one  ·  Scroll to grow  ·  Esc to cancel",
+            ));
+        }
+        // The mode bar sits at the top of the monitor under the pointer (the first one otherwise).
+        let pointer_here = contains(origin, view.cursor);
+        let pointer_anywhere = model.monitors.iter().any(|m| contains(m.rect, view.cursor));
+        // It steps aside while a rectangle is being drawn, so it never covers the selection.
+        if view.mode_bar && view.drawing.is_none() && (pointer_here || (self.index == 0 && !pointer_anywhere)) {
+            root = root.child(crate::overlay_tools::mode_bar(&self.model, win_w, cx));
+            if view.regions.is_empty() && view.selected.is_none() {
+                root = root.child(crate::overlay_tools::mode_hint(win_w));
+            }
         }
 
         root.on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
             let (x, y) = this.to_phys(ev.position, window, cx);
             this.send(RegionInput::PointerMove { x, y }, cx);
+            if let Some((ix, iy)) = this.drawing_at(x, y, cx) {
+                let mods = crate::editor_window::mods(&ev.modifiers);
+                this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerMove { x: ix, y: iy, mods }, cx));
+            }
         }))
         .on_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+            let (x, y) = this.to_phys(ev.position, window, cx);
+            if let Some((ix, iy)) = this.drawing_at(x, y, cx) {
+                // Drawing starts only on the canvas; a press outside it would add a mark nobody sees.
+                let inside = this.model.read(cx).annot.as_ref().is_some_and(|a| contains(a.rect, (x, y)));
+                if !inside {
+                    return;
+                }
+                if let Some(button) = crate::editor_window::button(ev.button) {
+                    let mods = crate::editor_window::mods(&ev.modifiers);
+                    this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerDown { x: ix, y: iy, button, mods }, cx));
+                }
+                return;
+            }
             if let Some(button) = button(ev.button) {
-                let (x, y) = this.to_phys(ev.position, window, cx);
                 this.send(RegionInput::PointerDown { x, y, button }, cx);
             }
         }))
         .capture_any_mouse_up(cx.listener(|this, ev: &MouseUpEvent, window, cx| {
+            let (x, y) = this.to_phys(ev.position, window, cx);
+            if let Some((ix, iy)) = this.drawing_at(x, y, cx) {
+                if let Some(button) = crate::editor_window::button(ev.button) {
+                    let mods = crate::editor_window::mods(&ev.modifiers);
+                    this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerUp { x: ix, y: iy, button, mods }, cx));
+                }
+                return;
+            }
             if let Some(button) = button(ev.button) {
-                let (x, y) = this.to_phys(ev.position, window, cx);
                 this.send(RegionInput::PointerUp { x, y, button }, cx);
             }
         }))
-        .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
-            if let Some(key) = region_key(ev.keystroke.key.as_str()) {
-                let m = &ev.keystroke.modifiers;
-                this.send(RegionInput::Key { key, mods: KeyMods { shift: m.shift, ctrl: m.control, alt: m.alt } }, cx);
+        // Scrolling up grows the hover to the enclosing region, down shrinks it back.
+        .on_scroll(cx.listener(|this, ev: &ScrollEvent, _, cx| {
+            let notches = match ev.delta {
+                ScrollDelta::Lines(d) => d.y,
+                ScrollDelta::Pixels(d) => f32::from(d.y) / PIXELS_PER_NOTCH,
+            };
+            let steps = wheel_steps(&mut this.wheel, notches);
+            if steps != 0 {
+                this.send(RegionInput::Wheel(steps), cx);
             }
         }))
+        .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| this.key(ev, cx)))
+    }
+}
+
+fn contains(r: PhysRect, (x, y): (i32, i32)) -> bool {
+    x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
+}
+
+impl OverlayView {
+    /// Canvas pixels for a desktop point while a drawing tool is out.
+    fn drawing_at(&self, x: i32, y: i32, cx: &App) -> Option<(f32, f32)> {
+        let m = self.model.read(cx);
+        m.tool?;
+        let a = m.annot.as_ref()?;
+        Some(((x - a.rect.x) as f32, (y - a.rect.y) as f32))
+    }
+
+    /// Keys: typing into a text annotation, the toolbar's shortcuts, the Esc cascade, then the
+    /// region session.
+    fn key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+        let key = ev.keystroke.key.as_str();
+        let m = &ev.keystroke.modifiers;
+        let (editing, drawing, marks, shown) = {
+            let model = self.model.read(cx);
+            let a = model.annot.as_ref();
+            (
+                a.is_some_and(|a| a.chrome.editing_text),
+                model.tool.is_some(),
+                a.is_some_and(crate::overlay_tools::Annot::has_marks),
+                model.toolbar_shown(),
+            )
+        };
+        let mods = crate::editor_window::mods(m);
+        if editing {
+            if !m.control
+                && let Some(ch) = ev.keystroke.key_char.clone().filter(|c| !c.is_empty() && !c.chars().any(char::is_control))
+            {
+                self.model.update(cx, |model, cx| model.editor_input(EditorInput::Text(ch), cx));
+                return;
+            }
+            if let Some(k) = crate::editor_window::editor_key(key) {
+                self.model.update(cx, |model, cx| model.editor_input(EditorInput::Key { key: k, mods }, cx));
+                return;
+            }
+        }
+        if shown
+            && let Some(item) = crate::presenters::capture_toolbar::key_item(
+                key,
+                crate::presenters::capture_toolbar::Mods { ctrl: m.control, shift: m.shift, alt: m.alt },
+            )
+        {
+            self.model.update(cx, |model, cx| model.pick(item, cx));
+            return;
+        }
+        match key {
+            "escape" if drawing => {
+                self.model.update(cx, |model, cx| {
+                    model.region_tool();
+                    cx.notify();
+                });
+                return;
+            }
+            "enter" if marks => {
+                self.model.update(cx, |model, cx| model.finish(laqta_domain::region::SelectionAction::Default, cx));
+                return;
+            }
+            _ => {}
+        }
+        if drawing && let Some(k) = crate::editor_window::editor_key(key) {
+            self.model.update(cx, |model, cx| model.editor_input(EditorInput::Key { key: k, mods }, cx));
+            return;
+        }
+        if let Some(key) = region_key(key) {
+            self.send(RegionInput::Key { key, mods: KeyMods { shift: m.shift, ctrl: m.control, alt: m.alt } }, cx);
+        }
     }
 }
 
 const CELL: f32 = 8.0;
+/// The magnifier card's width.
+const CARD_W: f32 = 168.0;
 
-/// The magnifier grid (one quad per sampled pixel) and the info text, placed beside the cursor.
+/// The magnifier and the pixel info as one card beside the cursor: a zoomed grid with faint
+/// pixel lines and the centre pixel marked, then the coordinates and colour with a swatch.
 fn magnifier_and_info(view: &RegionView, mon: &MonitorImage, lx: f32, ly: f32, win_w: f32, win_h: f32, scale: f32) -> Div {
-    let mut panel = div().flex().flex_col().gap(px(4.));
-    let mut width = 0.0;
-    let mut height = 0.0;
+    let _ = scale;
+    let mut card = div()
+        .flex()
+        .flex_col()
+        .rounded(crate::theme::radius::MD)
+        .overflow_hidden()
+        .bg(color(0x1c1c1f, 0.96))
+        .border_1()
+        .border_color(color(0xffffff, 0.14))
+        .shadow_lg();
+    let mut width: f32 = 0.0;
+    let mut height: f32 = 0.0;
+    let mut centre = 0u32;
     if let Some(m) = view.magnifier {
         let n_w = m.width.min(31);
         let n_h = m.height.min(31);
-        let mut grid = div().relative().w(px(n_w as f32 * CELL)).h(px(n_h as f32 * CELL)).border_1().border_color(gpui::white());
+        // Cells stretch so the grid fills the card's width, whatever the pixel count.
+        let cell = (CARD_W / n_w.max(1) as f32).max(CELL);
+        let (gw, gh) = (n_w as f32 * cell, n_h as f32 * cell);
+        let mut grid = div().relative().w(px(gw)).h(px(gh));
         for row in 0..n_h {
             for col in 0..n_w {
-                let px_x = m.x + col as i32 - mon.rect.x;
-                let px_y = m.y + row as i32 - mon.rect.y;
-                let c = sample(&mon.bitmap, px_x, px_y);
+                let c = sample(&mon.bitmap, m.x + col as i32 - mon.rect.x, m.y + row as i32 - mon.rect.y);
+                if row == n_h / 2 && col == n_w / 2 {
+                    centre = c;
+                }
                 grid = grid.child(
-                    div().absolute().left(px(col as f32 * CELL)).top(px(row as f32 * CELL)).w(px(CELL)).h(px(CELL)).bg(gpui::rgb(c)),
+                    div().absolute().left(px(col as f32 * cell)).top(px(row as f32 * cell)).w(px(cell)).h(px(cell)).bg(gpui::rgb(c)),
                 );
             }
         }
-        // Centre marker.
-        grid = grid.child(
-            div()
-                .absolute()
-                .left(px((n_w / 2) as f32 * CELL))
-                .top(px((n_h / 2) as f32 * CELL))
-                .w(px(CELL))
-                .h(px(CELL))
-                .border_1()
-                .border_color(gpui::black()),
-        );
-        width = n_w as f32 * CELL;
-        height = n_h as f32 * CELL;
-        panel = panel.child(grid);
+        // Faint pixel lines through the centre row and column, then the centre pixel's frame.
+        let (mx, my) = ((n_w / 2) as f32 * cell, (n_h / 2) as f32 * cell);
+        let guide = color(0x3d8bfd, 0.25);
+        grid = grid
+            .child(div().absolute().left_0().top(px(my)).w(px(gw)).h(px(cell)).bg(guide))
+            .child(div().absolute().left(px(mx)).top_0().w(px(cell)).h(px(gh)).bg(guide))
+            .child(div().absolute().left(px(mx - 1.0)).top(px(my - 1.0)).size(px(cell + 2.0)).border_1().border_color(gpui::white()))
+            .child(div().absolute().left(px(mx)).top(px(my)).size(px(cell)).border_1().border_color(gpui::black()));
+        width = gw;
+        height = gh;
+        card = card.child(grid);
     }
     if let Some(info) = &view.info_text {
-        height += 16.0 * (info.lines().count() as f32) + 8.0;
-        width = f32::max(width, 160.0);
-        let mut text = div().px(px(6.)).py(px(4.)).rounded(px(4.)).bg(color(0x000000, 0.75)).text_color(gpui::white()).text_xs();
+        let mut text = div().flex().flex_col().gap(px(1.)).px(px(8.)).py(px(6.)).text_color(color(0xffffff, 0.92)).text_size(px(11.5));
         for line in info.lines() {
             text = text.child(div().child(line.to_string()));
         }
-        panel = panel.child(text);
+        let row = div()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .when(view.magnifier.is_some(), |d| {
+                d.pl(px(8.)).child(
+                    div().size(px(14.)).flex_none().rounded(px(4.)).border_1().border_color(color(0xffffff, 0.3)).bg(gpui::rgb(centre)),
+                )
+            })
+            .child(text);
+        height += 16.0 * (info.lines().count() as f32) + 14.0;
+        width = width.max(CARD_W);
+        card = card.w(px(width)).child(row);
     }
-    let _ = scale;
-    let gap = 20.0;
+    let gap = 22.0;
     let x = if lx + gap + width > win_w { lx - gap - width } else { lx + gap };
     let y = if ly + gap + height > win_h { ly - gap - height } else { ly + gap };
-    div().absolute().left(px(x.max(0.0))).top(px(y.max(0.0))).child(panel)
+    div().absolute().left(px(x.max(4.0))).top(px(y.max(4.0))).child(card)
 }
 
 /// 0xRRGGBB of a pixel; black outside the bitmap.

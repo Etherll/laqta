@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_broadcast::{InactiveReceiver, Receiver};
 use futures_channel::oneshot;
 use laqta_domain::geometry::PhysRect;
-use laqta_domain::region::HoverTarget;
+use laqta_domain::region::{HoverTarget, SelectionAction};
 use laqta_domain::workflow::{AfterCaptureTasks, TaskSettings};
 use laqta_domain::{Action, Settings, WorkflowId};
 use laqta_domain::{Bitmap, Frame};
@@ -65,6 +65,21 @@ impl fmt::Debug for Ports {
     }
 }
 
+/// What a delivery mechanism already holds when it dispatches an action (ADR 015). The upload actions ask the user
+/// for a file, text or a URL; with the matching input they use it and skip the question. A watch folder, a drop, the
+/// CLI and IPC dispatch this way, so every one of them goes through the same routes. Any other input is ignored.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ActionInput {
+    #[default]
+    None,
+    /// For `FileUpload`: one upload job per file.
+    Files(Vec<PathBuf>),
+    /// For `UploadText`: the text to upload.
+    Text(String),
+    /// For `UploadUrl` and `ShortenUrl`: the URL to re-upload or to shorten.
+    Url(String),
+}
+
 /// What a dispatched action produced.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dispatched {
@@ -114,6 +129,8 @@ pub struct App {
     pub(crate) watches: std::sync::Mutex<Vec<laqta_ports::WatchHandle>>,
     /// What the borderless and top-most toggles switched on (M5 D7).
     pub(crate) window_toggles: crate::tools::WindowToggles,
+    /// The history the windows edit, once `main` attaches it (`history.rs`).
+    pub(crate) history: std::sync::OnceLock<Arc<dyn laqta_ports::HistoryEdit>>,
     /// Keeps the event channel open while nobody listens, so sends never fail.
     idle: InactiveReceiver<TaskEvent>,
 }
@@ -141,13 +158,24 @@ impl App {
             auto_capture: std::sync::Mutex::new(None),
             watches: std::sync::Mutex::new(Vec::new()),
             window_toggles: Default::default(),
+            history: std::sync::OnceLock::new(),
             idle: active.deactivate(),
         })
     }
 
     pub fn dispatch(self: &Arc<Self>, action: Action, workflow: Option<WorkflowId>) -> BoxFuture<'static, Result<Dispatched, AppError>> {
+        self.dispatch_with(action, ActionInput::None, workflow)
+    }
+
+    /// `dispatch` for a delivery mechanism that already has the action's input (see `ActionInput`).
+    pub fn dispatch_with(
+        self: &Arc<Self>,
+        action: Action,
+        input: ActionInput,
+        workflow: Option<WorkflowId>,
+    ) -> BoxFuture<'static, Result<Dispatched, AppError>> {
         tracing::debug!(target: "laqta::perf", ?action, "dispatch");
-        Box::pin(Arc::clone(self).route(action, workflow))
+        Box::pin(Arc::clone(self).route(action, input, workflow))
     }
 
     /// Stops one task (queued tasks never run; running ones stop at the next step).
@@ -213,8 +241,9 @@ impl App {
     async fn region(&self, mut ts: TaskSettings) -> Result<Dispatched, AppError> {
         let frames = self.frames(&ts).await?;
         let sel = region::select(&self.ports, frames, &ts.capture.region).await?;
+        ts.after_capture = after_capture_for(ts.after_capture, sel.action);
         if sel.annotate {
-            ts.after_capture.insert(laqta_domain::workflow::AfterCaptureTasks::ANNOTATE_IMAGE);
+            ts.after_capture.insert(AfterCaptureTasks::ANNOTATE_IMAGE);
         }
         if let Ok(mut last) = self.last_region.lock() {
             *last = Some((sel.rects.clone(), sel.target.clone()));
@@ -336,7 +365,7 @@ impl App {
         }
     }
 
-    async fn route(self: Arc<Self>, action: Action, workflow: Option<WorkflowId>) -> Result<Dispatched, AppError> {
+    async fn route(self: Arc<Self>, action: Action, input: ActionInput, workflow: Option<WorkflowId>) -> Result<Dispatched, AppError> {
         let settings = self.settings.get();
         let ts = settings.task_settings(workflow);
         match action {
@@ -427,9 +456,12 @@ impl App {
                 Ok(Dispatched::HotkeysToggled(off))
             }
             Action::UploadText => {
-                let text = match self.ports.clipboard.get().ok().flatten() {
-                    Some(ClipboardContent::Text(text)) => text,
-                    _ => self.ports.prompt.ask_text("Upload text", "").await.map_err(AppError::from)?,
+                let text = match input {
+                    ActionInput::Text(text) => text,
+                    _ => match self.ports.clipboard.get().ok().flatten() {
+                        Some(ClipboardContent::Text(text)) => text,
+                        _ => self.ports.prompt.ask_text("Upload text", "").await.map_err(AppError::from)?,
+                    },
                 };
                 if text.is_empty() {
                     return Err(AppError::Unsupported("nothing to upload".into()));
@@ -438,26 +470,40 @@ impl App {
             }
             Action::ClipboardUpload | Action::ClipboardUploadWithContentViewer => self.clipboard_upload(ts).await,
             Action::UploadUrl => {
-                let answer = self.ports.prompt.ask_text("URL to upload", "").await.map_err(AppError::from)?;
+                let answer = match input {
+                    ActionInput::Url(url) => url,
+                    _ => self.ports.prompt.ask_text("URL to upload", "").await.map_err(AppError::from)?,
+                };
                 let url = as_url(&answer).ok_or_else(not_a_url)?.to_owned();
                 Ok(self.upload(UploadSource::Url(url), ts))
             }
             Action::ShortenUrl => {
-                let clipboard = match self.ports.clipboard.get().ok().flatten() {
-                    Some(ClipboardContent::Text(text)) => as_url(&text).map(str::to_owned),
-                    _ => None,
-                };
-                let url = match clipboard {
-                    Some(url) => url,
-                    None => {
-                        let answer = self.ports.prompt.ask_text(Action::ShortenUrl.label(), "").await.map_err(AppError::from)?;
-                        as_url(&answer).ok_or_else(not_a_url)?.to_owned()
+                let url = match input {
+                    ActionInput::Url(url) => as_url(&url).ok_or_else(not_a_url)?.to_owned(),
+                    _ => {
+                        let clipboard = match self.ports.clipboard.get().ok().flatten() {
+                            Some(ClipboardContent::Text(text)) => as_url(&text).map(str::to_owned),
+                            _ => None,
+                        };
+                        match clipboard {
+                            Some(url) => url,
+                            None => {
+                                let answer = self.ports.prompt.ask_text(Action::ShortenUrl.label(), "").await.map_err(AppError::from)?;
+                                as_url(&answer).ok_or_else(not_a_url)?.to_owned()
+                            }
+                        }
                     }
                 };
                 Ok(self.upload(UploadSource::ShortenUrl(url), ts))
             }
             Action::FileUpload => {
-                let Some(paths) = self.picked_files(Action::FileUpload.label()).await? else { return Ok(Dispatched::Done) };
+                let paths = match input {
+                    ActionInput::Files(paths) => paths,
+                    _ => match self.picked_files(Action::FileUpload.label()).await? {
+                        Some(paths) => paths,
+                        None => return Ok(Dispatched::Done),
+                    },
+                };
                 Ok(first_task(self.upload_files(paths, workflow)))
             }
             Action::FolderUpload => {
@@ -512,6 +558,22 @@ fn first_task(ids: Vec<TaskId>) -> Dispatched {
     ids.first().map_or(Dispatched::Done, |id| Dispatched::Task(*id))
 }
 
+/// The after-capture steps for a region the user finished with `action` (ADR 011: what happens to a
+/// capture is Task flags). A button on the capture toolbar replaces the configured steps with its own;
+/// the after-upload steps are not touched. `Edit` adds the editor to the configured steps, and
+/// `Default` leaves them as they are.
+fn after_capture_for(configured: AfterCaptureTasks, action: SelectionAction) -> AfterCaptureTasks {
+    match action {
+        SelectionAction::Default => configured,
+        SelectionAction::Copy => AfterCaptureTasks::COPY_IMAGE_TO_CLIPBOARD,
+        SelectionAction::Save => AfterCaptureTasks::SAVE_IMAGE_TO_FILE,
+        SelectionAction::Pin => AfterCaptureTasks::PIN_TO_SCREEN,
+        SelectionAction::Upload => AfterCaptureTasks::SAVE_IMAGE_TO_FILE | AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST,
+        SelectionAction::Edit => configured | AfterCaptureTasks::ANNOTATE_IMAGE,
+        SelectionAction::CopyText => AfterCaptureTasks::DO_OCR,
+    }
+}
+
 /// The trimmed text when it is an http or https URL with no spaces in it.
 fn as_url(text: &str) -> Option<&str> {
     let url = text.trim();
@@ -522,4 +584,40 @@ fn as_url(text: &str) -> Option<&str> {
 
 fn not_a_url() -> AppError {
     AppError::Unsupported("not a URL".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A configuration that differs from every action's flags, so a result that kept it shows.
+    fn configured() -> AfterCaptureTasks {
+        AfterCaptureTasks::SAVE_IMAGE_TO_FILE | AfterCaptureTasks::COPY_IMAGE_TO_CLIPBOARD | AfterCaptureTasks::BEAUTIFY_IMAGE
+    }
+
+    #[test]
+    fn default_leaves_the_configured_steps_alone() {
+        assert_eq!(after_capture_for(configured(), SelectionAction::Default), configured());
+        assert_eq!(after_capture_for(AfterCaptureTasks::empty(), SelectionAction::Default), AfterCaptureTasks::empty());
+    }
+
+    #[test]
+    fn each_toolbar_action_replaces_the_configured_steps() {
+        for (action, flags) in [
+            (SelectionAction::Copy, AfterCaptureTasks::COPY_IMAGE_TO_CLIPBOARD),
+            (SelectionAction::Save, AfterCaptureTasks::SAVE_IMAGE_TO_FILE),
+            (SelectionAction::Pin, AfterCaptureTasks::PIN_TO_SCREEN),
+            (SelectionAction::Upload, AfterCaptureTasks::SAVE_IMAGE_TO_FILE | AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST),
+            (SelectionAction::CopyText, AfterCaptureTasks::DO_OCR),
+        ] {
+            assert_eq!(after_capture_for(configured(), action), flags, "{action:?}");
+            assert_eq!(after_capture_for(AfterCaptureTasks::empty(), action), flags, "{action:?} from nothing");
+        }
+    }
+
+    #[test]
+    fn edit_adds_the_editor_to_the_configured_steps() {
+        assert_eq!(after_capture_for(configured(), SelectionAction::Edit), configured() | AfterCaptureTasks::ANNOTATE_IMAGE);
+        assert_eq!(after_capture_for(AfterCaptureTasks::empty(), SelectionAction::Edit), AfterCaptureTasks::ANNOTATE_IMAGE);
+    }
 }

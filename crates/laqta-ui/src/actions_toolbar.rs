@@ -89,10 +89,14 @@ impl Render for ActionsToolbar {
     }
 }
 
-fn action_icon(a: Action) -> IconName {
+pub(crate) fn action_icon(a: Action) -> IconName {
     match a {
-        Action::RectangleRegion => IconName::Crop,
-        Action::PrintScreen => IconName::Monitor,
+        Action::RectangleRegion | Action::CustomRegion | Action::LastRegion => IconName::Crop,
+        Action::PrintScreen | Action::ActiveMonitor => IconName::Monitor,
+        Action::ScreenRecorderGif => IconName::Film,
+        Action::ScrollingCapture => IconName::ScanLine,
+        Action::Ocr => IconName::ScanText,
+        Action::ImageEditor => IconName::SquarePen,
         Action::ActiveWindow => IconName::AppWindow,
         Action::ScreenRecorder => IconName::Video,
         Action::ScreenColorPicker => IconName::Pipette,

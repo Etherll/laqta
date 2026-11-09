@@ -384,7 +384,12 @@ mod tests {
 
     #[test]
     fn units_come_from_names() {
-        let f = form(&Effect::Draw(Draw::Border { kind: laqta_domain::effects::draw::BorderKind::Outside, size: 4, color: Rgba::BLACK, dash: false }));
+        let f = form(&Effect::Draw(Draw::Border {
+            kind: laqta_domain::effects::draw::BorderKind::Outside,
+            size: 4,
+            color: Rgba::BLACK,
+            dash: false,
+        }));
         assert_eq!(unit(&f.fields[1]), Some("px"));
         assert_eq!(unit(&f.fields[0]), None);
         let f = form(&Effect::Adjust(Adjust::Hue { angle: 0.0 }));

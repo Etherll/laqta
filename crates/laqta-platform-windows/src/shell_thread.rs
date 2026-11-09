@@ -300,6 +300,19 @@ fn modifiers(m: Modifiers) -> HOT_KEY_MODIFIERS {
     out
 }
 
+/// The app icon: resource 1 of the executable (`apps/laqta/laqta.rc`), or the stock application
+/// icon when the executable has none.
+fn app_icon() -> windows::Win32::UI::WindowsAndMessaging::HICON {
+    // SAFETY: the module handle of the running executable; both loads only read resources.
+    unsafe {
+        GetModuleHandleW(None)
+            .ok()
+            .and_then(|m| LoadIconW(Some(HINSTANCE(m.0)), windows::core::PCWSTR(1 as _)).ok())
+            .or_else(|| LoadIconW(None, IDI_APPLICATION).ok())
+            .unwrap_or_default()
+    }
+}
+
 /// Adds (or updates) the notification-area icon. No notification area means `Unsupported`.
 fn notify(hwnd: HWND, tooltip: &str, add: bool) -> Result<(), PortError> {
     let mut data = NOTIFYICONDATAW {
@@ -308,8 +321,7 @@ fn notify(hwnd: HWND, tooltip: &str, add: bool) -> Result<(), PortError> {
         uID: TRAY_ID,
         uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
         uCallbackMessage: WM_LAQTA_TRAY,
-        // SAFETY: loads a stock system icon.
-        hIcon: unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default(),
+        hIcon: app_icon(),
         ..Default::default()
     };
     let tip: Vec<u16> = tooltip.encode_utf16().take(data.szTip.len() - 1).collect();

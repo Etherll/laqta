@@ -9,8 +9,7 @@ use std::sync::{Arc, Mutex};
 use futures_channel::oneshot;
 use gpui::{
     App, AppContext as _, Context, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement as _, Pixels, Render, RenderImage, SharedString, Styled as _, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
-    img, px, size,
+    ParentElement as _, Pixels, Render, RenderImage, SharedString, Styled as _, Window, WindowBounds, WindowOptions, div, img, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputState};
@@ -31,6 +30,11 @@ use crate::widgets;
 const TOOLS_W: f32 = 120.0;
 const PANEL_W: f32 = 260.0;
 const TOP_H: f32 = 48.0;
+
+/// Where the canvas area starts: the title bar (when the window draws its own) and the top bar.
+fn head(window: &Window) -> f32 {
+    crate::chrome::title_bar_height(window) + TOP_H
+}
 const PAD: f32 = 12.0;
 
 const BLENDS: [BlendMode; 16] = [
@@ -97,8 +101,10 @@ pub(crate) fn open(image: Option<Bitmap>, path: Option<PathBuf>, cx: &mut App) {
     let image = image.unwrap_or_else(|| blank(1280, 800));
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(1280.), px(820.)), cx)),
-        titlebar: Some(TitlebarOptions { title: Some("Photo editor".into()), ..Default::default() }),
-        app_id: Some("laqta".into()),
+        titlebar: Some(crate::chrome::titlebar("Photo editor")),
+        window_decorations: crate::chrome::decorations(),
+        app_owns_titlebar_drag: true,
+        app_id: Some(crate::APP_ID.into()),
         focus: true,
         ..Default::default()
     };
@@ -305,7 +311,8 @@ impl PhotoWindow {
     }
 
     fn active(&self) -> Option<LayerId> {
-        self.doc_read(|d| d.active).unwrap_or_else(|| self.interaction.view().active.and_then(|i| self.interaction.view().layers.get(i).map(|l| l.id)))
+        self.doc_read(|d| d.active)
+            .unwrap_or_else(|| self.interaction.view().active.and_then(|i| self.interaction.view().layers.get(i).map(|l| l.id)))
     }
 
     fn val(&self, input: &Entity<InputState>, cx: &App) -> String {
@@ -330,16 +337,17 @@ impl PhotoWindow {
     fn layout(&self, window: &Window) -> (f32, f32, f32) {
         let vp = window.viewport_size();
         let avail_w = (f32::from(vp.width) - TOOLS_W - PANEL_W - 2.0 * PAD).max(1.0);
-        let avail_h = (f32::from(vp.height) - TOP_H - 2.0 * PAD).max(1.0);
+        let head = head(window);
+        let avail_h = (f32::from(vp.height) - head - 2.0 * PAD).max(1.0);
         let (w, h) = (self.size.0.max(1) as f32, self.size.1.max(1) as f32);
         let z = (avail_w / w).min(avail_h / h).clamp(0.05, 1.0);
-        (TOOLS_W + PAD, TOP_H + PAD, z)
+        (TOOLS_W + PAD, head + PAD, z)
     }
 
     fn in_canvas(&self, pos: gpui::Point<Pixels>, window: &Window) -> bool {
         let x = f32::from(pos.x);
         let y = f32::from(pos.y);
-        x > TOOLS_W && y > TOP_H && x < f32::from(window.viewport_size().width) - PANEL_W
+        x > TOOLS_W && y > head(window) && x < f32::from(window.viewport_size().width) - PANEL_W
     }
 
     fn finish_drag(&mut self, cx: &mut Context<Self>) {
@@ -414,15 +422,15 @@ impl PhotoWindow {
             self.message = Some("Inpainting needs a layer the size of the canvas.".into());
             return cx.notify();
         }
-        let inpainter = cx.global::<UiState>().services.app.ports().inpainter.clone();
+        let app = cx.global::<UiState>().services.app.clone();
         let spawner = self.spawner.clone();
         self.busy = true;
         self.message = Some("Inpainting…".into());
         cx.notify();
         let task = cx.background_spawn(async move {
-            match inpainter.inpaint(bitmap.clone(), mask.data().to_vec()).await {
+            match app.erase(bitmap.clone(), mask.data().to_vec()).await {
                 Ok(b) => Ok((b, false)),
-                Err(laqta_ports::PortError::Cancelled | laqta_ports::PortError::Unsupported(_)) => {
+                Err(laqta_ports::AppError::Cancelled | laqta_ports::AppError::Unsupported(_)) => {
                     in_pool(&spawner, move || inpaint_fallback(&bitmap, &mask))
                         .map(|b| (b, true))
                         .ok_or_else(|| "the compute pool stopped".to_owned())
@@ -828,16 +836,22 @@ impl Render for PhotoWindow {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(Button::new("undo").label("Undo").small().on_click(cx.listener(|this, _, _, cx| {
-                this.edit(|e| {
-                    e.undo();
-                    Ok(())
-                }, cx);
+                this.edit(
+                    |e| {
+                        e.undo();
+                        Ok(())
+                    },
+                    cx,
+                );
             })))
             .child(Button::new("redo").label("Redo").small().on_click(cx.listener(|this, _, _, cx| {
-                this.edit(|e| {
-                    e.redo();
-                    Ok(())
-                }, cx);
+                this.edit(
+                    |e| {
+                        e.redo();
+                        Ok(())
+                    },
+                    cx,
+                );
             })))
             .child(widgets::muted("Colour", cx))
             .child(div().w(px(90.)).child(Input::new(&self.color).small()))
@@ -855,10 +869,10 @@ impl Render for PhotoWindow {
             .child(Button::new("close").label("Close").small().on_click(|_, w, _| w.remove_window()));
         let mut canvas = div().flex_1().relative().overflow_hidden().bg(cx.theme().secondary);
         if let Some(p) = &self.picture {
-            canvas =
-                canvas.child(img(p.clone()).absolute().left(px(ox - TOOLS_W)).top(px(oy - TOP_H)).w(px(w as f32 * z)).h(px(h as f32 * z)));
+            canvas = canvas
+                .child(img(p.clone()).absolute().left(px(ox - TOOLS_W)).top(px(oy - head(window))).w(px(w as f32 * z)).h(px(h as f32 * z)));
         }
-        div()
+        crate::chrome::rounded(div(), window)
             .id("laqta-photo")
             .size_full()
             .flex()
@@ -866,6 +880,7 @@ impl Render for PhotoWindow {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .text_sm()
+            .child(crate::chrome::TitleBar::new().title("Photo editor").flat())
             .child(top)
             .child(div().flex_1().flex().flex_row().child(tools).child(canvas).child(self.layers_panel(cx)))
             .on_mouse_down(

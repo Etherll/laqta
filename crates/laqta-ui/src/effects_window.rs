@@ -61,7 +61,7 @@ fn open_on(path: Option<PathBuf>, opened: Option<(Bitmap, Option<Arc<RenderImage
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,
         window_min_size: Some(size(px(960.), px(560.))),
-        app_id: Some("laqta".into()),
+        app_id: Some(crate::APP_ID.into()),
         ..Default::default()
     };
     if let Err(e) = cx.open_window(options, |window, cx| {
@@ -541,7 +541,7 @@ impl EffectsWindow {
                 .rounded(radius::MD)
                 .border_1()
                 .border_color(gpui::transparent_black())
-                .text_size(px(14.))
+                .text_size(text::ROW)
                 .text_color(if active { t.foreground } else { t.foreground.opacity(0.86) })
                 .hover(move |s| s.bg(x.wash))
                 .child(widgets::icon(IconName::Layers, if active { t.foreground } else { t.muted_foreground }))
@@ -750,7 +750,7 @@ impl EffectsWindow {
                     .child(
                         div()
                             .truncate()
-                            .text_size(px(14.))
+                            .text_size(text::ROW)
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(name_color)
                             .child(params::display_name(&item.effect)),
@@ -904,7 +904,7 @@ impl EffectsWindow {
             ));
         let mut body = div().flex().flex_col().gap(space::S1).child(header.pb(space::S2));
         if self.json {
-            return body.child(Textarea::new(&self.params).h(px(240.)).font_family("monospace").text_size(px(12.5))).into_any_element();
+            return body.child(Textarea::new(&self.params).h(px(240.)).font_family("monospace").text_size(text::SMALL)).into_any_element();
         }
         if self.fields.is_empty() {
             body = body.child(
@@ -1000,7 +1000,7 @@ impl EffectsWindow {
                     .border_dashed()
                     .border_color(t.foreground.opacity(0.14))
                     .child(widgets::icon(IconName::Sparkles, t.muted_foreground))
-                    .child(div().pt(space::S1).text_size(px(14.)).font_weight(FontWeight::MEDIUM).child("No effects yet"))
+                    .child(div().pt(space::S1).text_size(text::ROW).font_weight(FontWeight::MEDIUM).child("No effects yet"))
                     .child(div().text_size(text::LABEL).text_color(t.muted_foreground).child("Add one to start building this preset.")),
             );
         }
@@ -1101,7 +1101,8 @@ impl EffectsWindow {
         ];
         let picture = if self.show_original { self.original.clone() } else { self.preview.clone().or_else(|| self.original.clone()) };
         let caption = format!("{} · {} × {}", self.sample_name, self.sample.width(), self.sample.height());
-        let mut stage = div().flex_1().min_h_0().flex().flex_col().items_center().justify_center().gap(space::S3).px(space::S8).pb(space::S8);
+        let mut stage =
+            div().flex_1().min_h_0().flex().flex_col().items_center().justify_center().gap(space::S3).px(space::S8).pb(space::S8);
         if let Some(p) = picture {
             stage = stage.child(img(p).max_w_full().max_h(relative(0.86)).rounded(radius::MD).shadow(vec![gpui::BoxShadow {
                 color: gpui::black().opacity(if t.is_dark() { 0.5 } else { 0.18 }),
@@ -1119,16 +1120,24 @@ impl EffectsWindow {
             .flex()
             .flex_col()
             .bg(x.stage)
-            .child(div().h(px(HEADER_H)).flex_none().px(space::S5).flex().items_center().child(widgets::segmented(segs, cx)).child(div().flex_1()).child(
-                widgets::pill(
-                    "open-sample",
-                    "Preview on an image…",
-                    Pill::Default,
-                    true,
-                    cx.listener(|this, _, _, cx| this.open_sample(cx)),
-                    cx,
-                ),
-            ))
+            .child(
+                div()
+                    .h(px(HEADER_H))
+                    .flex_none()
+                    .px(space::S5)
+                    .flex()
+                    .items_center()
+                    .child(widgets::segmented(segs, cx))
+                    .child(div().flex_1())
+                    .child(widgets::pill(
+                        "open-sample",
+                        "Preview on an image…",
+                        Pill::Default,
+                        true,
+                        cx.listener(|this, _, _, cx| this.open_sample(cx)),
+                        cx,
+                    )),
+            )
             .child(stage)
     }
 }

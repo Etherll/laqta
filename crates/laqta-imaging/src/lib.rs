@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod beautify;
+pub mod layout;
 mod bmp;
 mod codecs;
 mod compose;

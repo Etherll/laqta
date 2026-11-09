@@ -22,7 +22,10 @@ impl ksni::Tray for SniItem {
         "Laqta".into()
     }
     fn icon_name(&self) -> String {
-        "camera-photo".into()
+        crate::app_id::APP_ID.into()
+    }
+    fn icon_theme_path(&self) -> String {
+        crate::app_id::icon_theme_dir().to_string_lossy().into_owned()
     }
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip { title: self.menu.tooltip.clone(), ..Default::default() }

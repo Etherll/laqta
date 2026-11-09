@@ -48,7 +48,11 @@ pub(crate) mod space {
 pub(crate) mod text {
     use gpui::{Pixels, px};
     pub const CAPTION: Pixels = px(11.25);
+    /// Small controls and secondary lines.
+    pub const SMALL: Pixels = px(12.5);
     pub const LABEL: Pixels = px(13.125);
+    /// Row titles and nav labels.
+    pub const ROW: Pixels = px(14.);
     pub const BODY: Pixels = px(15.);
     pub const SECTION: Pixels = px(16.875);
     pub const HEADING: Pixels = px(18.75);
@@ -80,6 +84,14 @@ pub(crate) struct Extra {
     /// The stage behind an image being edited: a step away from the chrome, so the image reads
     /// as the subject.
     pub stage: Hsla,
+    /// The library's card surface: a step above the page.
+    pub surface: Hsla,
+    /// Work in progress and selections (busy badges, the editor's selection, pin borders).
+    pub info: Hsla,
+    /// Paused or waiting.
+    pub warning: Hsla,
+    /// The window Close button's hover.
+    pub close_hover: Hsla,
 }
 
 pub(crate) fn extra(cx: &App) -> Extra {
@@ -93,6 +105,10 @@ pub(crate) fn extra(cx: &App) -> Extra {
         action: if dark { fg } else { hex(0x1A1C1F) },
         chip: t.primary.opacity(0.12),
         stage: if dark { hex(0x131313) } else { hex(0xEAEAE8) },
+        surface: if dark { hex(0x232323) } else { hex(0xFFFFFF) },
+        info: hex(0x3B82F6),
+        warning: hex(0xEAB308),
+        close_hover: hex(0xC42B1C),
     }
 }
 

@@ -2,14 +2,15 @@
 //! custom-model validation, over `laqta-ml`.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 use laqta_domain::settings::{CustomModel, ModelOptions, ModelProvider};
+use laqta_domain::workflow::ToastOptions;
 use laqta_ml::families::Family;
 use laqta_ml::runtime::{ExecutionProvider, Runtime};
 use laqta_ml::{Task, catalog};
-use laqta_ports::BoxFuture;
+use laqta_ports::{BoxFuture, Notifier, Toast};
 use laqta_ui::{ModelProgress, ModelRow, ModelService};
 
 /// The settings' model choices, shared with the OCR adapter and updated on save.
@@ -34,15 +35,65 @@ pub fn runtime(data: &Path, options: &ModelOptions) -> Option<Arc<Runtime>> {
     Some(Arc::new(Runtime::new(laqta_ml::install::library_path(&dir, ort), dir, provider(options.provider))))
 }
 
-/// Downloads ONNX Runtime when it is not there yet.
-pub async fn ensure_onnxruntime(data: &Path) -> Result<(), String> {
+/// Downloads ONNX Runtime when it is not there yet, reporting through `progress`.
+pub async fn ensure_onnxruntime(data: &Path, progress: laqta_ml::Progress) -> Result<(), String> {
     let dir = models_dir(data);
     let ort = laqta_ml::install::ort_for_host().ok_or("no ONNX Runtime build for this platform")?;
     if laqta_ml::install::library_path(&dir, ort).exists() {
         return Ok(());
     }
-    let none: laqta_ml::Progress = Arc::new(|_, _| {});
-    laqta_ml::install::install_onnxruntime(&dir, none, Arc::new(AtomicBool::new(false))).await.map(|_| ()).map_err(|e| e.to_string())
+    laqta_ml::install::install_onnxruntime(&dir, progress, Arc::new(AtomicBool::new(false))).await.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Downloads smaller than this are not reported: they are over before a notice could be read.
+const MIN_REPORTED_BYTES: u64 = 1_000_000;
+
+/// Throttles the per-chunk progress of one download to a notice per quarter.
+#[derive(Default)]
+struct Quarters {
+    last_done: u64,
+    last_step: Option<u8>,
+}
+
+impl Quarters {
+    /// The percentage (0, 25, 50, 75 or 100) to report when `done` of `total` bytes enters a quarter that has
+    /// not been reported yet. A total that is unknown or small reports nothing, and a count that drops back
+    /// means a new file started.
+    fn advance(&mut self, done: u64, total: Option<u64>) -> Option<u8> {
+        let total = total.filter(|t| *t >= MIN_REPORTED_BYTES)?;
+        if done < self.last_done {
+            *self = Quarters::default();
+        }
+        self.last_done = done;
+        let step = u8::try_from(done.min(total).saturating_mul(4) / total).ok()? * 25;
+        if self.last_step == Some(step) {
+            return None;
+        }
+        self.last_step = Some(step);
+        Some(step)
+    }
+}
+
+/// A `Progress` for the first-use download of `what` (ADR 022: "with progress shown"). No window starts
+/// these downloads, so the report goes through the `Notifier`: a toast under `title` at the start, at each
+/// quarter and at the end.
+pub fn toast_progress(notifier: &Arc<dyn Notifier>, title: &str, what: &str) -> laqta_ml::Progress {
+    let (notifier, title, what) = (Arc::clone(notifier), title.to_owned(), what.to_owned());
+    let quarters = Mutex::new(Quarters::default());
+    Arc::new(move |done, total| {
+        let Some(percent) = quarters.lock().ok().and_then(|mut q| q.advance(done, total)) else {
+            return;
+        };
+        let body = match percent {
+            0 => format!("Downloading {what}"),
+            100 => format!("Downloaded {what}, checking it"),
+            percent => format!("Downloading {what}: {percent} %"),
+        };
+        let options = ToastOptions { duration_ms: 1500, fade_ms: 300, ..ToastOptions::default() };
+        if let Err(error) = notifier.toast(Toast { title: title.clone(), body, image: None, path: None, url: None, options }) {
+            tracing::warn!(%error, "the download notice was not shown");
+        }
+    })
 }
 
 pub struct Models {
@@ -124,7 +175,8 @@ impl ModelService for Models {
         let options = self.options();
         Box::pin(async move {
             let fam = Family::parse(&family).ok_or_else(|| format!("unknown family {family}"))?;
-            ensure_onnxruntime(&data).await?;
+            // The model manager has no channel for this download (`add_custom` takes no progress).
+            ensure_onnxruntime(&data, Arc::new(|_, _| {})).await?;
             let rt = runtime(&data, &options).ok_or("no ONNX Runtime build for this platform")?;
             rt.ensure_ort().map_err(|e| e.to_string())?;
             laqta_ml::validate_custom(&path, &family).map_err(|e| e.to_string())?;
@@ -135,5 +187,76 @@ impl ModelService for Models {
             std::fs::copy(&path, dir.join(format!("{id}.onnx"))).map_err(|e| e.to_string())?;
             Ok(CustomModel { id, name, task: fam.task().as_str().to_owned(), family })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use laqta_ports::PortError;
+
+    const MB: u64 = 1_000_000;
+
+    /// A notifier that keeps the toasts it was given.
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<Toast>>);
+
+    impl Notifier for Recorder {
+        fn toast(&self, toast: Toast) -> Result<(), PortError> {
+            self.0.lock().expect("lock").push(toast);
+            Ok(())
+        }
+    }
+
+    fn bodies(recorder: &Recorder) -> Vec<String> {
+        recorder.0.lock().expect("lock").iter().map(|t| t.body.clone()).collect()
+    }
+
+    #[test]
+    fn a_download_reports_each_quarter_once() {
+        let mut quarters = Quarters::default();
+        let total = Some(100 * MB);
+        let mut reported = Vec::new();
+        for done in (1..=100).map(|i| i * MB) {
+            reported.extend(quarters.advance(done, total));
+            // A repeated chunk size inside a quarter reports nothing more.
+            assert_eq!(quarters.advance(done, total), None);
+        }
+        assert_eq!(reported, [0, 25, 50, 75, 100]);
+    }
+
+    #[test]
+    fn a_small_or_unsized_download_reports_nothing() {
+        let mut quarters = Quarters::default();
+        assert_eq!(quarters.advance(74_012, Some(74_012)), None, "a dictionary is over at once");
+        assert_eq!(quarters.advance(10 * MB, None), None, "no total, no percentage");
+    }
+
+    #[test]
+    fn a_second_file_starts_again_from_zero() {
+        let mut quarters = Quarters::default();
+        assert_eq!(quarters.advance(8 * MB, Some(8 * MB)), Some(100));
+        assert_eq!(quarters.advance(MB / 2, Some(8 * MB)), Some(0), "the count dropped, so this is a new file");
+    }
+
+    #[test]
+    fn the_progress_posts_a_toast_per_quarter_under_the_title() {
+        let recorder = Arc::new(Recorder::default());
+        let notifier: Arc<dyn Notifier> = recorder.clone();
+        let progress = toast_progress(&notifier, "Background removal", "BiRefNet lite, fp16");
+        for done in (1..=115).map(|i| i * MB) {
+            progress(done, Some(115 * MB));
+        }
+        assert_eq!(
+            bodies(&recorder),
+            [
+                "Downloading BiRefNet lite, fp16",
+                "Downloading BiRefNet lite, fp16: 25 %",
+                "Downloading BiRefNet lite, fp16: 50 %",
+                "Downloading BiRefNet lite, fp16: 75 %",
+                "Downloaded BiRefNet lite, fp16, checking it",
+            ]
+        );
+        assert!(recorder.0.lock().expect("lock").iter().all(|t| t.title == "Background removal"));
     }
 }

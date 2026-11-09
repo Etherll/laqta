@@ -107,6 +107,8 @@ fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
     let mut settings = Settings::default_for(dir.to_path_buf());
     settings.screenshots_dir = dir.to_path_buf();
     settings.defaults.capture.region.min_size = 2;
+    // Drawing the area ends the selection at once; there is no capture toolbar to confirm it.
+    settings.defaults.capture.region.show_tools_after_select = false;
     edit(&mut settings);
     let app = App::new(ports, settings);
     let events = app.events();

@@ -27,10 +27,10 @@ costs almost nothing while it waits in the tray.
 
 | Goal | Budget | How it is checked |
 | - | - | - |
-| Idle in tray | 0% CPU and zero wakeups while no lazy resource is held; RSS under 40 MB with no windows open | `cargo xtask measure-idle` on Linux and Windows: run by hand in M0 (the R6 gate, with GPUI running and no windows), then in the `bench.yml` CI workflow from M1. Wakeups are counted on Linux only |
-| Hotkey to overlay visible | under 120 ms on a 4K screen, on Windows, X11 and Wayland compositors with layer-shell | trace spans from hotkey to first overlay frame (bench, M1) |
-| Capture peak memory | region capture on two 4K monitors raises RSS by under 150 MB, released within 2 s of the task finishing | bench, M1 |
-| Fullscreen capture → PNG on disk | under 250 ms for one 4K monitor on the reference machine | bench in `laqta-imaging`, M0 |
+| Idle in tray | 0% CPU and zero wakeups while no lazy resource is held; RSS under 40 MB with no windows open | `cargo xtask measure-idle`. On Linux it reads RSS, CPU and wakeups; on Windows it only says to read the working set in Task Manager. Run by hand in M0 (the R6 gate, with GPUI running and no windows). The CI job planned for M1 is not built (pending, owner) |
+| Hotkey to overlay visible | under 120 ms on a 4K screen, on Windows, X11 and Wayland compositors with layer-shell | trace spans from hotkey to first overlay frame (the `laqta::perf` log target), read by hand. No bench exists (pending, owner) |
+| Capture peak memory | region capture on two 4K monitors raises RSS by under 150 MB, released within 2 s of the task finishing | measured by hand. No bench exists (pending, owner) |
+| Fullscreen capture → PNG on disk | under 250 ms for one 4K monitor on the reference machine | `cargo xtask bench-png`, an example in `laqta-imaging` (M0). CI does not run it |
 | Recording overhead | 1080p30 with a hardware encoder under 5% CPU on the reference machine | manual gate per release, M4 |
 | Parity | 99% of non-dropped rows in FEATURES.md marked `done` | FEATURES.md status column |
 
@@ -51,16 +51,26 @@ internal panel and one 4K external monitor.
   demand and dropped on close.
 - **Tray, hotkeys and IPC do not need GPUI.** They run on their own threads (§2.5), so the tray
   keeps working with no window open, and the UI could move to a separate process if R6 requires it.
-- **Lazy resources.** These start on first use: the HTTP runtime, the SQLite connection, the
-  compute pool, the onnxruntime library, the OCR and background-removal models, the FFmpeg
-  process, and the font database. Models, onnxruntime and FFmpeg are downloaded on first use
-  through `laqta-http`'s verified fetch, with progress shown.
+- **Lazy resources.** These start on first use: the HTTP runtime, the compute pool, the
+  onnxruntime library, the OCR and background-removal models, the FFmpeg process, and the font
+  database. The SQLite connection is the exception: it opens at start, so a bad history file
+  fails early, and the next call after a release opens it again. Models, onnxruntime and FFmpeg
+  are downloaded on first use through `laqta-http`'s verified fetch. The first-use model and
+  onnxruntime downloads report their progress as toasts.
 - **Release timers.** Each owner of a lazy resource arms one one-shot release timer while it
-  holds the resource (60 s after the last use), using the `Clock` port. With nothing held, no
-  timer exists and the process has no wakeups.
-- **No CPU-side duplication in process.** A captured frame is an `Arc`-shared buffer. Crops are
-  views until encoding. Copies happen only where a boundary requires one: uploading a texture to
-  the GPU, or writing frames to the FFmpeg pipe.
+  holds the resource (60 s after the last use). With nothing held, no timer exists and the
+  process has no wakeups. Built so far:
+  - the compute pool and the SQLite connection (`History::release_when_idle`) time themselves
+    with the `Clock` port;
+  - the HTTP runtime stops itself after 60 s with no job, on its own thread's timer, because
+    `laqta-http` has no `Clock`.
+
+  Not built yet: nothing releases the font database, the onnxruntime library or the loaded
+  models.
+- **No CPU-side duplication in process.** A captured frame is an `Arc`-shared buffer. Copies
+  happen where a boundary needs one: cropping a region out of the composed desktop
+  (`laqta_imaging::crop` copies the pixels), uploading a texture to the GPU, or writing frames to
+  the FFmpeg pipe.
 - **Undo stores commands, not bitmaps** (ADR 009).
 
 ---
@@ -72,7 +82,7 @@ internal panel and one 4K external monitor.
 │ Outer: delivery and drivers                                                   │
 │   laqta-ui (views + presenters) · laqta-platform-{windows,linux} ·          │
 │   laqta-upload · laqta-cloud · laqta-ml · laqta-media · laqta-library ·  │
-│   laqta-import · laqta-ipc · laqta-codecs-c · laqta-update ·             │
+│   laqta-import · laqta-ipc · laqta-update ·                              │
 │   laqta-http (library)                                                      │
 │ ┌──────────────────────────────────────────────────────────────────────────┐ │
 │ │ Application: laqta-app                                                  │ │
@@ -102,52 +112,67 @@ an outer crate and passed in. The CI guard enforces this with allow-lists (§3, 
 | Module | Contents |
 | - | - |
 | `image` | `Bitmap` (straight-alpha RGBA or BGRA pixels shared through `Arc`) and `Frame` (one monitor's captured image) |
-| `geometry` | Physical-pixel rects, points and monitor layouts (DPI conversion happens in platform code), snapping, aspect constraints |
+| `geometry` | Physical-pixel rects (`PhysRect`, with their union) and monitors (`MonitorId`, `Monitor`). DPI conversion happens in platform code |
 | `capture` | Capture modes and options (delay, cursor, transparency, HDR) |
-| `region` | The region-selection state machine: hover target, drag, resize handles, multi-region, keyboard nudge, magnifier sample rect, info text. Used only by the Region session |
+| `region` | The region-selection state machine: hover target, drag, resize handles, multi-region, keyboard nudge, the selected state behind the capture toolbar (tools shown or hidden, selection locked, `Finish(SelectionAction)`; ADR 029), magnifier sample rect, info text. Used only by the Region session |
 | `workflow` | Workflows, task settings and their sections, the after-capture and after-upload flags (listed in FEATURES.md), destination choices, and the merge of a workflow's overrides onto defaults (ADR 008) |
-| `action` | The `Action` enum, one variant per ShareX hotkey action. Its CLI and IPC names live in `laqta-ipc`, not here |
+| `action` | The `Action` enum: one variant per ShareX hotkey action, plus a few of Laqta's own (`RectangleLight`, `GifMaker`, `OpenSettings`, `RemoveBackground`). Its CLI and IPC names live in `laqta-ipc`, not here |
 | `naming` | Name patterns and upload-info templates (token lists in FEATURES.md) |
 | `effects` | Effects as data and presets. The `.sxie` package format is read and written by `laqta-import` |
 | `history` | History items, tags, query filters |
 | `settings` | The `Settings` value the application receives from `main` |
-| `hotkey` | Platform-neutral key chords, the binding table, conflict detection |
+| `hotkey` | Platform-neutral key chords and conflict detection. The binding table is built by `Settings::hotkey_bindings` |
+| `color` | Colours as data (`Rgba`) |
+| `hosts` | Native upload host accounts as data (kinds and their fields). `main` turns them into `laqta-upload` hosts |
+| `record` | Recording as data: codecs, quality, audio devices, camera overlay and the `RecordSpec` |
 
 **`laqta-imaging`**: pure pixel work. Effect kernels, resize, combine, split, scrolling-capture
-stitching, hashing, QR encode and decode, and the image codecs (PNG, JPEG, WebP, AVIF, GIF, BMP,
-TIFF, JPEG XL). Codecs are pure computation, so they are a library here, not a port.
+stitching, the beautifier, QR encode and decode, and the image codecs (PNG, JPEG, GIF, BMP, TIFF
+and lossless WebP). Codecs are pure computation, so they are a library here, not a port. Hashing
+is not here: it lives in `laqta-app`'s `tools`.
 - **Codec set.** `laqta-imaging` defines a codec-extension trait and a `Codecs` value listing
-  the codecs available. `main` builds that value, adding the optional C codecs from
-  `laqta-codecs-c` (lossy WebP encode, AVIF decode, HEIC) when their cargo feature is on. The
-  value is passed to whoever encodes or decodes. There is no global registry.
+  the codecs available. `main` builds that value and passes it to whoever encodes or decodes.
+  There is no global registry. The extension trait has no production implementation: the optional
+  C codecs (lossy WebP encode, AVIF decode, HEIC) that a `laqta-codecs-c` crate was to add were
+  never built.
 - **Parallel work.** Kernels use `rayon` parallel iterators but never create a pool. They run
   inside the compute pool that `main` builds and hands to callers through
   `Spawner::run_compute`, which calls `pool.install`. Each public parallel function starts with
   `debug_assert!(rayon::current_thread_index().is_some())`, so a call outside the pool (which
   would quietly create rayon's global pool) fails in tests.
 
-**`laqta-editor`**: the **Editor engine**, the single module behind the annotation editor,
-annotating in the overlay, and the beautifier.
+**`laqta-editor`**: the **Editor engine**, the single module behind every annotation surface:
+the image editor window and annotating on the region overlay (ADR 029). The beautifier is not
+here; it is `laqta-imaging`'s `beautify`, run by Task.
 
-- Interface: input events and commands go in; dirty rects, rendered pixels and a chrome
-  description come out. Export is the same renderer at full resolution.
-- Inside: the document (base image plus annotations), the 21 tools listed in FEATURES.md and the
-  canvas operations as state machines that turn pointer input into commands, undo and redo, the
-  per-annotation effect cache, and rendering on `tiny-skia` with text through `cosmic-text` and
-  `swash` (ADR 003).
+- Interface: input events and commands in; dirty rects, rendered pixels and a chrome
+  description out, plus requests for the host (save, continue, erase an object). Export is the
+  same renderer at full resolution.
+- Inside: the document (base image plus annotations), the 22 tools (the 21 listed in
+  FEATURES.md and the object eraser, which asks the host to erase a box) and the canvas
+  operations as state machines that turn pointer input into commands, undo and redo (including
+  replacing the whole image, which the AI tools use), the per-annotation effect cache, and
+  rendering on `tiny-skia` with text through `cosmic-text` and `swash` (ADR 003).
 - Fonts are injected. `main` builds a font loader (a function that loads the system font
-  database and locale) and wraps it in the engine's lazy `Fonts` handle. The same handle goes to
-  the Region session and to `laqta-ui`, and the loader runs on first use. `cosmic-text` is built with `default-features = false`, and the engine creates its
-  font system with `FontSystem::new_with_locale_and_db`, so it never scans system fonts itself.
-- Adding a tool edits this crate only.
+  database and locale) and wraps it in the engine's lazy `Fonts` handle. The handle goes to
+  `laqta-ui`, the only host of the engine (the editor window and the region overlay), and the
+  loader runs on first use. The Region session and `laqta-app` never see it. `cosmic-text` is
+  built with `default-features = false`, and the engine creates its font system with
+  `FontSystem::new_with_locale_and_db`, so it never scans system fonts itself.
+- Adding a tool edits this crate, plus the tool's label, hint and shortcut in `laqta-ui`'s
+  `editor_toolbar` presenter; a presenter test keeps those shortcuts in step with the engine's
+  key map.
 
 **`laqta-photo`** (created in M7): the photo editor (layers, masks, blend modes, selections), a
 second pure-core module beside the Editor engine. Its interface is decided in the M7 plan.
 
 ### 2.2 Application (`laqta-app`)
 
-Four deep modules and a dispatcher. Nothing here depends on GPUI, Tokio or OS crates. It depends
-on `laqta-ports` for every interface it calls, and on the pure core.
+An Action dispatcher and four deep modules (Task, Region session, Recording session, Watch
+folders), with smaller modules beside them: auto capture and scrolling capture (both driven from
+the dispatcher), the tool routes and `tools`, the AI use cases and history edits that open
+windows call (`ai`, `history`), and image-file helpers (`images`). Nothing here depends on GPUI,
+Tokio or OS crates. It depends on `laqta-ports` for every interface it calls, and on the pure core.
 
 File access goes through one private `files` module (ADR 024). It uses `std::fs`, because the
 file system is substitutable locally and tests use a temporary directory, so no port is needed.
@@ -158,73 +183,103 @@ a slow disk. `laqta-app`'s `clippy.toml` bans the `std::fs` items, `Path::exists
 
 **Action dispatcher.** The single entry point for every delivery mechanism: hotkeys, the tray,
 the main window, the CLI, single-instance IPC, browser native messaging and watch folders all
-call `dispatch(action, workflow)`. It merges settings and routes the action to one of:
+call `dispatch(action, workflow)`. A mechanism that already holds the action's input (a dropped
+file, a URL, a watched folder's new file) calls `dispatch_with(action, ActionInput, workflow)`
+instead (ADR 015). It merges settings and routes the action to one of:
 
 - Task, the Region session, the Recording session or Watch folders;
 - a **pure tool**: a tool that only decodes, runs `laqta-imaging` and encodes (hash, resize,
   convert, split, combine, thumbnail, strip metadata, QR);
 - a **windowed tool**: a tool with its own window (colour pickers, ruler, pin to screen, OCR,
   video tools, window tools, viewers). These open through the `ToolHost` port. Their rules
-  (colour sampling and formats, ruler measurements, pin-window state and the other tool state
-  machines) live in `laqta-app`'s pure `tools` module and in `laqta-imaging`. Their windows live in `laqta-ui`, render the tool's
-  state, and reach ports and pixel work only through methods on the application handle (for
-  example OCR, transcoding or sampling), so the work stays testable with fakes.
+  live in `laqta-app`'s `tools` module and in `laqta-imaging`. The module mixes plain values
+  (colour formats, ruler measurements) with functions that take the `Ports` they use, so file
+  access, pixel work and platform calls still go through `files`, the compute pool and the
+  ports. Pin-window state lives in the GPUI view. The windows live in `laqta-ui`, render the
+  tool's state, and reach ports and pixel work only through methods on the application handle
+  (for example OCR, transcoding or sampling), so the work stays testable with fakes.
+
+**Use cases for open windows.** Entry points go through `dispatch`. Work done inside an open
+window calls methods on `App`, which take plain data and return a future.
+- `ai.rs` has the four AI use cases: `recognize_text`, `remove_background`, `erase` (fill the
+  pixels under a mask) and `analyze`. Each runs one port call (`Ocr`, `BackgroundRemover`,
+  `Inpainter`, `ImageAnalyzer`), maps `PortError` to `AppError`, and emits nothing else, so the
+  image editor, the photo editor and the library can all use them and the caller decides what to
+  do with the answer (ADR 029).
+- `history.rs` has `history_set_tags`, `history_delete` and `attach_history`. A window edits a
+  history entry through the narrow `HistoryEdit` port, which runs on the blocking pool (ADR 018).
 
 **Task.** Owns a task from input to result, because the steps
 share ordering and cleanup rules (ADR 011).
 
-- Interface: submit a task job (capture result, file, text, URL, folder, or URL to download and
-  reupload) with its settings; receive a stream of task events (status, progress, result,
-  errors); stop one task or all.
+- Interface: submit a task job (a capture result, or an upload of text, a file, a URL to
+  download and reupload, a URL to shorten, or an already saved file; the dispatcher turns a
+  folder into one job per file) with its settings; receive a stream of task events (status,
+  progress, result, errors); stop one task or all.
 - Inside, private: the step plan and order, encoding once (only when save, save-as, OCR, upload or
   analyze needs it), thumbnails from the saved path, the large-file warning, the before-upload
-  prompt, upload filters, bounded retries (risk R7), after-upload steps (run only when a URL was
-  expected and returned), branching by job kind, cleanup that spans both phases (delete file,
-  clear an early-copied URL on failure), the status machine, and the queue with its concurrency
-  limit.
-- The implementation is split into private sub-modules (queue, plan, steps, retry, cleanup).
-  Their unit tests are internal; the golden traces test the interface.
+  prompt, bounded retries (risk R7), after-upload steps (run only when a URL was expected and
+  returned), branching by job kind, cleanup that spans both phases (`DELETE_FILE` removes the
+  file whatever the outcome; ADR 011), the status machine, and the
+  queue (two capture slots and one save slot, fixed in `task/mod.rs`).
+- Not built yet, though ShareX has them: upload filters, and copying the URL before the task
+  ends (with clearing it when the task fails).
+- The implementation is split into private sub-modules (`encode`, `run`, `save`, `status`,
+  `upload`). Their unit tests are internal; the golden traces test the interface.
 - Each job runs inside `catch_unwind`. A panic becomes a `Failed` event instead of ending the
   process (ADR 020).
 - Tests: golden scenarios ported from `WorkerTask.cs`, run against fake ports, asserting the
   event trace and side effects.
 
-**Region session.** Owns selecting a region on screen, for capture and recording (ADR 012).
+**Region session.** Owns selecting a region on screen, for capture and recording (ADR 012,
+ADR 029).
 
 - Interface: given frozen frames and options, return a selection (rects, the target window's
-  title and process, and the final image with any annotations already rendered) or `Cancelled`.
+  title and process, the image, and the action the user chose) or `Cancelled`.
 - Inside: shows the overlay through the `Overlay` port before hover targets load, loads hover
-  targets in the background from `HoverSource`, runs the `domain::region` state machine and hit
-  tests, and hosts the Editor engine for annotating in the overlay. When the user confirms, it
-  renders the annotations into the cropped image through the Editor engine, so Task receives
-  finished pixels.
+  targets in the background from `HoverSource`, and runs the `domain::region` state machine and
+  hit tests. With `show_tools_after_select` on (the default), a drawn or clicked region stays
+  selected and adjustable, and the overlay shows the capture toolbar beside it. The session crops
+  the composed desktop to the selection whenever it changes and passes the crop to the overlay
+  (`RegionView::selection_image`). The overlay hosts the Editor engine on that crop and sends the
+  annotated crop back (`RegionInput::Annotated`); the selection's image is then that crop.
+  `Selection::action` is the toolbar button that ended the session.
+- The session holds no Editor engine and no `Fonts`. Tools that act on an area at once
+  (recording, scrolling capture, OCR, QR, colour picker, ruler, pin from screen) go through
+  `region::pick`, which confirms on release with no toolbar.
 
 **Recording session.** Owns a recording from start to file.
 
 - Interface: start with a mode (region, window, custom, last region) and a record spec; pause,
-  resume, stop or abort; receive recording events. The finished file goes to Task.
-- A **record spec** holds the region, container, codec, frame rate, quality (CRF or bitrate),
-  cursor on or off, and the audio device IDs to record.
-- Inside: region selection through the Region session, the countdown, the fixed-duration stop,
-  opening a `ScreenStream`, driving the `Media` port, and GIF encoding after stop.
+  resume, stop or abort; receive recording events. The finished file goes to Task as an upload
+  job of the saved file.
+- A **record spec** holds the area, codec (the container follows from it), frame rate, quality
+  (CRF or bitrate), cursor on or off, the audio devices to record, custom encoder arguments and
+  an optional camera overlay.
+- Inside: region selection through the Region session (for the region area only; the other
+  areas use the active window, the custom region or the last area), the countdown, the
+  fixed-duration stop, opening a `ScreenStream` on one rect (several selected rects are
+  unioned), and driving the `Media` port. GIF encoding happens in the `Media` adapter, not in
+  the session.
 
-**Watch folders.** Watches configured folders through `FileWatcher` and submits Task jobs with
-each folder's workflow.
+**Watch folders.** Watches configured folders through `FileWatcher` and, for each new file,
+dispatches a `FileUpload` with that folder's workflow (`dispatch_with`).
 
 ### 2.3 Ports and the seam rule
 
 All ports live in **`laqta-ports`**, with the plain types they carry (`TaskEvent`, `AppError`,
 `PortError`, `BoxFuture`, …). Data shared with the pure core, such as `Bitmap` and `Frame`, stays
-in `laqta-domain`. That crate holds traits and data only. Adapters depend on
-`laqta-ports` and `laqta-domain`, never on `laqta-app`, so a change inside Task or a session
-doesn't touch any adapter (ADR 024).
+in `laqta-domain`. The crate holds traits and data, plus working fakes for tests behind its
+`fakes` feature. Adapters depend on `laqta-ports` and `laqta-domain`, never on `laqta-app`, so a
+change inside Task or a session doesn't touch any adapter (ADR 024).
 
 Port types use Laqta's vocabulary, never an adapter's. FFmpeg arguments, Win32 handles,
-Wayland objects and file formats stay in the adapter that maps them. One coupling is accepted
+Wayland objects and file formats stay in the adapter that maps them. A few couplings are accepted
 and contained (ADR 016): a recording `Target` carries an `OsScreenRef` (a Windows output and
-adapter, or an X11 display and screen) and audio devices carry the OS's device name. The
-application passes both through unread; only the platform adapter creates them and only
-`laqta-media` reads them.
+adapter, or an X11 display and screen), audio devices carry the OS's device name, and a record
+spec carries the user's custom encoder arguments as opaque text. The application passes all of
+these through unread. The platform adapter creates the first two; `laqta-media` reads all three,
+and the Windows native recorder reads the first.
 
 **Seam rule.** A port (trait) exists only if it has either:
 
@@ -237,79 +292,94 @@ instead of checking flags (ADR 018).
 
 | Port | Production adapters | Fake needed by | Used by |
 | - | - | - | - |
-| `ScreenSource` (stills; always one frame per monitor, adapters split a pre-composed image) | Windows, Wayland, X11 | Task, Region session tests | Task, Region session |
-| `ScreenStream`: video is `Frames` (a frame source) or `Target` (a screen target the recorder may capture itself, carrying a sealed `OsScreenRef` that only the platform adapter fills in and only `laqta-media` reads); audio inputs are `Device` (an audio device ID and name) or `Pcm` (a PCM source, such as Windows system audio) | WGC frame pool, PipeWire frames, screen targets for Windows and X11 | Recording session tests | Recording session |
-| `HoverSource` | Win32 + UI Automation, X11 + AT-SPI, one Wayland compositor | Region session tests | Region session |
+| `ScreenSource` (stills; always one frame per monitor, adapters split a pre-composed image) | Windows (DXGI duplication, GDI fallback), Wayland, X11 | Task, Region session tests | Task, Region session |
+| `ScreenStream`: video is `Frames` (a frame source) or `Target` (a screen target the recorder may capture itself, carrying an `OsScreenRef`); audio inputs are `Device` (an audio device ID and name) or `Pcm` (a PCM source, such as Windows system audio). Its sub-traits are `FrameSource`, `PcmSource` and `RecordingHandle` | PipeWire frames (Wayland); screen targets (Windows, X11) | Recording session tests | Recording session |
+| `HoverSource` | Win32 + UI Automation (Windows); X11; sway and KWin (Wayland). AT-SPI elements wrap every Linux backend | Region session tests | Region session |
 | `Overlay` | GPUI | Region session tests | Region session |
-| `Media` (record a stream, transcode a file) | FFmpeg (native Windows recorder in M7) | Recording session tests | Recording session, windowed tools |
-| `Destination`, `Shortener`, `Sharer` | one per host in `laqta-upload` | Task tests | Task |
-| `Prompt` (ask for text, choose from a list, show text, confirm) | GPUI | Task tests | Task, `laqta-upload` |
-| `ToolHost` | GPUI | dispatcher tests | dispatcher |
-| `Clipboard` | Windows, Wayland, X11 | Task tests | Task, tools |
-| `Notifier` | GPUI toasts, native toasts | Task tests | Task |
-| `Shell` (open, reveal, print) | Windows, Linux | Task tests | Task, `laqta-upload` (opens the browser for OAuth) |
-| `HotkeyRegistrar` | `RegisterHotKey`, GlobalShortcuts portal, `XGrabKey` | — | main |
-| `Tray`, `Autostart` | Windows, Linux | — | main |
-| `SecretStore` | Credential Manager, Secret Service | upload tests | `laqta-upload` |
-| `Ocr` | `laqta-ml` (PP-OCR family and others in the catalog), Windows.Media.Ocr | Task tests | Task, tools |
-| `BackgroundRemover` | `laqta-ml` (BiRefNet, BEN2 and the other families in the catalog), `laqta-cloud` (remove.bg) | tool tests | tools |
-| `ImageAnalyzer` | `laqta-cloud`: one OpenAI-compatible client; provider, base URL and model name are configuration (OpenAI, OpenRouter, Gemini, Ollama, LM Studio) | Task tests | Task, tools |
-| `FileWatcher` | `notify` | Watch folders tests | Watch folders |
+| `EditorHost` (opens the annotation editor after capture) | GPUI | Task tests | Task |
+| `Media` (record a stream, transcode a file) | FFmpeg (`laqta-media`), the native Windows recorder (Windows.Graphics.Capture, in `laqta-platform-windows`) | Recording session tests | Recording session, windowed tools |
+| `Destination`, `Shortener`, `Sharer` | one per host in `laqta-upload` | Task tests (`Sharer` has none yet) | Task |
+| `Uploaders` (look up hosts by id, download a URL) | `laqta-upload` | Task tests | Task, dispatcher |
+| `Prompt` (ask for text, choose from a list, show text, confirm; also the file and folder pickers, the after-capture and before-upload windows, and the save dialog) | GPUI | Task tests | Task, `laqta-upload` |
+| `ToolHost` (opens windowed tools, shows text and OCR results) | GPUI | dispatcher tests | dispatcher |
+| `Clipboard` | Windows; Linux (one `arboard` adapter for Wayland and X11) | Task tests | Task, tools |
+| `Notifier` | GPUI toasts (`UiHandle`, and `AppNotifier` in `main`) | Task tests | Task |
+| `Shell` (open a file or URL, reveal, print, run a program) | Windows, Linux | Task tests | Task, `laqta-upload` (opens the browser for OAuth) |
+| `HotkeyRegistrar` | `RegisterHotKey`, GlobalShortcuts portal, `XGrabKey` | none (a fake exists) | main |
+| `Tray`, `Autostart` | Windows, Linux | none (`Tray` has a fake) | main |
+| `SecretStore` | Credential Manager, Secret Service. `main` wraps either in `SessionSecrets`, which keeps what a keyring refuses in memory for the session (`MemorySecrets` under `--sandbox`) | upload tests | `laqta-upload` |
+| `HistoryEdit` (replace tags, delete an entry) | `laqta-library`'s `History` | dispatcher tests | `App::history_set_tags`, `App::history_delete` |
+| `Ocr` | `laqta-ml` (the PP-OCR families), Windows.Media.Ocr | Task tests | Task, tools, `App::recognize_text` |
+| `BackgroundRemover` | `laqta-ml` (the matting family: BiRefNet, BEN2 and U²-Net-p entries), `laqta-cloud` (remove.bg) | tool tests | tools, `App::remove_background` |
+| `ImageAnalyzer` | `laqta-cloud`: one OpenAI-compatible client; provider, base URL and model name are configuration (OpenAI, OpenRouter, Gemini, Ollama, LM Studio) | Task tests | Task, tools, `App::analyze` |
+| `Inpainter` | `laqta-ml` (the LaMa family). One production adapter so far | none needed yet | photo editor, `App::erase` |
+| `WindowOps` (borderless, top-most, window properties) | Windows, Linux | tool tests | tools |
+| `InputSynth` (scroll a window) | Windows, Linux | scrolling capture tests | scrolling capture |
+| `PointerHighlighter` | Windows, Linux | tool tests | tools |
+| `ShellIntegration` (Explorer menu and Send To; `.desktop` actions) | Windows, Linux | none | main |
+| `RemoteStorage` | `laqta-upload` (S3, FTP, SFTP) | remote browser tests | remote browser window |
+| `FileWatcher` | `notify`, in `laqta-library` | Watch folders tests | Watch folders |
 | `Clock` (`now`, `sleep`) | system time and `async-io` timers | every deep module's tests (a manual clock) | everything with time: retries, countdown, fixed-length recording, release timers |
 | `Rng` | system | tests with fixed seeds | Task, `laqta-upload` |
-| `Spawner` (`spawn`, `run_blocking`, `run_compute`) | `async-executor`, `blocking`, the compute pool | every deep module's tests | everything |
+| `Spawner` (`spawn`, `run_blocking`, `run_compute`) | `async-executor`, `main`'s blocking pool (`blocking_pool.rs`), the compute pool | every deep module's tests | everything |
 
 `HotkeyRegistrar`, `Tray` and `Autostart` are used only by `main`. They are still ports, because
 each has one adapter per platform and `main` must not contain platform code.
 
 Local models are chosen per task from a catalog, or added by the user as custom models of a
-supported model family (ADR 023). `laqta-ml` owns all of this behind `Ocr` and
-`BackgroundRemover`.
+supported model family (ADR 023). `laqta-ml` owns all of this behind `Ocr`, `BackgroundRemover`
+and `Inpainter`.
 
-**Capabilities** exist only as information for the settings UI and onboarding (for example,
-"window detection is unavailable on this compositor"). No rule branches on them.
+There is no capabilities type. If the settings UI or onboarding needs to say that something is
+unavailable (for example, "window detection is unavailable on this compositor"), that is
+information only, and no rule branches on it.
 
 **Settings and history are not ports.** The application receives settings as a value from `main`,
-and a new value whenever the user changes something. History is written by a task-event
-subscriber in `laqta-library`. `laqta-ui` reads it through `laqta-library`'s query functions,
-which return `laqta-domain` types only. Presenters receive those values and may not import
-`laqta-library`.
+and a new value whenever the user changes something. New history entries are written by a
+task-event subscriber in `laqta-library`. A window edits an existing entry (tags, delete) through
+`App`, which runs the narrow `HistoryEdit` port on the blocking pool; the application never reads
+history. `laqta-ui` reads history through `laqta-library`'s query functions, which return
+`laqta-domain` types only. Presenters receive those values and may not import `laqta-library`.
 
 **Platform state** that an adapter must keep between runs, such as the ScreenCast restore token,
 is passed in by `main` when the adapter is built, and handed back through a callback that `main`
-saves with `laqta-library`. Platform crates never touch settings storage.
+saves (the token goes to `<data>/screencast-token`). Platform crates never touch settings storage.
 
 ### 2.4 Outer modules
 
 | Crate | Role |
 | - | - |
-| `laqta-upload` | The **Upload module**: every host behind `Destination`, `Shortener` and `Sharer` (ADR 014). It holds the custom-uploader (`.sxcu`) engine and the bundled catalog (ADR 004). It also holds the hosts written in Rust: OAuth2 and OAuth1, S3 SigV4, Azure, B2, MEGA, FTP, FTPS, SFTP, SMTP and shared folder. It owns the OAuth loopback listener with PKCE and token refresh, and the remote-storage browser. `Prompt`, `Rng`, `Clock`, `Shell` and `SecretStore` are injected. Each host is one file behind its own cargo feature |
-| `laqta-http` | A library, not a port. It runs a Tokio runtime on one thread, started on the first request, with one shared `reqwest` + rustls client and the SFTP client (ADR 007). It also holds **verified fetch**: download to a file with a pinned SHA-256, progress and cancellation, used for FFmpeg, onnxruntime, models and updates. Used by `laqta-upload`, `laqta-cloud`, `laqta-ml`, `laqta-media` and `laqta-update` |
+| `laqta-upload` | The **Upload module**: every host behind `Destination`, `Shortener` and `Sharer` (ADR 014). It holds the custom-uploader (`.sxcu`) engine and the bundled catalog (ADR 004). It also holds the hosts written in Rust (see `src/hosts/`: OAuth2 and OAuth1, S3 SigV4 and GCS, Azure, B2, FTP, FTPS, SFTP, SMTP, shared folder and others; MEGA was dropped, ADR 010), the OAuth flow with PKCE and token refresh, and the remote-storage browser. `Prompt`, `Rng`, `Shell` and `SecretStore` are injected; OAuth takes the current time as a closure, not a `Clock`. Nine hosts sit behind a `host-*` cargo feature (Imgur, Dropbox, Google Drive, OneDrive, S3, FTP, SFTP, shared folder, Bitly); the others compile unconditionally |
+| `laqta-http` | A library, not a port. It runs a Tokio runtime on one thread, started on the first request and stopped after 60 s with no job, with one shared `reqwest` client (rustls on Linux, SChannel through `native-tls` on Windows; ADR 025), the OAuth loopback listener and the SFTP client (ADR 007). It also holds **verified fetch**: download to a file with a pinned SHA-256, progress and cancellation, used for FFmpeg, onnxruntime, models and updates. Used by `laqta-upload`, `laqta-cloud`, `laqta-ml`, `laqta-media`, `laqta-update` and `apps/laqta` |
 | `laqta-cloud` | Cloud ML adapters: `ImageAnalyzer` (one OpenAI-compatible client) and the remove.bg `BackgroundRemover`. API keys come from `SecretStore` |
-| `laqta-update` (M6) | Update checks and installs: GitHub Releases through `laqta-http`'s verified fetch, applied by Velopack on Windows; a notice only on Linux |
+| `laqta-update` (M6) | Update checks and installs: GitHub Releases through `laqta-http`'s verified fetch (the expected hash comes from the release's own `SHA256SUMS` asset), applied by Velopack on Windows; a notice only on Linux |
 | `laqta-media` | The `Media` adapter: FFmpeg with hardware or software encoders, GIF through FFmpeg's `palettegen` / `paletteuse`, audio mux (piping Windows loopback PCM to FFmpeg as a second input), cursor overlay. It consumes a `ScreenStream` and never calls platform code. It alone maps Laqta's screen targets and audio inputs to FFmpeg inputs (`ddagrab`, `x11grab`, `dshow`, `pulse`, raw frames and PCM on pipes). It records into a container that survives a crash (fragmented MP4 or MKV), then remuxes on stop |
-| `laqta-library` | Settings (versioned JSON, migrations, atomic writes, rotating and weekly backups, export and import archives, portable mode) and history (SQLite with WAL, thumbnail cache, task-event subscriber) |
+| `laqta-library` | Settings (versioned JSON, migrations, atomic writes, rotating and weekly backups, export and import archives, portable mode) and history (SQLite with WAL, the task-event subscriber that records saved files, the `HistoryEdit` adapter, and release of the connection after 60 s idle). It also holds the `notify` adapter for `FileWatcher` and the reader of ShareX's history files (`legacy.rs`). It has no thumbnail cache: `laqta-ui` keeps decoded thumbnails in memory |
 | `laqta-import` | Reads ShareX config, history, `.sxcu`, `.sxie` (it owns the package format) and backup archives into Laqta values. Secrets encrypted with DPAPI decrypt only on Windows; elsewhere the user re-enters them |
-| `laqta-ui` | GPUI views: main window, settings, history, editor window (paints Editor engine output), overlay (`Overlay`), prompts (`Prompt`), tool windows (`ToolHost`), recording bar, toasts, pin windows. Its `presenters` module holds GPUI-free logic (task-list rows, history paging, settings shown as differences from defaults, the tray menu model, and the editor and photo **Editor interaction**: input, render gating and snapshot renders, with compute injected as a function so the R1 A2 facade can replace it). The CI guard keeps that module free of `gpui` and `laqta_library` imports (ADR 017). It receives the `Fonts` handle from `main` |
-| `laqta-ml` | The **model runtime** (ADR 023):<br>• the model catalog (`catalog/models.toml`) and the user's custom models;<br>• downloads through `laqta-http`'s verified fetch;<br>• `ort` sessions (loaded lazily, at most one per task, released by the release timer) and the execution-provider setting (Auto, CPU, GPU);<br>• the model families, one file each (a parametric family for models that differ only in numbers, plus dedicated families);<br>• validation of custom models.<br>Internal modules (catalog, runtime and sessions, families, validation) each have their own tests. Implements `Ocr` and `BackgroundRemover` |
-| `laqta-codecs-c` | Optional codecs that need C libraries (`webp` for lossy WebP, `dav1d` for AVIF decode, WIC / `libheif-rs` for HEIC), behind cargo features |
+| `laqta-ui` | GPUI views: main window, settings, history, editor window (paints Editor engine output), overlay (`Overlay`, with the capture toolbar and the Editor engine hosted on the selection; ADR 029), prompts (`Prompt`), tool windows (`ToolHost`, including the text window for OCR and analysis results), recording bar, toasts, pin windows, a GPUI tray menu. Its `presenters` module holds GPUI-free logic (task-list rows, history paging, settings shown as differences from defaults, the tray menu model, the capture toolbar's layout and keys, the editor toolbar, and the editor and photo **Editor interaction**: input, render gating and snapshot renders, with compute injected as a function so the R1 A2 facade can replace it). The CI guard keeps that module free of `gpui` and `laqta_library` imports (ADR 017). It receives the `Fonts` handle from `main` |
+| `laqta-ml` | The **model runtime** (ADR 023):<br>• the model catalog (`catalog/models.toml`) and the user's custom models;<br>• downloads through `laqta-http`'s verified fetch;<br>• `ort` sessions (loaded lazily, at most one per task) and the execution-provider setting (Auto, CPU, GPU; no GPU provider is built in yet);<br>• the model families, one file each (a parametric matting family for models that differ only in numbers, the two PP-OCR families together in `o1.rs`, and LaMa for inpainting);<br>• validation of custom models.<br>Internal modules (catalog, runtime and sessions, families, validation) each have their own tests. Implements `Ocr`, `BackgroundRemover` and `Inpainter` |
 | `laqta-ipc` | Single-instance lock and forwarding of commands between instances, over a named pipe (Windows) or a Unix socket (Linux). It owns the text names of actions used by the CLI and the IPC protocol |
-| `laqta-platform-windows` | Capture via Windows.Graphics.Capture and DXGI duplication (HDR via DXGI 1.6). DWM capture of transparent windows. Hover targets from `EnumWindows` + UI Automation. Hotkeys and the tray on a dedicated message-loop thread. WinRT toasts, Credential Manager, the Startup task, shell verbs and Send To |
-| `laqta-platform-linux` | Capture, overlay and hotkey backends with their Wayland fallbacks (ADR 019). Also: SNI tray with a DBusMenu menu (`ksni`), freedesktop notifications, Secret Service, XDG autostart, AT-SPI |
+| `laqta-platform-windows` | Stills through DXGI duplication with a GDI fallback (HDR via DXGI 1.6). Transparent windows are captured twice, over white and over black pop-ups, and the alpha comes from the difference. Hover targets from `EnumWindows` + UI Automation. Hotkeys and the tray on a dedicated message-loop thread. Credential Manager, the Run-key autostart, shell verbs and Send To. The native recorder (a `Media` adapter on Windows.Graphics.Capture, with WASAPI loopback). It has no toast code: notifications are GPUI toasts |
+| `laqta-platform-linux` | Capture, hover and hotkey backends with their Wayland fallbacks (ADR 019). Also: SNI tray with a DBusMenu menu (`ksni`), Secret Service, XDG autostart, AT-SPI. The overlay is not here: its layer-shell backend is in `laqta-ui`. There are no freedesktop notifications; toasts are GPUI's |
 
 ### 2.5 Composition root (`apps/laqta`)
 
-`main.rs` is the only place that names every concrete type. It:
+`apps/laqta` is the composition root. `main.rs` is short and hands off to `wiring::run`; the
+concrete adapters are named in `wiring.rs`, `cloud.rs`, `media.rs`, `local_models.rs`,
+`notifier.rs` and `stubs.rs`. It:
 
 1. Parses CLI arguments. If another instance is running, it forwards them over `laqta-ipc` and exits.
 2. Picks the platform module with `cfg(target_os)` and, on Linux, Wayland or X11 at runtime.
 3. Loads settings from `laqta-library`, builds the port adapters, the `Codecs` value and the
    `Spawner`, and constructs `laqta-app`. The `Spawner` uses `async-executor` on one worker
-   thread, the `blocking` pool for blocking I/O, and a `rayon` compute pool built on first use
-   and released by its timer. None of these depend on GPUI (ADR 020).
-4. Subscribes `laqta-library`'s history writer to task events.
+   thread, a blocking pool of its own for blocking I/O (`blocking_pool.rs`; threads exit after
+   10 s idle), and a `rayon` compute pool built on first use and released by its timer. None of
+   these depend on GPUI (ADR 020).
+4. Subscribes `laqta-library`'s history writer to task events, lets the history release its
+   connection when idle, and attaches it to the application for tag and delete edits.
 5. Starts the tray, hotkeys and IPC listener on their own threads, all calling `dispatch`.
-6. Runs GPUI's application loop on the main thread with no windows open.
+6. Runs GPUI's application loop on the main thread. A start without `-silent` or `-autoclose`
+   opens the main window.
 
 `apps/laqta-nmh` is a second binary: the browser native-messaging host. It forwards messages to
 the running instance over IPC.
@@ -321,11 +391,12 @@ the running instance over IPC.
 Every workspace dependency edge. The CI guard checks this list (§ "CI guard" below).
 
 ```text
-apps/laqta        ──▶ every crate below (composition root)
+apps/laqta        ──▶ every crate below except laqta-photo (composition root)
 apps/laqta-nmh    ──▶ laqta-ipc
 
 laqta-ui          ──▶ laqta-app (dispatch, application handle), laqta-ports, laqta-domain,
-                       laqta-editor (paints its output), laqta-library (reads, domain types only),
+                       laqta-editor (hosts the engine: editor window and region overlay),
+                       laqta-library (reads, domain types only),
                        laqta-imaging (thumbnails and the overlay magnifier; added in M1, D9),
                        laqta-photo (the photo editor window; M7)
 laqta-platform-*  ──▶ laqta-ports, laqta-domain
@@ -334,13 +405,12 @@ laqta-cloud       ──▶ laqta-ports, laqta-domain, laqta-http
 laqta-ml          ──▶ laqta-ports, laqta-domain, laqta-imaging, laqta-http
 laqta-media       ──▶ laqta-ports, laqta-domain, laqta-http
 laqta-library     ──▶ laqta-ports (task events), laqta-domain
-laqta-update      ──▶ laqta-domain, laqta-http
+laqta-update      ──▶ laqta-http
 laqta-import      ──▶ laqta-domain
-laqta-codecs-c    ──▶ laqta-imaging            (implements the codec-extension trait)
 laqta-ipc         ──▶ laqta-domain
 laqta-http        ──▶ (no workspace crates)
 
-laqta-app         ──▶ laqta-ports, laqta-editor, laqta-imaging, laqta-domain
+laqta-app         ──▶ laqta-ports, laqta-imaging, laqta-domain  (laqta-editor is allowed but unused: the engine runs in laqta-ui, ADR 029)
 laqta-ports       ──▶ laqta-domain
 laqta-editor      ──▶ laqta-imaging, laqta-domain
 laqta-photo       ──▶ laqta-editor, laqta-imaging, laqta-domain   (M7, ADR 027)
@@ -358,12 +428,13 @@ laqta-domain      ──▶ (no workspace crates)
 - **CI guard** (ADR 024): `cargo xtask check-deps`, configured in `deps-policy.toml`, fails the
   build when any of these breaks:
   - **Workspace edges:** each crate's workspace dependencies must be on the list above.
-  - **Allow-lists:** each pure-core crate (`laqta-domain`, `laqta-imaging`, `laqta-editor`)
-    and `laqta-ports` may depend directly only on the crates on its allow-list.
+  - **Allow-lists:** each pure-core crate (`laqta-domain`, `laqta-imaging`, `laqta-editor`,
+    `laqta-photo`) and `laqta-ports` may depend directly only on the crates on its allow-list.
   - **Transitive deny-list:** for those crates and `laqta-app`, no transitive dependency on a
     crate that does I/O or drives the OS (gpui, tokio, reqwest, rusqlite, libsqlite3-sys, ort,
-    pipewire, libwayshot, wayland-*, x11rb, windows, zbus, ashpd, notify, mio, keyring-core,
-    arboard, ksni, interprocess, …). `windows-sys` is allowed, because Cargo's feature
+    pipewire, libwayshot, wayland-client, wayland-protocols, wayland-protocols-wlr, x11rb,
+    windows, zbus, ashpd, notify, mio, keyring-core, arboard, ksni, interprocess, …; the list
+    names exact crates, with no wildcards). `windows-sys` is allowed, because Cargo's feature
     unification lets `jiff` reach it; the clippy rules below stop the core from calling OS APIs.
   - **Framework placement:** `gpui-pre`, `gpui-pre-platform` and `gpui-component` may be direct
     dependencies only of `laqta-ui` and `apps/laqta`; `tokio` and `reqwest` only of
@@ -387,13 +458,20 @@ laqta-domain      ──▶ (no workspace crates)
 
 ```text
 platform hotkey ─▶ dispatch(Action::RectangleRegion, workflow)
-  ├─ ScreenSource.capture_all()            frozen frames, one Arc buffer per monitor
+  ├─ ScreenSource.capture()                after the configured delay: frozen frames, one Arc buffer per monitor
   ├─ Region session.select(frames, options)
   │    ├─ Overlay.show(...)                shown before hover targets load (120 ms budget)
   │    ├─ HoverSource loads targets in the background
-  │    └─ returns Selection { rects, target window, final image } | Cancelled
+  │    ├─ a drawn or clicked region stays selected; the app crops it and the overlay shows the
+  │    │  capture toolbar beside it, with the Editor engine on the crop (RegionView.selection_image)
+  │    ├─ the first annotation locks the selection; the overlay sends the edited crop (RegionInput::Annotated)
+  │    └─ returns Selection { rects, target window, image, action } | Cancelled
+  ├─ after_capture_for(settings, selection.action)   the toolbar button picks the after-capture flags
   └─ Task.submit(capture job, settings) ─▶ task events
 ```
+
+With `show_tools_after_select` off, or for a tool that acts on an area at once (`region::pick`),
+the region confirms on release and no toolbar appears.
 
 ### 4.2 Task
 
@@ -411,17 +489,21 @@ Task.submit(job, settings)
 editor window ── input events ──▶ Editor engine ──▶ dirty rects + pixels + chrome description
 editor window ◀── paints texture and chrome ───────┘
 export ─▶ Editor engine renders at full resolution (same renderer)
+region overlay ── the same loop on the selection's crop ──▶ annotated crop back to the Region session
+editor "Smart tools" ─▶ App::recognize_text | remove_background | erase | analyze
+                         ├─ an image comes back ─▶ Command::ReplaceImage (undoable)
+                         └─ text comes back ─▶ the text window (ToolHost::show_ocr for OCR)
 ```
 
 ### 4.4 Recording
 
 ```text
 dispatch(Action::ScreenRecorder) ─▶ Recording session
-  ├─ Region session.select(...)
+  ├─ Region session.pick(...)                      only for the region area; the other areas need no selection
   ├─ countdown
-  ├─ ScreenStream.open(selection, audio inputs)    Frames (WGC, PipeWire) or Target (Windows, X11)
-  ├─ Media.record(stream, record spec)             pause, resume, stop, abort
-  └─ finished file ─▶ Task.submit(file job)
+  ├─ ScreenStream.open(one rect, audio inputs)     Frames (PipeWire) or Target (Windows, X11)
+  ├─ Media.start(input, record spec, output)       pause, resume, stop, abort
+  └─ finished file ─▶ Task.submit(upload job of the saved file)
 ```
 
 FFmpeg is found on `PATH`, at a configured path, or downloaded on first use and checked against
@@ -432,19 +514,23 @@ partial file, because the container survives a crash.
 
 ## 5. UI (GPUI)
 
-- **Design system:** one theme token set (colour, radius, spacing, type scale, motion) with light,
-  dark and system modes, applied through `gpui-component` theming. Mica / Acrylic on Windows 11
-  and background blur on Wayland compositors that support it. The opaque fallback applies when the
-  GPU adapter is a software renderer (WARP, llvmpipe), when the OS asks for reduced transparency,
-  or when the user turns it off.
-- **Surfaces:** main window (task list, quick capture bar, destinations); settings (searchable,
-  one page per section, per-workflow overrides shown as differences from defaults); history (list
-  and a virtualized image grid backed by the thumbnail cache); editor; effects editor with live
-  preview; region overlay; recording bar; toasts; pin-to-screen windows; tool windows. The tray
-  menu is a native menu owned by the platform `Tray` adapter, built from the presenters' tray
-  menu model.
+- **Design system:** one theme token set (colour, radius, spacing, type scale) with light, dark
+  and system modes, applied through `gpui-component` theming (ADR 028). There are no motion
+  tokens. Mica / Acrylic on Windows 11 and background blur on Wayland compositors, with an opaque
+  fallback for a software renderer, reduced transparency or a user toggle, are not built:
+  windows are opaque or transparent only.
+- **Surfaces:** main window (task list, quick capture bar, destinations); settings (one page per
+  section, per-workflow overrides shown as differences from defaults; only the language list is
+  searchable); history (list and a paged image grid; thumbnails are decoded into an in-memory
+  cache); editor, with its smart tools (text recognition, background removal, object erase,
+  analyze); effects editor with live preview; region overlay with the capture toolbar; recording
+  bar; toasts; pin-to-screen windows; tool windows, including the text window for OCR and
+  analysis results. The platform `Tray` adapter owns the tray icon and its native menu, built from
+  the presenters' tray menu model; `laqta-ui` also draws a GPUI pop-up tray menu
+  (`Action::ToggleTrayMenu`).
 - **Rule:** a view may read a presenter or settings, call `dispatch`, paint Editor engine output,
-  or implement `Overlay`, `Prompt` or `ToolHost`. It may not compute business results.
+  or implement `Overlay`, `Prompt` or `ToolHost`. It may not compute business results. Work done
+  inside an open window calls methods on `App` (the AI use cases, history edits), not ports.
 - **GPUI version:** `gpui-pre` pinned exactly to the snapshot `gpui-component` is built against
   (ADR 002). That snapshot includes the Wayland `LayerShell` window kind the overlay uses.
 
@@ -454,14 +540,14 @@ partial file, because the container survives a crash.
 
 | Concern | Decision |
 | - | - |
-| Executors | Built by `main` and reached through `Spawner`: an `async-executor` worker for the application, the `blocking` pool for blocking I/O, and a `rayon` compute pool for CPU-heavy work, built on first use. GPUI's executors run UI work only. Tokio runs only inside `laqta-http` (ADRs 007, 020, 024) |
+| Executors | Built by `main` and reached through `Spawner`: an `async-executor` worker for the application, a blocking pool of `main`'s own for blocking I/O (`blocking_pool.rs`: threads exit after 10 s idle, at most 64, because the `blocking` crate never retires its last thread, risk R6), and a `rayon` compute pool for CPU-heavy work, built on first use. GPUI's executors run UI work only. Tokio runs only inside `laqta-http` (ADRs 007, 020, 024) |
 | Panics | Unwinding stays on. Each Task job and each tool run is wrapped in `catch_unwind`; a panic hook writes the panic to the log (ADR 020) |
 | Errors | One application error type with user-presentable kinds; signatures are in the M0 plan |
-| Logging | `tracing` with a rolling file appender, plus an in-app log viewer (as in ShareX) |
-| Secrets | Never in JSON. Settings hold a reference that resolves through `SecretStore`. With no OS keyring, `SecretStore` returns `Unsupported`, and credentials are asked for once per session and kept in memory |
-| Supply chain | Every download (FFmpeg, onnxruntime, models, updates) goes through `laqta-http`'s verified fetch, with a SHA-256 pinned in the binary or in the model catalog. A mismatch deletes the file and fails the step |
+| Logging | `tracing` with a daily rolling file appender and a panic hook. There is no in-app log viewer yet (ShareX has one) |
+| Secrets | Never in JSON. Settings hold a reference that resolves through `SecretStore`. With no OS keyring, `SecretStore` returns `Unsupported`, and `main`'s `SessionSecrets` keeps the credentials in memory for the session, so they are asked for again on the next launch |
+| Supply chain | Every download (FFmpeg, onnxruntime, models, updates) goes through `laqta-http`'s verified fetch, with a SHA-256 pinned in the binary or in the model catalog; an update's expected hash comes from the `SHA256SUMS` asset of its own release, because a binary can't pin a later release's hash. A mismatch deletes the file and fails the step |
 | Other security | `.sxcu` and `.sxie` imports are data, never code. FFmpeg arguments are built as argv, never through a shell. OAuth uses PKCE with a loopback redirect |
-| Localization | Fluent (`.ftl`) bundles in `locales/`; `scripts/resx-to-ftl` converts ShareX translations once to seed about 30 languages |
+| Localization | Fluent (`.ftl`) bundles in `locales/`; `scripts/resx-to-ftl.py` converts ShareX translations once to seed about 30 languages |
 | Updates | `laqta-update`: GitHub Releases on Windows, downloaded by verified fetch and applied by Velopack; on Linux a notice only, since packages handle updates |
 | Testing | Each deep module is tested at its interface:<br>• Domain: unit and property tests<br>• Editor engine: input script in, image snapshot out<br>• Task: golden event traces<br>• Region session: scripted input with a fake `HoverSource`<br>• Upload module: local HTTP server and recorded fixtures<br>• Library: temporary directory and in-memory SQLite<br>• Platform modules: a contract test per port<br>• UI: GPUI `TestAppContext` smoke tests |
 
@@ -470,34 +556,34 @@ partial file, because the container survives a crash.
 ## 7. Workspace layout
 
 Every path below is created by the milestone named in its comment. M0 creates only the paths
-marked M0.
+marked M0. A planned path that was never built (a `bench.yml` workflow, `laqta-codecs-c`) is not
+listed.
 
 ```text
 LICENSE                             M0  GPL-3.0 text (ADR 022)
-Cargo.toml                          M0  workspace, [workspace.lints], release profile
+Cargo.toml                          M0  workspace, [workspace.lints], release profile; patches `blocking` from vendor/
 deny.toml                           M0  licences, advisories, bans
 .gitignore                          M0
+rustfmt.toml                        M1
 ci/sway.conf                        M0  headless sway for the Wayland CI job
 rust-toolchain.toml                 M0
 deps-policy.toml                    M0  CI dependency guard config
-xtask/                              M0  check-deps, bench runner
+xtask/                              M0  check-deps [--self-test], bench-png, measure-idle
 .github/workflows/ci.yml            M0  test + guard matrix
-.github/workflows/bench.yml         M1  budgets from §1.2
 crates/
   laqta-domain/                    M0  (clippy.toml)
   laqta-imaging/                   M0  (clippy.toml, examples/png_bench.rs)
   laqta-ports/                     M0
   laqta-editor/                    M3  (clippy.toml, tests/snapshots/)
-  laqta-photo/                     M7
+  laqta-photo/                     M7  (clippy.toml)
   laqta-app/                       M0  (clippy.toml, src/files.rs, tests/golden/ for Task traces)
-  laqta-upload/                    M2  (catalog/*.sxcu, hosts/<host>.rs with feature host-<host>, tests/fixtures/)
+  laqta-upload/                    M2  (catalog/*.sxcu, hosts/<host>.rs; nine hosts have a host-<host> feature)
   laqta-http/                      M2
   laqta-cloud/                     M7
   laqta-update/                    M6
   laqta-media/                     M4
   laqta-library/                   M1
-  laqta-codecs-c/                  M1
-  laqta-ml/                        M5  (catalog/models.toml, families/<family>.rs, tests/golden/)
+  laqta-ml/                        M5  (catalog/models.toml, families/<family>.rs)
   laqta-import/                    M6
   laqta-ui/                        M0  (src/presenters/)
   laqta-ipc/                       M0
@@ -506,9 +592,10 @@ crates/
 apps/
   laqta/                           M0  composition root
   laqta-nmh/                       M6  native-messaging host
+vendor/                             M0  patched `blocking` and `gpui-component` (vendor/README.md)
 locales/                            M6  Fluent bundles
-scripts/resx-to-ftl/                M6
-docs/                               ARCHITECTURE.md · FEATURES.md · GLOSSARY.md · adr/ · plan/ · research/ · proposals/
+scripts/                            M6  resx-to-ftl.py (bench-analyze.py and bench-sway.sh came with the perf work)
+docs/                               ARCHITECTURE.md · FEATURES.md · GLOSSARY.md · adr/ · plan/ · research/ · review/ · proposals/
 ```
 
 ---
@@ -523,7 +610,7 @@ GNOME and X11. Feature lists are the FEATURES.md rows tagged with that milestone
 | # | Milestone | Scope | Exit checks |
 | - | - | - | - |
 | M0 | Skeleton | Workspace, domain types, M0 ports and fakes, dispatcher, minimal Task (capture → save → copy), single-instance IPC, tray, one hotkey, fullscreen capture | Task golden traces for the M0 job; dispatcher routing test; platform contract tests; CI guard; PNG budget; idle RSS measured (R6) |
-| M1 | Capture core | Region session and overlay, every capture mode in FEATURES.md "Capture" except scrolling, auto and text capture; after-capture steps that don't upload; toasts; history; naming; settings with workflows and the hotkey editor | Region session scripted-input tests; Task traces for every after-capture flag in M1's scope (the steps that don't upload and don't need the editor, OCR, pinning or AI); overlay latency and capture-memory budgets |
+| M1 | Capture core | Region session and overlay, every capture mode in FEATURES.md "Capture" except scrolling, auto and text capture; after-capture steps that don't upload; toasts; history; naming; settings with workflows and the hotkey editor | Region session scripted-input tests; Task traces for every after-capture flag in M1's scope (the steps that don't upload and don't need the editor, OCR, pinning or AI); overlay latency and capture-memory budgets (measured by hand; pending, owner) |
 | M2 | Upload core | Upload module with the M2 hosts in FEATURES.md; after-upload steps; quick task menu; actions toolbar; after-capture and before-upload windows; Actions; URL sharing; clipboard, drag-and-drop, text, URL and folder upload | Upload fixtures for each M2 host; `.sxcu` syntax tests covering all 13 functions; Task traces for upload failure, retry and cleanup |
 | M3 | Editor | Editor engine with the 21 tools, undo and redo, canvas operations, the 60 classic image effects, presets and `.sxie` import, beautifier, annotating in the overlay | Editor snapshot tests per tool and effect; export matches view |
 | M4 | Recording | Recording session; FFmpeg video and GIF; audio; pause, stop and abort; countdown; recording bar; fixed duration | Recording session tests with a fake stream; recording CPU budget; crash-survival test (kill FFmpeg midway) |
@@ -569,6 +656,7 @@ Full records are in [`adr/`](adr/).
 | [026](adr/026-windows-sqlite.md) | Linux bundles SQLite; Windows links a static vcpkg SQLite with FTS5 | bundling SQLite on Windows (needs the MSVC C runtime headers on the checking machine) |
 | [027](adr/027-photo-uses-editor.md) | `laqta-photo` depends on `laqta-editor` for fonts and text layout (its rasterizer is private, so shapes and brushes use tiny-skia directly) | a copy of those parts in `laqta-photo`; a shared third crate |
 | [028](adr/028-ui-design-system.md) | One design system in `laqta-ui`: theme tokens, shared components, bundled Inter and Space Grotesk, `gpui-kit-assets` icons, a custom titlebar | inline styling per window; a design-system crate; the platform UI font; the system titlebar |
+| [029](adr/029-capture-toolbar-and-in-place-annotation.md) | A selected region stays adjustable under a capture toolbar; the overlay hosts the Editor engine on the selection while the app owns the pixels; the chosen action becomes Task flags; AI work is `App` use cases | the Region session hosting the engine; an editor window for every annotation; windows calling AI ports |
 
 ---
 
@@ -576,14 +664,14 @@ Full records are in [`adr/`](adr/).
 
 | # | Risk | Mitigation |
 | - | - | - |
-| R1 | GNOME (Mutter) has no layer-shell, so the overlay cannot use `LayerShell` there | Fullscreen window per monitor; latency measured but not budgeted on GNOME (ADR 019) |
-| R2 | The GlobalShortcuts portal is missing (for example on `xdg-desktop-portal-wlr`), so hotkeys don't work | `laqta --action <name>` over IPC, bound in compositor settings; settings page shows the command (ADR 019) |
-| R3 | The GPUI snapshot pin, `LayerShell` and the overlay latency budget depend on one external project | Pin exactly; upgrade only together with `gpui-component`; overlay latency bench in CI from M1 |
+| R1 | GNOME (Mutter) has no layer-shell, so the overlay cannot use `LayerShell` there | When the layer surface is refused, the overlay opens a pop-up window sized to each monitor (in `laqta-ui`'s `overlay.rs`; not yet run on GNOME). Latency is measured but not budgeted on GNOME (ADR 019) |
+| R2 | The GlobalShortcuts portal is missing (for example on `xdg-desktop-portal-wlr`), so hotkeys don't work | `laqta --action <name>` over IPC, bound in compositor settings; the settings page should show the command (ADR 019) but does not yet |
+| R3 | The GPUI snapshot pin, `LayerShell` and the overlay latency budget depend on one external project | Pin exactly; upgrade only together with `gpui-component`; overlay latency is read from trace spans by hand (no CI bench yet) |
 | R4 | FFmpeg is missing, crashes or is tampered with | Pinned-hash download; crash-surviving container; failure event keeps the partial file |
 | R5 | A panic in a decoder, kernel or host could end the resident process | `catch_unwind` per job and tool run, with panics logged (ADR 020) |
-| R6 | GPUI may hold a GPU device and fonts with no windows, pushing idle RSS over 40 MB | Measured in M0. If over budget, an ADR chooses between raising the budget and running the UI as a separate on-demand process. Tray, hotkeys and IPC already run without GPUI |
-| R7 | Retrying an upload duplicates it on hosts that don't deduplicate | Retry only on connection errors or timeouts before any response, at most twice, with backoff |
-| R8 | On GNOME Wayland, setting the clipboard may fail without a focused window | M0 manual check. If it fails, the toast offers a Copy button, and clicking it gives the app focus |
+| R6 | GPUI may hold a GPU device and fonts with no windows, pushing idle RSS over 40 MB | Measured in M0. If over budget, an ADR chooses between raising the budget and running the UI as a separate on-demand process. Tray, hotkeys and IPC already run without GPUI. Idle mitigations built: the vendored `blocking` crate with its patch (idle threads exit; `vendor/README.md`) and `main`'s own blocking pool (threads exit after 10 s idle) |
+| R7 | Retrying an upload duplicates it on hosts that don't deduplicate | Retry only a connection error, a timeout, an HTTP 5xx or a 429, at most `settings.upload.retries` times (default 2, at most 10 in the settings window), with a 1 s then 3 s backoff |
+| R8 | On GNOME Wayland, setting the clipboard may fail without a focused window | M0 manual check. If it fails, the toast should offer a Copy button, and clicking it gives the app focus. The toast has no Copy button yet: a failed copy shows only in the task list |
 | R9 | Layering drift: GPUI types leak into the core, views grow rules, or Task gains a public step interface | CI guard (§3); region rules stay in `domain::region`, tool rules in `laqta-app`'s `tools` module, and annotation rules in the Editor engine; new after-capture behaviour is a flag inside Task plus a golden scenario |
 
 ---

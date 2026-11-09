@@ -116,6 +116,21 @@ mod tests {
     }
 
     #[test]
+    fn a_new_token_is_kept_for_the_next_start_and_handed_to_the_saver() {
+        let saved = Arc::new(Mutex::new(Vec::new()));
+        let on_token: Arc<dyn Fn(String) + Send + Sync> = {
+            let saved = Arc::clone(&saved);
+            Arc::new(move |token| saved.lock().expect("lock").push(token))
+        };
+        let stream = LinuxScreenStream::new(Session::Wayland, None, on_token);
+        assert_eq!(stream.restore_token(), None, "no saved token: the first start asks the portal");
+        stream.remember("first".into());
+        stream.remember("second".into());
+        assert_eq!(stream.restore_token().as_deref(), Some("second"), "the next start in this run reuses the newest token");
+        assert_eq!(*saved.lock().expect("lock"), ["first", "second"], "each token reaches `main` for saving");
+    }
+
+    #[test]
     fn even_area_rounds_down() {
         let area = PhysRect { x: -3, y: 5, width: 1921, height: 1081 };
         assert_eq!(even_area(area).ok(), Some(PhysRect { x: -3, y: 5, width: 1920, height: 1080 }));

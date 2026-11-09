@@ -257,7 +257,7 @@ impl App {
     /// An area the user draws. Several drawn rects give their bounding box.
     async fn drawn_area(&self, ts: &TaskSettings) -> Result<PhysRect, AppError> {
         let frames = self.frames(ts).await?;
-        let selection = region::select(&self.ports, frames, &ts.capture.region).await?;
+        let selection = region::pick(&self.ports, frames, &ts.capture.region).await?;
         selection.rects.into_iter().reduce(PhysRect::union).ok_or_else(|| AppError::Io("no area was selected".to_owned()))
     }
 

@@ -12,6 +12,7 @@ use async_broadcast::Receiver;
 use futures_lite::future::{block_on, poll_once, yield_now};
 use laqta_app::{App, Dispatched, Ports};
 use laqta_domain::effects::{Adjust, Effect, EffectItem, Preset};
+use laqta_domain::region::{Button, RegionCommand, RegionInput, SelectionAction};
 use laqta_domain::workflow::{AfterCaptureTasks, AfterUploadTasks, ExternalAction, FileExistsAction};
 use laqta_domain::{Action, Bitmap, Frame, ImageFormat, Monitor, MonitorId, PhysRect, PixelFormat, Settings};
 use laqta_ports::fakes::{
@@ -62,6 +63,7 @@ struct Rig {
     background: Arc<laqta_ports::fakes::FakeBackgroundRemover>,
     tools: Arc<laqta_ports::fakes::FakeToolHost>,
     ocr: Arc<laqta_ports::fakes::FakeOcr>,
+    overlay: Arc<FakeOverlay>,
 }
 
 fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Settings) -> Rig {
@@ -76,13 +78,14 @@ fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Set
     let analyzer = Arc::new(laqta_ports::fakes::FakeAnalyzer::default());
     let background = Arc::new(laqta_ports::fakes::FakeBackgroundRemover::default());
     let ocr = Arc::new(laqta_ports::fakes::FakeOcr::default());
+    let overlay = Arc::new(FakeOverlay::default());
     let ports = Ports {
         screen: Arc::new(FakeScreen::new(two_frames())),
         clipboard: clipboard.clone(),
         shell: shell.clone(),
         clock: clock.clone(),
         spawner,
-        overlay: Arc::new(FakeOverlay::default()),
+        overlay: overlay.clone(),
         tools: tools.clone(),
         prompt: prompt.clone(),
         editor: editor.clone(),
@@ -103,7 +106,21 @@ fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Set
         host: laqta_ports::HostInfo::default(),
         codecs: laqta_imaging::Codecs::builtin(),
     };
-    Rig { app: App::new(ports, settings), clipboard, shell, notifier, uploaders, prompt, editor, clock, analyzer, background, tools, ocr }
+    Rig {
+        app: App::new(ports, settings),
+        clipboard,
+        shell,
+        notifier,
+        uploaders,
+        prompt,
+        editor,
+        clock,
+        analyzer,
+        background,
+        tools,
+        ocr,
+        overlay,
+    }
 }
 
 /// M0 settings with the screenshots folder in `dir`.
@@ -621,6 +638,26 @@ fn upload_fails_after_retries() {
         assert_eq!(imgur.requests.lock().unwrap().len(), 3, "one attempt and two retries");
         assert_eq!(rig.clock.now(), at_second(26), "the waits were 1 s and then 3 s");
         assert!(saved_png(tmp.path()).is_file(), "a failed upload keeps the saved file");
+    });
+}
+
+/// ShareX deletes the file in a `finally` block, so a failed upload does not keep a file the user asked to delete.
+#[test]
+fn delete_file_after_failed_upload() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let mut settings = upload_settings(tmp.path());
+        settings.defaults.after_capture |= AfterCaptureTasks::DELETE_FILE;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), settings);
+        let imgur = destination(&rig, "imgur", vec![Err(UploadError::Auth("bad token".into()))]);
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/delete_file_after_failed_upload.trace"));
+        assert_eq!(imgur.requests.lock().unwrap().len(), 1);
+        assert!(!saved_png(tmp.path()).exists(), "the failed job still deleted its file");
     });
 }
 
@@ -1190,6 +1227,42 @@ fn pin_qr_ocr() {
         assert_eq!(rig.tools.pins.lock().unwrap().as_slice(), &[(8, 4)]);
         assert_eq!(rig.tools.texts.lock().unwrap().as_slice(), &[("Recognised text (copied)".to_owned(), "hello".to_owned())]);
         assert_eq!(rig.clipboard.texts.lock().unwrap().last().map(String::as_str), Some("hello"));
+    });
+}
+
+/// A region selected and finished with the toolbar's Copy button (UX1): the capture is copied and not saved,
+/// although the default steps save and copy.
+#[test]
+fn selection_action_copy() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let mut settings = settings_in(tmp.path());
+        settings.defaults.capture.region.min_size = 2;
+        settings.defaults.capture.region.show_tools_after_select = true;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), settings);
+        let mut events = rig.app.events();
+
+        let mut dispatch = std::pin::pin!(rig.app.dispatch(Action::RectangleRegion, None));
+        while !rig.overlay.is_open() {
+            assert!(block_on(poll_once(dispatch.as_mut())).is_none());
+        }
+        for input in [
+            RegionInput::PointerDown { x: 1, y: 0, button: Button::Left },
+            RegionInput::PointerMove { x: 6, y: 3 },
+            RegionInput::PointerUp { x: 6, y: 3, button: Button::Left },
+        ] {
+            rig.overlay.send(input);
+        }
+        assert!(block_on(poll_once(dispatch.as_mut())).is_none(), "the drag only selects the region");
+        rig.overlay.send(RegionInput::Command(RegionCommand::Finish(SelectionAction::Copy)));
+        assert_eq!(block_on(dispatch).unwrap(), Dispatched::Task(TaskId(1)));
+        drive(&spawner);
+
+        assert_eq!(render(&mut events, tmp.path(), false), include_str!("golden/selection_action_copy.trace"));
+        let copied = rig.clipboard.images.lock().unwrap();
+        assert_eq!((copied[0].width(), copied[0].height()), (6, 4), "the selected region, not the desktop");
+        assert!(!tmp.path().join("2026-11").exists(), "nothing is saved");
     });
 }
 

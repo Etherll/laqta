@@ -43,6 +43,11 @@ pub(crate) fn rounded(el: gpui::Div, window: &Window) -> gpui::Div {
     el.rounded_tl(c.top_left).rounded_tr(c.top_right).rounded_bl(c.bottom_left).rounded_br(c.bottom_right)
 }
 
+/// How tall `TitleBar` is in this window: nothing when the compositor draws the frame.
+pub(crate) fn title_bar_height(window: &Window) -> f32 {
+    if draws_own_frame(window) { f32::from(TITLE_BAR_H) } else { 0.0 }
+}
+
 /// True when this window draws its own frame (client-side decorations).
 fn draws_own_frame(window: &Window) -> bool {
     if cfg!(target_os = "linux") { matches!(window.window_decorations(), Decorations::Client { .. }) } else { true }
@@ -106,7 +111,7 @@ impl RenderOnce for TitleBar {
             .min_w_0()
             .truncate()
             .text_center()
-            .text_size(px(12.5))
+            .text_size(text::SMALL)
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(t.muted_foreground)
             .children(self.title);
@@ -184,7 +189,7 @@ fn control(kind: Control, cx: &App) -> impl IntoElement {
     let close = matches!(kind, Control::Close);
     // Close turns red on hover; the others take the neutral wash.
     let (hover_bg, hover_fg): (Hsla, Hsla) =
-        if close { (gpui::rgb(0xC42B1C).into(), gpui::white()) } else { (t.foreground.opacity(0.07), t.foreground) };
+        if close { (crate::theme::extra(cx).close_hover, gpui::white()) } else { (t.foreground.opacity(0.07), t.foreground) };
     let icon_color = t.foreground.opacity(0.75);
     div()
         .id(id)
@@ -216,7 +221,12 @@ fn control(kind: Control, cx: &App) -> impl IntoElement {
 
 /// The Laqta wordmark for the titlebar's leading slot.
 pub(crate) fn wordmark() -> impl IntoElement {
-    div().font_family(text::HEADING_FONT).font_weight(gpui::FontWeight::SEMIBOLD).text_size(px(17.)).child("Laqta")
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(gpui::img(crate::assets::BRAND_MARK).size(px(18.)).flex_none())
+        .child(div().font_family(text::HEADING_FONT).font_weight(gpui::FontWeight::SEMIBOLD).text_size(text::SECTION).child("Laqta"))
 }
 
 /// The content sheet under the titlebar: page colour with a rounded corner where it meets the

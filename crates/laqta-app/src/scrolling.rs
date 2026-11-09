@@ -28,7 +28,7 @@ impl App {
         _workflow: Option<WorkflowId>,
     ) -> Result<Dispatched, AppError> {
         let frames = self.frames(&ts).await?;
-        let sel = region::select(&self.ports, frames, &ts.capture.region).await?;
+        let sel = region::pick(&self.ports, frames, &ts.capture.region).await?;
         let rect = sel.rects.iter().copied().reduce(PhysRect::union).ok_or_else(|| AppError::Io("no region selected".to_owned()))?;
         let scrolling = ts.capture.scrolling.clone();
         let show_cursor = ts.capture.show_cursor;

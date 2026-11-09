@@ -1,0 +1,3 @@
+// Windows resources: the app icon as resource 1, which Explorer shows for the exe and GPUI
+// loads for every window. The tray loads it too (laqta-platform-windows shell_thread.rs).
+1 ICON "../../assets/icon/laqta.ico"

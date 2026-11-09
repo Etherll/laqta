@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use laqta_ports::{Clipboard, HotkeyRegistrar, HoverSource, ScreenSource, Shell, Tray};
 
+pub mod app_id;
 mod atspi_elements;
 mod autostart;
 mod clipboard;

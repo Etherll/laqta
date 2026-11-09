@@ -10,7 +10,7 @@ use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use futures_lite::StreamExt;
 use gpui::{App, AppContext as _, AsyncApp, Entity};
 use laqta_app::App as LaqtaApp;
-use laqta_domain::{Action, Frame, Settings};
+use laqta_domain::{Action, Bitmap, Frame, Settings};
 use laqta_library::History;
 use laqta_ports::{
     Clock, HostInfo, InputCallback, Notifier, Overlay, PortError, RegionView, Shell, TaskEvent, Toast, ToolHost, ToolWindow,
@@ -20,7 +20,12 @@ use crate::presenters::task_list::TaskList;
 use crate::{history_window, main_window, overlay, settings_window, toast, tray_popup};
 
 pub(crate) enum UiCommand {
-    ShowOverlay { frames: Vec<Frame>, images: Vec<Option<std::sync::Arc<gpui::RenderImage>>>, view: RegionView, on_input: InputCallback },
+    ShowOverlay {
+        frames: Vec<Frame>,
+        images: Vec<Option<std::sync::Arc<gpui::RenderImage>>>,
+        view: RegionView,
+        on_input: InputCallback,
+    },
     UpdateOverlay(RegionView),
     CloseOverlay,
     Toast(Toast),
@@ -28,9 +33,26 @@ pub(crate) enum UiCommand {
     Pin(laqta_domain::Bitmap),
     PhotoEditor(laqta_domain::Bitmap),
     ClosePins,
-    ShowText { title: String, text: String },
-    Edit { image: laqta_domain::Bitmap, reply: futures_channel::oneshot::Sender<Result<laqta_domain::Bitmap, PortError>> },
-    Prompt { title: String, kind: crate::prompt_window::PromptKind, reply: crate::prompt_window::Reply },
+    ShowText {
+        title: String,
+        text: String,
+    },
+    /// OCR: the text beside the image it came from.
+    ShowOcr {
+        image: Bitmap,
+        text: String,
+    },
+    /// A colour picked from the screen.
+    ShowColor(laqta_domain::color::Rgba),
+    Edit {
+        image: laqta_domain::Bitmap,
+        reply: futures_channel::oneshot::Sender<Result<laqta_domain::Bitmap, PortError>>,
+    },
+    Prompt {
+        title: String,
+        kind: crate::prompt_window::PromptKind,
+        reply: crate::prompt_window::Reply,
+    },
     Quit,
 }
 
@@ -245,6 +267,12 @@ impl ToolHost for UiHandle {
     fn show_text(&self, title: &str, text: &str) -> Result<(), PortError> {
         self.send(UiCommand::ShowText { title: title.to_owned(), text: text.to_owned() })
     }
+    fn show_color(&self, color: laqta_domain::color::Rgba) -> Result<(), PortError> {
+        self.send(UiCommand::ShowColor(color))
+    }
+    fn show_ocr(&self, image: Bitmap, result: laqta_ports::OcrResult) -> Result<(), PortError> {
+        self.send(UiCommand::ShowOcr { image, text: result.text() })
+    }
 }
 
 /// Checks for an update: the message to show and whether `install_update` can apply it here.
@@ -329,6 +357,21 @@ pub struct UiServices {
     /// The compute pool and blocking pool (`run_compute` for editor operations that need it).
     pub spawner: Arc<dyn laqta_ports::Spawner>,
     pub codecs: laqta_imaging::Codecs,
+    /// What the last hotkey registration reported, for the Shortcuts page.
+    pub hotkey_report: Arc<dyn Fn() -> HotkeyReport + Send + Sync>,
+}
+
+/// The outcome of the last global-hotkey registration.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HotkeyReport {
+    /// Shortcuts the system accepted.
+    pub registered: Vec<laqta_domain::hotkey::KeyChord>,
+    /// Shortcuts the system turned down, with its reason (often: taken by another app).
+    pub failed: Vec<(laqta_domain::hotkey::KeyChord, String)>,
+    /// Global shortcuts can't work on this system at all, and why.
+    pub unsupported: Option<String>,
+    /// Registration hasn't finished yet (the portal can take seconds).
+    pub pending: bool,
 }
 
 impl std::fmt::Debug for UiServices {
@@ -446,12 +489,21 @@ fn handle(cmd: UiCommand, cx: &mut App) {
         UiCommand::Edit { image, reply } => crate::editor_window::open(Some(image), Some(reply), None, cx),
         UiCommand::Open(ToolWindow::Editor(path)) => crate::editor_window::open_file(path, cx),
         UiCommand::Open(ToolWindow::Effects(path)) => crate::effects_window::open(path, cx),
+        UiCommand::Open(ToolWindow::Tool(laqta_ports::ToolKind::ColorPicker)) => crate::color_window::open(None, cx),
         UiCommand::Open(ToolWindow::Tool(kind)) => crate::tools_window::open(kind, cx),
+        UiCommand::ShowColor(color) => crate::color_window::open(Some(color), cx),
         UiCommand::Pin(image) => crate::pin_window::pin(image, cx),
         UiCommand::PhotoEditor(image) => crate::photo_window::open(Some(image), None, cx),
         UiCommand::Open(ToolWindow::PhotoEditor(path)) => crate::photo_window::open(None, path, cx),
         UiCommand::ClosePins => crate::pin_window::close_all(cx),
-        UiCommand::ShowText { title, text } => crate::pin_window::show_text(title, text, cx),
+        UiCommand::ShowText { title, text } => {
+            crate::text_window::open(crate::text_window::TextResult { title, image: None, text, copied: false }, cx)
+        }
+        // The OCR route copies non-empty text before it shows the result.
+        UiCommand::ShowOcr { image, text } => {
+            let copied = !text.trim().is_empty();
+            crate::text_window::open(crate::text_window::TextResult { title: "Text capture".into(), image: Some(image), text, copied }, cx)
+        }
         UiCommand::Open(other) => tracing::warn!(?other, "no window for this tool yet"),
         UiCommand::Quit => {
             overlay::close(cx);

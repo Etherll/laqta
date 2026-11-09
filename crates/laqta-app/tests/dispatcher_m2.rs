@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use async_broadcast::Receiver;
 use futures_lite::future::block_on;
-use laqta_app::{App, Dispatched, Ports};
+use laqta_app::{ActionInput, App, Dispatched, Ports};
 use laqta_domain::{Action, Bitmap, PixelFormat, Settings};
 use laqta_ports::fakes::{
     ClipboardBehaviour, CountingRng, FakeClipboard, FakeDestination, FakeHoverSource, FakeNotifier, FakeOverlay, FakePrompt, FakeScreen,
@@ -69,9 +69,14 @@ fn harness_with(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
 
 /// Dispatches `action` and runs the jobs it submits. Imaging needs the compute pool, so the work runs in one.
 fn run(h: &H, action: Action) -> Result<Dispatched, AppError> {
+    run_with(h, action, ActionInput::None)
+}
+
+/// Like `run`, for a delivery mechanism that already has the action's input.
+fn run_with(h: &H, action: Action, input: ActionInput) -> Result<Dispatched, AppError> {
     let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
     pool.install(|| {
-        let result = block_on(h.app.dispatch(action, None));
+        let result = block_on(h.app.dispatch_with(action, input, None));
         loop {
             let jobs = h.spawner.take_spawned();
             if jobs.is_empty() {
@@ -342,4 +347,54 @@ fn folder_upload_of_an_empty_folder_is_unsupported() {
     let err = run(&h, Action::FolderUpload).unwrap_err();
     assert!(matches!(err, AppError::Unsupported(ref s) if s == "the folder has no files"), "got {err:?}");
     assert!(h.spawner.spawned.lock().unwrap().is_empty());
+}
+
+#[test]
+fn dispatch_with_files_uploads_them_and_asks_for_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path());
+    let file = tmp.path().join("watched.zip");
+    std::fs::write(&file, b"zip").unwrap();
+    h.prompt.texts.lock().unwrap().push_back("must stay unasked".to_owned());
+    let uguu = destination(&h, "sxcu:uguu", vec![Ok(uploaded("https://u.example/9"))]);
+
+    assert_eq!(run_with(&h, Action::FileUpload, ActionInput::Files(vec![file.clone()])).unwrap(), Dispatched::Task(TaskId(1)));
+    assert_eq!(uguu.requests.lock().unwrap()[0].data, UploadData::Path(file));
+    assert_eq!(h.prompt.texts.lock().unwrap().len(), 1, "the picker and the path prompt were skipped");
+    assert!(h.prompt.shown.lock().unwrap().is_empty());
+}
+
+#[test]
+fn dispatch_with_text_uploads_it_instead_of_the_clipboard() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path());
+    *h.clipboard.contents.lock().unwrap() = Some(ClipboardContent::Text("from the clipboard".to_owned()));
+    let paste = destination(&h, "sxcu:paste-ee", vec![Ok(uploaded("https://paste.example/10"))]);
+
+    assert_eq!(run_with(&h, Action::UploadText, ActionInput::Text("given".to_owned())).unwrap(), Dispatched::Task(TaskId(1)));
+    assert_eq!(paste.requests.lock().unwrap()[0].data, UploadData::Bytes(b"given".to_vec()));
+}
+
+#[test]
+fn dispatch_with_a_url_downloads_it_and_shortens_it_without_asking() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness_with(tmp.path(), |settings| settings.defaults.upload.url_shortener = "fake".into());
+    h.prompt.texts.lock().unwrap().push_back("must stay unasked".to_owned());
+    *h.uploaders.download.lock().unwrap() = Some((vec![7], "a.jpg".to_owned(), String::new()));
+    let imgur = destination(&h, "imgur", vec![Ok(uploaded("https://img.example/11"))]);
+    h.uploaders.shorteners.lock().unwrap().push(Arc::new(FakeShortener));
+    let mut events = h.app.events();
+
+    assert_eq!(
+        run_with(&h, Action::UploadUrl, ActionInput::Url("https://example.com/a.jpg".to_owned())).unwrap(),
+        Dispatched::Task(TaskId(1))
+    );
+    assert_eq!(imgur.requests.lock().unwrap()[0].file_name, "a.jpg");
+    let short = ActionInput::Url("https://example.com/long".to_owned());
+    assert_eq!(run_with(&h, Action::ShortenUrl, short).unwrap(), Dispatched::Task(TaskId(2)));
+    assert!(drain(&mut events).iter().any(|e| matches!(e, TaskEvent::Shortened { url, .. } if url == "https://example.com/long/s")));
+    assert_eq!(h.prompt.texts.lock().unwrap().len(), 1, "no prompt was asked");
+
+    let err = run_with(&h, Action::ShortenUrl, ActionInput::Url("not a url".to_owned())).unwrap_err();
+    assert!(matches!(err, AppError::Unsupported(_)), "got {err:?}");
 }

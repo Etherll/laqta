@@ -9,8 +9,8 @@ use gpui::{
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{ActiveTheme as _, Root};
-use laqta_domain::Action;
 use laqta_domain::hotkey::KeyChord;
+use laqta_domain::{Action, Bitmap};
 
 use crate::assets::IconName;
 use crate::chrome;
@@ -35,7 +35,7 @@ pub(crate) fn open(cx: &mut App) {
         titlebar: Some(crate::chrome::titlebar("Laqta")),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,
-        app_id: Some("laqta".into()),
+        app_id: Some(crate::APP_ID.into()),
         window_min_size: Some(size(px(720.), px(480.))),
         ..Default::default()
     };
@@ -86,6 +86,7 @@ impl MainWindow {
             }
         })
         .detach();
+        crate::vanish::restore_on_activation(window, cx).detach();
         let focus = cx.focus_handle();
         let library_generation = tasks.read(cx).library_generation();
         let mut this =
@@ -135,6 +136,53 @@ impl MainWindow {
         .detach();
     }
 
+    /// Reads and decodes an image file off the UI thread, then hands it to `then`.
+    fn with_image(
+        &mut self,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, Bitmap, &mut Context<Self>) + 'static,
+    ) {
+        let codecs = cx.global::<UiState>().services.codecs.clone();
+        let task = cx.background_spawn(async move { std::fs::read(&path).ok().and_then(|bytes| codecs.decode(&bytes).ok()) });
+        cx.spawn(async move |this, cx| {
+            let image = task.await;
+            let _ = this.update(cx, |this, cx| match image {
+                Some(image) => then(this, image, cx),
+                None => this.flash("Couldn't open the image", cx),
+            });
+        })
+        .detach();
+    }
+
+    /// Recognises the text in a library image and shows it beside the image (copied).
+    fn text_item(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        self.flash("Reading the text…", cx);
+        self.with_image(path, cx, |_, image, cx| {
+            let app = cx.global::<UiState>().services.app.clone();
+            let work = cx.background_spawn(app.recognize_text(image.clone()));
+            cx.spawn(async move |this, cx| {
+                let result = work.await;
+                let _ = this.update(cx, |this, cx| match result {
+                    Ok(r) => {
+                        let text = r.text();
+                        let copied = !text.trim().is_empty();
+                        if copied {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+                        }
+                        let title = "Text capture".into();
+                        crate::text_window::open(crate::text_window::TextResult { title, image: Some(image), text, copied }, cx);
+                    }
+                    Err(e) => {
+                        tracing::warn!("ocr: {e}");
+                        this.flash("Text recognition failed", cx);
+                    }
+                });
+            })
+            .detach();
+        });
+    }
+
     /// Copies an image to the clipboard (read off the UI thread); other files copy their path.
     fn copy_item(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
         let Some(format) = crate::history_window::clipboard_format(&path) else {
@@ -157,7 +205,7 @@ impl MainWindow {
     }
 }
 
-/// Actions that select something on screen: the main window minimizes first so it stays out of
+/// Actions that select something on screen: the main window vanishes first so it stays out of
 /// the capture.
 fn hides_window(action: Action) -> bool {
     matches!(
@@ -170,16 +218,20 @@ fn hides_window(action: Action) -> bool {
             | Action::ScrollingCapture
             | Action::ScreenRecorder
             | Action::ScreenRecorderGif
+            | Action::Ocr
+            | Action::RemoveBackground
+            | Action::AnalyzeImage
     )
 }
 
 fn on_dispatch(action: Action, cx: &App) -> impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static {
     let dispatch = cx.global::<UiState>().services.dispatch.clone();
-    move |_, window, _| {
+    move |_, window, cx| {
         if hides_window(action) {
-            window.minimize_window();
+            crate::vanish::then_dispatch(action, dispatch.clone(), window, cx);
+        } else {
+            dispatch(action);
         }
-        dispatch(action);
     }
 }
 
@@ -242,6 +294,10 @@ fn sidebar(cx: &App) -> Div {
         .child(nav("nav-editor", IconName::Image, "Image editor", Action::ImageEditor))
         .child(nav("nav-effects", IconName::Sparkles, "Effects", Action::ImageEffects))
         .child(nav("nav-picker", IconName::Pipette, "Color picker", Action::ColorPicker))
+        .child(widgets::nav_group("AI tools", cx))
+        .child(nav("nav-ocr", IconName::ScanLine, "Text capture (OCR)", Action::Ocr))
+        .child(nav("nav-rembg", IconName::WandSparkles, "Remove background", Action::RemoveBackground))
+        .child(nav("nav-analyze", IconName::Eye, "Analyze image", Action::AnalyzeImage))
         .child(div().flex_1())
         .child(nav("nav-settings", IconName::Settings, "Settings", Action::OpenSettings))
 }
@@ -281,7 +337,7 @@ const CAPTURES: [CaptureCard; 8] = [
         id: "cap-monitor",
         glyph: IconName::SquareDashedMousePointer,
         title: "Monitor",
-        hint: "The monitor under the cursor",
+        hint: "Under the cursor",
         action: Action::ActiveMonitor,
     },
     CaptureCard {
@@ -338,7 +394,7 @@ fn tone(status: laqta_ports::TaskStatus) -> Tone {
 
 /// The card surface of the library: a step above the page.
 fn library_surface(cx: &App) -> gpui::Hsla {
-    if cx.theme().is_dark() { gpui::rgb(0x232323).into() } else { theme::extra(cx).card }
+    theme::extra(cx).surface
 }
 
 /// The icon for an item with no thumbnail.
@@ -395,7 +451,7 @@ impl MainWindow {
                 .flex()
                 .flex_col()
                 .gap(px(2.))
-                .child(div().truncate().text_size(px(14.)).font_weight(FontWeight::MEDIUM).child(r.title.clone()));
+                .child(div().truncate().text_size(text::ROW).font_weight(FontWeight::MEDIUM).child(r.title.clone()));
             // The badge already says the status; repeat the detail only when it adds something.
             if detail != label && !detail.is_empty() {
                 let color = if r.error.is_some() { t.danger } else { t.muted_foreground };
@@ -452,7 +508,7 @@ impl MainWindow {
                     .rounded(radius::PILL)
                     .border_1()
                     .border_color(gpui::transparent_black())
-                    .text_size(px(14.))
+                    .text_size(text::ROW)
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(if selected { t.foreground } else { t.muted_foreground })
                     .when(selected, |d| d.bg(t.accent))
@@ -544,9 +600,15 @@ impl MainWindow {
                         .flex()
                         .flex_col()
                         .gap(px(2.))
-                        .child(div().truncate().text_size(px(14.)).font_weight(FontWeight::MEDIUM).child(c.name.clone()))
-                        .child(div().truncate().text_size(px(12.)).text_color(t.muted_foreground).child(when_meta(c))),
+                        .child(div().truncate().text_size(text::ROW).font_weight(FontWeight::MEDIUM).child(c.label.clone()))
+                        .child(div().truncate().text_size(text::SMALL).text_color(t.muted_foreground).child(if c.path.is_some() {
+                            c.meta.clone()
+                        } else {
+                            when_meta(c)
+                        })),
                 );
+            let name = SharedString::from(c.name.clone());
+            card = card.tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(name.clone()).build(window, cx));
             if let Some(open) = open_card(c, cx) {
                 card = widgets::clickable(card, open, cx);
             }
@@ -573,6 +635,30 @@ impl MainWindow {
                 if c.is_image { "Copy image" } else { "Copy path" },
                 cx.listener(move |this, _, _, cx| this.copy_item(p.clone(), cx)),
             ));
+            if c.is_image {
+                let (edit, text, pin) = (path.clone(), path.clone(), path.clone());
+                bar = bar
+                    .child(overlay_button(
+                        SharedString::from(format!("lib-edit-{}", c.id)),
+                        IconName::SquarePen,
+                        "Open in editor",
+                        move |_, _, cx| crate::editor_window::open_file(Some(edit.clone()), cx),
+                    ))
+                    .child(overlay_button(
+                        SharedString::from(format!("lib-text-{}", c.id)),
+                        IconName::ScanText,
+                        "Copy text",
+                        cx.listener(move |this, _, _, cx| this.text_item(text.clone(), cx)),
+                    ))
+                    .child(overlay_button(
+                        SharedString::from(format!("lib-pin-{}", c.id)),
+                        IconName::Pin,
+                        "Pin to screen",
+                        cx.listener(move |this, _, _, cx| {
+                            this.with_image(pin.clone(), cx, |_, image, cx| crate::pin_window::pin(image, cx))
+                        }),
+                    ));
+            }
             bar = bar.child(overlay_button(
                 SharedString::from(format!("lib-folder-{}", c.id)),
                 IconName::FolderOpen,
@@ -633,8 +719,8 @@ impl MainWindow {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(div().truncate().text_size(px(14.)).font_weight(FontWeight::MEDIUM).child(c.name.clone()))
-                    .child(div().truncate().text_size(px(12.)).text_color(t.muted_foreground).child(when_meta(c))),
+                    .child(div().truncate().text_size(text::ROW).font_weight(FontWeight::MEDIUM).child(c.name.clone()))
+                    .child(div().truncate().text_size(text::SMALL).text_color(t.muted_foreground).child(when_meta(c))),
             )
             .child(self.overlay_actions(c, &group, cx).relative().top(px(0.)).right(px(0.)));
         if let Some(open) = open_card(c, cx) {
@@ -692,32 +778,17 @@ impl Render for MainWindow {
 
         // Upload strip: a drop target with two one-line actions. Light: white pills on a grey strip;
         // dark: the usual grey pills on a ring-only strip.
-        let (strip_bg, pill_bg) = if t.is_dark() { (gpui::transparent_black(), t.secondary) } else { (t.secondary, x.card) };
+        let pill_bg = if t.is_dark() { t.secondary } else { x.card };
+        // Uploading is occasional, so it is one quiet line: two small buttons and the drop hint.
+        // The whole window takes dropped files and tints while something is dragged over it.
         let upload = div()
             .flex()
             .items_center()
-            .gap(space::S3)
-            .pl(space::S5)
-            .pr(px(10.))
-            .h(px(56.))
-            .rounded(radius::CARD)
-            .bg(strip_bg)
-            .border_1()
-            .border_color(x.ring)
-            .child(widgets::icon(IconName::CloudUpload, t.muted_foreground))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(text::LABEL)
-                    .text_color(t.muted_foreground)
-                    .child("Drop files anywhere in this window to upload them"),
-            )
-            .child(widgets::pill("up-file", "Upload file", Pill::Default, false, on_dispatch(Action::FileUpload, cx), cx).bg(pill_bg))
-            .child(
-                widgets::pill("up-clip", "From clipboard", Pill::Default, false, on_dispatch(Action::ClipboardUpload, cx), cx).bg(pill_bg),
-            );
+            .gap(space::S2)
+            .child(widgets::icon(IconName::CloudUpload, t.muted_foreground).size(px(16.)))
+            .child(widgets::pill("up-file", "Upload file", Pill::Ghost, true, on_dispatch(Action::FileUpload, cx), cx).bg(pill_bg))
+            .child(widgets::pill("up-clip", "From clipboard", Pill::Ghost, true, on_dispatch(Action::ClipboardUpload, cx), cx).bg(pill_bg))
+            .child(div().min_w_0().truncate().text_size(text::SMALL).text_color(t.muted_foreground).child("or drop files anywhere here"));
 
         let activity = self.activity(cx);
         let header = self.library_header(cx);

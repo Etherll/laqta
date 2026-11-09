@@ -246,7 +246,7 @@ pub(crate) fn nav_row(
         .rounded(radius::PILL)
         .border_1()
         .border_color(gpui::transparent_black())
-        .text_size(px(14.5))
+        .text_size(text::ROW)
         .text_color(fg)
         .hover(move |s| s.bg(wash))
         .child(icon(glyph, ic))
@@ -291,7 +291,7 @@ pub(crate) fn badge(label: impl Into<SharedString>, tone: Tone, cx: &App) -> Div
         Tone::Neutral => t.muted_foreground,
         Tone::Success => t.primary,
         Tone::Danger => t.danger,
-        Tone::Busy => gpui::rgb(0x3B82F6).into(),
+        Tone::Busy => theme::extra(cx).info,
     };
     div()
         .flex_none()
@@ -302,7 +302,7 @@ pub(crate) fn badge(label: impl Into<SharedString>, tone: Tone, cx: &App) -> Div
         .gap(px(6.))
         .rounded(radius::PILL)
         .bg(t.secondary)
-        .text_size(px(11.))
+        .text_size(text::CAPTION)
         .font_weight(FontWeight::MEDIUM)
         .text_color(t.muted_foreground)
         .child(div().size(px(6.)).rounded(radius::PILL).bg(dot))
@@ -311,7 +311,7 @@ pub(crate) fn badge(label: impl Into<SharedString>, tone: Tone, cx: &App) -> Div
 
 /// A key-chord hint, such as a hotkey: quiet text, so it never competes with the label.
 pub(crate) fn kbd(keys: impl Into<SharedString>, cx: &App) -> Div {
-    div().flex_none().text_size(px(12.)).text_color(cx.theme().muted_foreground).child(keys.into())
+    div().flex_none().text_size(text::SMALL).text_color(cx.theme().muted_foreground).child(keys.into())
 }
 
 /// An empty state: an icon tile, a title and a line telling the user what to do.
@@ -334,7 +334,7 @@ pub(crate) fn empty_state(glyph: IconName, title: impl Into<SharedString>, body:
                 .justify_center()
                 .child(icon(glyph, t.muted_foreground)),
         )
-        .child(div().pt(space::S1).text_size(px(14.)).font_weight(FontWeight::MEDIUM).child(title.into()))
+        .child(div().pt(space::S1).text_size(text::ROW).font_weight(FontWeight::MEDIUM).child(title.into()))
         .child(div().text_size(text::LABEL).text_color(t.muted_foreground).text_center().child(body.into()))
 }
 
@@ -478,14 +478,24 @@ pub(crate) fn dropdown(id: impl Into<SharedString>, options: Vec<Choice>, _cx: &
 
 /// A button that opens a menu of actions, such as "Add account".
 pub(crate) fn menu_button(id: impl Into<SharedString>, label: impl Into<SharedString>, items: Vec<Choice>) -> AnyElement {
-    use gpui_component::button::Button;
+    menu_button_with(id, label, IconName::Plus, items)
+}
+
+/// `menu_button` with its own icon; an empty label makes a compact icon-only "more" button.
+pub(crate) fn menu_button_with(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    glyph: IconName,
+    items: Vec<Choice>,
+) -> AnyElement {
+    use gpui_component::button::{Button, ButtonVariants as _};
     use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
     let id: SharedString = id.into();
+    let label: SharedString = label.into();
     let items = std::rc::Rc::new(items);
-    Button::new(ElementId::Name(id))
-        .label(label.into())
-        .icon(Icon::new(IconName::Plus))
-        .outline()
+    let button = Button::new(ElementId::Name(id)).icon(Icon::new(glyph));
+    let button = if label.is_empty() { button.ghost() } else { button.label(label).outline() };
+    button
         .dropdown_menu(move |mut menu, _, _| {
             for o in items.iter() {
                 let h = o.on_click.clone();
@@ -605,9 +615,9 @@ pub(crate) fn stepper(
         .rounded(radius::PILL)
         .bg(t.foreground.opacity(0.06))
         .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(tooltip).build(window, cx))
-        .child(div().pr(space::S1).text_size(px(12.5)).text_color(t.muted_foreground).child(label))
+        .child(div().pr(space::S1).text_size(text::SMALL).text_color(t.muted_foreground).child(label))
         .child(step(format!("{id}-less"), IconName::Minus, Box::new(on_less)))
-        .child(div().min_w(px(40.)).text_center().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).child(value.into()))
+        .child(div().min_w(px(40.)).text_center().text_size(text::SMALL).font_weight(FontWeight::MEDIUM).child(value.into()))
         .child(step(format!("{id}-more"), IconName::Plus, Box::new(on_more)))
 }
 
@@ -660,7 +670,7 @@ pub(crate) fn toggle_chip(
         .border_color(if on { gpui::transparent_black() } else { t.foreground.opacity(0.12) })
         .bg(bg)
         .text_color(fg)
-        .text_size(px(12.5))
+        .text_size(text::SMALL)
         .font_weight(FontWeight::MEDIUM)
         .when(!on, move |d| d.hover(move |s| s.bg(wash).text_color(hover_fg)))
         .child(Icon::new(glyph).size(px(15.)))

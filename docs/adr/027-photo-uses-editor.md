@@ -1,4 +1,4 @@
-# ADR 027: The photo editor reuses the Editor engine's text and rasterizer
+# ADR 027: The photo editor reuses the Editor engine's fonts and text layout
 
 Status: accepted (2026-11-07, M7 plan D1).
 

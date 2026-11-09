@@ -355,8 +355,18 @@ mod tests {
             let defaults = entries.iter().filter(|model| model.default).count();
             assert_eq!(defaults, 1, "{} has {defaults} defaults", task.as_str());
         }
-        assert_eq!(catalog().default_for(Task::Background).expect("a default").id, "birefnet-lite");
+        assert_eq!(catalog().default_for(Task::Background).expect("a default").id, "birefnet-lite-fp16");
         assert_eq!(catalog().default_for(Task::Inpaint).expect("a default").id, "big-lama");
+    }
+
+    #[test]
+    fn the_default_background_model_is_the_pinned_fp16_build() {
+        let model = catalog().default_for(Task::Background).expect("a default");
+        assert_eq!(model.precisions, ["fp16"], "ADR 023 makes the half-precision build the default");
+        assert!(!model.is_pending(), "the default has a real SHA-256, so its first-use download is verified");
+        assert_eq!(model.sha256, "d39b897ceb16ae654c1731f3dba0cf9b368d9cae74b5a57459b455cc8bfec402");
+        assert!(model.url.contains("/resolve/de15b22ba131738a16dff04aab8bdf8dc32e3ac1/"), "the URL is pinned to a commit");
+        assert!(model.size_bytes < 120_000_000, "about 115 MB, half of the fp32 build");
     }
 
     #[test]

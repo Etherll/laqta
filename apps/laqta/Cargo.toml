@@ -50,6 +50,9 @@ dirs.workspace = true
 fastrand.workspace = true
 getrandom.workspace = true
 
+[build-dependencies]
+embed-resource = "3.0.12"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 laqta-platform-linux.workspace = true
 

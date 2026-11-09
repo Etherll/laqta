@@ -3,14 +3,14 @@
 
 use std::sync::Arc;
 
-use laqta_domain::Frame;
 use laqta_domain::geometry::PhysRect;
 use laqta_domain::region::{Handle, HoverTarget, RegionInput};
+use laqta_domain::{Bitmap, Frame};
 
 use crate::PortError;
 
 /// Everything the overlay paints. Coordinates are physical virtual-desktop pixels.
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct RegionView {
     /// Union of all monitor rects; overlay pixel (0,0) is `bounds.(x, y)`.
     pub bounds: PhysRect,
@@ -27,6 +27,73 @@ pub struct RegionView {
     pub dim_alpha: u8,
     /// Annotate mode is on: the toolbar's Annotate button shows as pressed.
     pub annotate: bool,
+    /// The region the session holds as the adjustable selection: the active region once the gesture
+    /// that made it has ended, for a session that does not confirm on select. `None` while the
+    /// user draws, moves or resizes, and in every other kind of session.
+    pub selected: Option<PhysRect>,
+    /// The desktop's pixels under `selected`, in physical pixels. It rides on the one view that
+    /// follows a change of `selected`; later views leave it `None`, and the overlay keeps the image
+    /// until `selected` changes again.
+    pub selection_image: Option<Arc<Bitmap>>,
+    /// The capture tools (toolbar and info badge) are shown; Space toggles them.
+    pub tools_visible: bool,
+    /// The selection is frozen because annotations exist on it.
+    pub locked: bool,
+    /// Show the mode bar at the top of the screen (`RegionCaptureOptions::show_mode_bar`).
+    pub mode_bar: bool,
+    /// The session picks one pixel (the screen colour picker): a click picks, nothing is drawn.
+    pub pick_point: bool,
+}
+
+impl PartialEq for RegionView {
+    /// `Bitmap` has no equality of its own, so the selection images compare by identity: the same
+    /// crop is the same image, and two crops of equal pixels are not worth a pixel scan.
+    fn eq(&self, other: &Self) -> bool {
+        // Destructured so that a new field cannot be left out of the comparison.
+        let Self {
+            bounds,
+            regions,
+            active,
+            drawing,
+            hovered,
+            handles,
+            cursor,
+            magnifier,
+            info_text,
+            show_crosshair,
+            dim_alpha,
+            annotate,
+            selected,
+            selection_image,
+            tools_visible,
+            locked,
+            mode_bar,
+            pick_point,
+        } = self;
+        let same_image = match (selection_image, &other.selection_image) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        same_image
+            && *bounds == other.bounds
+            && *regions == other.regions
+            && *active == other.active
+            && *drawing == other.drawing
+            && *hovered == other.hovered
+            && *handles == other.handles
+            && *cursor == other.cursor
+            && *magnifier == other.magnifier
+            && *info_text == other.info_text
+            && *show_crosshair == other.show_crosshair
+            && *dim_alpha == other.dim_alpha
+            && *annotate == other.annotate
+            && *selected == other.selected
+            && *tools_visible == other.tools_visible
+            && *locked == other.locked
+            && *mode_bar == other.mode_bar
+            && *pick_point == other.pick_point
+    }
 }
 
 pub type InputCallback = Arc<dyn Fn(RegionInput) + Send + Sync>;
@@ -118,10 +185,24 @@ pub trait ToolHost: Send + Sync {
         Ok(())
     }
 
+    /// Shows a colour picked from the screen in the colour picker.
+    fn show_color(&self, color: laqta_domain::color::Rgba) -> Result<(), PortError> {
+        let _ = color;
+        Err(PortError::Unsupported("the colour picker".into()))
+    }
+
     /// Shows a tool's text result (OCR, QR decode, ruler, inspector) with a copy button.
     fn show_text(&self, title: &str, text: &str) -> Result<(), PortError> {
         let _ = (title, text);
         Err(PortError::Unsupported("text results".into()))
+    }
+
+    /// Shows an OCR result beside the image it was read from: the text window for text capture. A host
+    /// without a window of its own shows the recognised text with `show_text`.
+    fn show_ocr(&self, image: laqta_domain::Bitmap, result: crate::OcrResult) -> Result<(), PortError> {
+        let _ = image;
+        let text = result.text();
+        self.show_text("Recognised text", if text.is_empty() { "No text found." } else { &text })
     }
 }
 

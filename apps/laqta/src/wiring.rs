@@ -35,12 +35,33 @@ struct Platform {
     native_recorder: Option<Arc<dyn laqta_ports::Media>>,
 }
 
+/// Where the Wayland ScreenCast restore token is kept, so the portal asks for permission once,
+/// not on every launch (ADR 019).
 #[cfg(target_os = "linux")]
-fn platform() -> Result<Platform, String> {
+fn screencast_token_path(data: &std::path::Path) -> std::path::PathBuf {
+    data.join("screencast-token")
+}
+
+#[cfg(target_os = "linux")]
+fn platform(data: &std::path::Path) -> Result<Platform, String> {
     use laqta_platform_linux::Session;
     let session = Session::detect().ok_or("no display: neither WAYLAND_DISPLAY nor DISPLAY is set")?;
     tracing::info!("session: {session:?}");
-    let p = laqta_platform_linux::ports(session);
+    // The portals need an app id before the first portal call (KDE's shortcuts refuse a session
+    // without one).
+    if session == Session::Wayland
+        && let Ok(exe) = std::env::current_exe()
+    {
+        laqta_platform_linux::app_id::register(&exe);
+    }
+    let path = screencast_token_path(data);
+    let token = std::fs::read_to_string(&path).ok().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+    let save: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |t: String| {
+        if let Err(e) = write_private(&path, &t) {
+            tracing::warn!("screencast token not saved: {e}");
+        }
+    });
+    let p = laqta_platform_linux::ports_with_token(session, token, save);
     Ok(Platform {
         screen: p.screen,
         clipboard: p.clipboard,
@@ -60,8 +81,19 @@ fn platform() -> Result<Platform, String> {
     })
 }
 
+/// Writes a file only this user can read (the token grants screen access without asking).
+#[cfg(target_os = "linux")]
+fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let tmp = path.with_extension("tmp");
+    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+    file.write_all(text.as_bytes())?;
+    std::fs::rename(&tmp, path)
+}
+
 #[cfg(windows)]
-fn platform() -> Result<Platform, String> {
+fn platform(_data: &std::path::Path) -> Result<Platform, String> {
     laqta_platform_windows::set_dpi_awareness();
     let p = laqta_platform_windows::ports();
     Ok(Platform {
@@ -84,7 +116,7 @@ fn platform() -> Result<Platform, String> {
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
-fn platform() -> Result<Platform, String> {
+fn platform(_data: &std::path::Path) -> Result<Platform, String> {
     Err("this platform is not supported (ADR 001)".into())
 }
 
@@ -166,6 +198,15 @@ fn load_settings(store: &SettingsStore) -> Settings {
 /// thread that may block, and this lets an unchanged save skip it.
 type RegisteredBindings = Arc<Mutex<Option<Vec<(KeyChord, Action)>>>>;
 
+/// What the last registration reported, read by the Shortcuts page.
+type HotkeyReports = Arc<Mutex<laqta_ui::HotkeyReport>>;
+
+static HOTKEY_REPORT: std::sync::OnceLock<HotkeyReports> = std::sync::OnceLock::new();
+
+fn hotkey_reports() -> HotkeyReports {
+    HOTKEY_REPORT.get_or_init(|| Arc::new(Mutex::new(laqta_ui::HotkeyReport { pending: true, ..Default::default() }))).clone()
+}
+
 /// Makes the platform's hotkeys match the app's current bindings unless they already do. Returns whether the platform
 /// reports hotkeys unsupported; false when the bindings were already registered. The settings are read under the lock,
 /// so the last run to take it leaves the latest bindings registered.
@@ -179,19 +220,26 @@ fn sync_hotkeys(app: &App, hotkeys: &dyn HotkeyRegistrar, registered: &Registere
     let mut unsupported = false;
     // A failed chord (not "unsupported") is retried on the next save, as before.
     let mut retry = false;
+    let mut report = laqta_ui::HotkeyReport::default();
     for (chord, result) in hotkeys.register(&bindings, on_fire) {
         match result {
-            Ok(()) => tracing::info!(%chord, "hotkey registered"),
+            Ok(()) => {
+                tracing::info!(%chord, "hotkey registered");
+                report.registered.push(chord);
+            }
             Err(PortError::Unsupported(why)) => {
                 unsupported = true;
                 tracing::warn!(%chord, "global hotkeys unsupported here ({why}); bind `laqta --action <name>` in your desktop's keyboard settings");
+                report.unsupported = Some(why);
             }
             Err(e) => {
                 retry = true;
                 tracing::warn!(%chord, "hotkey registration failed: {e}");
+                report.failed.push((chord, e.to_string()));
             }
         }
     }
+    *hotkey_reports().lock().unwrap_or_else(|e| e.into_inner()) = report;
     *current = if retry { None } else { Some(bindings) };
     unsupported
 }
@@ -203,11 +251,14 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     startup.extend(args.requests.iter().cloned());
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let spawner = AppSpawner::start(clock.clone()).map_err(|e| format!("cannot start the app worker: {e}"))?;
-    let mut platform = platform()?;
+    let data = data_dir(&args);
+    let mut platform = platform(&data)?;
     if args.sandbox {
         platform.secrets = Arc::new(stubs::MemorySecrets::default());
+    } else {
+        // With no keyring, password and key credentials last for the session (ADR 018).
+        platform.secrets = Arc::new(stubs::SessionSecrets::new(platform.secrets.clone()));
     }
-    let data = data_dir(&args);
     let store = Arc::new(SettingsStore::new(data.clone()));
     let settings = load_settings(&store);
     let history = if settings.history.enabled && !args.sandbox {
@@ -299,6 +350,8 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         }
     }));
     if let Some(h) = &history {
+        h.release_when_idle(clock.clone(), spawner.clone());
+        app.attach_history(h.clone());
         spawner.spawn(Box::pin(laqta_library::record_task_events(h.clone(), app.events(), clock.clone())));
     }
 
@@ -531,6 +584,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         let last_release: Arc<Mutex<Option<laqta_update::Release>>> = Arc::new(Mutex::new(None));
         let quit_ui = quit_tx.clone();
         let services = UiServices {
+            hotkey_report: Arc::new(|| hotkey_reports().lock().unwrap_or_else(|e| e.into_inner()).clone()),
             app: app.clone(),
             history: history.clone(),
             shell: platform.shell.clone(),

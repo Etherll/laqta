@@ -3,8 +3,8 @@
 
 use futures_channel::oneshot;
 use gpui::{
-    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Window, WindowBounds,
-    WindowKind, WindowOptions, div, px, size,
+    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Window, WindowBounds, WindowKind, WindowOptions, div, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputState};
@@ -33,12 +33,20 @@ pub(crate) enum Answer {
 
 pub(crate) type Reply = oneshot::Sender<Result<Answer, PortError>>;
 
+/// A confirm prompt tall enough for its text, so the buttons never fall off the bottom: title
+/// bar 36, heading and padding 64, footer 57, and about 60 characters per 20 px line.
+fn confirm_height(text: &str) -> f32 {
+    let lines: usize = text.lines().map(|l| l.chars().count().div_ceil(60).max(1)).sum();
+    (36.0 + 64.0 + 57.0 + 20.0 * lines.max(1) as f32 + 12.0).min(520.0)
+}
+
 pub(crate) fn open(title: String, kind: PromptKind, reply: Reply, cx: &mut App) {
     let (width, height) = match &kind {
         PromptKind::Choose { options } => (460.0, 120.0 + 36.0 * options.len().min(10) as f32),
         PromptKind::Show { .. } => (460.0, 360.0),
         PromptKind::AfterCapture { .. } => (820.0, 640.0),
         PromptKind::BeforeUpload { .. } => (560.0, 420.0),
+        PromptKind::Confirm { text } => (460.0, confirm_height(text)),
         _ => (460.0, 170.0),
     };
     let options = WindowOptions {
@@ -48,7 +56,7 @@ pub(crate) fn open(title: String, kind: PromptKind, reply: Reply, cx: &mut App) 
         app_owns_titlebar_drag: true,
         kind: WindowKind::Dialog,
         focus: true,
-        app_id: Some("laqta".into()),
+        app_id: Some(crate::APP_ID.into()),
         ..Default::default()
     };
     let mut reply = Some(reply);
@@ -102,14 +110,20 @@ impl Drop for PromptWindow {
 
 impl Render for PromptWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // `min_h_0` lets the body shrink below its content, so a long text scrolls and the footer
+        // stays on screen.
         let mut body = div()
+            .id("prompt-body")
             .flex_1()
+            .min_h_0()
+            .overflow_y_scrollbar()
             .flex()
             .flex_col()
             .gap(px(8.))
             .p(px(12.))
             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(self.title.clone()));
-        let mut footer = div().flex().flex_row().gap(px(8.)).p(px(12.)).border_t_1().border_color(cx.theme().border).child(div().flex_1());
+        let mut footer =
+            div().flex_none().flex().flex_row().gap(px(8.)).p(px(12.)).border_t_1().border_color(cx.theme().border).child(div().flex_1());
         match &self.kind {
             PromptKind::Text { .. } => {
                 if let Some(i) = &self.input {
@@ -247,6 +261,23 @@ impl Render for PromptWindow {
                     );
             }
         }
-        crate::chrome::rounded(widgets::page(cx), window).child(crate::chrome::TitleBar::new().title(self.title.clone()).flat()).child(body).child(footer)
+        crate::chrome::rounded(widgets::page(cx), window)
+            .child(crate::chrome::TitleBar::new().title(self.title.clone()).flat())
+            .child(body)
+            .child(footer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::confirm_height;
+
+    #[test]
+    fn a_confirm_prompt_grows_with_its_text() {
+        let short = confirm_height("Delete this file?");
+        let long = confirm_height(&"Text recognition needs ONNX Runtime and its models (about 8 MB). ".repeat(3));
+        assert!(short >= 170.0, "the footer fits under one line of text");
+        assert!(long >= short + 40.0, "{long} vs {short}");
+        assert!(confirm_height(&"x".repeat(10_000)) <= 520.0, "very long text scrolls instead");
     }
 }

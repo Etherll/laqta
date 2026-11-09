@@ -9,13 +9,13 @@ Status: accepted (2026-11-07), revised after the EGM review
 
 **Decision.**
 - A port that cannot do something returns `Unsupported`, and callers handle that one error. Capabilities are shown only in the settings UI and onboarding.
-- The application receives settings as a value. History is written by a task-event subscriber in `laqta-library` and read directly by the UI.
-- Tray and autostart are platform ports. All ports live in `laqta-ports` (ADR 024).
-- `SecretStore` has OS keyring adapters only. With no keyring, it returns `Unsupported`, and credentials are asked for once per session and kept in memory.
+- The application receives settings as a value. History is written by a task-event subscriber in `laqta-library` and read directly by the UI. Edits to existing entries (replace tags, delete) go through `App::history_set_tags` and `App::history_delete` to a narrow `HistoryEdit` port, which `laqta-library`'s `History` implements; `main` attaches it with `App::attach_history`. It meets the seam rule (one production adapter and a fake the dispatcher tests need), and it is not a repository: it has no reads and no inserts.
+- Tray and autostart are platform ports. All ports live in `laqta-ports` (ADR 024). `ModelService`, the settings window's model manager, is not a port: it is a seam defined in `laqta-ui` with a `main` adapter and a test fake.
+- `SecretStore` has OS keyring adapters only. With no keyring, it returns `Unsupported`. `main` wraps the platform store in `SessionSecrets`, which keeps what the keyring refuses in memory for the session, so password and key hosts, the SMTP login and the native-messaging setup work until the process exits and are asked for again on the next launch. A working keyring keeps the only copy. OAuth tokens also have their own session cache in `laqta-upload`. Under `--sandbox` the store is an in-memory one.
 
 **Rejected.**
 - **Capability flags checked by callers:** the branching spreads everywhere (see Context).
 - **Repository ports for settings and history:** each had one real adapter.
 - **An encrypted file with a key stored next to it:** this gives no protection.
 
-**Consequences.** The application has no storage interface, so it stays storage-independent without a seam that has one adapter.
+**Consequences.** The application has no storage interface beyond `HistoryEdit`'s two writes, so it stays storage-independent without a seam that has one adapter and no test need.

@@ -7,13 +7,13 @@ use std::sync::Arc;
 
 use futures_lite::future::{block_on, poll_once};
 use laqta_app::{App, Dispatched, Ports};
-use laqta_domain::region::{Button, HoverTarget, KeyMods, RegionInput, RegionKey, TargetKind};
+use laqta_domain::region::{Button, HoverTarget, KeyMods, RegionCommand, RegionInput, RegionKey, SelectionAction, TargetKind};
 use laqta_domain::{Action, Bitmap, Frame, Monitor, MonitorId, PhysRect, PixelFormat, Settings};
 use laqta_ports::fakes::{
     ClipboardBehaviour, CountingRng, FakeClipboard, FakeHoverSource, FakeNotifier, FakeOverlay, FakeScreen, FakeShell, FakeToolHost,
     InlineSpawner, ManualClock,
 };
-use laqta_ports::{AppError, HostInfo, ToolWindow};
+use laqta_ports::{AppError, HostInfo, TaskEvent, ToolWindow};
 use tempfile::TempDir;
 
 struct H {
@@ -84,6 +84,8 @@ fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
     let mut settings = Settings::default_for(dir.to_path_buf());
     settings.screenshots_dir = dir.to_path_buf();
     settings.defaults.capture.region.min_size = 2;
+    // These tests drag a region and expect the capture at once, not a selection with tools beside it.
+    settings.defaults.capture.region.show_tools_after_select = false;
     edit(&mut settings);
     H { app: App::new(ports, settings), overlay, tools, spawner, screen }
 }
@@ -233,6 +235,82 @@ fn region_then_last_region() {
     assert_eq!(std::fs::read_dir(tmp.path().join("2026-11")).unwrap().count(), 2);
 }
 
+/// Opens a region session on `h`, drags (1, 1) to (6, 5) and checks the drag only selects. Then `after` plays
+/// the toolbar, and the capture's task runs to the end.
+fn select_then(h: &H, after: Vec<RegionInput>) -> Result<Dispatched, AppError> {
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    let out = pool.install(|| {
+        block_on(async {
+            let mut fut = h.app.dispatch(Action::RectangleRegion, None);
+            while !h.overlay.is_open() {
+                assert!(poll_once(&mut fut).await.is_none());
+            }
+            for i in [
+                RegionInput::PointerMove { x: 1, y: 1 },
+                RegionInput::PointerDown { x: 1, y: 1, button: Button::Left },
+                RegionInput::PointerMove { x: 6, y: 5 },
+                RegionInput::PointerUp { x: 6, y: 5, button: Button::Left },
+            ] {
+                h.overlay.send(i);
+            }
+            assert!(poll_once(&mut fut).await.is_none(), "the drag only selects the region");
+            assert!(h.overlay.is_open());
+            for i in after {
+                h.overlay.send(i);
+            }
+            fut.await
+        })
+    });
+    run(h, async {});
+    out
+}
+
+/// The kinds of after-capture step the task reported: "saved" and "copied".
+fn steps_reported(events: &mut async_broadcast::Receiver<TaskEvent>) -> Vec<&'static str> {
+    let mut seen = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        match event {
+            TaskEvent::Saved { .. } => seen.push("saved"),
+            TaskEvent::Copied { .. } => seen.push("copied"),
+            TaskEvent::Pinned { .. } => seen.push("pinned"),
+            _ => {}
+        }
+    }
+    seen
+}
+
+#[test]
+fn a_selected_region_runs_only_the_steps_of_the_toolbar_action() {
+    // The default steps save and copy; each action replaces them.
+    for (action, expected) in [
+        (SelectionAction::Copy, vec!["copied"]),
+        (SelectionAction::Save, vec!["saved"]),
+        (SelectionAction::Pin, vec!["pinned"]),
+        (SelectionAction::Default, vec!["saved", "copied"]),
+    ] {
+        let tmp = TempDir::new().unwrap();
+        let h = harness(tmp.path(), |s| s.defaults.capture.region.show_tools_after_select = true);
+        let mut events = h.app.events();
+
+        let out = select_then(&h, vec![RegionInput::Command(RegionCommand::Finish(action))]);
+
+        assert!(matches!(out, Ok(Dispatched::Task(_))), "{action:?}");
+        assert_eq!(steps_reported(&mut events), expected, "{action:?}");
+        assert_eq!(tmp.path().join("2026-11").exists(), expected.contains(&"saved"), "{action:?}");
+    }
+}
+
+#[test]
+fn the_annotated_crop_is_the_captured_image() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path(), |s| s.defaults.capture.region.show_tools_after_select = true);
+    let annotated = Bitmap::new(3, 2, PixelFormat::Rgba8, vec![5u8; 24].into()).unwrap();
+
+    select_then(&h, vec![RegionInput::Annotated(annotated), RegionInput::Command(RegionCommand::Finish(SelectionAction::Save))]).unwrap();
+
+    assert_eq!(saved_size(tmp.path()), (3, 2), "the edited crop, not the 6 x 5 region");
+}
+
 #[test]
 fn region_cancel_is_cancelled() {
     let tmp = TempDir::new().unwrap();
@@ -326,6 +404,10 @@ fn every_action_routes() {
             _ => {
                 if let Err(e) = &r {
                     assert!(matches!(e, AppError::Unsupported(_)), "{a:?}: {e:?}");
+                    // The catch-all's answer means the action has no route, which this table is here to catch.
+                    if let AppError::Unsupported(why) = e {
+                        assert!(!why.ends_with("is not available yet"), "{a:?} has no route: {why}");
+                    }
                 }
             }
         }

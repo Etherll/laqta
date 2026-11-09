@@ -146,6 +146,8 @@ fn harness(dir: &Path, page: Arc<Page>, input: Arc<dyn InputSynth>, edit: impl F
     };
     let mut settings = Settings::default_for(dir.to_path_buf());
     settings.screenshots_dir = dir.to_path_buf();
+    // Releasing the drag selects the region at once; there is no capture toolbar to confirm it.
+    settings.defaults.capture.region.show_tools_after_select = false;
     edit(&mut settings);
     H { app: App::new(ports, settings), overlay, spawner, notifier, clock }
 }

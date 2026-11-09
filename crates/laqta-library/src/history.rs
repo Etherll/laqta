@@ -1,14 +1,15 @@
 //! History in SQLite (ADR 006, M1 D7): entries, tags, a full-text index over file names, and the
 //! task-event subscriber that writes entries.
 
+use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 use std::time::Duration;
 
 use laqta_domain::history::{HistoryItem, HistoryKind, HistoryQuery, HistoryStats, NewHistoryItem, kind_for_path};
-use laqta_ports::{Clock, TaskEvent};
+use laqta_ports::{Clock, HistoryEdit, PortError, Spawner, TaskEvent};
 use rusqlite::types::{Type, Value};
 use rusqlite::{Connection, OptionalExtension, Row, params_from_iter};
 
@@ -60,38 +61,117 @@ const COLUMNS: &str = "id, time, kind, file_name, path, url, thumbnail_url, dele
 
 const KINDS: [HistoryKind; 4] = [HistoryKind::Image, HistoryKind::Text, HistoryKind::File, HistoryKind::Url];
 
-/// The history database. The connection sits behind a mutex, so the value is `Send + Sync`.
-#[derive(Debug)]
+/// How long the connection stays open with no use before the release timer closes it (ARCHITECTURE §1.4).
+const RELEASE_AFTER: Duration = Duration::from_secs(60);
+
+/// The history database. The connection sits behind a mutex, so the value is `Send + Sync`. On disk it is a lazy
+/// resource: `release_when_idle` makes it close after a minute with no use, and the next call opens it again.
 pub struct History {
-    conn: Mutex<Connection>,
+    /// The database file. `None` for an in-memory database, which cannot be reopened and so is never released.
+    path: Option<PathBuf>,
+    state: Arc<Mutex<State>>,
+    /// The clock and spawner of the release timer, once `release_when_idle` has set them.
+    idle: OnceLock<Idle>,
+}
+
+impl fmt::Debug for History {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("History").field("path", &self.path).field("connected", &self.connected()).finish_non_exhaustive()
+    }
+}
+
+struct State {
+    conn: Option<Connection>,
+    /// Calls so far. The release timer compares it with the count it saw when it last slept.
+    uses: u64,
+    timer_armed: bool,
+}
+
+struct Idle {
+    clock: Arc<dyn Clock>,
+    spawner: Arc<dyn Spawner>,
 }
 
 impl History {
-    /// Opens or creates the database at `path` in WAL mode and migrates its schema.
+    /// Opens or creates the database at `path` in WAL mode and migrates its schema. It opens now, so a bad file fails
+    /// at start; `release_when_idle` lets the connection go again when it is not in use.
     pub fn open(path: &Path) -> Result<History, LibraryError> {
         if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
             fs::create_dir_all(parent)?;
         }
-        Self::setup(Connection::open(path)?)
+        Ok(Self::holding(Some(path.to_path_buf()), connect(path)?))
     }
 
     pub fn open_in_memory() -> Result<History, LibraryError> {
-        Self::setup(Connection::open_in_memory()?)
+        Ok(Self::holding(None, configure(Connection::open_in_memory()?)?))
     }
 
-    fn setup(mut conn: Connection) -> Result<History, LibraryError> {
-        conn.busy_timeout(Duration::from_secs(5))?;
-        conn.pragma_update(None, "foreign_keys", true)?;
-        // Returns the mode it reached: "wal" on disk, "memory" in memory.
-        conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
-        migrate(&mut conn)?;
-        Ok(History { conn: Mutex::new(conn) })
+    fn holding(path: Option<PathBuf>, conn: Connection) -> History {
+        History { path, state: Arc::new(Mutex::new(State { conn: Some(conn), uses: 0, timer_armed: false })), idle: OnceLock::new() }
     }
 
-    fn lock(&self) -> MutexGuard<'_, Connection> {
+    /// Closes the connection after `RELEASE_AFTER` with no use, using one one-shot timer on `clock` that exists only
+    /// while the connection is open (ARCHITECTURE §1.4). The next call reopens the file. An in-memory database keeps
+    /// its connection, and the first call wins if this is called twice.
+    pub fn release_when_idle(&self, clock: Arc<dyn Clock>, spawner: Arc<dyn Spawner>) {
+        if self.path.is_none() || self.idle.set(Idle { clock, spawner }).is_err() {
+            return;
+        }
+        let mut state = lock_state(&self.state);
+        self.arm(&mut state);
+    }
+
+    /// Whether the connection is open right now.
+    pub fn connected(&self) -> bool {
+        lock_state(&self.state).conn.is_some()
+    }
+
+    /// Runs `f` on the connection, opened again if the release timer closed it. Every method comes through here, and
+    /// each call counts as a use.
+    fn with<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T, LibraryError>) -> Result<T, LibraryError> {
         // A panic while the lock was held leaves SQLite itself consistent, so keep using it.
-        self.conn.lock().unwrap_or_else(PoisonError::into_inner)
+        let mut state = lock_state(&self.state);
+        state.uses += 1;
+        if state.conn.is_none() {
+            let path = self.path.as_deref().ok_or_else(|| io::Error::other("the in-memory history connection is gone"))?;
+            state.conn = Some(connect(path)?);
+            tracing::debug!("history database reopened");
+        }
+        self.arm(&mut state);
+        match state.conn.as_mut() {
+            Some(conn) => f(conn),
+            None => Err(io::Error::other("the history connection is closed").into()),
+        }
+    }
+
+    /// Starts the release timer if it is configured and not already running.
+    fn arm(&self, state: &mut State) {
+        let Some(idle) = self.idle.get() else { return };
+        if state.timer_armed || state.conn.is_none() {
+            return;
+        }
+        state.timer_armed = true;
+        let shared = Arc::clone(&self.state);
+        let clock = Arc::clone(&idle.clock);
+        let mut seen = state.uses;
+        idle.spawner.spawn(Box::pin(async move {
+            loop {
+                clock.sleep(RELEASE_AFTER).await;
+                // A call that holds the connection is a use, so it is not interrupted: look again later.
+                let mut state = match shared.try_lock() {
+                    Ok(state) => state,
+                    Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+                    Err(TryLockError::WouldBlock) => continue,
+                };
+                if state.uses == seen {
+                    state.conn = None;
+                    state.timer_armed = false;
+                    tracing::debug!("history database released");
+                    return;
+                }
+                seen = state.uses;
+            }
+        }));
     }
 
     /// Stores an entry with its tags and returns its id.
@@ -101,42 +181,44 @@ impl History {
         let size_bytes = item.size_bytes.map(signed).transpose()?;
         let time = stored_time(item.time).to_string();
 
-        let mut conn = self.lock();
-        let tx = conn.transaction()?;
-        tx.execute(
-            "INSERT INTO history (time, kind, file_name, path, url, thumbnail_url, deletion_url, host, width, \
+        self.with(|conn| {
+            let tx = conn.transaction()?;
+            tx.execute(
+                "INSERT INTO history (time, kind, file_name, path, url, thumbnail_url, deletion_url, host, width, \
              height, size_bytes, thumbnail_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            rusqlite::params![
-                time,
-                kind_text(item.kind),
-                item.file_name,
-                path,
-                item.url,
-                item.thumbnail_url,
-                item.deletion_url,
-                item.host,
-                item.width,
-                item.height,
-                size_bytes,
-                thumbnail_path,
-            ],
-        )?;
-        let id = tx.last_insert_rowid();
-        insert_tags(&tx, id, &item.tags)?;
-        tx.commit()?;
-        Ok(id)
+                rusqlite::params![
+                    time,
+                    kind_text(item.kind),
+                    item.file_name,
+                    path,
+                    item.url,
+                    item.thumbnail_url,
+                    item.deletion_url,
+                    item.host,
+                    item.width,
+                    item.height,
+                    size_bytes,
+                    thumbnail_path,
+                ],
+            )?;
+            let id = tx.last_insert_rowid();
+            insert_tags(&tx, id, &item.tags)?;
+            tx.commit()?;
+            Ok(id)
+        })
     }
 
     pub fn get(&self, id: i64) -> Result<Option<HistoryItem>, LibraryError> {
-        let conn = self.lock();
-        let item = conn.query_row(&format!("SELECT {COLUMNS} FROM history WHERE id = ?1"), [id], map_row).optional()?;
-        match item {
-            Some(mut item) => {
-                item.tags = load_tags(&conn, item.id)?;
-                Ok(Some(item))
+        self.with(|conn| {
+            let item = conn.query_row(&format!("SELECT {COLUMNS} FROM history WHERE id = ?1"), [id], map_row).optional()?;
+            match item {
+                Some(mut item) => {
+                    item.tags = load_tags(conn, item.id)?;
+                    Ok(Some(item))
+                }
+                None => Ok(None),
             }
-            None => Ok(None),
-        }
+        })
     }
 
     /// Entries matching `q`, newest first, with the given paging.
@@ -176,65 +258,73 @@ impl History {
         params.push(Value::Integer(if q.limit == 0 { -1 } else { i64::from(q.limit) }));
         params.push(Value::Integer(i64::from(q.offset)));
 
-        let conn = self.lock();
-        let mut stmt = conn.prepare(&sql)?;
-        let mut items = stmt.query_map(params_from_iter(params.iter()), map_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(stmt);
-        for item in &mut items {
-            item.tags = load_tags(&conn, item.id)?;
-        }
-        Ok(items)
+        self.with(|conn| {
+            let mut stmt = conn.prepare(&sql)?;
+            let mut items = stmt.query_map(params_from_iter(params.iter()), map_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(stmt);
+            for item in &mut items {
+                item.tags = load_tags(conn, item.id)?;
+            }
+            Ok(items)
+        })
     }
 
     /// Deletes an entry and its tags. An unknown id is not an error.
     pub fn delete(&self, id: i64) -> Result<(), LibraryError> {
-        self.lock().execute("DELETE FROM history WHERE id = ?1", [id])?;
-        Ok(())
+        self.with(|conn| {
+            conn.execute("DELETE FROM history WHERE id = ?1", [id])?;
+            Ok(())
+        })
     }
 
     /// Replaces the tags of an entry. An unknown id is not an error.
     pub fn set_tags(&self, id: i64, tags: &[String]) -> Result<(), LibraryError> {
-        let mut conn = self.lock();
-        let tx = conn.transaction()?;
-        let exists = tx.query_row("SELECT EXISTS (SELECT 1 FROM history WHERE id = ?1)", [id], |row| row.get::<_, bool>(0))?;
-        if exists {
-            tx.execute("DELETE FROM history_tags WHERE item_id = ?1", [id])?;
-            insert_tags(&tx, id, tags)?;
-        }
-        tx.commit()?;
-        Ok(())
+        self.with(|conn| {
+            let tx = conn.transaction()?;
+            let exists = tx.query_row("SELECT EXISTS (SELECT 1 FROM history WHERE id = ?1)", [id], |row| row.get::<_, bool>(0))?;
+            if exists {
+                tx.execute("DELETE FROM history_tags WHERE item_id = ?1", [id])?;
+                insert_tags(&tx, id, tags)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
     }
 
     /// Sets the thumbnail path of an entry. An unknown id is not an error.
     pub fn set_thumbnail(&self, id: i64, path: &Path) -> Result<(), LibraryError> {
         let path = text_of(path)?;
-        self.lock().execute("UPDATE history SET thumbnail_path = ?1 WHERE id = ?2", rusqlite::params![path, id])?;
-        Ok(())
+        self.with(|conn| {
+            conn.execute("UPDATE history SET thumbnail_path = ?1 WHERE id = ?2", rusqlite::params![path, id])?;
+            Ok(())
+        })
     }
 
     pub fn stats(&self) -> Result<HistoryStats, LibraryError> {
-        let conn = self.lock();
-        let (total, total_bytes): (u64, u64) = conn.query_row("SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM history", [], |row| {
-            Ok((unsigned(row.get(0)?, 0)?, unsigned(row.get(1)?, 1)?))
-        })?;
+        self.with(|conn| {
+            let (total, total_bytes): (u64, u64) =
+                conn.query_row("SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM history", [], |row| {
+                    Ok((unsigned(row.get(0)?, 0)?, unsigned(row.get(1)?, 1)?))
+                })?;
 
-        let mut by_kind: Vec<(HistoryKind, u64)> = KINDS.iter().map(|&kind| (kind, 0)).collect();
-        let mut stmt = conn.prepare("SELECT kind, COUNT(*) FROM history GROUP BY kind")?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, unsigned(row.get(1)?, 1)?)))?;
-        for row in rows {
-            let (kind, count) = row?;
-            if let Some(entry) = parse_kind(&kind).and_then(|kind| by_kind.iter_mut().find(|(k, _)| *k == kind)) {
-                entry.1 = count;
+            let mut by_kind: Vec<(HistoryKind, u64)> = KINDS.iter().map(|&kind| (kind, 0)).collect();
+            let mut stmt = conn.prepare("SELECT kind, COUNT(*) FROM history GROUP BY kind")?;
+            let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, unsigned(row.get(1)?, 1)?)))?;
+            for row in rows {
+                let (kind, count) = row?;
+                if let Some(entry) = parse_kind(&kind).and_then(|kind| by_kind.iter_mut().find(|(k, _)| *k == kind)) {
+                    entry.1 = count;
+                }
             }
-        }
-        Ok(HistoryStats { total, by_kind, total_bytes })
+            Ok(HistoryStats { total, by_kind, total_bytes })
+        })
     }
 
     /// Moves the write-ahead log into `history.db` and empties the log, so the file alone holds every
     /// committed entry. Fails when another connection blocks the checkpoint.
     pub fn checkpoint(&self) -> Result<(), LibraryError> {
         // The row is (busy, log frames, checkpointed frames). busy is 1 when SQLite could not finish.
-        let busy: i64 = self.lock().query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+        let busy: i64 = self.with(|conn| Ok(conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?))?;
         if busy == 0 {
             Ok(())
         } else {
@@ -247,11 +337,24 @@ impl History {
         if max_items == 0 {
             return Ok(0);
         }
-        let deleted = self.lock().execute(
-            "DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY time DESC, id DESC LIMIT ?1)",
-            [i64::from(max_items)],
-        )?;
+        let deleted = self.with(|conn| {
+            Ok(conn.execute(
+                "DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY time DESC, id DESC LIMIT ?1)",
+                [i64::from(max_items)],
+            )?)
+        })?;
         Ok(deleted as u64)
+    }
+}
+
+/// The port the application edits history through (`laqta-ports`). Both calls are the inherent ones above.
+impl HistoryEdit for History {
+    fn set_tags(&self, id: i64, tags: &[String]) -> Result<(), PortError> {
+        History::set_tags(self, id, tags).map_err(|error| PortError::Failed(error.to_string()))
+    }
+
+    fn delete(&self, id: i64) -> Result<(), PortError> {
+        History::delete(self, id).map_err(|error| PortError::Failed(error.to_string()))
     }
 }
 
@@ -327,6 +430,26 @@ fn png_dimensions(path: &Path) -> Option<(u32, u32)> {
             None
         }
     }
+}
+
+/// Opens the database file and sets it up.
+fn connect(path: &Path) -> Result<Connection, LibraryError> {
+    configure(Connection::open(path)?)
+}
+
+/// The pragmas and the schema, for a fresh connection.
+fn configure(mut conn: Connection) -> Result<Connection, LibraryError> {
+    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.pragma_update(None, "foreign_keys", true)?;
+    // Returns the mode it reached: "wal" on disk, "memory" in memory.
+    conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    migrate(&mut conn)?;
+    Ok(conn)
+}
+
+fn lock_state(state: &Mutex<State>) -> MutexGuard<'_, State> {
+    state.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn migrate(conn: &mut Connection) -> Result<(), LibraryError> {

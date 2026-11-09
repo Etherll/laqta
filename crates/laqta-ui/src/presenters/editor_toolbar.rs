@@ -14,7 +14,10 @@ const GROUPS: [(&str, &[Tool]); 6] = [
     ("Select", &[Tool::Select]),
     ("Draw", &[Tool::Rectangle, Tool::Ellipse, Tool::Line, Tool::Arrow, Tool::Freehand]),
     ("Text", &[Tool::Text, Tool::SpeechBalloon, Tool::Step]),
-    ("Hide and focus", &[Tool::Blur, Tool::Pixelate, Tool::Highlight, Tool::Magnify, Tool::Spotlight, Tool::SmartEraser]),
+    (
+        "Hide and focus",
+        &[Tool::Blur, Tool::Pixelate, Tool::Highlight, Tool::Magnify, Tool::Spotlight, Tool::SmartEraser, Tool::ObjectEraser],
+    ),
     ("Insert", &[Tool::Image, Tool::Emoji, Tool::Cursor, Tool::Clone]),
     ("Canvas", &[Tool::Crop, Tool::CutOut]),
 ];
@@ -65,6 +68,7 @@ pub fn hint(tool: Tool) -> &'static str {
         Tool::Cursor => "Click to place a mouse cursor.",
         Tool::Highlight => "Drag over text to highlight it.",
         Tool::SmartEraser => "Drag to paint over with the colour around the area.",
+        Tool::ObjectEraser => "Drag a box around an object to remove it and fill in the background.",
         Tool::Blur => "Drag over an area to blur it.",
         Tool::Pixelate => "Drag over an area to pixelate it.",
         Tool::Magnify => "Drag over an area to magnify it.",
@@ -74,27 +78,11 @@ pub fn hint(tool: Tool) -> &'static str {
     }
 }
 
-/// The single-key shortcut that picks a tool, if it has one. The view handles these keys only
-/// when no text is being edited.
+/// The single-key shortcut that picks a tool, if it has one. The engine owns the key map
+/// (`Tool::shortcut`), so the tooltip and the engine cannot disagree. The view handles these
+/// keys only when no text is being edited.
 pub fn shortcut(tool: Tool) -> Option<char> {
-    Some(match tool {
-        Tool::Select => 'v',
-        Tool::Rectangle => 'r',
-        Tool::Ellipse => 'e',
-        Tool::Line => 'l',
-        Tool::Arrow => 'a',
-        Tool::Freehand => 'p',
-        Tool::Text => 't',
-        Tool::SpeechBalloon => 'b',
-        Tool::Step => 'n',
-        Tool::Blur => 'u',
-        Tool::Pixelate => 'x',
-        Tool::Highlight => 'h',
-        Tool::Magnify => 'm',
-        Tool::Spotlight => 's',
-        Tool::Crop => 'c',
-        _ => return None,
-    })
+    tool.shortcut()
 }
 
 /// The tool a plain key press picks, if any.
@@ -126,6 +114,9 @@ pub fn style_controls(tool: Tool) -> StyleControls {
 
 #[cfg(test)]
 mod tests {
+    use laqta_domain::{Bitmap, PixelFormat};
+    use laqta_editor::{Command, Editor, EditorInput, EditorKey, Fonts, Mods};
+
     use super::*;
 
     #[test]
@@ -154,6 +145,38 @@ mod tests {
             }
         }
         assert_eq!(tool_for_key('z'), None);
+    }
+
+    #[test]
+    fn shortcuts_agree_with_the_engine_key_map() {
+        let engine_pick = |c: char| {
+            let bitmap = Bitmap::new(8, 8, PixelFormat::Rgba8, vec![0u8; 8 * 8 * 4].into()).unwrap_or_else(|e| panic!("bitmap: {e}"));
+            let mut editor = Editor::new(bitmap, Fonts::empty());
+            // No key maps to the Object eraser, so a tool change is the engine's answer.
+            editor.execute(Command::SetTool(Tool::ObjectEraser));
+            let out = editor.handle(EditorInput::Key { key: EditorKey::Char(c), mods: Mods::default() });
+            (out.chrome.tool != Tool::ObjectEraser).then_some(out.chrome.tool)
+        };
+        for c in ('a'..='z').chain('0'..='9') {
+            let engine = engine_pick(c);
+            if c.is_ascii_digit() {
+                // Digits are engine-only aliases; the rail shows letters.
+                assert_eq!(engine, Tool::from_key(c), "key {c}");
+            } else {
+                assert_eq!(tool_for_key(c), engine, "key {c}");
+            }
+        }
+        for t in Tool::ALL {
+            assert_eq!(shortcut(t).and_then(engine_pick), shortcut(t).map(|_| t), "{t:?}");
+        }
+    }
+
+    #[test]
+    fn the_clashing_letters_pick_what_the_engine_picks() {
+        assert_eq!(tool_for_key('b'), Some(Tool::Blur));
+        assert_eq!(tool_for_key('p'), Some(Tool::Pixelate));
+        assert_eq!(tool_for_key('s'), Some(Tool::SpeechBalloon));
+        assert_eq!(shortcut(Tool::ObjectEraser), None);
     }
 
     #[test]

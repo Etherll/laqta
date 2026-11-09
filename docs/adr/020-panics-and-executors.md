@@ -8,7 +8,7 @@ Status: accepted (2026-11-07)
 - Panics unwind, so the release profile does not set `panic = "abort"`.
 - Task wraps each job, and the dispatcher wraps each tool run, in `catch_unwind`. A panic becomes a `Failed` event.
 - A panic hook writes the panic message and backtrace to the log.
-- Application async work runs on `async-executor` with one worker thread. Blocking I/O runs on the `blocking` pool. CPU-heavy work runs on a `rayon` compute pool that `main` builds on first use and releases with its timer; kernels reach it through `Spawner::run_compute` and never create a pool (ADR 024). GPUI's executors run UI work only.
+- Application async work runs on `async-executor` with one worker thread. Blocking I/O runs on a pool of `main`'s own (`apps/laqta/src/blocking_pool.rs`: threads exit after 10 s idle, at most 64), because the `blocking` crate 1.7.0 never retires its last thread (risk R6). CPU-heavy work runs on a `rayon` compute pool that `main` builds on first use and releases with its timer; kernels reach it through `Spawner::run_compute` and never create a pool (ADR 024). GPUI's executors run UI work only.
 - None of these executors depends on GPUI, so the UI could move to a separate process if risk R6 requires it.
 
 **Rejected.**

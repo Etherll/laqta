@@ -359,3 +359,14 @@ fn watch_callbacks_do_not_keep_the_app_alive() {
     drain(&spawner);
     assert!(uploads.requests.lock().unwrap().is_empty());
 }
+
+/// A watched file is delivered like every other input (ADR 015): as a `FileUpload` dispatch with the folder's
+/// workflow. The behaviour tests above would pass with a direct `upload_files` call too, so this guard reads the
+/// source, the way the UI's `view_guards.rs` does.
+#[test]
+fn watch_folders_deliver_through_dispatch() {
+    let source = include_str!("../src/watch.rs");
+    let code = source.split("#[cfg(test)]").next().unwrap();
+    assert!(code.contains("dispatch_with(Action::FileUpload"), "a watched file is a FileUpload dispatch");
+    assert!(!code.contains("upload_files(") && !code.contains("upload_source("), "no direct Task submission");
+}

@@ -9,7 +9,10 @@ use laqta_domain::Bitmap;
 use laqta_ml::catalog::{Task, catalog};
 use laqta_ml::ocr::ModelOcr;
 use laqta_ml::runtime::Runtime;
-use laqta_ports::{BoxFuture, Ocr, OcrResult, PortError, Prompt};
+use laqta_ports::{BoxFuture, Notifier, Ocr, OcrResult, PortError, Prompt};
+
+/// The title of the download prompt and of the progress toasts.
+const TITLE: &str = "Text recognition";
 
 /// The detection model, recognition model and provider an engine was built for.
 type EngineKey = (String, String, laqta_domain::settings::ModelProvider);
@@ -18,6 +21,8 @@ pub struct LazyOcr {
     data: PathBuf,
     prompt: Arc<dyn Prompt>,
     options: crate::models::SharedModelOptions,
+    /// Where the first-use download progress is reported, as toasts.
+    notifier: Arc<dyn Notifier>,
     /// The OS engine (Windows.Media.Ocr) used when the models are declined (M5 D4).
     fallback: Option<Arc<dyn Ocr>>,
     /// The engine and the (det, rec, provider) it was built for.
@@ -35,8 +40,14 @@ fn ml(e: laqta_ml::error::MlError) -> PortError {
 }
 
 impl LazyOcr {
-    pub fn new(data: PathBuf, prompt: Arc<dyn Prompt>, options: crate::models::SharedModelOptions, fallback: Option<Arc<dyn Ocr>>) -> Self {
-        LazyOcr { data, prompt, options, fallback, ready: Mutex::new(None) }
+    /// `ui` asks before a download and shows its progress as toasts.
+    pub fn new<U: Prompt + Notifier + 'static>(
+        data: PathBuf,
+        ui: Arc<U>,
+        options: crate::models::SharedModelOptions,
+        fallback: Option<Arc<dyn Ocr>>,
+    ) -> Self {
+        LazyOcr { data, prompt: ui.clone(), options, notifier: ui, fallback, ready: Mutex::new(None) }
     }
 
     async fn get(&self) -> Result<Arc<ModelOcr>, PortError> {
@@ -66,7 +77,7 @@ impl LazyOcr {
             let ok = self
                 .prompt
                 .confirm(
-                    "Text recognition",
+                    TITLE,
                     &if self.fallback.is_some() {
                         format!("Download ONNX Runtime and the text models (about {mb} MB) for better accuracy? Choose No to use Windows' built-in OCR.")
                     } else {
@@ -77,12 +88,14 @@ impl LazyOcr {
             if !ok {
                 return Err(PortError::Cancelled);
             }
-            let none: laqta_ml::runtime::Progress = Arc::new(|_, _| {});
+            let notifier = &self.notifier;
             if !lib.exists() {
-                laqta_ml::install::install_onnxruntime(&dir, none.clone(), Arc::new(AtomicBool::new(false))).await.map_err(ml)?;
+                let progress = crate::models::toast_progress(notifier, TITLE, "ONNX Runtime");
+                laqta_ml::install::install_onnxruntime(&dir, progress, Arc::new(AtomicBool::new(false))).await.map_err(ml)?;
             }
             for entry in wanted {
-                runtime.install(entry, none.clone(), Arc::new(AtomicBool::new(false))).await.map_err(ml)?;
+                let progress = crate::models::toast_progress(notifier, TITLE, &entry.name);
+                runtime.install(entry, progress, Arc::new(AtomicBool::new(false))).await.map_err(ml)?;
             }
         }
         let ocr = Arc::new(ModelOcr::new(runtime, det_id, rec_id));

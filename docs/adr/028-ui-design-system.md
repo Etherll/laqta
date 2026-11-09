@@ -10,19 +10,22 @@ so `gpui-component` icons did not draw.
 **Decision.**
 - `laqta-ui/src/theme.rs` holds the token set: a neutral grey palette for light and dark with a
   green `primary` kept for the one key action in a region, a fixed radius scale (8–28px, pills for
-  anything one line tall), a 4px spacing rhythm and a type scale. `apply` lays the palette over
-  `gpui-component`'s theme, so its buttons, inputs and switches follow it.
+  anything one line tall), a 4px spacing rhythm and a type scale (caption 11.25px up to page
+  title 31.9px). `apply` lays the palette over `gpui-component`'s theme, so its buttons, inputs
+  and switches follow it. The colours the components need beyond that theme sit in one `Extra`
+  set: the card `surface`, `info` (busy state, pin border, selection), `warning` (paused
+  recording) and `close_hover`. There are no motion tokens.
 - `laqta-ui/src/widgets.rs` holds the shared components built on those tokens: card, section,
   settings row, page title, pill button (default, primary, dark, ghost), nav row, segmented
   control, badge, key hint and empty state. Interactive ones are tab stops with a focus ring.
   Views compose these instead of styling inline.
-- Inter (body) and Space Grotesk (headings), both SIL OFL 1.1, are embedded in `laqta-ui` with their
+- Inter (body) and Space Grotesk (headings, requested as "Space Grotesk Light" because that is the family name the bundled file reports), both SIL OFL 1.1, are embedded in `laqta-ui` with their
   licence files and registered with GPUI the first time a window is about to open, so the tray-only
   process never loads them (§1.4, risk R6).
 - Icons come from `gpui-kit-assets` (Apache-2.0, part of GPUI Kit). `laqta-ui` registers one asset
   source: the Lucide icons the views name plus the kit's default component icons. The crate is
   pinned `=0.9.0` and moves with `gpui-component` (ADR 002).
-- Windows draw their own titlebar (`chrome.rs`): client-side decorations, a 40px bar in the
+- Windows draw their own titlebar (`chrome.rs`): client-side decorations, a 36px bar in the
   sidebar colour with the title and 46px window controls, drag to move, double click to maximize,
   right click for the window menu. The content sits on a sheet with a rounded corner where it
   meets the sidebar. Where the system decorates the window anyway (X11 without a compositor, a
@@ -47,5 +50,7 @@ so `gpui-component` icons did not draw.
 - The full Lucide catalog as assets: about 1,600 SVGs embedded for some 60 used.
 
 **Consequences.** New views build from `widgets.rs` and read colours from the theme. The editor
-and photo editor windows keep their own toolbars for now; they pick up the palette and fonts
-through `gpui-component` and the theme font.
+and photo editor windows keep their own toolbars for now, under the same titlebar (`chrome.rs`;
+the photo editor's is flat); they pick up the palette and fonts through `gpui-component` and the
+theme font. The radius and type scales are adopted window by window, so a few literal sizes and
+radii remain.

@@ -9,8 +9,8 @@ Status: accepted (2026-11-07)
 
 **Decision.**
 - Depend on `gpui = { package = "gpui-pre", version = "=0.3.11" }` and `gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11" }`.
-- Depend on `gpui-component = "=0.9.0"`, plus `gpui-fps = "=0.9.0"` as an optional debug HUD behind the `debug-hud` feature. Both are part of GPUI Kit and are released together.
-- Upgrade GPUI only when GPUI Kit moves to a new snapshot, and move `gpui-pre`, `gpui-component` and `gpui-fps` in one commit.
+- Depend on `gpui-component = "=0.9.0"` and `gpui-kit-assets = "=0.9.0"` (ADR 028). Both are part of GPUI Kit and are released together. `gpui-fps`, GPUI Kit's debug HUD, was to be an optional dependency behind a `debug-hud` feature; it is not adopted (no HUD exists), and it joins the upgrade set if one is built.
+- Upgrade GPUI only when GPUI Kit moves to a new snapshot, and move `gpui-pre`, `gpui-component` and `gpui-kit-assets` in one commit.
 - Only `laqta-ui` and `apps/laqta` depend on either crate.
 
 **Rejected.**

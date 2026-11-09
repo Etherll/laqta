@@ -4,7 +4,8 @@
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, SharedString, Styled as _, Window, WindowBounds, WindowOptions, div, px, size,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, WindowBounds, WindowOptions, div,
+    prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::ScrollableElement as _;
@@ -34,7 +35,7 @@ pub(crate) fn open(cx: &mut App) {
         titlebar: Some(crate::chrome::titlebar("Laqta settings")),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,
-        app_id: Some("laqta".into()),
+        app_id: Some(crate::APP_ID.into()),
         ..Default::default()
     };
     match cx.open_window(options, |window, cx| {
@@ -138,6 +139,11 @@ struct SettingsWindow {
     integration_status: Option<(Result<bool, String>, Result<bool, String>)>,
     focus: FocusHandle,
     language: Entity<SelectState<Vec<SharedString>>>,
+    /// The shortcut row listening for a key combination, and the focus that receives its keys.
+    recording: Option<usize>,
+    rec_focus: FocusHandle,
+    /// Why the last key press was refused while recording.
+    rec_error: Option<&'static str>,
 }
 
 struct RecordingInputs {
@@ -190,6 +196,9 @@ impl SettingsWindow {
             update: None,
             focus: cx.focus_handle(),
             language,
+            recording: None,
+            rec_focus: cx.focus_handle(),
+            rec_error: None,
             rec: RecordingInputs {
                 fps: text_input(d.recording.fps.to_string(), window, cx),
                 gif_fps: text_input(d.recording.gif_fps.to_string(), window, cx),
@@ -1273,7 +1282,13 @@ impl SettingsWindow {
 
     fn integration(&self, cx: &mut Context<Self>) -> gpui::Div {
         let Some((autostart, shell)) = self.integration_status.clone() else {
-            return page().child(widgets::section("Startup", cx).child(widgets::row_with("Checking…", None::<String>, Slot::Hug, div(), cx)));
+            return page().child(widgets::section("Startup", cx).child(widgets::row_with(
+                "Checking…",
+                None::<String>,
+                Slot::Hug,
+                div(),
+                cx,
+            )));
         };
         let startup = match autostart {
             Ok(on) => widgets::switch_row(
@@ -1822,6 +1837,22 @@ impl SettingsWindow {
             .child(
                 widgets::section("Selection screen", cx)
                     .child(self.sw(
+                        "tools-after-select",
+                        "Show tools after selecting",
+                        Some("Keep the selection open with drawing tools and Copy, Save, Pin and Copy text. Off: capture as soon as you release the mouse. Space hides the tools."),
+                        r.show_tools_after_select,
+                        |this, v| this.draft.defaults.capture.region.show_tools_after_select = v,
+                        cx,
+                    ))
+                    .child(self.sw(
+                        "mode-bar",
+                        "Show the mode bar",
+                        Some("The bar at the top of the screen: screenshot or video, full screen, monitor, edit after capture, colour picker and text capture."),
+                        r.show_mode_bar,
+                        |this, v| this.draft.defaults.capture.region.show_mode_bar = v,
+                        cx,
+                    ))
+                    .child(self.sw(
                         "multi",
                         "Allow several regions",
                         Some("Select more than one area in one capture."),
@@ -1835,6 +1866,14 @@ impl SettingsWindow {
                         None,
                         r.snap_to_windows,
                         |this, v| this.draft.defaults.capture.region.snap_to_windows = v,
+                        cx,
+                    ))
+                    .child(self.sw(
+                        "regions",
+                        "Detect regions inside windows",
+                        Some("Hover a sidebar, panel or text box to select just that part. Scroll to grow to the enclosing one."),
+                        r.detect_regions,
+                        |this, v| this.draft.defaults.capture.region.detect_regions = v,
                         cx,
                     ))
                     .child(self.sw(
@@ -1921,29 +1960,227 @@ impl SettingsWindow {
         .map(|(a, l)| self.opt(l, current == a, move |this| set(&mut this.draft, a), cx))
         .collect()
     }
-    fn workflows_page(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let mut top = widgets::section("Shortcuts", cx).child(self.sw(
-            "disable-hotkeys",
-            "Turn off all shortcuts",
-            Some("Laqta stops listening for its global hotkeys until you turn this off."),
-            self.draft.disable_hotkeys,
-            |this, v| this.draft.disable_hotkeys = v,
-            cx,
-        ));
-        for c in present::hotkey_conflicts(&self.draft) {
-            top = top.child(widgets::notice(c, false, cx).py(space::S1));
+    /// Sets row `i`'s shortcut in the draft and in its text input (which `collect` reads).
+    fn set_hotkey(&mut self, i: usize, chord: Option<KeyChord>, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(w) = self.draft.workflows.get_mut(i) {
+            w.hotkey = chord;
         }
-        let mut list = div().flex().flex_col().gap(space::S3);
-        for (i, (w, inputs)) in self.draft.workflows.iter().zip(&self.workflows).enumerate() {
-            let overrides = present::overridden_labels(&w.patch);
-            let mut card = entity_card(cx)
+        if let Some(inputs) = self.workflows.get(i) {
+            let text = chord.map(|c| c.to_string()).unwrap_or_default();
+            inputs.hotkey.update(cx, |input, cx| input.set_value(text, window, cx));
+        }
+    }
+
+    /// One key press while row `recording` listens.
+    fn record_key(&mut self, ev: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::presenters::hotkeys::{Mods, Recorded, record};
+        let Some(i) = self.recording else { return };
+        let m = &ev.keystroke.modifiers;
+        let mods = Mods { ctrl: m.control, alt: m.alt, shift: m.shift, super_: m.platform };
+        match record(&ev.keystroke.key, mods) {
+            Recorded::Chord(chord) => {
+                self.set_hotkey(i, Some(chord), window, cx);
+                self.recording = None;
+                self.rec_error = None;
+            }
+            Recorded::Clear => {
+                self.set_hotkey(i, None, window, cx);
+                self.recording = None;
+                self.rec_error = None;
+            }
+            Recorded::Cancel => {
+                self.recording = None;
+                self.rec_error = None;
+            }
+            Recorded::Waiting => {}
+            Recorded::Unusable => self.rec_error = Some("That key can't be a global shortcut. Try a letter, a number, F1–F12 or PrtSc."),
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// The shortcut chip: keycaps, "Set shortcut", or "Press keys…" while recording.
+    fn shortcut_chip(
+        &self,
+        i: usize,
+        chord: Option<KeyChord>,
+        status: &crate::presenters::hotkeys::RowStatus,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        use crate::presenters::hotkeys::RowStatus;
+        let t = cx.theme().clone();
+        let x = crate::theme::extra(cx);
+        let recording = self.recording == Some(i);
+        let bad = matches!(status, RowStatus::Conflict(_) | RowStatus::Failed(_));
+        let mut chip = div()
+            .id(SharedString::from(format!("wf-key-{i}")))
+            .h(px(32.))
+            .min_w(px(150.))
+            .px(space::S2)
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(4.))
+            .rounded(crate::theme::radius::MD)
+            .border_1()
+            .cursor_pointer();
+        chip = if recording {
+            chip.border_2()
+                .border_color(t.primary)
+                .bg(t.primary.opacity(0.08))
+                .track_focus(&self.rec_focus)
+                .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| this.record_key(ev, window, cx)))
+                .child(div().text_size(text::SMALL).text_color(t.primary).child("Press keys…"))
+        } else {
+            let base = chip.border_color(if bad { t.danger } else { x.ring }).bg(x.card).hover(|s| s.bg(x.wash));
+            match chord {
+                Some(c) => {
+                    let mut caps = base;
+                    for cap in crate::presenters::hotkeys::keycaps(c) {
+                        caps = caps.child(
+                            div()
+                                .px(px(6.))
+                                .h(px(22.))
+                                .flex()
+                                .items_center()
+                                .rounded(px(5.))
+                                .bg(t.secondary)
+                                .border_b_2()
+                                .border_color(x.ring)
+                                .text_size(text::SMALL)
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child(cap),
+                        );
+                    }
+                    caps
+                }
+                None => base.border_dashed().child(div().text_size(text::SMALL).text_color(t.muted_foreground).child("Set shortcut")),
+            }
+        };
+        chip.on_click(cx.listener(move |this, _, window, cx| {
+            this.recording = Some(i);
+            this.rec_error = None;
+            window.focus(&this.rec_focus, cx);
+            cx.notify();
+        }))
+        .into_any_element()
+    }
+
+    fn workflows_page(&self, cx: &mut Context<Self>) -> gpui::Div {
+        use crate::presenters::hotkeys::{RowStatus, row_status};
+        let t = cx.theme().clone();
+        let x = crate::theme::extra(cx);
+        let report = (cx.global::<UiState>().services.hotkey_report)();
+        let off = self.draft.disable_hotkeys;
+
+        // Whether shortcuts can work here at all, in one line, with the switch beside it.
+        let (tone, headline, detail): (Tone, String, String) = if off {
+            (Tone::Neutral, "Shortcuts are off".into(), "Laqta isn't listening for its shortcuts. Turn them back on to use them.".into())
+        } else if let Some(why) = &report.unsupported {
+            (
+                Tone::Danger,
+                "Global shortcuts aren't available on this system".into(),
+                format!("{why}. You can still bind `laqta --action <name>` in your desktop's keyboard settings."),
+            )
+        } else if report.pending {
+            (Tone::Busy, "Registering shortcuts…".into(), "The desktop may ask you to confirm them the first time.".into())
+        } else {
+            let n = report.registered.len();
+            (
+                Tone::Success,
+                format!("{n} shortcut{} active", if n == 1 { "" } else { "s" }),
+                "They work in every app. Changes apply when you save; KDE may ask you to confirm new ones.".into(),
+            )
+        };
+        let status = entity_card(cx).child(
+            div()
+                .flex()
+                .items_center()
+                .gap(space::S3)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .gap(px(6.))
+                        .child(widgets::badge(headline, tone, cx))
+                        .child(widgets::muted(detail, cx)),
+                )
+                .child(Switch::new("hotkeys-on").checked(!off).on_click(cx.listener(|this, v: &bool, _, cx| {
+                    this.draft.disable_hotkeys = !*v;
+                    cx.notify();
+                }))),
+        );
+
+        let rows: Vec<(String, Option<KeyChord>, bool)> =
+            self.draft.workflows.iter().map(|w| (w.name.clone(), w.hotkey, w.enabled)).collect();
+        let statuses = row_status(&rows, &report.registered, &report.failed);
+        let mut list = div().flex().flex_col().rounded(crate::theme::radius::CARD).border_1().border_color(x.ring).overflow_hidden();
+        if self.draft.workflows.is_empty() {
+            list = list.child(widgets::empty_state(
+                IconName::Keyboard,
+                "No shortcuts yet",
+                "Add one below, then click its key box and press the keys.",
+                cx,
+            ));
+        }
+        for (i, ((w, inputs), st)) in self.draft.workflows.iter().zip(&self.workflows).zip(statuses).enumerate() {
+            let (dot, note): (Option<gpui::Hsla>, Option<String>) = match &st {
+                // A working shortcut needs no marker; only problems and pending changes get one.
+                RowStatus::Active => (None, None),
+                RowStatus::Pending => (Some(t.muted_foreground), Some("Not active yet: save to apply.".into())),
+                RowStatus::Conflict(why) => (Some(t.danger), Some(why.clone())),
+                RowStatus::Failed(why) => (Some(t.danger), Some(format!("The system refused it: {why}"))),
+                RowStatus::Disabled | RowStatus::Unset => (None, None),
+            };
+            let recording_here = self.recording == Some(i);
+            let note = if recording_here {
+                Some(self.rec_error.unwrap_or("Press the keys, Esc to keep the old shortcut, Backspace to remove it.").to_owned())
+            } else {
+                note
+            };
+            let overriding = w.patch.after_capture.is_some();
+            let row = div()
+                .flex()
+                .flex_col()
+                .gap(space::S2)
+                .px(space::S4)
+                .py(space::S3)
+                .when(i > 0, |d| d.border_t_1().border_color(x.ring))
+                .when(!w.enabled, |d| d.opacity(0.6))
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .gap(space::S3)
-                        .child(div().flex_1().min_w_0().child(Input::new(&inputs.name)))
-                        .child(div().w(px(200.)).flex_none().child(Input::new(&inputs.hotkey)))
+                        .child(widgets::icon_tile(crate::actions_toolbar::action_icon(w.action), false, cx))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(Input::new(&inputs.name).appearance(false).cleanable(false))
+                                // Only what the name doesn't already say.
+                                .when_some(
+                                    {
+                                        let mut parts = Vec::new();
+                                        if w.name != w.action.label() {
+                                            parts.push(format!("Runs {}", w.action.label()));
+                                        }
+                                        if overriding {
+                                            parts.push("Own after-capture steps".to_owned());
+                                        }
+                                        (!parts.is_empty()).then(|| parts.join(" · "))
+                                    },
+                                    |d, sub| d.child(div().pl(px(8.)).text_size(text::SMALL).text_color(t.muted_foreground).child(sub)),
+                                ),
+                        )
+                        .when_some(dot, |d, c| d.child(div().size(px(8.)).flex_none().rounded(crate::theme::radius::PILL).bg(c)))
+                        .child(self.shortcut_chip(i, w.hotkey, &st, cx))
                         .child(Switch::new(SharedString::from(format!("wf-en-{i}"))).checked(w.enabled).on_click(cx.listener(
                             move |this, v: &bool, _, cx| {
                                 if let Some(w) = this.draft.workflows.get_mut(i) {
@@ -1952,44 +2189,44 @@ impl SettingsWindow {
                                 cx.notify();
                             },
                         )))
-                        .child(widgets::pill(
-                            SharedString::from(format!("wf-rm-{i}")),
-                            "Remove",
-                            Pill::Ghost,
-                            true,
-                            cx.listener(move |this, _, window, cx| {
-                                if this.collect(cx).is_ok() && i < this.draft.workflows.len() {
-                                    this.draft.workflows.remove(i);
-                                    this.rebuild_workflow_inputs(window, cx);
-                                }
-                                cx.notify();
-                            }),
-                            cx,
+                        .child(widgets::menu_button_with(
+                            SharedString::from(format!("wf-more-{i}")),
+                            "",
+                            IconName::Ellipsis,
+                            vec![
+                                widgets::Choice::new(
+                                    if overriding { "Use the default after-capture steps" } else { "Give it its own after-capture steps" },
+                                    false,
+                                    cx.listener(move |this, _, _, cx| {
+                                        let defaults = this.draft.defaults.after_capture;
+                                        if let Some(w) = this.draft.workflows.get_mut(i) {
+                                            w.patch.after_capture = if w.patch.after_capture.is_some() { None } else { Some(defaults) };
+                                        }
+                                        cx.notify();
+                                    }),
+                                ),
+                                widgets::Choice::new(
+                                    "Remove shortcut",
+                                    false,
+                                    cx.listener(move |this, _, window, cx| {
+                                        if this.collect(cx).is_ok() && i < this.draft.workflows.len() {
+                                            this.draft.workflows.remove(i);
+                                            this.recording = None;
+                                            this.rebuild_workflow_inputs(window, cx);
+                                        }
+                                        cx.notify();
+                                    }),
+                                ),
+                            ],
                         )),
                 )
-                .child(widgets::muted(
-                    format!(
-                        "Runs: {}{}",
-                        w.action.label(),
-                        if overrides.is_empty() { String::new() } else { format!(" · Own settings: {}", overrides.join(", ")) }
-                    ),
-                    cx,
-                ));
-            let overriding = w.patch.after_capture.is_some();
-            card = card.child(self.sw_dyn(
-                format!("wf-ov-{i}"),
-                "Use its own after-capture steps",
-                overriding,
-                move |this, v| {
-                    let defaults = this.draft.defaults.after_capture;
-                    if let Some(w) = this.draft.workflows.get_mut(i) {
-                        w.patch.after_capture = v.then_some(defaults);
-                    }
-                },
-                cx,
-            ));
-            if let Some(flags) = w.patch.after_capture {
-                card = card.child(div().pl(space::S4).pt(space::S2).child(self.after_capture_list(
+                .when_some(note, |d, n| {
+                    let danger =
+                        matches!(st, RowStatus::Conflict(_) | RowStatus::Failed(_)) || (recording_here && self.rec_error.is_some());
+                    d.child(div().pl(px(48.)).child(widgets::notice(n, !danger, cx)))
+                });
+            let row = match w.patch.after_capture {
+                Some(flags) => row.child(div().pl(px(48.)).child(self.after_capture_list(
                     &format!("wf-{i}"),
                     flags,
                     move |this, flag, on| {
@@ -1998,10 +2235,12 @@ impl SettingsWindow {
                         }
                     },
                     cx,
-                )));
-            }
-            list = list.child(card);
+                ))),
+                None => row,
+            };
+            list = list.child(row);
         }
+
         let add_opts = [
             Action::RectangleRegion,
             Action::PrintScreen,
@@ -2009,6 +2248,16 @@ impl SettingsWindow {
             Action::ActiveMonitor,
             Action::LastRegion,
             Action::CustomRegion,
+            Action::ScrollingCapture,
+            Action::ScreenRecorder,
+            Action::ScreenRecorderGif,
+            Action::Ocr,
+            Action::ScreenColorPicker,
+            Action::ImageEditor,
+            Action::ClipboardUpload,
+            Action::FileUpload,
+            Action::OpenMainWindow,
+            Action::OpenHistory,
         ]
         .into_iter()
         .map(|action| {
@@ -2027,17 +2276,23 @@ impl SettingsWindow {
                             patch: Default::default(),
                         });
                         this.rebuild_workflow_inputs(window, cx);
+                        // Go straight to recording its keys.
+                        this.recording = Some(this.draft.workflows.len() - 1);
+                        this.rec_error = None;
+                        window.focus(&this.rec_focus, cx);
                     }
                     cx.notify();
                 }),
             )
         })
         .collect();
-        page().child(top).child(widgets::section("Your shortcuts", cx).child(list).child(div().pt(space::S3).child(widgets::menu_button(
-            "wf-add",
-            "Add shortcut",
-            add_opts,
-        ))))
+        page().child(status).child(
+            widgets::section("Your shortcuts", cx).child(list).child(div().pt(space::S3).child(widgets::menu_button(
+                "wf-add",
+                "Add shortcut",
+                add_opts,
+            ))),
+        )
     }
 }
 
@@ -2085,7 +2340,8 @@ impl Render for SettingsWindow {
             None => footer.child(div().flex_1()),
         };
         footer = footer.child(widgets::pill("save", "Save", Pill::Dark, false, cx.listener(|this, _, _, cx| this.save(cx)), cx));
-        let settings_label = div().font_family(text::HEADING_FONT).font_weight(FontWeight::SEMIBOLD).text_size(px(17.)).child("Settings");
+        let settings_label =
+            div().font_family(text::HEADING_FONT).font_weight(FontWeight::SEMIBOLD).text_size(text::SECTION).child("Settings");
         let body = div()
             .flex_1()
             .min_w_0()
@@ -2109,7 +2365,12 @@ impl Render for SettingsWindow {
         widgets::tab_keys(crate::chrome::rounded(widgets::page(cx), window).bg(cx.theme().sidebar), &self.focus)
             .child(crate::chrome::TitleBar::new().leading(settings_label, px(232.)))
             .child(
-                div().flex_1().min_h_0().flex().child(nav).child(crate::chrome::sheet(window, cx).flex_1().min_w_0().h_full().flex().child(body)),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(nav)
+                    .child(crate::chrome::sheet(window, cx).flex_1().min_w_0().h_full().flex().child(body)),
             )
     }
 }
@@ -2133,7 +2394,7 @@ fn page_header(page: Page) -> (&'static str, &'static str) {
         Page::Image => ("Image format", "File format, quality and thumbnails for saved captures."),
         Page::Naming => ("File naming", "How saved files and their folders are named."),
         Page::Capture => ("Capture", "What the selection screen shows and how it responds to clicks."),
-        Page::Workflows => ("Shortcuts", "Global hotkeys. Type a key combination such as Ctrl+Shift+PrintScreen; leave it empty for none."),
+        Page::Workflows => ("Shortcuts", "Global shortcuts that work in every app. Click a key box and press the keys."),
         Page::Uploads => ("Uploads", "Where uploads go and what is copied when they finish."),
         Page::Recording => ("Recording", "Screen recording to video and GIF."),
         Page::Automation => ("Automation", "Timed captures, scrolling captures and folders that upload new files."),

@@ -7,15 +7,17 @@ use std::sync::{Arc, Mutex};
 
 use laqta_domain::Bitmap;
 use laqta_ml::{ModelBackground, ModelInpainter, Task, catalog};
-use laqta_ports::{BackgroundRemover, BoxFuture, Inpainter, PortError, Prompt};
+use laqta_ports::{BackgroundRemover, BoxFuture, Inpainter, Notifier, PortError, Prompt};
 
 use crate::models::SharedModelOptions;
 
-/// Downloads ONNX Runtime and `id` when missing (after asking), and returns a runtime for it.
+/// Downloads ONNX Runtime and `id` when missing (after asking), and returns a runtime for it. The
+/// downloads report their progress through `notifier`.
 async fn prepare(
     data: &std::path::Path,
     options: &SharedModelOptions,
     prompt: &Arc<dyn Prompt>,
+    notifier: &Arc<dyn Notifier>,
     id: &str,
     what: &str,
 ) -> Result<Arc<laqta_ml::Runtime>, PortError> {
@@ -35,10 +37,12 @@ async fn prepare(
         if !ok {
             return Err(PortError::Cancelled);
         }
-        crate::models::ensure_onnxruntime(data).await.map_err(PortError::Failed)?;
+        crate::models::ensure_onnxruntime(data, crate::models::toast_progress(notifier, what, "ONNX Runtime"))
+            .await
+            .map_err(PortError::Failed)?;
         if let Some(e) = entry.filter(|_| !model_ok) {
-            let none: laqta_ml::Progress = Arc::new(|_, _| {});
-            rt.install(e, none, Arc::new(AtomicBool::new(false))).await.map_err(|e| PortError::Failed(e.to_string()))?;
+            let progress = crate::models::toast_progress(notifier, what, &e.name);
+            rt.install(e, progress, Arc::new(AtomicBool::new(false))).await.map_err(|e| PortError::Failed(e.to_string()))?;
         }
     }
     Ok(rt)
@@ -55,12 +59,14 @@ pub struct LocalBackground {
     pub data: PathBuf,
     pub options: SharedModelOptions,
     pub prompt: Arc<dyn Prompt>,
+    notifier: Arc<dyn Notifier>,
     ready: Mutex<Option<(String, Arc<ModelBackground>)>>,
 }
 
 impl LocalBackground {
-    pub fn new(data: PathBuf, options: SharedModelOptions, prompt: Arc<dyn Prompt>) -> Self {
-        LocalBackground { data, options, prompt, ready: Mutex::new(None) }
+    /// `ui` asks before a download and shows its progress as toasts.
+    pub fn new<U: Prompt + Notifier + 'static>(data: PathBuf, options: SharedModelOptions, ui: Arc<U>) -> Self {
+        LocalBackground { data, options, prompt: ui.clone(), notifier: ui, ready: Mutex::new(None) }
     }
 }
 
@@ -76,7 +82,7 @@ impl BackgroundRemover for LocalBackground {
             let engine = match cached {
                 Some((_, e)) => e,
                 None => {
-                    let rt = prepare(&self.data, &self.options, &self.prompt, &id, "Background removal").await?;
+                    let rt = prepare(&self.data, &self.options, &self.prompt, &self.notifier, &id, "Background removal").await?;
                     // A custom model (not in the catalog) runs with the default model's numbers.
                     let e = if catalog().model(&id).is_some() {
                         Arc::new(ModelBackground::new(rt, id.clone()))
@@ -100,12 +106,14 @@ pub struct LocalInpainter {
     pub data: PathBuf,
     pub options: SharedModelOptions,
     pub prompt: Arc<dyn Prompt>,
+    notifier: Arc<dyn Notifier>,
     ready: Mutex<Option<Arc<ModelInpainter>>>,
 }
 
 impl LocalInpainter {
-    pub fn new(data: PathBuf, options: SharedModelOptions, prompt: Arc<dyn Prompt>) -> Self {
-        LocalInpainter { data, options, prompt, ready: Mutex::new(None) }
+    /// `ui` asks before a download and shows its progress as toasts.
+    pub fn new<U: Prompt + Notifier + 'static>(data: PathBuf, options: SharedModelOptions, ui: Arc<U>) -> Self {
+        LocalInpainter { data, options, prompt: ui.clone(), notifier: ui, ready: Mutex::new(None) }
     }
 }
 
@@ -116,7 +124,7 @@ impl Inpainter for LocalInpainter {
                 Some(e) => e,
                 None => {
                     let id = default_id(Task::Inpaint)?;
-                    let rt = prepare(&self.data, &self.options, &self.prompt, &id, "Inpainting").await?;
+                    let rt = prepare(&self.data, &self.options, &self.prompt, &self.notifier, &id, "Inpainting").await?;
                     let e = Arc::new(ModelInpainter::new(rt, id));
                     if let Ok(mut g) = self.ready.lock() {
                         *g = Some(e.clone());

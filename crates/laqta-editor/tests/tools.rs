@@ -26,7 +26,7 @@ fn check(tool: Tool, name: &str, script: impl FnOnce(&mut Editor) + Send) {
 
 #[test]
 fn every_tool_is_listed() {
-    assert_eq!(Tool::ALL.len(), 21);
+    assert_eq!(Tool::ALL.len(), 22);
 }
 
 #[test]

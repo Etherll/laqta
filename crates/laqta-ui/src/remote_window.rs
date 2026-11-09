@@ -23,7 +23,7 @@ pub(crate) fn open(cx: &mut App) {
         titlebar: Some(crate::chrome::titlebar("Remote storage")),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,
-        app_id: Some("laqta".into()),
+        app_id: Some(crate::APP_ID.into()),
         focus: true,
         ..Default::default()
     };

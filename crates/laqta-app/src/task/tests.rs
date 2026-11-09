@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use async_broadcast::Receiver;
 use futures_lite::future::{block_on, poll_once, yield_now};
+use laqta_domain::workflow::AfterCaptureTasks;
 use laqta_domain::{Bitmap, Frame, Monitor, MonitorId, PhysRect, PixelFormat, Settings};
 use laqta_imaging::Codecs;
 use laqta_ports::fakes::{
@@ -368,5 +369,29 @@ fn stop_after_save() {
         assert_eq!(render(&mut events, tmp.path(), true), include_str!("../../tests/golden/stop_after_save.trace"));
         // The stop came after the save, so the file stays, and the steps after the checkpoint never ran.
         assert_eq!(png_size(&tmp.path().join("2026-11/Laqta_2026-11-07_14-03-22.png")), (8, 4));
+    });
+}
+
+/// A stop after the save ends the job at its next checkpoint, and `DELETE_FILE` still removes the file (ShareX's
+/// `finally`).
+#[test]
+fn delete_file_after_stop() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(HookSpawner::default());
+        let mut settings = settings_in(tmp.path());
+        settings.defaults.after_capture = AfterCaptureTasks::SAVE_IMAGE_TO_FILE | AfterCaptureTasks::DELETE_FILE;
+        let (task, mut events) = task_on(spawner.clone(), settings.clone());
+        let task = Arc::new(task);
+        let stopper = Arc::clone(&task);
+        *spawner.after_save.lock().unwrap() = Some(Box::new(move || {
+            assert!(stopper.stop(TaskId(1)), "a running job can be stopped");
+        }));
+
+        task.submit(frames_job(&settings));
+        drive(&spawner.inner);
+
+        assert_eq!(render(&mut events, tmp.path(), true), include_str!("../../tests/golden/delete_file_after_stop.trace"));
+        assert!(!tmp.path().join("2026-11/Laqta_2026-11-07_14-03-22.png").exists(), "the stopped job still deleted its file");
     });
 }

@@ -1,6 +1,6 @@
 # ADR 024: Ports crate, core purity and its enforcement
 
-Status: accepted (2026-11-07, after the Clean Architecture validation), amended 2026-11-07 after the trade-offs review (`egm-review/tradeoffs/`): file access in `laqta-app`, and the `cosmic-text` requirement
+Status: accepted (2026-11-07, after the Clean Architecture validation), amended 2026-11-07 after the trade-offs review (`egm-review/tradeoffs/`): file access in `laqta-app`, and the `cosmic-text` requirement; amended 2026-11-09 by ADR 029 (the `Fonts` handle goes to `laqta-ui`, not the Region session)
 
 **Context.** The validation scored the plan 7/10. Five of seven checks passed. Two failed:
 
@@ -33,8 +33,8 @@ It also found these problems:
    - the `rayon` compute pool, reached through `Spawner::run_compute`;
    - the `Codecs` value;
    - the font loader. `main` wraps a function that loads the system font database and locale in
-     the Editor engine's lazy `Fonts` handle, and gives the same handle to the Region session and
-     `laqta-ui`. `cosmic-text` uses `default-features = false` and
+     the Editor engine's lazy `Fonts` handle, and gives the handle to `laqta-ui`, which hosts
+     the engine (ADR 029). `cosmic-text` uses `default-features = false` and
      `FontSystem::new_with_locale_and_db`.
 
    Public parallel kernels `debug_assert!` that they run inside a pool, so an accidental call

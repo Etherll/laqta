@@ -10,7 +10,7 @@ MSVC C runtime headers, so that build script fails there (the same problem as AD
 - Linux: `rusqlite` with `bundled` (FTS5 included), as before.
 - Windows: `rusqlite` without `bundled`; `libsqlite3-sys` finds a static SQLite through vcpkg
   (`sqlite3[fts5]:x64-windows-static-md`, `VCPKGRS_TRIPLET=x64-windows-static-md`). The Windows CI job
-  and release builds install it first. Nothing is downloaded at run time, and the binary has no
+  installs it first. No release workflow exists yet; it must do the same. Nothing is downloaded at run time, and the binary has no
   extra DLL.
 
 **Consequences.** Windows builds need vcpkg on the build machine. The SQLite version on Windows follows

@@ -14,7 +14,8 @@ const CHROME_ORIGIN: &str = "chrome-extension://nlkoigbdolhchiicbonbihbphgamnaoc
 const FIREFOX_ID: &str = "ShareX@ShareX";
 const MANIFEST_FILE: &str = "com.laqta.nmh.json";
 
-const DESKTOP_FILE: &str = "laqta.desktop";
+/// Named after the portal app id, so the visible entry and the portals' entry are one file.
+const DESKTOP_FILE: &str = "io.github.etherll.Laqta.desktop";
 const SERVICE_MENU_FILE: &str = "laqta-upload.desktop";
 const SCRIPT_NAME: &str = "Upload with Laqta";
 
@@ -129,7 +130,8 @@ const MIME_TYPES: &str = "application/x-sharex-custom-uploader;application/x-sha
 /// types open ShareX's files in Laqta.
 fn desktop_file(executable: &Path) -> String {
     format!(
-        "[Desktop Entry]\nType=Application\nName=Laqta\nExec={}\nMimeType={MIME_TYPES}\nActions=upload;\n\n[Desktop Action upload]\nName=Upload with Laqta\nExec={}\n",
+        "[Desktop Entry]\nType=Application\nName=Laqta\nIcon={}\nExec={}\nMimeType={MIME_TYPES}\nActions=upload;\n\n[Desktop Action upload]\nName=Upload with Laqta\nExec={}\n",
+        crate::app_id::APP_ID,
         exec_value(executable, " %F"),
         exec_value(executable, " %F"),
     )
@@ -245,7 +247,7 @@ mod tests {
         integration.install(exe).expect("install again");
         assert!(integration.is_installed().expect("check"));
 
-        let desktop = fs::read_to_string(dir.join("share/applications/laqta.desktop")).expect("desktop");
+        let desktop = fs::read_to_string(dir.join("share/applications/io.github.etherll.Laqta.desktop")).expect("desktop");
         assert!(desktop.contains("Actions=upload;\n"));
         assert!(desktop.contains("MimeType=application/x-sharex-custom-uploader;"));
         let mime = fs::read_to_string(dir.join("share/mime/packages/laqta.xml")).expect("mime");

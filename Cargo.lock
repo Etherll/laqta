@@ -4831,6 +4831,7 @@ dependencies = [
  "blocking",
  "cosmic-text",
  "dirs 7.0.0",
+ "embed-resource",
  "fastrand",
  "futures-channel",
  "futures-lite",

@@ -5,7 +5,7 @@ use laqta_domain::color::Rgba;
 
 use crate::geom::{PointF, RectF, segment_distance};
 
-/// The 21 editor tools.
+/// The 22 editor tools.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Tool {
     Select,
@@ -23,6 +23,9 @@ pub enum Tool {
     Cursor,
     Highlight,
     SmartEraser,
+    /// Drags a box and asks the host to erase what is inside it (`EditorRequest::EraseObject`);
+    /// it leaves no annotation behind.
+    ObjectEraser,
     Blur,
     Pixelate,
     Magnify,
@@ -32,7 +35,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 21] = [
+    pub const ALL: [Tool; 22] = [
         Tool::Select,
         Tool::Rectangle,
         Tool::Ellipse,
@@ -48,6 +51,7 @@ impl Tool {
         Tool::Cursor,
         Tool::Highlight,
         Tool::SmartEraser,
+        Tool::ObjectEraser,
         Tool::Blur,
         Tool::Pixelate,
         Tool::Magnify,
@@ -73,6 +77,7 @@ impl Tool {
             Tool::Cursor => "Cursor",
             Tool::Highlight => "Highlight",
             Tool::SmartEraser => "Smart eraser",
+            Tool::ObjectEraser => "Object eraser",
             Tool::Blur => "Blur",
             Tool::Pixelate => "Pixelate",
             Tool::Magnify => "Magnify",
@@ -80,6 +85,46 @@ impl Tool {
             Tool::Crop => "Crop",
             Tool::CutOut => "Cut out",
         }
+    }
+
+    /// The single letter that picks this tool, if it has one. `from_key` and the engine's
+    /// keyboard map read this table, so a surface that shows shortcuts cannot disagree with it.
+    pub fn shortcut(self) -> Option<char> {
+        Some(match self {
+            Tool::Select => 'v',
+            Tool::Rectangle => 'r',
+            Tool::Ellipse => 'e',
+            Tool::Line => 'l',
+            Tool::Arrow => 'a',
+            Tool::Freehand => 'f',
+            Tool::Text => 't',
+            Tool::SpeechBalloon => 's',
+            Tool::Step => 'i',
+            Tool::Blur => 'b',
+            Tool::Pixelate => 'p',
+            Tool::Highlight => 'h',
+            Tool::Magnify => 'm',
+            Tool::Crop => 'c',
+            _ => return None,
+        })
+    }
+
+    /// The tool a plain key press picks: the `shortcut` letters, plus digits 1-9 for the nine
+    /// most used tools in toolbar order.
+    pub fn from_key(key: char) -> Option<Tool> {
+        let digit = match key {
+            '1' => Some(Tool::Select),
+            '2' => Some(Tool::Rectangle),
+            '3' => Some(Tool::Ellipse),
+            '4' => Some(Tool::Line),
+            '5' => Some(Tool::Arrow),
+            '6' => Some(Tool::Freehand),
+            '7' => Some(Tool::Text),
+            '8' => Some(Tool::SpeechBalloon),
+            '9' => Some(Tool::Step),
+            _ => None,
+        };
+        digit.or_else(|| Tool::ALL.into_iter().find(|t| t.shortcut() == Some(key)))
     }
 }
 

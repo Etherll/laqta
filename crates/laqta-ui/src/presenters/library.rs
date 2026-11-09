@@ -74,6 +74,9 @@ pub struct LibraryCard {
     pub name: String,
     /// "Today 21:35", "Yesterday 09:12", "Wednesday", "8 Nov", "8 Nov 2025".
     pub when: String,
+    /// The grid card's label: how long ago for a file ("2 min ago", "Today 14:03"), since every
+    /// capture's name starts the same; the name for a link. The full name goes in the tooltip.
+    pub label: String,
     /// "1192×488 · 43.0 KB".
     pub meta: String,
     pub glyph: CardGlyph,
@@ -88,6 +91,7 @@ pub fn card(item: &HistoryItem, now: DateTime) -> LibraryCard {
     let meta = [row.dimensions.clone(), row.size.clone()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
     LibraryCard {
         id: item.id,
+        label: if row.path.is_some() { ago(item.time, now) } else { row.title.clone() },
         name: row.title,
         when: relative_when(item.time, now),
         meta,
@@ -105,6 +109,16 @@ pub fn card(item: &HistoryItem, now: DateTime) -> LibraryCard {
 }
 
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/// How long ago, for the last hour ("Just now", "5 min ago"); `relative_when` after that.
+pub fn ago(time: DateTime, now: DateTime) -> String {
+    let minutes = now.since(time).ok().and_then(|span| span.total(jiff::Unit::Minute).ok()).unwrap_or(f64::MAX);
+    match minutes {
+        m if (0.0..1.0).contains(&m) => "Just now".into(),
+        m if (1.0..60.0).contains(&m) => format!("{} min ago", m.floor() as i64),
+        _ => relative_when(time, now),
+    }
+}
 
 /// A short, human time: today and yesterday with the time, the past week by weekday, then a date.
 pub fn relative_when(time: DateTime, now: DateTime) -> String {
@@ -136,6 +150,14 @@ fn weekday(time: DateTime) -> &'static str {
 mod tests {
     use super::*;
     use jiff::civil::date;
+
+    #[test]
+    fn ago_counts_minutes_then_falls_back() {
+        let now = date(2026, 11, 8).at(21, 35, 0, 0);
+        assert_eq!(ago(date(2026, 11, 8).at(21, 34, 30, 0), now), "Just now");
+        assert_eq!(ago(date(2026, 11, 8).at(21, 30, 0, 0), now), "5 min ago");
+        assert_eq!(ago(date(2026, 11, 8).at(20, 0, 0, 0), now), "Today 20:00");
+    }
 
     #[test]
     fn relative_times() {
