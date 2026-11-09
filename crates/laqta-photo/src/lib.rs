@@ -36,6 +36,8 @@ pub use style::{LayerStyle, Shadow, StrokePosition};
 
 use crate::document::max_id;
 use crate::history::{Entry, History};
+use crate::render::render_list;
+use crate::surface::Surface;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -61,13 +63,14 @@ pub struct PhotoEditor {
     history: History,
     fonts: Fonts,
     next_id: u64,
+    revision: u64,
 }
 
 impl PhotoEditor {
     /// An editor over `doc`. Fonts start empty, so text draws nothing until [`with_fonts`](Self::with_fonts).
     pub fn new(doc: Document) -> PhotoEditor {
         let next_id = max_id(&doc.layers) + 1;
-        PhotoEditor { doc, history: History::new(DEFAULT_SNAPSHOT_CAP), fonts: Fonts::empty(), next_id }
+        PhotoEditor { doc, history: History::new(DEFAULT_SNAPSHOT_CAP), fonts: Fonts::empty(), next_id, revision: 0 }
     }
 
     /// A one-layer document: the bitmap as a raster layer named "Background", at the bitmap's size.
@@ -76,7 +79,7 @@ impl PhotoEditor {
         let mut doc = Document { width: bitmap.width(), height: bitmap.height(), layers: Vec::new(), selection: None, active: None };
         doc.layers.push(Layer::new(id, "Background", LayerKind::Raster(bitmap)));
         doc.active = Some(id);
-        PhotoEditor { doc, history: History::new(DEFAULT_SNAPSHOT_CAP), fonts: Fonts::empty(), next_id: 2 }
+        PhotoEditor { doc, history: History::new(DEFAULT_SNAPSHOT_CAP), fonts: Fonts::empty(), next_id: 2, revision: 0 }
     }
 
     /// Sets the fonts that text layers and text effects render with.
@@ -89,7 +92,7 @@ impl PhotoEditor {
         &self.doc
     }
 
-    /// Sets the active layer. It is view state, so it is not an undo step.
+    /// Sets the active layer. It is not an undo step, but it still bumps the [`revision`](Self::revision).
     pub fn set_active(&mut self, layer: Option<LayerId>) -> Result<(), PhotoError> {
         if let Some(id) = layer
             && self.doc.layer(id).is_none()
@@ -97,6 +100,7 @@ impl PhotoEditor {
             return Err(PhotoError::NoSuchLayer(id));
         }
         self.doc.active = layer;
+        self.revision += 1;
         Ok(())
     }
 
@@ -114,6 +118,7 @@ impl PhotoEditor {
         }
         self.fix_active();
         self.history.push(Entry { changes });
+        self.revision += 1;
         Ok(())
     }
 
@@ -125,6 +130,7 @@ impl PhotoEditor {
         }
         self.history.redo.push(entry);
         self.fix_active();
+        self.revision += 1;
         true
     }
 
@@ -136,6 +142,7 @@ impl PhotoEditor {
         }
         self.history.undo.push(entry);
         self.fix_active();
+        self.revision += 1;
         true
     }
 
@@ -158,10 +165,25 @@ impl PhotoEditor {
         self.history.bytes()
     }
 
+    /// Counts the changes to the document: a successful [`execute`](Self::execute), an
+    /// [`undo`](Self::undo) or [`redo`](Self::redo) that changed something, and a successful
+    /// [`set_active`](Self::set_active). A render or view taken at one revision still matches the
+    /// document while the revision is unchanged.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// A copy of the document and fonts to render later, possibly on another thread. Its
+    /// [`run`](PhotoRenderJob::run) gives the same pixels as [`render`](Self::render) at the revision
+    /// it was taken.
+    pub fn render_job(&self) -> PhotoRenderJob {
+        PhotoRenderJob { doc: self.doc.clone(), fonts: self.fonts.clone() }
+    }
+
     /// The composite of the visible layers, straight RGBA8 at the canvas size. Transparent where no
     /// layer is.
     pub fn render(&self) -> Bitmap {
-        self.composite().into_bitmap()
+        self.render_job().run()
     }
 
     /// The image to export: the same pixels as [`render`](Self::render). The layer stack is unchanged;
@@ -179,6 +201,30 @@ impl PhotoEditor {
         }
     }
 }
+
+/// A snapshot of a document and its fonts, from [`PhotoEditor::render_job`]. It owns its copy, so
+/// [`run`](Self::run) can happen on the compute pool while the editor keeps changing.
+#[derive(Clone, Debug)]
+pub struct PhotoRenderJob {
+    doc: Document,
+    fonts: Fonts,
+}
+
+impl PhotoRenderJob {
+    /// Composites the snapshot. Adjustment and smart layers run imaging kernels, so this needs the
+    /// compute pool, as [`PhotoEditor::render`] does.
+    pub fn run(self) -> Bitmap {
+        let mut canvas = Surface::new(self.doc.width, self.doc.height);
+        render_list(&mut canvas, &self.doc.layers, (0, 0), &self.fonts);
+        canvas.into_bitmap()
+    }
+}
+
+// A render job must be able to move to the compute pool.
+const _: fn() = || {
+    fn assert_send<T: Send + 'static>() {}
+    assert_send::<PhotoRenderJob>();
+};
 
 #[cfg(test)]
 mod tests {
