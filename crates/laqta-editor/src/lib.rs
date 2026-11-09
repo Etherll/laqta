@@ -16,7 +16,7 @@ mod history;
 mod model;
 mod render;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use laqta_domain::Bitmap;
 use laqta_domain::color::Rgba;
@@ -195,8 +195,50 @@ enum Gesture {
 
 const HANDLE_RADIUS: f32 = 6.0;
 
+/// Everything one render needs, copied out of the engine so it can run on another thread
+/// with no engine borrow or lock held. Made by `Editor::render_job`.
+pub struct RenderJob {
+    base: Arc<Img>,
+    annotations: Vec<Annotation>,
+    draft: Option<Annotation>,
+    view: PhysRect,
+    fonts: Fonts,
+    cache: Arc<Mutex<EffectCache>>,
+    generation: u64,
+}
+
+const _: fn() = || {
+    fn assert_send<T: Send + 'static>() {}
+    assert_send::<RenderJob>();
+};
+
+impl RenderJob {
+    /// Renders the job's view: the annotations, then the draft on top.
+    pub fn run(self) -> Bitmap {
+        let mut list: Vec<&Annotation> = self.annotations.iter().collect();
+        if let Some(d) = &self.draft {
+            list.push(d);
+        }
+        let mut cache = match self.cache.lock() {
+            Ok(c) => c,
+            Err(p) => p.into_inner(),
+        };
+        render::render(&self.base, &list, self.view, &self.fonts, &mut cache, self.generation)
+    }
+}
+
+impl std::fmt::Debug for RenderJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderJob")
+            .field("canvas", &(self.base.w, self.base.h))
+            .field("view", &self.view)
+            .field("annotations", &self.annotations.len())
+            .finish_non_exhaustive()
+    }
+}
+
 pub struct Editor {
-    base: Img,
+    base: Arc<Img>,
     generation: u64,
     annotations: Vec<Annotation>,
     fonts: Fonts,
@@ -213,7 +255,7 @@ pub struct Editor {
     history: History,
     clipboard: Option<Annotation>,
     modified: bool,
-    cache: Mutex<EffectCache>,
+    cache: Arc<Mutex<EffectCache>>,
 }
 
 impl std::fmt::Debug for Editor {
@@ -228,7 +270,7 @@ impl std::fmt::Debug for Editor {
 impl Editor {
     pub fn new(base: Bitmap, fonts: Fonts) -> Editor {
         Editor {
-            base: Img::from_bitmap(&base),
+            base: Arc::new(Img::from_bitmap(&base)),
             generation: 0,
             annotations: Vec::new(),
             fonts,
@@ -244,7 +286,7 @@ impl Editor {
             history: History::new(),
             clipboard: None,
             modified: false,
-            cache: Mutex::new(EffectCache::default()),
+            cache: Arc::new(Mutex::new(EffectCache::default())),
         }
     }
 
@@ -287,18 +329,28 @@ impl Editor {
         PhysRect { x: 0, y: 0, width: self.base.w, height: self.base.h }
     }
 
+    /// A snapshot of the full canvas as `render` draws it, including the shape being drawn.
+    /// Run it on any thread; the engine's lock is not held while it runs.
+    pub fn render_job(&self) -> RenderJob {
+        self.job(self.canvas())
+    }
+
+    /// Copies what a render of `view` needs out of the engine.
+    fn job(&self, view: PhysRect) -> RenderJob {
+        RenderJob {
+            base: Arc::clone(&self.base),
+            annotations: self.annotations.clone(),
+            draft: self.draft(),
+            view,
+            fonts: self.fonts.clone(),
+            cache: Arc::clone(&self.cache),
+            generation: self.generation,
+        }
+    }
+
     /// Renders the canvas region `view`, including the shape being drawn.
     pub fn render(&self, view: PhysRect) -> Bitmap {
-        let draft = self.draft();
-        let mut list: Vec<&Annotation> = self.annotations.iter().collect();
-        if let Some(d) = &draft {
-            list.push(d);
-        }
-        let mut cache = match self.cache.lock() {
-            Ok(c) => c,
-            Err(p) => p.into_inner(),
-        };
-        render::render(&self.base, &list, view, &self.fonts, &mut cache, self.generation)
+        self.job(view).run()
     }
 
     /// The full canvas through the same renderer, without the in-progress shape.
@@ -583,27 +635,23 @@ impl Editor {
         if result.w == 0 || result.h == 0 {
             return;
         }
-        let before = Snapshot { base: self.base.clone(), annotations: self.annotations.clone() };
-        self.base = result;
+        let before = Snapshot { base: Img::clone(&self.base), annotations: self.annotations.clone() };
+        self.base = Arc::new(result);
         self.annotations.clear();
         self.selected = None;
         self.pending = None;
         self.generation += 1;
-        if let Ok(mut c) = self.cache.lock() {
-            c.clear();
-        }
-        let after = Snapshot { base: self.base.clone(), annotations: Vec::new() };
+        self.reset_cache();
+        let after = Snapshot { base: Img::clone(&self.base), annotations: Vec::new() };
         self.history.push(Entry::Destructive { before: Box::new(before), after: Box::new(after) });
         self.modified = true;
     }
 
     fn restore(&mut self, s: &Snapshot) {
-        self.base = s.base.clone();
+        self.base = Arc::new(s.base.clone());
         self.annotations = s.annotations.clone();
         self.generation += 1;
-        if let Ok(mut c) = self.cache.lock() {
-            c.clear();
-        }
+        self.reset_cache();
     }
 
     fn undo(&mut self) {
@@ -657,10 +705,26 @@ impl Editor {
         self.annotations.sort_by_key(|a| ids.iter().position(|i| *i == a.id).unwrap_or(usize::MAX));
     }
 
+    /// Pruning is housekeeping: skip it while a render job holds the cache, so input never waits.
     fn cleanup_cache(&self) {
         let live: Vec<u64> = self.annotations.iter().map(|a| a.id).collect();
-        if let Ok(mut c) = self.cache.lock() {
+        if let Ok(mut c) = self.cache.try_lock() {
             c.retain(&live);
+        }
+    }
+
+    /// Drops every cached effect after the base changes. A render job may hold the cache for its
+    /// whole run; then the editor takes a fresh cache and the job keeps the old one.
+    fn reset_cache(&mut self) {
+        let busy = match self.cache.try_lock() {
+            Ok(mut c) => {
+                c.clear();
+                false
+            }
+            Err(_) => true,
+        };
+        if busy {
+            self.cache = Arc::new(Mutex::new(EffectCache::default()));
         }
     }
 
