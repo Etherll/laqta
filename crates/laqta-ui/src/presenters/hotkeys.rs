@@ -10,6 +10,7 @@ pub fn hotkey_label(bindings: &[(KeyChord, Action)], action: Action) -> Option<S
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use laqta_domain::settings::Settings;

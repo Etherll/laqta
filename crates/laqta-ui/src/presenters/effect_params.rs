@@ -312,6 +312,7 @@ pub fn summary(effect: &Effect) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use laqta_domain::effects::{Adjust, Draw, Filter, Manip};
