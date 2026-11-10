@@ -4856,6 +4856,7 @@ dependencies = [
  "laqta-ui",
  "laqta-update",
  "laqta-upload",
+ "raw-window-handle",
  "rayon",
  "tracing",
  "tracing-appender",

@@ -437,6 +437,9 @@ pub struct FakePrompt {
     pub chooses: Mutex<Vec<(String, Vec<String>)>>,
     /// Answers for `pick_files`: the files, or an error such as `Cancelled`.
     pub files: Mutex<std::collections::VecDeque<Result<Vec<std::path::PathBuf>, PortError>>>,
+    /// Answers for `pick_file`, and the extensions of every `pick_file` call.
+    pub one_files: Mutex<std::collections::VecDeque<Result<std::path::PathBuf, PortError>>>,
+    pub file_filters: Mutex<Vec<Vec<String>>>,
     /// Answers for `pick_folder`: the folder, or an error such as `Cancelled`.
     pub folders: Mutex<std::collections::VecDeque<Result<std::path::PathBuf, PortError>>>,
     /// Answers for `save_path`.
@@ -476,6 +479,11 @@ impl crate::Prompt for FakePrompt {
     }
     fn pick_files(&self, _title: &str) -> BoxFuture<'_, Result<Vec<std::path::PathBuf>, PortError>> {
         let next = self.files.lock().unwrap().pop_front();
+        Box::pin(async move { next.unwrap_or_else(|| Err(PortError::Unsupported("file picker".into()))) })
+    }
+    fn pick_file(&self, _title: &str, extensions: &[&str]) -> BoxFuture<'_, Result<std::path::PathBuf, PortError>> {
+        self.file_filters.lock().unwrap().push(extensions.iter().map(|e| e.to_string()).collect());
+        let next = self.one_files.lock().unwrap().pop_front();
         Box::pin(async move { next.unwrap_or_else(|| Err(PortError::Unsupported("file picker".into()))) })
     }
     fn pick_folder(&self, _title: &str) -> BoxFuture<'_, Result<std::path::PathBuf, PortError>> {
@@ -636,9 +644,15 @@ pub struct FakeScreenStream {
     pub opened: Mutex<Vec<laqta_domain::geometry::PhysRect>>,
     /// When true, `open` never completes, like a portal dialog nobody answers.
     pub hang: Mutex<bool>,
+    /// `Some` lists these cameras; `None` is a platform whose recorder picks the first camera.
+    pub cameras: Mutex<Option<Vec<String>>>,
 }
 
 impl crate::ScreenStream for FakeScreenStream {
+    fn camera_devices(&self) -> BoxFuture<'_, Result<Vec<String>, PortError>> {
+        let cameras = self.cameras.lock().unwrap().clone();
+        Box::pin(async move { cameras.ok_or_else(|| PortError::Unsupported("the recorder picks the first camera".into())) })
+    }
     fn open(
         &self,
         area: laqta_domain::geometry::PhysRect,
@@ -711,7 +725,8 @@ impl crate::Media for FakeMedia {
         spec: laqta_domain::record::RecordSpec,
         output: PathBuf,
     ) -> BoxFuture<'_, Result<Box<dyn crate::RecordingHandle>, PortError>> {
-        self.calls.lock().unwrap().push(format!("start {:?} {}x{}", spec.codec, spec.area.width, spec.area.height));
+        let camera = spec.camera.as_ref().map(|camera| format!(" camera={}", camera.device)).unwrap_or_default();
+        self.calls.lock().unwrap().push(format!("start {:?} {}x{}{camera}", spec.codec, spec.area.width, spec.area.height));
         let h: Box<dyn crate::RecordingHandle> =
             Box::new(FakeHandle { calls: self.calls.clone(), output, crashed: *self.crash.lock().unwrap() });
         let slow = *self.slow_start.lock().unwrap();

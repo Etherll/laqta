@@ -328,12 +328,72 @@ fn folder_upload_submits_one_file_job_per_file_in_the_folder() {
     std::fs::write(folder.join("a.zip"), b"a").unwrap();
     std::fs::write(folder.join("nested").join("deep.zip"), b"d").unwrap();
     h.prompt.folders.lock().unwrap().push_back(Ok(folder));
-    let uguu = destination(&h, "sxcu:uguu", vec![Ok(uploaded("https://u.example/9")), Ok(uploaded("https://u.example/10"))]);
+    let uguu = destination(
+        &h,
+        "sxcu:uguu",
+        vec![Ok(uploaded("https://u.example/9")), Ok(uploaded("https://u.example/10")), Ok(uploaded("https://u.example/11"))],
+    );
 
     assert_eq!(run(&h, Action::FolderUpload).unwrap(), Dispatched::Task(TaskId(1)));
-    // Non-recursive and sorted: the subfolder's file is not uploaded, and the two others go in name order.
+    // Recursive and sorted: the subfolder's file goes after the two in the folder, in name order.
     let requests = uguu.requests.lock().unwrap();
-    assert_eq!(requests.iter().map(|r| r.file_name.as_str()).collect::<Vec<_>>(), vec!["a.zip", "b.zip"]);
+    assert_eq!(requests.iter().map(|r| r.file_name.as_str()).collect::<Vec<_>>(), vec!["a.zip", "b.zip", "deep.zip"]);
+}
+
+#[test]
+fn folder_upload_of_more_than_ten_files_is_confirmed_then_submitted() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path());
+    let folder = tmp.path().join("many");
+    std::fs::create_dir_all(folder.join("nested")).unwrap();
+    for i in 0..6 {
+        std::fs::write(folder.join(format!("top{i}.zip")), b"t").unwrap();
+    }
+    for i in 0..5 {
+        std::fs::write(folder.join("nested").join(format!("deep{i}.zip")), b"d").unwrap();
+    }
+    h.prompt.folders.lock().unwrap().push_back(Ok(folder));
+    h.prompt.confirms.lock().unwrap().push_back(true);
+    let uguu = destination(&h, "sxcu:uguu", (0..11).map(|i| Ok(uploaded(&format!("https://u.example/{i}")))).collect());
+
+    assert_eq!(run(&h, Action::FolderUpload).unwrap(), Dispatched::Task(TaskId(1)));
+    assert!(h.prompt.confirms.lock().unwrap().is_empty(), "the folder's eleven files were confirmed");
+    assert_eq!(uguu.requests.lock().unwrap().len(), 11);
+}
+
+#[test]
+fn upload_of_more_than_ten_files_asks_first_and_submits_nothing_when_declined() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path());
+    let files: Vec<_> = (0..11).map(|i| tmp.path().join(format!("f{i:02}.zip"))).collect();
+    for file in &files {
+        std::fs::write(file, b"z").unwrap();
+    }
+    h.prompt.files.lock().unwrap().push_back(Ok(files));
+    h.prompt.confirms.lock().unwrap().push_back(false);
+    let uguu = destination(&h, "sxcu:uguu", Vec::new());
+
+    assert_eq!(run(&h, Action::FileUpload).unwrap(), Dispatched::Done);
+    assert!(h.prompt.confirms.lock().unwrap().is_empty(), "the eleven files were not confirmed");
+    assert!(uguu.requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn upload_of_ten_files_does_not_ask() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path());
+    let files: Vec<_> = (0..10).map(|i| tmp.path().join(format!("f{i:02}.zip"))).collect();
+    for file in &files {
+        std::fs::write(file, b"z").unwrap();
+    }
+    h.prompt.files.lock().unwrap().push_back(Ok(files));
+    // A prompt would take this answer and decline; ten files must not reach the prompt at all.
+    h.prompt.confirms.lock().unwrap().push_back(false);
+    let uguu = destination(&h, "sxcu:uguu", (0..10).map(|i| Ok(uploaded(&format!("https://u.example/{i}")))).collect());
+
+    assert_eq!(run(&h, Action::FileUpload).unwrap(), Dispatched::Task(TaskId(1)));
+    assert_eq!(h.prompt.confirms.lock().unwrap().len(), 1, "ten files went without asking");
+    assert_eq!(uguu.requests.lock().unwrap().len(), 10);
 }
 
 #[test]

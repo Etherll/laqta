@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use gpui::{
     App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, RenderImage,
-    SharedString, Styled as _, Window, WindowBounds, WindowOptions, div, img, px, size,
+    SharedString, Styled as _, Window, WindowOptions, div, img, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputState};
@@ -78,7 +78,7 @@ fn spec(kind: ToolKind) -> Spec {
             &[("Color (hex, rgb(), hsl(), name)", "#3b82f6")],
             &[],
             Some("Show"),
-            "Type a colour, or pick one from the screen.",
+            "Type a color, or pick one from the screen.",
         ),
         ToolKind::ImageViewer => s(Pick::OneFile, None, &[], &[], None, "Open an image to view it."),
         ToolKind::ImageComparer => {
@@ -198,7 +198,7 @@ fn spec(kind: ToolKind) -> Spec {
             &[],
             &[],
             None,
-            "Click the panel to step through test colours; maximise the window for a full-screen test.",
+            "Click the panel to step through test colors; maximize the window for a full-screen test.",
         ),
         ToolKind::NetworkMonitor => {
             s(Pick::Nothing, None, &[], &[], None, "Traffic per interface, sampled once a second while this window is open.")
@@ -245,7 +245,7 @@ const TEST_COLOURS: [(u32, &str); 8] = [
 pub(crate) fn open(kind: ToolKind, cx: &mut App) {
     let big = matches!(kind, ToolKind::ImageViewer | ToolKind::ImageComparer | ToolKind::MonitorTest | ToolKind::IndexFolder);
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(if big { 960. } else { 680. }), px(if big { 720. } else { 560. })), cx)),
+        window_bounds: Some(crate::chrome::centered(if big { 960. } else { 680. }, if big { 720. } else { 560. }, cx)),
         titlebar: Some(crate::chrome::titlebar(title(kind))),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,
@@ -529,7 +529,7 @@ impl Job {
         let text = |s: String| Ok((s, None));
         match self {
             Job::Colour(s) => {
-                let c = t::parse_color(&s).ok_or("not a colour")?;
+                let c = t::parse_color(&s).ok_or("not a color")?;
                 let f = t::ColorFormats::from_rgba(c);
                 let px: Vec<u8> = std::iter::repeat_n([c.r, c.g, c.b, 255], 96 * 48).flatten().collect();
                 let swatch = Bitmap::new(96, 48, PixelFormat::Rgba8, px.into()).ok();
@@ -686,7 +686,7 @@ impl Render for ToolsWindow {
                         } else {
                             gpui::white()
                         })
-                        .child(format!("{name} — click for the next colour"))
+                        .child(format!("{name} — click for the next color"))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
@@ -825,7 +825,7 @@ impl Render for ToolsWindow {
                     .p(px(12.))
                     .rounded(crate::theme::radius::LG)
                     .bg(cx.theme().secondary)
-                    .font_family("monospace")
+                    .font_family(cx.theme().mono_font_family.clone())
                     .text_sm()
                     .whitespace_normal()
                     .child(self.output.clone()),

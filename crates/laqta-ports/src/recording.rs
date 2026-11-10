@@ -103,6 +103,11 @@ pub trait ScreenStream: Send + Sync {
     fn open(&self, area: PhysRect, show_cursor: bool, fps: u32, audio: &[AudioDevice]) -> BoxFuture<'_, Result<RecordingInput, PortError>>;
     /// Microphones and loopback (system sound) devices.
     fn audio_devices(&self) -> BoxFuture<'_, Result<Vec<AudioDevice>, PortError>>;
+    /// Camera names, the system's first camera first. `Unsupported` where the recorder opens the
+    /// first camera itself when no name is set.
+    fn camera_devices(&self) -> BoxFuture<'_, Result<Vec<String>, PortError>> {
+        Box::pin(async { Err(PortError::Unsupported("the recorder picks the first camera".into())) })
+    }
 }
 
 /// A recording in progress.

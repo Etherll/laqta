@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, WindowBounds,
-    WindowOptions, div, img, prelude::FluentBuilder as _, px, size,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, WindowOptions, div,
+    img, prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement as _;
@@ -26,7 +26,7 @@ pub(crate) fn open(images_only: bool, cx: &mut App) {
         return;
     }
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(1080.), px(740.)), cx)),
+        window_bounds: Some(crate::chrome::centered(1080., 740., cx)),
         window_min_size: Some(size(px(640.), px(420.))),
         titlebar: Some(crate::chrome::titlebar("Laqta history")),
         window_decorations: crate::chrome::decorations(),
@@ -181,21 +181,18 @@ impl HistoryWindow {
     /// Copies the image itself to the clipboard; other files copy their path. The file is read off
     /// the UI thread.
     fn copy_item(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let Some(format) = clipboard_format(&path) else {
+        if !is_picture(&path) {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(path.display().to_string()));
             self.flash("Copied the file path", cx);
             return;
-        };
-        let task = cx.background_spawn(async move { std::fs::read(&path) });
+        }
+        let app = cx.global::<UiState>().services.app.clone();
         cx.spawn(async move |this, cx| {
-            let result = task.await;
+            let result = app.copy_image_file(path).await;
             let _ = this.update(cx, |this, cx| match result {
-                Ok(bytes) => {
-                    cx.write_to_clipboard(gpui::ClipboardItem::new_image(&gpui::Image::from_bytes(format, bytes)));
-                    this.flash("Copied", cx);
-                }
+                Ok(()) => this.flash("Copied", cx),
                 Err(e) => {
-                    this.error = Some(format!("Couldn't read the file: {e}"));
+                    this.error = Some(format!("Couldn't copy the picture: {e}"));
                     cx.notify();
                 }
             });
@@ -204,18 +201,10 @@ impl HistoryWindow {
     }
 }
 
-/// The clipboard image format for a file, by extension; `None` for files that aren't images.
-pub(crate) fn clipboard_format(path: &Path) -> Option<gpui::ImageFormat> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    Some(match ext.as_str() {
-        "png" => gpui::ImageFormat::Png,
-        "jpg" | "jpeg" => gpui::ImageFormat::Jpeg,
-        "webp" => gpui::ImageFormat::Webp,
-        "gif" => gpui::ImageFormat::Gif,
-        "bmp" => gpui::ImageFormat::Bmp,
-        "tif" | "tiff" => gpui::ImageFormat::Tiff,
-        _ => return None,
-    })
+/// True for a file whose picture can be put on the clipboard.
+pub(crate) fn is_picture(path: &Path) -> bool {
+    let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default().to_ascii_lowercase();
+    matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "tif" | "tiff")
 }
 
 /// A 32px round ghost icon button with a tooltip. `danger` turns it red on hover.

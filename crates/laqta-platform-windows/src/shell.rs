@@ -31,10 +31,12 @@ impl Shell for WindowsShell {
         if code > 32 { Ok(()) } else { Err(PortError::Failed(format!("could not print {} (code {code})", path.display()))) }
     }
 
-    /// `explorer.exe /select,<path>` opens the folder with the file selected.
+    /// `explorer.exe /select,"<path>"` opens the folder with the file selected. The argument goes in raw:
+    /// the usual quoting would escape the quotes explorer reads.
     fn reveal(&self, path: &Path) -> Result<(), PortError> {
+        use std::os::windows::process::CommandExt;
         std::process::Command::new("explorer.exe")
-            .arg(format!("/select,{}", path.display()))
+            .raw_arg(select_arg(path))
             .spawn()
             .map(|_| ())
             .map_err(|e| PortError::Failed(format!("explorer: {e}")))
@@ -52,5 +54,22 @@ impl Shell for WindowsShell {
             let status = cmd.status().map_err(|e| PortError::Failed(format!("{}: {e}", cmd.get_program().to_string_lossy())))?;
             Ok(status.code().unwrap_or(-1))
         }))
+    }
+}
+
+/// The argument `explorer.exe` takes to select `path`: `/select,"<path>"`, with the path in double quotes.
+fn select_arg(path: &Path) -> String {
+    format!("/select,\"{}\"", path.display())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::select_arg;
+
+    #[test]
+    fn select_arg_quotes_a_path_with_spaces() {
+        assert_eq!(select_arg(Path::new(r"C:\Users\Ann\My Pictures\shot 1.png")), r#"/select,"C:\Users\Ann\My Pictures\shot 1.png""#);
     }
 }

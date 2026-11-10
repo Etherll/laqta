@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use gpui::{
     App, AppContext as _, ClipboardItem, Context, Entity, FontWeight, IntoElement, ParentElement as _, Render, RenderImage, Styled as _,
-    StyledImage as _, Window, WindowBounds, WindowOptions, div, img, prelude::FluentBuilder as _, px, size,
+    StyledImage as _, Window, WindowOptions, div, img, prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::input::{Textarea, TextareaState};
 use gpui_component::{ActiveTheme as _, Root};
@@ -30,7 +30,7 @@ pub(crate) fn open(result: TextResult, cx: &mut App) {
     crate::theme::ensure_fonts(cx);
     let wide = result.image.is_some();
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(if wide { 860. } else { 600. }), px(520.)), cx)),
+        window_bounds: Some(crate::chrome::centered(if wide { 860. } else { 600. }, 520., cx)),
         titlebar: Some(crate::chrome::titlebar(result.title.clone())),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,

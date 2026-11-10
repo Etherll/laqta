@@ -99,6 +99,7 @@ impl SecretStore for SessionSecrets {
             }
             Err(error) => {
                 self.session.set(key, secret)?;
+                tracing::warn!(key, error = %error, "the keyring refused the secret; it is kept for this session only");
                 Err(error)
             }
         }

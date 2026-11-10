@@ -36,8 +36,20 @@ const START_WAIT: Duration = Duration::from_secs(5);
 /// examples use about 20 ms.
 const EVENT_BUFFER_HNS: i64 = 2_000_000;
 
-/// Microphones (capture endpoints, named by their friendly name, which `dshow` accepts) and the
-/// system sound entry. This blocks, so run it off the async worker.
+/// The name `dshow` opens a capture endpoint by. `dshow` lists a microphone under a friendly name
+/// cut to 31 characters, so two long names can collide and the full name never matches. Its
+/// "alternative name" is exact: the audio-input category plus the endpoint's GUID, the last
+/// `{...}` of the endpoint id (`{0.0.1.00000000}.{guid}`). An id without one keeps the friendly name.
+fn dshow_name(endpoint_id: &str, friendly: &str) -> String {
+    const AUDIO_INPUTS: &str = "@device_cm_{33D9A762-90C8-11D0-BD43-00A0C911CE86}";
+    match endpoint_id.rsplit_once(".{") {
+        Some((_, guid)) if guid.ends_with('}') && guid.len() == 37 => format!("{AUDIO_INPUTS}\\wave_{{{}", guid.to_ascii_uppercase()),
+        _ => friendly.to_string(),
+    }
+}
+
+/// Microphones (capture endpoints) and the system sound entry. A microphone's id is the name
+/// `dshow` opens it by (see `dshow_name`). This blocks, so run it off the async worker.
 pub(crate) fn list_devices() -> Result<Vec<AudioDevice>, PortError> {
     let _com = Mta::enter();
     let enumerator = DeviceEnumerator::new().map_err(|e| PortError::Failed(format!("audio devices: {e}")))?;
@@ -46,8 +58,9 @@ pub(crate) fn list_devices() -> Result<Vec<AudioDevice>, PortError> {
     let count = collection.get_nbr_devices().map_err(|e| PortError::Failed(format!("capture devices: {e}")))?;
     let mut devices = Vec::new();
     for index in 0..count {
-        match collection.get_device_at_index(index).and_then(|device| device.get_friendlyname()) {
-            Ok(name) => devices.push(AudioDevice { id: name.clone(), name, loopback: false }),
+        let device = collection.get_device_at_index(index);
+        match device.and_then(|device| Ok((device.get_friendlyname()?, device.get_id()?))) {
+            Ok((name, endpoint)) => devices.push(AudioDevice { id: dshow_name(&endpoint, &name), name, loopback: false }),
             Err(e) => tracing::debug!("skipping capture device {index}: {e}"),
         }
     }
@@ -265,10 +278,10 @@ fn frames_since(start: Instant) -> u64 {
 
 /// Initialises COM for the calling thread as multi-threaded. It is uninitialised on drop when that
 /// call succeeded. A thread already set up in another mode keeps its own setting.
-struct Mta(bool);
+pub(crate) struct Mta(bool);
 
 impl Mta {
-    fn enter() -> Self {
+    pub(crate) fn enter() -> Self {
         Mta(wasapi::initialize_mta().is_ok())
     }
 }
@@ -278,5 +291,21 @@ impl Drop for Mta {
         if self.0 {
             wasapi::deinitialize();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dshow_name;
+
+    #[test]
+    fn a_microphone_is_opened_by_its_exact_dshow_name() {
+        let id = "{0.0.1.00000000}.{e5af2a2d-0c1b-4a3e-9f6d-7b2a1c3d4e5f}";
+        assert_eq!(
+            dshow_name(id, "Microphone (Realtek High Definition Audio)"),
+            r"@device_cm_{33D9A762-90C8-11D0-BD43-00A0C911CE86}\wave_{E5AF2A2D-0C1B-4A3E-9F6D-7B2A1C3D4E5F}"
+        );
+        // An id in another form keeps the friendly name.
+        assert_eq!(dshow_name("SWD\\MMDEVAPI\\x", "Line In"), "Line In");
     }
 }

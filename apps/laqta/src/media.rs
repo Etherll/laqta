@@ -85,8 +85,8 @@ impl Media for LazyMedia {
 }
 
 /// FFmpeg, or the native Windows recorder when the settings choose it. A recording the
-/// native recorder refuses (an area, another codec, the camera, custom arguments) reopens the
-/// screen stream and records with FFmpeg instead.
+/// native recorder refuses (an area, another codec, the camera, custom arguments) or fails to
+/// start reopens the screen stream and records with FFmpeg instead.
 pub struct SwitchingMedia {
     pub ffmpeg: std::sync::Arc<dyn laqta_ports::Media>,
     pub native: Option<std::sync::Arc<dyn laqta_ports::Media>>,
@@ -105,10 +105,23 @@ impl laqta_ports::Media for SwitchingMedia {
             let native = self.backend.read().map(|b| *b == laqta_domain::record::RecorderBackend::Native).unwrap_or(false);
             if let (true, Some(n)) = (native, &self.native) {
                 match n.start(input, spec.clone(), output.clone()).await {
+                    // A refusal: the recording needs something only FFmpeg does.
                     Err(laqta_ports::PortError::Unsupported(why)) => {
                         tracing::info!("native recorder declined ({why}); recording with FFmpeg");
                         let input = self.stream.open(spec.area, spec.show_cursor, spec.fps, &spec.audio).await?;
                         return self.ffmpeg.start(input, spec, output).await;
+                    }
+                    // A failure before the recording exists (no encoder, a lost device): FFmpeg gets a
+                    // try, and if it fails too the error keeps the native recorder's cause.
+                    Err(laqta_ports::PortError::Failed(why)) => {
+                        tracing::warn!("native recorder failed to start ({why}); recording with FFmpeg");
+                        let input = self.stream.open(spec.area, spec.show_cursor, spec.fps, &spec.audio).await?;
+                        return match self.ffmpeg.start(input, spec, output).await {
+                            Err(laqta_ports::PortError::Failed(ffmpeg)) => {
+                                Err(laqta_ports::PortError::Failed(format!("{why}. FFmpeg could not record either: {ffmpeg}")))
+                            }
+                            other => other,
+                        };
                     }
                     other => return other,
                 }

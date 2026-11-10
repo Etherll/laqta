@@ -59,6 +59,8 @@ laqta-platform-linux.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 laqta-platform-windows.workspace = true
+# The native handle of a GPUI window, for `laqta_platform_windows::plain_popup`.
+raw-window-handle = "0.6"
 
 # `cargo deb -p laqta` (release workflow) builds the Debian package.
 [package.metadata.deb]

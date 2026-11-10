@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use laqta_ports::{PortError, ShellIntegration};
 
-use crate::autostart::{exec_value, remove_if_exists, write_file, xdg_dir};
+use crate::autostart::{exec_value, launcher, remove_if_exists, write_file, xdg_dir};
 
 /// The native-messaging host name both browsers look up, and the callers it accepts.
 const HOST_NAME: &str = "com.laqta.nmh";
@@ -78,6 +78,7 @@ impl ShellIntegration for LinuxShellIntegration {
     }
 
     fn install(&self, executable: &Path) -> Result<(), PortError> {
+        let executable = &launcher(executable);
         let [desktop, service_menu, script, mime] = self.entries();
         write_file(&desktop, &desktop_file(executable), 0o644)?;
         write_file(&service_menu, &service_menu_file(executable), 0o755)?;

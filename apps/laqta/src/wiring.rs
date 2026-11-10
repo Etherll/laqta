@@ -4,7 +4,7 @@
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use laqta_app::{App, Dispatched, Ports};
+use laqta_app::{App, Dispatched, Ports, UploadSource};
 use laqta_domain::settings::SETTINGS_VERSION;
 use laqta_domain::{Action, KeyChord, Settings};
 use laqta_library::{History, SettingsStore};
@@ -125,19 +125,55 @@ fn pictures_dir() -> std::path::PathBuf {
 }
 
 /// `-sandbox`: a fresh temporary folder, removed on exit. `-portable`: `LaqtaData` next to the
-/// binary, as the `portable` marker file does.
+/// binary, as the `portable` marker file or a "portable" executable name does.
 fn data_dir(args: &crate::cli::Args) -> std::path::PathBuf {
-    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let exe = std::env::current_exe().ok();
+    let exe_dir = exe.as_deref().and_then(|p| p.parent().map(|d| d.to_path_buf()));
     if args.sandbox {
         return std::env::temp_dir().join(format!("laqta-sandbox-{}", std::process::id()));
     }
-    if args.portable
-        && let Some(dir) = &exe_dir
-    {
-        return dir.join("LaqtaData");
-    }
     let default = dirs::data_local_dir().unwrap_or_else(|| ".".into()).join("Laqta");
-    laqta_library::data_dir(exe_dir.as_deref(), default)
+    let chosen = match (&exe_dir, args.portable) {
+        (Some(dir), true) => dir.join("LaqtaData"),
+        _ => laqta_library::data_dir(exe.as_deref(), default.clone()),
+    };
+    if chosen != default && !writable(&chosen) {
+        // A portable copy on read-only media, or in a folder this account can't write.
+        eprintln!("laqta: cannot write {}; keeping data in {}", chosen.display(), default.display());
+        return default;
+    }
+    chosen
+}
+
+/// Hands a GPUI window's native handle to the Windows adapter. Other platforms need none of
+/// these calls and answer false.
+fn native_window(window: &gpui::Window, what: laqta_ui::NativeWindow) -> bool {
+    #[cfg(windows)]
+    {
+        use laqta_ui::NativeWindow;
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::Win32(win32) = handle.as_raw()
+        {
+            let hwnd = win32.hwnd.get();
+            match what {
+                NativeWindow::PlainPopup => laqta_platform_windows::plain_popup(hwnd),
+                NativeWindow::BringToFront => laqta_platform_windows::bring_to_front(hwnd),
+                NativeWindow::HideForCapture => laqta_platform_windows::hide_for_capture(hwnd),
+            }
+            return true;
+        }
+    }
+    let _ = (window, what);
+    false
+}
+
+/// True when `dir` exists or can be made, and a file can be created in it.
+fn writable(dir: &std::path::Path) -> bool {
+    let probe = dir.join(format!(".laqta-write-{}", std::process::id()));
+    let ok = std::fs::create_dir_all(dir).is_ok() && std::fs::write(&probe, b"").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    ok
 }
 
 /// Runs one request and returns the tasks it started; `Ok(None)` means quit.
@@ -154,6 +190,9 @@ async fn run_request(
             Ok(_) | Err(laqta_ports::AppError::Cancelled) => Ok(Some(vec![])),
             Err(e) => Err(e.to_string()),
         },
+        Route::Upload(UploadSource::File(path), workflow) => {
+            app.upload_paths(vec![path], workflow).await.map(Some).map_err(|e| e.to_string())
+        }
         Route::Upload(source, workflow) => Ok(Some(vec![app.upload_source(source, workflow)])),
         Route::ImportUploader(path) => importer.uploader(&path).map(|id| {
             tracing::info!(%id, "custom uploader imported");
@@ -208,7 +247,7 @@ fn hotkey_reports() -> HotkeyReports {
 }
 
 /// Makes the platform's hotkeys match the app's current bindings unless they already do. Returns whether the platform
-/// reports hotkeys unsupported; false when the bindings were already registered. The settings are read under the lock,
+/// refused every chord as unsupported; false when the bindings were already registered. The settings are read under the lock,
 /// so the last run to take it leaves the latest bindings registered.
 fn sync_hotkeys(app: &App, hotkeys: &dyn HotkeyRegistrar, registered: &RegisteredBindings, on_fire: ActionCallback) -> bool {
     let mut current = registered.lock().unwrap_or_else(|e| e.into_inner());
@@ -217,18 +256,19 @@ fn sync_hotkeys(app: &App, hotkeys: &dyn HotkeyRegistrar, registered: &Registere
         return false;
     }
     hotkeys.unregister_all();
-    let mut unsupported = false;
-    // A failed chord (not "unsupported") is retried on the next save, as before.
+    let results = hotkeys.register(&bindings, on_fire);
+    // Only a platform that refuses every chord is "unsupported"; a single refused chord is a failed row.
+    let unsupported = !results.is_empty() && results.iter().all(|(_, r)| matches!(r, Err(PortError::Unsupported(_))));
+    // A chord that failed, or was unsupported beside registered chords, is retried on the next save.
     let mut retry = false;
     let mut report = laqta_ui::HotkeyReport::default();
-    for (chord, result) in hotkeys.register(&bindings, on_fire) {
+    for (chord, result) in results {
         match result {
             Ok(()) => {
                 tracing::info!(%chord, "hotkey registered");
                 report.registered.push(chord);
             }
-            Err(PortError::Unsupported(why)) => {
-                unsupported = true;
+            Err(PortError::Unsupported(why)) if unsupported => {
                 tracing::warn!(%chord, "global hotkeys unsupported here ({why}); bind `laqta --action <name>` in your desktop's keyboard settings");
                 report.unsupported = Some(why);
             }
@@ -494,10 +534,14 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             if use_hotkeys && sync_hotkeys(&app, hotkeys.as_ref(), &registered, dispatch.clone()) {
                 menu.tooltip = laqta_ui::presenters::tray::TOOLTIP_NO_HOTKEY.to_string();
             }
-            match tray.show(menu, dispatch) {
+            // With no tray icon the main window is the only way in, so it opens even on a silent
+            // start. On Windows the icon is added once Explorer is back.
+            match tray.show(menu, dispatch.clone()) {
                 Ok(()) => tracing::info!("tray icon shown"),
-                Err(PortError::Unsupported(why)) => tracing::warn!("no tray ({why}); the CLI and hotkey still work"),
-                Err(e) => tracing::warn!("tray failed: {e}; the CLI and hotkey still work"),
+                Err(e) => {
+                    tracing::warn!("no tray icon ({e}); opening the main window");
+                    dispatch(Action::OpenMainWindow);
+                }
             }
         }
     };
@@ -595,6 +639,8 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             data_dir: data.clone(),
             uploaders: uploaders.clone(),
             secrets: platform.secrets.clone(),
+            prompt: Arc::new(ui.clone()),
+            native_window: Arc::new(native_window),
             fonts: crate::fonts::fonts(),
             spawner: spawner.clone(),
             codecs: laqta_imaging::Codecs::builtin(),
@@ -615,7 +661,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                     Box::pin(async move {
                         let found = laqta_http::run(crate::updates::check()).await?;
                         let msg = crate::updates::describe(&found);
-                        let installable = cfg!(windows) && found.is_some();
+                        let installable = found.is_some() && crate::updates::update_exe().is_some();
                         if let Ok(mut l) = last.lock() {
                             *l = found;
                         }

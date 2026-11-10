@@ -109,6 +109,11 @@ gpui_kit_assets::icon_assets!(
         Upload,
         Video,
         WandSparkles,
+        // The titlebar controls (`chrome.rs`); embedded here so they never depend on the kit's file-backed bundle.
+        WindowClose,
+        WindowMaximize,
+        WindowMinimize,
+        WindowRestore,
         Wrench,
         X,
         ZoomIn,

@@ -268,6 +268,33 @@ impl App {
         paths.into_iter().map(|path| self.task.submit(TaskJob::Upload { source: UploadSource::File(path), settings: ts.clone() })).collect()
     }
 
+    /// Submits one upload per file for `paths`, with each folder expanded to the files inside it, recursively. The
+    /// file routes, the folder route, the clipboard, the CLI and Send To all come here. A declined or cancelled
+    /// confirmation submits nothing.
+    pub async fn upload_paths(self: &Arc<Self>, paths: Vec<PathBuf>, workflow: Option<WorkflowId>) -> Result<Vec<TaskId>, AppError> {
+        let files = files::files_under(self.ports.spawner.as_ref(), paths).await.map_err(|error| AppError::Io(error.to_string()))?;
+        self.confirm_upload_many(files, workflow).await
+    }
+
+    /// Submits `files` as one upload each. Above `MULTI_UPLOAD_CONFIRM_ABOVE` files the user confirms first, as ShareX
+    /// does before a multi-file upload. A declined or cancelled confirmation submits nothing.
+    async fn confirm_upload_many(self: &Arc<Self>, files: Vec<PathBuf>, workflow: Option<WorkflowId>) -> Result<Vec<TaskId>, AppError> {
+        if files.len() > MULTI_UPLOAD_CONFIRM_ABOVE {
+            let text = format!("Upload {} files?", files.len());
+            let confirmed = match self.ports.prompt.confirm("Upload files", &text).await {
+                Ok(confirmed) => confirmed,
+                Err(PortError::Cancelled) => false,
+                // No way to ask: upload, as ShareX does with its warning turned off.
+                Err(PortError::Unsupported(_)) => true,
+                Err(error) => return Err(AppError::from(error)),
+            };
+            if !confirmed {
+                return Ok(Vec::new());
+            }
+        }
+        Ok(self.upload_files(files, workflow))
+    }
+
     /// Submits one Upload job with the workflow's settings: text, a file, a URL to re-upload or a URL to
     /// shorten. The CLI, IPC and native-messaging requests use it.
     pub fn upload_source(self: &Arc<Self>, source: UploadSource, workflow: Option<WorkflowId>) -> TaskId {
@@ -340,19 +367,13 @@ impl App {
 
     /// "Upload from clipboard": an image becomes a capture with the upload flag, each file is one upload, a URL
     /// is downloaded and uploaded, and other text is uploaded as text. An empty clipboard is an error.
-    async fn clipboard_upload(&self, mut ts: TaskSettings) -> Result<Dispatched, AppError> {
+    async fn clipboard_upload(self: &Arc<Self>, mut ts: TaskSettings, workflow: Option<WorkflowId>) -> Result<Dispatched, AppError> {
         match self.clipboard_get().await.map_err(AppError::from)? {
             Some(ClipboardContent::Image(image)) => {
                 ts.after_capture.insert(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST);
                 Ok(self.submit(CaptureImage::Image(image), ts, None))
             }
-            Some(ClipboardContent::Files(paths)) if !paths.is_empty() => {
-                let ids: Vec<TaskId> = paths
-                    .into_iter()
-                    .map(|path| self.task.submit(TaskJob::Upload { source: UploadSource::File(path), settings: ts.clone() }))
-                    .collect();
-                Ok(ids.first().map_or(Dispatched::Done, |id| Dispatched::Task(*id)))
-            }
+            Some(ClipboardContent::Files(paths)) if !paths.is_empty() => Ok(first_task(self.upload_paths(paths, workflow).await?)),
             Some(ClipboardContent::Text(text)) if !text.is_empty() => {
                 let url = as_url(&text).map(str::to_owned);
                 let source = match url {
@@ -468,7 +489,7 @@ impl App {
                 }
                 Ok(self.upload(UploadSource::Text(text), ts))
             }
-            Action::ClipboardUpload | Action::ClipboardUploadWithContentViewer => self.clipboard_upload(ts).await,
+            Action::ClipboardUpload | Action::ClipboardUploadWithContentViewer => self.clipboard_upload(ts, workflow).await,
             Action::UploadUrl => {
                 let answer = match input {
                     ActionInput::Url(url) => url,
@@ -504,15 +525,16 @@ impl App {
                         None => return Ok(Dispatched::Done),
                     },
                 };
-                Ok(first_task(self.upload_files(paths, workflow)))
+                Ok(first_task(self.upload_paths(paths, workflow).await?))
             }
             Action::FolderUpload => {
                 let Some(folder) = self.picked_folder().await? else { return Ok(Dispatched::Done) };
-                let paths = files::list_dir(self.ports.spawner.as_ref(), folder).await.map_err(|error| AppError::Io(error.to_string()))?;
+                let paths =
+                    files::files_under(self.ports.spawner.as_ref(), vec![folder]).await.map_err(|error| AppError::Io(error.to_string()))?;
                 if paths.is_empty() {
                     return Err(AppError::Unsupported("the folder has no files".into()));
                 }
-                Ok(first_task(self.upload_files(paths, workflow)))
+                Ok(first_task(self.confirm_upload_many(paths, workflow).await?))
             }
             Action::DragDropUpload => self.open(ToolWindow::Main),
             Action::ImageEditor => self.open(ToolWindow::Editor(None)),
@@ -552,6 +574,9 @@ impl App {
         }
     }
 }
+
+/// The number of files above which an upload asks the user first.
+const MULTI_UPLOAD_CONFIRM_ABOVE: usize = 10;
 
 /// The dispatched result for a batch of jobs: the first job's id, or nothing to wait for when the batch is empty.
 fn first_task(ids: Vec<TaskId>) -> Dispatched {

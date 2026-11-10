@@ -1,8 +1,9 @@
 //! Windows Credential Manager for `SecretStore`: generic credentials kept for this machine. Win32
 //! terms stay in this file. The naming helper also builds under `test`, so its test runs on Linux.
 
+use laqta_ports::PortError;
 #[cfg(windows)]
-use laqta_ports::{PortError, SecretStore};
+use laqta_ports::SecretStore;
 #[cfg(windows)]
 use windows::Win32::Foundation::ERROR_NOT_FOUND;
 #[cfg(windows)]
@@ -15,6 +16,17 @@ use windows::core::{PCWSTR, PWSTR};
 /// The Credential Manager target name for `key`, e.g. `Laqta/imgur.token`.
 fn target_name(key: &str) -> String {
     format!("Laqta/{key}")
+}
+
+/// The most a generic credential's blob holds: CRED_MAX_CREDENTIAL_BLOB_SIZE, 5 × 512 bytes.
+const CRED_MAX_BLOB_BYTES: u32 = 2560;
+
+/// The blob size `CredWriteW` takes for `secret`, or an error when Credential Manager would refuse it.
+fn blob_size(secret: &str) -> Result<u32, PortError> {
+    u32::try_from(secret.len())
+        .ok()
+        .filter(|&len| len <= CRED_MAX_BLOB_BYTES)
+        .ok_or_else(|| PortError::Failed("the secret is too long for Windows Credential Manager (max 2560 bytes)".to_owned()))
 }
 
 /// `text` as NUL-terminated UTF-16, the form the `PWSTR` and `PCWSTR` fields take.
@@ -64,8 +76,8 @@ impl SecretStore for CredentialStore {
 
     fn set(&self, key: &str, secret: &str) -> Result<(), PortError> {
         let mut target = wide(&target_name(key));
+        let size = blob_size(secret)?;
         let mut blob = secret.as_bytes().to_vec();
-        let size = u32::try_from(blob.len()).map_err(|_| PortError::Failed(format!("secret for {key} is too large")))?;
         let credential = CREDENTIALW {
             Type: CRED_TYPE_GENERIC,
             TargetName: PWSTR(target.as_mut_ptr()),
@@ -94,10 +106,18 @@ impl SecretStore for CredentialStore {
 
 #[cfg(test)]
 mod tests {
-    use super::target_name;
+    use laqta_ports::PortError;
+
+    use super::{blob_size, target_name};
 
     #[test]
     fn target_name_prefixes_the_key_with_laqta() {
         assert_eq!(target_name("imgur.token"), "Laqta/imgur.token");
+    }
+
+    #[test]
+    fn blob_size_accepts_up_to_the_credential_limit_and_refuses_more() {
+        assert_eq!(blob_size(&"a".repeat(2560)).ok(), Some(2560));
+        assert!(matches!(blob_size(&"a".repeat(2561)), Err(PortError::Failed(_))));
     }
 }

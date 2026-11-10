@@ -218,7 +218,7 @@ impl App {
             show_cursor: ts.recording.show_cursor,
             audio: devices,
             custom_args: ts.recording.custom_args.clone(),
-            camera: ts.recording.camera.enabled.then(|| ts.recording.camera.clone()),
+            camera: self.camera(&ts).await,
         };
         let handle = self.ports.media.start(input, spec, output.clone()).await.map_err(AppError::from)?;
         if stop_requested(&mut commands) {
@@ -274,6 +274,19 @@ impl App {
             devices.push(AudioDevice { id: LOOPBACK.to_owned(), name: LOOPBACK.to_owned(), loopback: true });
         }
         devices
+    }
+
+    /// The camera overlay the settings ask for. With no camera named, the first camera the stream
+    /// lists is used; a platform that lists none leaves the name empty for its recorder to resolve.
+    async fn camera(&self, ts: &TaskSettings) -> Option<laqta_domain::record::CameraOverlay> {
+        let mut camera = ts.recording.camera.enabled.then(|| ts.recording.camera.clone())?;
+        if camera.device.trim().is_empty()
+            && let Ok(listed) = self.ports.stream.camera_devices().await
+            && let Some(first) = listed.into_iter().next()
+        {
+            camera.device = first;
+        }
+        Some(camera)
     }
 
     /// Sends a control command to the recording, if one runs. Its driver does the work.

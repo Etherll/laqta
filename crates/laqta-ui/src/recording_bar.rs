@@ -21,6 +21,7 @@ pub(crate) struct RecordingWindows {
     countdown: Option<AnyWindowHandle>,
 }
 
+#[derive(Clone, Copy)]
 struct Bar {
     elapsed: u32,
     paused: bool,
@@ -30,13 +31,19 @@ struct Bar {
     /// The scale the border was last placed at. It is placed from the bar's render, the first
     /// place the real (possibly fractional) scale is known, and again if that scale changes.
     border_scale: Option<f32>,
+    /// The display scale the bar's position was worked out with, and how often it was reopened
+    /// because the display it landed on has another one.
+    placed_scale: f32,
+    moves: u8,
+    /// Where the bar was meant to open (not on Wayland), until its first render checked it.
+    wanted_y: Option<gpui::Pixels>,
 }
 
 struct Countdown {
     seconds: u32,
 }
 
-/// Physical desktop pixels → this display's logical pixels (scale from the primary display).
+/// Physical desktop pixels → logical pixels on a display with this scale.
 fn logical(r: PhysRect, scale: f32) -> Bounds<gpui::Pixels> {
     Bounds {
         origin: point(px(r.x as f32 / scale), px(r.y as f32 / scale)),
@@ -53,6 +60,11 @@ enum Place {
     BottomCenter,
     /// Exact desktop bounds, in logical pixels.
     At(Bounds<gpui::Pixels>),
+}
+
+/// Leaves a recording window with only what it paints: no outline or shadow from the OS.
+fn plain(window: &Window, cx: &App) {
+    (cx.global::<UiState>().services.native_window)(window, crate::runtime::NativeWindow::PlainPopup);
 }
 
 fn is_wayland() -> bool {
@@ -72,7 +84,7 @@ fn popup_on(place: Place, size: gpui::Size<gpui::Pixels>, display: Option<gpui::
     let (bounds, kind) = if is_wayland() {
         (Bounds { origin: point(px(0.), px(0.)), size }, layer_kind(place))
     } else {
-        (x11_bounds(place, size, cx), WindowKind::PopUp)
+        (crate::popup::placed(x11_bounds(place, size, cx)), WindowKind::PopUp)
     };
     WindowOptions {
         titlebar: None,
@@ -185,6 +197,7 @@ fn countdown(seconds: u32, cx: &mut App) {
         }
     }
     if let Ok(handle) = cx.open_window(popup(Place::Center, size(px(160.), px(160.)), cx), |window, cx| {
+        plain(window, cx);
         let view = cx.new(|_| Countdown { seconds });
         // The view is rounded: keep the root's square theme background out of the corners.
         cx.new(|cx| Root::new(view, window, cx).bg(gpui::transparent_black()))
@@ -212,23 +225,41 @@ fn start(area: PhysRect, cx: &mut App) {
         let _ = c.update(cx, |_, window, _| window.remove_window());
     }
     let border = cx.global::<UiState>().services.app.settings().defaults.recording.show_border;
+    cx.global_mut::<UiState>().recording = RecordingWindows::default();
+    // The scale of a window that is already open is the best first guess for the bar's display.
+    let scale = cx.windows().into_iter().find_map(|w| w.update(cx, |_, window, _| window.scale_factor()).ok()).unwrap_or(1.0);
+    open_bar(Bar { elapsed: 0, paused: false, area, border, border_scale: None, placed_scale: scale, moves: 0, wanted_y: None }, cx);
+}
+
+/// Opens the bar for `state`, in place of any bar already open.
+fn open_bar(mut state: Bar, cx: &mut App) {
     let bar = size(px(BAR_SIZE.0), px(BAR_SIZE.1));
-    let place = if is_wayland() { Place::BottomCenter } else { Place::At(bar_bounds(area, bar, cx)) };
-    let mut windows = RecordingWindows::default();
+    let place = if is_wayland() { Place::BottomCenter } else { Place::At(bar_bounds(state.area, state.placed_scale, bar, cx)) };
+    state.wanted_y = match place {
+        Place::At(bounds) => Some(bounds.origin.y),
+        _ => None,
+    };
+    if let Some(old) = cx.global_mut::<UiState>().recording.bar.take() {
+        let _ = old.update(cx, |_, window, _| window.remove_window());
+    }
     if let Ok(handle) = cx.open_window(popup(place, bar, cx), |window, cx| {
-        let view = cx.new(|_| Bar { elapsed: 0, paused: false, area, border, border_scale: None });
+        plain(window, cx);
+        let view = cx.new(|_| state);
         // The view is rounded: keep the root's square theme background out of the corners.
         cx.new(|cx| Root::new(view, window, cx).bg(gpui::transparent_black()))
     }) {
-        windows.bar = Some(handle.into());
+        cx.global_mut::<UiState>().recording.bar = Some(handle.into());
     }
-    cx.global_mut::<UiState>().recording = windows;
 }
 
-/// X11: the bar under the area, above it when that is off the screen, else inside its bottom edge.
-fn bar_bounds(area: PhysRect, bar: gpui::Size<gpui::Pixels>, cx: &App) -> Bounds<gpui::Pixels> {
-    let a = logical(area, 1.0);
-    let screen = cx.primary_display().map(|d| d.bounds()).unwrap_or(a);
+/// Windows and X11: the bar under the area, above it when that is off the screen's work area (the
+/// part clear of the taskbar), else inside its bottom edge. `scale` turns the physical area into
+/// the logical pixels of its display.
+fn bar_bounds(area: PhysRect, scale: f32, bar: gpui::Size<gpui::Pixels>, cx: &App) -> Bounds<gpui::Pixels> {
+    let a = logical(area, scale);
+    let center = point(a.origin.x + a.size.width / 2.0, a.origin.y + a.size.height / 2.0);
+    let display = cx.displays().into_iter().find(|d| d.bounds().contains(&center)).or_else(|| cx.primary_display());
+    let screen = display.map(|d| d.visible_bounds()).unwrap_or(a);
     let bottom = screen.origin.y + screen.size.height;
     let below = a.origin.y + a.size.height + px(8.0);
     let above = a.origin.y - bar.height - px(8.0);
@@ -237,21 +268,34 @@ fn bar_bounds(area: PhysRect, bar: gpui::Size<gpui::Pixels>, cx: &App) -> Bounds
     } else if above >= screen.origin.y {
         above
     } else {
-        a.origin.y + a.size.height - bar.height - px(8.0)
+        (a.origin.y + a.size.height).min(bottom) - bar.height - px(8.0)
     };
-    Bounds { origin: point(a.origin.x.max(screen.origin.x), y), size: bar }
+    let right = (screen.origin.x + screen.size.width - bar.width).max(screen.origin.x);
+    Bounds { origin: point(a.origin.x.clamp(screen.origin.x, right), y), size: bar }
+}
+
+/// Windows can't make a window shorter than a title bar. There the top and bottom strips are this
+/// tall and transparent, and paint only the edge next to the area.
+const TALL_STRIP: f32 = 40.0;
+
+/// The part of its window a border strip paints.
+#[derive(Clone, Copy)]
+enum Paint {
+    All,
+    /// A line as thick as the border, this far below the window's top.
+    Line(f32),
 }
 
 /// Four thin windows just outside the area, so the border never appears in the recording. Any
-/// border from an earlier placement is closed first.
-fn place_border(area: PhysRect, scale: f32, cx: &mut App) {
+/// border from an earlier placement is closed first. `bar` is the bar's state at `scale`.
+fn place_border(bar: Bar, scale: f32, cx: &mut App) {
     if cx.global::<UiState>().recording.bar.is_none() {
         return;
     }
     for h in std::mem::take(&mut cx.global_mut::<UiState>().recording.border) {
         let _ = h.update(cx, |_, window, _| window.remove_window());
     }
-    let a = logical(area, scale);
+    let a = logical(bar.area, scale);
     // On Wayland each strip is placed on the display holding the area, relative to its origin.
     let center = point(a.origin.x + a.size.width / 2.0, a.origin.y + a.size.height / 2.0);
     let display = cx.displays().into_iter().find(|d| d.bounds().contains(&center));
@@ -262,25 +306,54 @@ fn place_border(area: PhysRect, scale: f32, cx: &mut App) {
     let (ox, oy) = (f32::from(screen.origin.x), f32::from(screen.origin.y));
     let t = 3.0;
     let (x, y, w, h) = (f32::from(a.origin.x) - ox, f32::from(a.origin.y) - oy, f32::from(a.size.width), f32::from(a.size.height));
+    // Windows also rounds a narrow window up by a pixel, so the left strip starts one pixel out.
+    let (tall, slack) = if cfg!(windows) { (TALL_STRIP - t, 1.0) } else { (0.0, 0.0) };
+    // The tall top strip sits above the area with its line at the bottom. Near the top of the
+    // screen there is no room above, so it starts at the screen edge and its transparent rest
+    // hangs over the area instead.
+    let top_y = (y - t - tall).max(0.0).min(y - t);
+    let (top, bottom) = if cfg!(windows) { (Paint::Line(y - t - top_y), Paint::Line(0.0)) } else { (Paint::All, Paint::All) };
     let mut strips = Vec::new();
-    for (bx, by, bw, bh) in [(x - t, y - t, w + 2.0 * t, t), (x - t, y + h, w + 2.0 * t, t), (x - t, y, t, h), (x + w, y, t, h)] {
+    for (bx, by, bw, bh, paint) in [
+        (x - t, top_y, w + 2.0 * t, t + tall, top),
+        (x - t, y + h, w + 2.0 * t, t + tall, bottom),
+        (x - t - slack, y, t, h, Paint::All),
+        (x + w, y, t, h, Paint::All),
+    ] {
         // A strip that would start off the screen is left out; shifting it would put it over the area.
         if bx < 0. || by < 0. {
             continue;
         }
         let b = Bounds { origin: point(px(bx), px(by)), size: size(px(bw), px(bh)) };
-        if let Ok(handle) = cx.open_window(popup_on(Place::At(b), b.size, display_id, cx), |_, cx| cx.new(|_| BorderStrip)) {
+        if let Ok(handle) = cx.open_window(popup_on(Place::At(b), b.size, display_id, cx), |window, cx| {
+            plain(window, cx);
+            cx.new(|_| BorderStrip { paint, thickness: t })
+        }) {
             strips.push(handle.into());
         }
     }
     cx.global_mut::<UiState>().recording.border = strips;
+    // The transparent part of the bottom strip covers the bar and would take its clicks, so the
+    // bar is opened again, above the strips.
+    if cfg!(windows) {
+        open_bar(bar, cx);
+    }
 }
 
-struct BorderStrip;
+struct BorderStrip {
+    paint: Paint,
+    thickness: f32,
+}
 
 impl Render for BorderStrip {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().bg(cx.theme().danger)
+        match self.paint {
+            Paint::All => div().size_full().bg(cx.theme().danger),
+            Paint::Line(offset) => div()
+                .size_full()
+                .relative()
+                .child(div().absolute().left_0().top(px(offset)).w_full().h(px(self.thickness)).bg(cx.theme().danger)),
+        }
     }
 }
 
@@ -304,10 +377,17 @@ impl Render for Countdown {
 impl Render for Bar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let scale = window.scale_factor();
-        if self.border && self.border_scale != Some(scale) {
+        if let Some(wanted_y) = self.wanted_y.take() {
+            crate::popup::observe(window, wanted_y);
+        }
+        // The bar landed on a display with another scale than its position assumed: place it again.
+        if !is_wayland() && (scale - self.placed_scale).abs() > 0.01 && self.moves < 2 {
+            let again = Bar { border_scale: None, placed_scale: scale, moves: self.moves + 1, ..*self };
+            cx.defer(move |cx| open_bar(again, cx));
+        } else if self.border && self.border_scale != Some(scale) {
             self.border_scale = Some(scale);
-            let area = self.area;
-            cx.defer(move |cx| place_border(area, scale, cx));
+            let bar = *self;
+            cx.defer(move |cx| place_border(bar, scale, cx));
         }
         let app = cx.global::<UiState>().services.app.clone();
         let (a1, a2, a3) = (app.clone(), app.clone(), app.clone());

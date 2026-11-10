@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use futures_lite::future;
 
-use crate::autostart::{exec_value, write_file, xdg_dir};
+use crate::autostart::{exec_value, launcher, write_file, xdg_dir};
 
 /// The reverse-DNS id: the desktop entry's file name and the id the portals key permissions on.
 pub const APP_ID: &str = "io.github.etherll.Laqta";
@@ -121,7 +121,7 @@ pub fn register(executable: &Path) {
     let data_home = xdg_dir("XDG_DATA_HOME", ".local/share");
     let icons = install_icons(&data_home);
     let data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".to_owned());
-    if ensure_entry(&data_home, executable, &data_dirs) | icons {
+    if ensure_entry(&data_home, &launcher(executable), &data_dirs) | icons {
         // KDE looks entries up in its service cache; refresh it so the new one is found now.
         for tool in ["kbuildsycoca6", "kbuildsycoca5"] {
             if std::process::Command::new(tool).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok() {

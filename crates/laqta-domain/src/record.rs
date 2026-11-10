@@ -73,6 +73,29 @@ impl VideoCodec {
     pub fn is_animation(self) -> bool {
         matches!(self, VideoCodec::Gif | VideoCodec::WebP | VideoCodec::Apng)
     }
+
+    /// Whether `os` has this encoder. The OS-specific ones are hardware paths (VA-API, NVENC, AMF,
+    /// Quick Sync) that exist on some systems only.
+    pub fn available_on(self, os: Os) -> bool {
+        !matches!(
+            (self, os),
+            (VideoCodec::Vaapi, Os::Windows | Os::MacOs)
+                | (VideoCodec::Amf | VideoCodec::Qsv | VideoCodec::Nvenc | VideoCodec::NvencHevc, Os::MacOs)
+        )
+    }
+
+    /// The codecs `os` has, in `ALL` order.
+    pub fn available(os: Os) -> impl Iterator<Item = VideoCodec> {
+        Self::ALL.into_iter().filter(move |codec| codec.available_on(os))
+    }
+}
+
+/// The operating systems Laqta builds for. `main` passes the running one in; the core never detects it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Os {
+    Windows,
+    Linux,
+    MacOs,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -221,5 +244,31 @@ mod tests {
         assert_eq!(VideoCodec::Gif.extension(), "gif");
         assert!(VideoCodec::Apng.is_animation());
         assert_eq!(VideoCodec::ALL.len(), 14);
+    }
+
+    #[test]
+    fn windows_has_every_codec_but_vaapi() {
+        assert!(!VideoCodec::Vaapi.available_on(Os::Windows));
+        assert!(VideoCodec::Nvenc.available_on(Os::Windows));
+        let codecs: Vec<_> = VideoCodec::available(Os::Windows).collect();
+        assert_eq!(codecs.len(), 13);
+        assert!(!codecs.contains(&VideoCodec::Vaapi));
+    }
+
+    #[test]
+    fn linux_has_every_codec() {
+        let codecs: Vec<_> = VideoCodec::available(Os::Linux).collect();
+        assert_eq!(codecs, VideoCodec::ALL);
+    }
+
+    #[test]
+    fn macos_lacks_the_five_hardware_encoders() {
+        let gone = [VideoCodec::Vaapi, VideoCodec::Amf, VideoCodec::Qsv, VideoCodec::Nvenc, VideoCodec::NvencHevc];
+        for codec in gone {
+            assert!(!codec.available_on(Os::MacOs), "{codec:?}");
+        }
+        let codecs: Vec<_> = VideoCodec::available(Os::MacOs).collect();
+        assert_eq!(codecs.len(), 9);
+        assert!(codecs.contains(&VideoCodec::X264));
     }
 }

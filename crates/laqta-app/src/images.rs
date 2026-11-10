@@ -29,6 +29,27 @@ impl App {
         };
         compute(self.ports.spawner.as_ref(), work).await
     }
+
+    /// Puts `image` on the clipboard through the `Clipboard` port, as a capture's copy step does, so
+    /// every program that pastes pictures can paste it. The port call blocks, so it runs on the
+    /// blocking pool.
+    pub async fn copy_image(&self, image: Bitmap) -> Result<(), AppError> {
+        let clipboard = self.ports.clipboard.clone();
+        let (tx, rx) = futures_channel::oneshot::channel();
+        self.ports
+            .spawner
+            .run_blocking(Box::new(move || {
+                let _ = tx.send(clipboard.set_image(&image));
+            }))
+            .await;
+        rx.await.map_err(|_| AppError::Io("the clipboard call did not finish".to_owned()))?.map_err(AppError::from)
+    }
+
+    /// Reads the image file at `path` and puts the picture on the clipboard.
+    pub async fn copy_image_file(&self, path: PathBuf) -> Result<(), AppError> {
+        let image = self.decode_file(path).await?;
+        self.copy_image(image).await
+    }
 }
 
 #[cfg(test)]
@@ -138,5 +159,11 @@ mod tests {
         let result = in_compute_pool(|| block_on(app().decode_file(missing)));
 
         assert!(matches!(result, Err(AppError::Io(_))));
+    }
+
+    #[test]
+    fn copy_image_reaches_the_clipboard_port() {
+        let image = Bitmap::new(1, 1, PixelFormat::Rgba8, Arc::from(vec![0u8; 4])).unwrap();
+        assert!(block_on(app().copy_image(image)).is_ok());
     }
 }

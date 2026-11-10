@@ -44,15 +44,22 @@ Download the latest build for your system:
 
 <table>
   <tr><td><b>Platform</b></td><td><b>Download</b></td></tr>
-  <tr><td><b>Windows (x64)</b></td><td><a href="../../releases/latest/download/laqta-windows-x64.zip">laqta-windows-x64.zip</a></td></tr>
+  <tr><td><b>Windows installer (x64)</b></td><td><a href="../../releases/latest/download/laqta-windows-x64-setup.exe">laqta-windows-x64-setup.exe</a></td></tr>
+  <tr><td><b>Windows portable (x64)</b></td><td><a href="../../releases/latest/download/laqta-windows-x64-portable.exe">laqta-windows-x64-portable.exe</a></td></tr>
+  <tr><td><b>Linux AppImage (x86_64)</b></td><td><a href="../../releases/latest/download/laqta-linux-x86_64.AppImage">laqta-linux-x86_64.AppImage</a></td></tr>
   <tr><td><b>Debian / Ubuntu (amd64)</b></td><td><a href="../../releases/latest/download/laqta-linux-amd64.deb">laqta-linux-amd64.deb</a></td></tr>
-  <tr><td><b>Linux (x86_64)</b></td><td><a href="../../releases/latest/download/laqta-linux-x86_64.tar.gz">laqta-linux-x86_64.tar.gz</a></td></tr>
+  <tr><td><b>Linux archive (x86_64)</b></td><td><a href="../../releases/latest/download/laqta-linux-x86_64.tar.gz">laqta-linux-x86_64.tar.gz</a></td></tr>
 </table>
 
-Every file has a `.sha256` next to it on the [Releases](../../releases) page. On Windows, unzip
-and run `laqta.exe`. On Debian or Ubuntu, install the package with
-`sudo apt install ./laqta-linux-amd64.deb`. Other Linux systems can unpack the archive and run
-`laqta`, or [build it from source](#%EF%B8%8F-build-from-source).
+Every file has a `.sha256` next to it on the [Releases](../../releases) page.
+
+- **Windows:** the installer sets Laqta up for your account, adds Start menu and desktop
+  shortcuts, and keeps it updated. The portable `.exe` runs from any folder, a USB stick
+  included, and keeps its settings in a `LaqtaData` folder beside it.
+- **Linux:** make the AppImage executable (`chmod +x laqta-linux-x86_64.AppImage`) and run it. On
+  Debian or Ubuntu you can instead install the package with
+  `sudo apt install ./laqta-linux-amd64.deb`. The archive holds the plain binaries, or you can
+  [build from source](#%EF%B8%8F-build-from-source).
 
 Laqta lives in the tray. Press <kbd>Ctrl</kbd>+<kbd>PrtSc</kbd> to capture a region,
 <kbd>PrtSc</kbd> for the whole screen, or set your own shortcuts in **Settings → Shortcuts**.

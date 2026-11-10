@@ -4,7 +4,7 @@
 use futures_channel::oneshot;
 use gpui::{
     App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Window, WindowBounds, WindowKind, WindowOptions, div, px, size,
+    Window, WindowKind, WindowOptions, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputState};
@@ -50,7 +50,7 @@ pub(crate) fn open(title: String, kind: PromptKind, reply: Reply, cx: &mut App) 
         _ => (460.0, 170.0),
     };
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(width), px(height)), cx)),
+        window_bounds: Some(crate::chrome::centered(width, height, cx)),
         titlebar: Some(crate::chrome::titlebar(SharedString::from(title.clone()))),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,

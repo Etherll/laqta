@@ -5,8 +5,8 @@
 
 use gpui::{
     AnyWindowHandle, App, AppContext as _, ClipboardItem, Context, Entity, FontWeight, Global, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, WindowBounds,
-    WindowOptions, div, prelude::FluentBuilder as _, px, size,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, WindowOptions, div,
+    prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::tooltip::Tooltip;
@@ -61,8 +61,8 @@ pub(crate) fn open(color: Option<Rgba>, cx: &mut App) {
     }
     crate::theme::ensure_fonts(cx);
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(460.), px(640.)), cx)),
-        titlebar: Some(crate::chrome::titlebar("Colour picker")),
+        window_bounds: Some(crate::chrome::centered(460., 640., cx)),
+        titlebar: Some(crate::chrome::titlebar("Color picker")),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,
         app_id: Some("laqta".into()),
@@ -263,7 +263,15 @@ impl Render for ColorWindow {
                             .text_color(t.muted_foreground)
                             .child(row.label),
                     )
-                    .child(div().flex_1().min_w_0().truncate().text_size(text::LABEL).font_family("monospace").child(row.value))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(text::LABEL)
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .child(row.value),
+                    )
                     .child(widgets::icon(IconName::Copy, t.muted_foreground).size(px(14.)))
                     .on_click(cx.listener(move |this, _, _, cx| this.copy(value.clone(), cx))),
             );
@@ -310,11 +318,11 @@ impl Render for ColorWindow {
             .child(div().flex().flex_col().gap(space::S2).child(section("Formats")).child(formats))
             .child(div().flex().flex_col().gap(space::S2).child(section("Tints and shades")).child(tones))
             .child(div().flex().flex_col().gap(space::S2).child(section("Used this session")).child(if recent.is_empty() {
-                widgets::muted("Colours you pick or copy show up here.", cx).into_any_element()
+                widgets::muted("Colors you pick or copy show up here.", cx).into_any_element()
             } else {
                 used.into_any_element()
             }));
 
-        crate::chrome::rounded(widgets::page(cx), window).child(crate::chrome::TitleBar::new().title("Colour picker").flat()).child(body)
+        crate::chrome::rounded(widgets::page(cx), window).child(crate::chrome::TitleBar::new().title("Color picker").flat()).child(body)
     }
 }

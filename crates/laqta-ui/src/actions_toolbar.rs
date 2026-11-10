@@ -113,7 +113,7 @@ fn short_label(a: Action) -> &'static str {
         Action::PrintScreen => "Screen",
         Action::ActiveWindow => "Window",
         Action::ScreenRecorder => "Record",
-        Action::ScreenColorPicker => "Colour",
+        Action::ScreenColorPicker => "Color",
         Action::ClipboardUpload => "Upload clip",
         Action::OpenHistory => "History",
         Action::OpenMainWindow => "Laqta",

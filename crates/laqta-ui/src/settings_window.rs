@@ -4,8 +4,7 @@
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, WindowBounds, WindowOptions, div,
-    prelude::FluentBuilder as _, px, size,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, WindowOptions, div, prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::ScrollableElement as _;
@@ -30,7 +29,7 @@ pub(crate) fn open(cx: &mut App) {
         return;
     }
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(1040.), px(760.)), cx)),
+        window_bounds: Some(crate::chrome::centered(1040., 760., cx)),
         window_min_size: Some(size(px(720.), px(480.))),
         titlebar: Some(crate::chrome::titlebar("Laqta settings")),
         window_decorations: crate::chrome::decorations(),
@@ -50,6 +49,17 @@ pub(crate) fn open(cx: &mut App) {
         Err(e) => tracing::error!("settings window failed: {e:#}"),
     }
 }
+
+/// What a path setting's Browse button picks.
+#[derive(Clone, Copy)]
+enum PathPick {
+    Folder,
+    /// A file, limited to these extensions when the list is not empty.
+    File(&'static [&'static str]),
+}
+
+/// Sound files the platform's player takes: Windows plays only WAV.
+const SOUND_FILES: &[&str] = if cfg!(windows) { &["wav"] } else { &["wav", "ogg", "oga", "flac"] };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DestKind {
@@ -432,6 +442,52 @@ impl SettingsWindow {
     }
 
     /// A switch row that writes one draft field.
+    /// A path setting: the text stays editable, so a pasted path works, and Browse opens the system
+    /// picker through the `Prompt` port.
+    fn path_row(
+        &self,
+        id: impl Into<SharedString>,
+        label: &'static str,
+        description: Option<&'static str>,
+        input: &Entity<InputState>,
+        pick: PathPick,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let target = input.clone();
+        let id: SharedString = id.into();
+        let selector = id.to_string();
+        let browse = widgets::pill(
+            id,
+            "Browse…",
+            Pill::Default,
+            true,
+            cx.listener(move |_this, _, _, cx| {
+                let prompt = cx.global::<UiState>().services.prompt.clone();
+                let target = target.clone();
+                let task = cx.background_spawn(async move {
+                    match pick {
+                        PathPick::Folder => prompt.pick_folder(label).await,
+                        PathPick::File(extensions) => prompt.pick_file(label, extensions).await,
+                    }
+                });
+                cx.spawn(async move |this, cx| {
+                    if let Ok(path) = task.await {
+                        let _ = this.update_in(cx, |_this, window, cx| {
+                            target.update(cx, |input, cx| input.set_value(path.display().to_string(), window, cx));
+                            cx.notify();
+                        });
+                    }
+                })
+                .detach();
+            }),
+            cx,
+        )
+        .debug_selector(move || selector);
+        let control =
+            div().w_full().flex().items_center().gap(space::S2).child(div().flex_1().min_w_0().child(Input::new(input))).child(browse);
+        widgets::row_with(label, description, Slot::Field, control, cx)
+    }
+
     fn sw(
         &self,
         id: &'static str,
@@ -513,7 +569,24 @@ impl SettingsWindow {
         let data_dir = cx.global::<UiState>().services.data_dir.display().to_string();
         let theme = [("System", Theme::System), ("Light", Theme::Light), ("Dark", Theme::Dark)]
             .into_iter()
-            .map(|(label, t)| self.opt(label, self.draft.theme == t, move |this| this.draft.theme = t, cx))
+            .map(|(label, t)| {
+                // The theme applies and is saved on the click: a choice that waits for Save looks broken.
+                widgets::Choice::new(
+                    label,
+                    self.draft.theme == t,
+                    cx.listener(move |this, _, _, cx| {
+                        this.draft.theme = t;
+                        crate::theme::apply(t, cx);
+                        let services = cx.global::<UiState>().services.clone();
+                        let mut saved = services.app.settings();
+                        saved.theme = t;
+                        if let Err(e) = (services.save_settings)(saved) {
+                            this.message = Some((false, format!("Couldn't save the theme: {e}")));
+                        }
+                        cx.notify();
+                    }),
+                )
+            })
             .collect();
         let placement = [
             ("Top left", ToastPlacement::TopLeft),
@@ -543,11 +616,12 @@ impl SettingsWindow {
             )
             .child(
                 widgets::section("Storage", cx)
-                    .child(widgets::row_with(
+                    .child(self.path_row(
+                        "dir-browse",
                         "Screenshots folder",
                         Some("Where captures are saved."),
-                        Slot::Field,
-                        Input::new(&self.dir),
+                        &self.dir,
+                        PathPick::Folder,
                         cx,
                     ))
                     .child(self.sw(
@@ -590,25 +664,28 @@ impl SettingsWindow {
                         |this, v| this.draft.defaults.general.play_sound_after_task = v,
                         cx,
                     ))
-                    .child(widgets::row_with(
+                    .child(self.path_row(
+                        "snd-capture-browse",
                         "Capture sound",
                         Some("A sound file. Leave empty for the built-in one."),
-                        Slot::Field,
-                        Input::new(&self.sound_capture),
+                        &self.sound_capture,
+                        PathPick::File(SOUND_FILES),
                         cx,
                     ))
-                    .child(widgets::row_with(
+                    .child(self.path_row(
+                        "snd-task-browse",
                         "Task finished sound",
                         Some("Leave empty for the built-in one."),
-                        Slot::Field,
-                        Input::new(&self.sound_task),
+                        &self.sound_task,
+                        PathPick::File(SOUND_FILES),
                         cx,
                     ))
-                    .child(widgets::row_with(
+                    .child(self.path_row(
+                        "snd-error-browse",
                         "Error sound",
                         Some("Leave empty for the built-in one."),
-                        Slot::Field,
-                        Input::new(&self.sound_error),
+                        &self.sound_error,
+                        PathPick::File(SOUND_FILES),
                         cx,
                     )),
             )
@@ -703,8 +780,7 @@ impl SettingsWindow {
         let r = &self.draft.defaults.recording;
         let codecs = |gif: bool, this: &Self, cx: &mut Context<Self>| {
             let current = if gif { this.draft.defaults.recording.gif_codec } else { this.draft.defaults.recording.codec };
-            let opts = VideoCodec::ALL
-                .into_iter()
+            let opts = VideoCodec::available(crate::host_os())
                 .filter(|c| matches!(c, VideoCodec::Gif | VideoCodec::WebP | VideoCodec::Apng) == gif)
                 .map(|c| {
                     this.opt(
@@ -820,7 +896,11 @@ impl SettingsWindow {
                     ))
                     .child(widgets::row_with(
                         "Camera",
-                        Some("Device name. Leave empty for the first camera (Linux)."),
+                        Some(if cfg!(windows) {
+                            "The camera's name, as Windows lists it. Leave empty for the first camera."
+                        } else {
+                            "Device name. Leave empty for the first camera."
+                        }),
                         Slot::Field,
                         Input::new(&self.rec.camera_device),
                         cx,
@@ -845,11 +925,12 @@ impl SettingsWindow {
                         cx,
                     ))
                     .child(widgets::row_with("Extra FFmpeg arguments", None::<&str>, Slot::Field, Input::new(&self.rec.args), cx))
-                    .child(widgets::row_with(
+                    .child(self.path_row(
+                        "ffmpeg-browse",
                         "FFmpeg location",
                         Some("Leave empty to find it, or download it on first use."),
-                        Slot::Field,
-                        Input::new(&self.rec.ffmpeg),
+                        &self.rec.ffmpeg,
+                        PathPick::File(if cfg!(windows) { &["exe"] } else { &[] }),
                         cx,
                     )),
             )
@@ -899,7 +980,7 @@ impl SettingsWindow {
         for (i, (folder, (dir, filter))) in self.draft.watch_folders.iter().zip(&self.watch).enumerate() {
             watch = watch.child(
                 entity_card(cx)
-                    .child(widgets::row_with("Folder", None::<&str>, Slot::Field, Input::new(dir), cx))
+                    .child(self.path_row(format!("wf-browse-{i}"), "Folder", None, dir, PathPick::Folder, cx))
                     .child(widgets::row_with("Files", Some("Patterns such as *.png;*.jpg."), Slot::Field, Input::new(filter), cx))
                     .child(self.sw_dyn(
                         format!("wf-on-{i}"),
@@ -943,10 +1024,10 @@ impl SettingsWindow {
             Pill::Default,
             false,
             cx.listener(|_this, _, _, cx| {
-                let task =
-                    cx.background_spawn(async move { rfd::AsyncFileDialog::new().pick_folder().await.map(|f| f.path().to_path_buf()) });
+                let prompt = cx.global::<UiState>().services.prompt.clone();
+                let task = cx.background_spawn(async move { prompt.pick_folder("Watch a folder").await });
                 cx.spawn(async move |this, cx| {
-                    if let Some(folder) = task.await {
+                    if let Ok(folder) = task.await {
                         let _ = this.update_in(cx, |this, window, cx| {
                             let _ = this.collect(cx);
                             this.draft.watch_folders.push(laqta_domain::settings::WatchFolder { folder, ..Default::default() });
@@ -1785,7 +1866,7 @@ impl SettingsWindow {
                 .gap(space::S3)
                 .py(px(6.))
                 .child(div().w(px(140.)).flex_none().text_size(text::LABEL).font_weight(FontWeight::MEDIUM).child(group))
-                .child(div().flex_1().text_size(text::LABEL).text_color(cx.theme().muted_foreground).child(items))
+                .child(div().flex_1().min_w_0().text_size(text::LABEL).text_color(cx.theme().muted_foreground).child(items))
         };
         page()
             .child(
@@ -2080,7 +2161,11 @@ impl SettingsWindow {
             (
                 Tone::Danger,
                 "Global shortcuts aren't available on this system".into(),
-                format!("{why}. You can still bind `laqta --action <name>` in your desktop's keyboard settings."),
+                if cfg!(target_os = "linux") {
+                    format!("{why}. You can still bind `laqta --action <name>` in your desktop's keyboard settings.")
+                } else {
+                    format!("{why}.")
+                },
             )
         } else if report.pending {
             (Tone::Busy, "Registering shortcuts…".into(), "The desktop may ask you to confirm them the first time.".into())
@@ -2089,7 +2174,11 @@ impl SettingsWindow {
             (
                 Tone::Success,
                 format!("{n} shortcut{} active", if n == 1 { "" } else { "s" }),
-                "They work in every app. Changes apply when you save; KDE may ask you to confirm new ones.".into(),
+                if cfg!(target_os = "linux") {
+                    "They work in every app. Changes apply when you save; KDE may ask you to confirm new ones.".into()
+                } else {
+                    "They work in every app. Changes apply when you save.".into()
+                },
             )
         };
         let status = entity_card(cx).child(

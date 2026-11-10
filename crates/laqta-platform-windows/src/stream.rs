@@ -127,6 +127,10 @@ impl ScreenStream for WindowsStream {
     fn audio_devices(&self) -> BoxFuture<'_, Result<Vec<AudioDevice>, PortError>> {
         Box::pin(blocking::unblock(list_devices))
     }
+
+    fn camera_devices(&self) -> BoxFuture<'_, Result<Vec<String>, PortError>> {
+        Box::pin(blocking::unblock(crate::cameras::list))
+    }
 }
 
 #[cfg(test)]

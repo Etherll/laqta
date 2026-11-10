@@ -54,6 +54,19 @@ pub(crate) struct Plan {
     pub(crate) host: Host,
 }
 
+/// Refuses a plan this host cannot run, before FFmpeg is spawned. A codec the OS lacks is
+/// `Unsupported`. A Windows camera needs a DirectShow name, so an enabled camera with none is refused.
+fn validate(plan: &Plan) -> Result<(), PortError> {
+    if !plan.spec.codec.available_on(plan.host.os()) {
+        return Err(PortError::Unsupported(format!("{} is not available on this system", plan.spec.codec.label())));
+    }
+    let camera_unnamed = plan.spec.camera.as_ref().is_some_and(|cam| cam.enabled && cam.device.trim().is_empty());
+    if plan.host == Host::Windows && camera_unnamed {
+        return Err(PortError::Failed("Choose a camera in Settings → Recording, or turn the camera overlay off".into()));
+    }
+    Ok(())
+}
+
 /// A recording in progress. Its `RecordingHandle` methods run the work on a worker thread.
 pub struct FfmpegRecorder {
     inner: Arc<Mutex<Inner>>,
@@ -98,7 +111,19 @@ struct Feeder {
 
 impl FfmpegRecorder {
     /// Starts the first segment. `feed` is the stdin source, when `plan` uses stdin.
-    pub(crate) fn start(paths: FfmpegPaths, plan: Plan, session: PathBuf, output: PathBuf, feed: Option<Feed>) -> Result<Self, PortError> {
+    pub(crate) fn start(
+        paths: FfmpegPaths,
+        plan: Plan,
+        session: PathBuf,
+        output: PathBuf,
+        mut feed: Option<Feed>,
+    ) -> Result<Self, PortError> {
+        if let Err(err) = validate(&plan) {
+            if let Some(feed) = feed.as_mut() {
+                feed.stop();
+            }
+            return Err(err);
+        }
         fs::create_dir_all(&session).map_err(|err| PortError::Failed(format!("create {}: {err}", session.display())))?;
         // The concat step runs inside the session folder, so the output needs an absolute path.
         let output = match std::path::absolute(&output) {
@@ -215,6 +240,8 @@ impl Inner {
         tracing::warn!("ddagrab failed to start; falling back to gdigrab");
         self.capture = WindowsCapture::Gdigrab;
         self.finish_segment();
+        // The ddagrab segment ending is why gdigrab takes over, not the end of the recording.
+        self.ended = false;
         self.spawn_segment()?;
         let early = self.current.as_mut().and_then(|segment| wait_for_exit(&mut segment.child, CAPTURE_CHECK));
         match early {
@@ -646,7 +673,36 @@ fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use laqta_domain::geometry::PhysRect;
+    use laqta_domain::record::{CameraOverlay, Quality};
+
     use super::*;
+
+    /// A stand-in FFmpeg that fails for `ddagrab` and runs until killed otherwise.
+    #[cfg(unix)]
+    #[test]
+    fn a_recording_that_fell_back_to_gdigrab_is_still_alive() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ffmpeg = dir.path().join("ffmpeg");
+        fs::write(&ffmpeg, "#!/bin/sh\ncase \"$*\" in *ddagrab*) exit 1;; esac\nexec sleep 30\n").expect("script");
+        fs::set_permissions(&ffmpeg, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let mut plan = plan(VideoCodec::X264, Host::Windows, None);
+        plan.video = VideoInputDesc::Target(OsScreen::Windows {
+            adapter_index: 0,
+            output_index: 0,
+            offset_x: 0,
+            offset_y: 0,
+            width: 640,
+            height: 480,
+            desktop_x: 0,
+            desktop_y: 0,
+        });
+        let paths = FfmpegPaths { ffmpeg: ffmpeg.clone(), ffprobe: ffmpeg };
+        let mut recorder = FfmpegRecorder::start(paths, plan, dir.path().join("session"), dir.path().join("out.mp4"), None).expect("start");
+        assert!(RecordingHandle::is_alive(&mut recorder), "the failed ddagrab attempt must not end the recording");
+        locked(&recorder.inner, Inner::abort);
+    }
 
     #[test]
     fn copies_follow_the_periods_missed_up_to_the_cap() {
@@ -664,5 +720,46 @@ mod tests {
         let output = Path::new("/videos/Screencast 12-00-00.gif");
         assert_eq!(part_path(output), Path::new("/videos/Screencast 12-00-00.gif.part"));
         assert_eq!(kept_path(output), Path::new("/videos/Screencast 12-00-00.gif.mkv"));
+    }
+
+    fn plan(codec: VideoCodec, host: Host, camera: Option<CameraOverlay>) -> Plan {
+        let spec = RecordSpec {
+            area: PhysRect { x: 0, y: 0, width: 640, height: 480 },
+            codec,
+            fps: 30,
+            quality: Quality::Default,
+            show_cursor: true,
+            audio: Vec::new(),
+            custom_args: String::new(),
+            camera,
+        };
+        Plan { video: VideoInputDesc::RawFrames { width: 64, height: 48, fps: 30 }, audio: Vec::new(), spec, host }
+    }
+
+    fn camera(enabled: bool, device: &str) -> Option<CameraOverlay> {
+        Some(CameraOverlay { enabled, device: device.into(), ..CameraOverlay::default() })
+    }
+
+    #[test]
+    fn vaapi_is_refused_on_windows_and_passes_on_linux() {
+        let on_windows = validate(&plan(VideoCodec::Vaapi, Host::Windows, None));
+        assert!(matches!(on_windows, Err(PortError::Unsupported(_))));
+        assert!(validate(&plan(VideoCodec::Vaapi, Host::Linux, None)).is_ok());
+    }
+
+    #[test]
+    fn enabled_camera_without_a_name_is_refused_on_windows_only() {
+        for name in ["", "   "] {
+            let windows = validate(&plan(VideoCodec::X264, Host::Windows, camera(true, name)));
+            assert!(matches!(windows, Err(PortError::Failed(_))), "{name:?}");
+        }
+        assert!(validate(&plan(VideoCodec::X264, Host::Linux, camera(true, ""))).is_ok());
+    }
+
+    #[test]
+    fn disabled_camera_or_a_named_one_passes_on_windows() {
+        assert!(validate(&plan(VideoCodec::X264, Host::Windows, camera(false, ""))).is_ok());
+        assert!(validate(&plan(VideoCodec::X264, Host::Windows, camera(true, "Integrated Camera"))).is_ok());
+        assert!(validate(&plan(VideoCodec::X264, Host::Windows, None)).is_ok());
     }
 }
