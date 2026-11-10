@@ -21,6 +21,7 @@
 <p align="center">
   <img alt="Windows" src="https://img.shields.io/badge/Windows-10%20%7C%2011-3D8BFD?style=flat-square">
   <img alt="Linux" src="https://img.shields.io/badge/Linux-X11%20%7C%20Wayland-3D8BFD?style=flat-square">
+  <img alt="macOS" src="https://img.shields.io/badge/macOS-14%2B%20(preview)-3D8BFD?style=flat-square">
   <img alt="Rust" src="https://img.shields.io/badge/built%20with-Rust-1E2A78?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-FF6B5A?style=flat-square">
 </p>
@@ -31,8 +32,8 @@
 
 **Laqta** (Arabic لقطة, *"a snapshot"*) takes screenshots and screen recordings, lets you mark
 them up, and uploads them wherever you want, starting from one shortcut. It's written in Rust with
-a GPU-drawn interface, sits in the tray until you need it, and works on Windows and on Linux
-(X11 and Wayland).
+a GPU-drawn interface, sits in the tray until you need it, and works on Windows, on Linux
+(X11 and Wayland) and on macOS 14 or later.
 
 Coming from **ShareX**? Laqta is built to replace it, and it brings your setup along: settings,
 hotkeys, workflows, custom uploaders (`.sxcu`), image effects (`.sxie`), backups (`.sxb`) and
@@ -49,6 +50,7 @@ Download the latest build for your system:
   <tr><td><b>Linux AppImage (x86_64)</b></td><td><a href="../../releases/latest/download/laqta-linux-x86_64.AppImage">laqta-linux-x86_64.AppImage</a></td></tr>
   <tr><td><b>Debian / Ubuntu (amd64)</b></td><td><a href="../../releases/latest/download/laqta-linux-amd64.deb">laqta-linux-amd64.deb</a></td></tr>
   <tr><td><b>Linux archive (x86_64)</b></td><td><a href="../../releases/latest/download/laqta-linux-x86_64.tar.zst">laqta-linux-x86_64.tar.zst</a></td></tr>
+  <tr><td><b>macOS 14+ (Apple silicon and Intel), preview</b></td><td><a href="../../releases/latest/download/laqta-macos-universal.dmg">laqta-macos-universal.dmg</a></td></tr>
 </table>
 
 Every file has a `.sha256` next to it on the [Releases](../../releases) page.
@@ -60,9 +62,19 @@ Every file has a `.sha256` next to it on the [Releases](../../releases) page.
   Debian or Ubuntu you can instead install the package with
   `sudo apt install ./laqta-linux-amd64.deb`. The archive holds the plain binaries, or you can
   [build from source](#%EF%B8%8F-build-from-source).
+- **macOS (preview):** open the `.dmg` and drag Laqta into Applications. The build isn't
+  notarized by Apple yet, so the first time you open it macOS blocks it: go to
+  **System Settings → Privacy & Security** and click **Open Anyway**. Laqta then asks for the
+  Screen Recording and Accessibility permissions. Recording uses FFmpeg from Homebrew
+  (`brew install ffmpeg`). The macOS build passes CI but hasn't been tested on a real Mac yet,
+  so please [report](../../issues) anything that doesn't work.
 
-Laqta lives in the tray. Press <kbd>Ctrl</kbd>+<kbd>PrtSc</kbd> to capture a region,
-<kbd>PrtSc</kbd> for the whole screen, or set your own shortcuts in **Settings → Shortcuts**.
+Laqta lives in the tray (the menu bar on macOS). Press <kbd>Ctrl</kbd>+<kbd>PrtSc</kbd> to
+capture a region, <kbd>PrtSc</kbd> for the whole screen, or set your own shortcuts in
+**Settings → Shortcuts**. Macs have no Print Screen key and keep
+<kbd>⌘</kbd>+<kbd>⇧</kbd>+<kbd>3</kbd>/<kbd>4</kbd>/<kbd>5</kbd> for their own screenshots, so
+there the defaults are <kbd>⌃</kbd>+<kbd>⌥</kbd>+<kbd>2</kbd> for a region and
+<kbd>⌃</kbd>+<kbd>⌥</kbd>+<kbd>1</kbd> for the whole screen.
 
 ## ⭐ Features
 
@@ -169,8 +181,18 @@ cargo build --release -p laqta
 .\target\release\laqta.exe
 ```
 
-Laqta downloads FFmpeg the first time you record, or you can point it at your own copy in
-Settings. The optional local models download from the model manager when you first need them.
+#### macOS
+With the Xcode command line tools (`xcode-select --install`). macOS grants screen and
+accessibility permissions to an app bundle, so build the bundle and open it:
+
+```bash
+cargo build --release -p laqta -p laqta-nmh
+scripts/macos-bundle.sh target/release/laqta target/release/laqta-nmh 0.0.0 target/mac
+open target/mac/Laqta.app
+```
+
+On Windows and Linux, Laqta downloads FFmpeg the first time you record; on macOS it uses
+Homebrew's. You can also point it at your own copy in Settings. The optional local models download from the model manager when you first need them.
 
 #### Scripting
 Running `laqta` again passes its arguments to the copy that's already running, so you can drive
@@ -191,7 +213,7 @@ Platform and service code plugs into it through small interfaces (ports).
 | --- | --- |
 | Pure core | `laqta-domain`, `laqta-imaging`, `laqta-editor`, `laqta-photo` |
 | Application | `laqta-app` (use cases, the task pipeline, the region session) and `laqta-ports` |
-| Adapters | `laqta-platform-linux`, `laqta-platform-windows`, `laqta-media`, `laqta-upload`, `laqta-cloud`, `laqta-library`, `laqta-ml`, … |
+| Adapters | `laqta-platform-linux`, `laqta-platform-windows`, `laqta-platform-macos`, `laqta-media`, `laqta-upload`, `laqta-cloud`, `laqta-library`, `laqta-ml`, … |
 | Interface | `laqta-ui` (GPUI) and `apps/laqta`, which wires it all together |
 
 Read more in [Architecture](docs/ARCHITECTURE.md), the [feature list](docs/FEATURES.md), the
