@@ -14,7 +14,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use laqta_domain::action::Action;
 use laqta_domain::hotkey::KeyChord;
-use laqta_ports::{ActionCallback, HotkeyRegistrar, PortError};
+use laqta_ports::{HotkeyCallback, HotkeyRegistrar, PortError};
 
 use crate::keys::{key_code, modifier_mask};
 use crate::main_thread::on_main;
@@ -102,14 +102,14 @@ unsafe impl Send for HotKeyRef {}
 #[derive(Debug)]
 struct Registered {
     id: u32,
-    action: Action,
+    chord: KeyChord,
     hot_key: HotKeyRef,
 }
 
 struct State {
     handler_installed: bool,
     registered: Vec<Registered>,
-    on_fire: Option<ActionCallback>,
+    on_fire: Option<HotkeyCallback>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State { handler_installed: false, registered: Vec::new(), on_fire: None });
@@ -122,7 +122,7 @@ fn state() -> MutexGuard<'static, State> {
 pub struct MacHotkeys;
 
 impl HotkeyRegistrar for MacHotkeys {
-    fn register(&self, bindings: &[(KeyChord, Action)], on_fire: ActionCallback) -> HotkeyResults {
+    fn register(&self, bindings: &[(KeyChord, Action)], on_fire: HotkeyCallback) -> HotkeyResults {
         on_main(|_| register_on_main(bindings, on_fire))
     }
 
@@ -158,12 +158,12 @@ extern "C" fn on_hot_key(_call: *mut c_void, event: *mut c_void, _user_data: *mu
     // Look up under the lock, call outside it: the callback may register again.
     let fire = {
         let s = state();
-        s.registered.iter().find(|r| r.id == hot_key_id.id).map(|r| r.action).zip(s.on_fire.clone())
+        s.registered.iter().find(|r| r.id == hot_key_id.id).map(|r| r.chord).zip(s.on_fire.clone())
     };
-    let Some((action, callback)) = fire else { return EVENT_NOT_HANDLED_ERR };
+    let Some((chord, callback)) = fire else { return EVENT_NOT_HANDLED_ERR };
     // A panic must not unwind into Carbon.
-    if catch_unwind(AssertUnwindSafe(|| callback(action))).is_err() {
-        tracing::error!("hotkey callback panicked for {action:?}");
+    if catch_unwind(AssertUnwindSafe(|| callback(chord))).is_err() {
+        tracing::error!("hotkey callback panicked for {chord:?}");
     }
     NO_ERR
 }
@@ -203,7 +203,7 @@ fn unregister_registered() {
     }
 }
 
-fn register_on_main(bindings: &[(KeyChord, Action)], on_fire: ActionCallback) -> HotkeyResults {
+fn register_on_main(bindings: &[(KeyChord, Action)], on_fire: HotkeyCallback) -> HotkeyResults {
     unregister_registered();
     if bindings.is_empty() {
         return Vec::new();
@@ -213,9 +213,9 @@ fn register_on_main(bindings: &[(KeyChord, Action)], on_fire: ActionCallback) ->
     }
     let mut registered = Vec::new();
     let mut results = Vec::with_capacity(bindings.len());
-    for (index, (chord, action)) in bindings.iter().enumerate() {
+    for (index, (chord, _)) in bindings.iter().enumerate() {
         let id = index as u32 + 1;
-        let result = register_one(*chord, id).map(|hot_key| registered.push(Registered { id, action: *action, hot_key }));
+        let result = register_one(*chord, id).map(|hot_key| registered.push(Registered { id, chord: *chord, hot_key }));
         results.push((*chord, result));
     }
     let mut s = state();

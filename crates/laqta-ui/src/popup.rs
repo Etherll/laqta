@@ -1,4 +1,9 @@
-//! Exact placement for windows without a title bar on Windows.
+//! Windows without a title bar: one way to open them, with the Windows quirks handled.
+//!
+//! [`open`] is how a popup opens. It corrects the placement drift described below and removes the
+//! outline the OS draws around a borderless popup. A popup shorter than [`min_height`] is not
+//! possible on Windows, so a caller that sizes a window from content clamps to it. The region
+//! overlay is the one exception: it may open fullscreen, so it calls `placed` and `observe` itself.
 //!
 //! GPUI's Windows backend centres a window's frame around the bounds it is given, but a window
 //! without a title bar keeps a frame only at its bottom. So the window lands above the place asked
@@ -9,10 +14,36 @@
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use gpui::{Bounds, Pixels, Window, px};
+use gpui::{App, Bounds, Entity, Pixels, Render, Window, WindowBounds, WindowHandle, WindowOptions, px};
+
+use crate::runtime::{NativeWindow, UiState};
 
 /// The drift in thousandths of a logical pixel.
 static DRIFT: AtomicI32 = AtomicI32::new(if cfg!(windows) { 4000 } else { 0 });
+
+/// The shortest window GPUI opens on Windows, in logical pixels. Zero elsewhere.
+pub(crate) fn min_height() -> f32 {
+    if cfg!(windows) { 31.0 } else { 0.0 }
+}
+
+/// Opens a window without a title bar exactly at the bounds in `options`, with no outline or
+/// shadow from the OS. `options.window_bounds` holds the bounds wanted; do not pass them through
+/// `placed` first.
+pub(crate) fn open<V: 'static + Render>(
+    mut options: WindowOptions,
+    cx: &mut App,
+    build: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
+) -> gpui::Result<WindowHandle<V>> {
+    options.titlebar = None;
+    options.window_bounds = options.window_bounds.map(|bounds| match bounds {
+        WindowBounds::Windowed(b) => WindowBounds::Windowed(placed(b)),
+        other => other,
+    });
+    cx.open_window(options, |window, cx| {
+        (cx.global::<UiState>().services.native_window)(window, NativeWindow::PlainPopup);
+        build(window, cx)
+    })
+}
 
 /// `bounds`, moved so that a window without a title bar opens exactly at `bounds`.
 pub(crate) fn placed(mut bounds: Bounds<Pixels>) -> Bounds<Pixels> {

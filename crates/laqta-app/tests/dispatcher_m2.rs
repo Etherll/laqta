@@ -192,7 +192,7 @@ fn clipboard_upload_of_files_submits_one_job_per_file() {
     *h.clipboard.contents.lock().unwrap() = Some(ClipboardContent::Files(vec![first.clone(), second.clone()]));
     let uguu = destination(&h, "sxcu:uguu", vec![Ok(uploaded("https://u.example/1")), Ok(uploaded("https://u.example/2"))]);
 
-    assert_eq!(run(&h, Action::ClipboardUpload).unwrap(), Dispatched::Task(TaskId(1)));
+    assert_eq!(run(&h, Action::ClipboardUpload).unwrap(), Dispatched::Tasks((1..=2).map(TaskId).collect()));
     let requests = uguu.requests.lock().unwrap();
     assert_eq!(requests.iter().map(|r| r.file_name.as_str()).collect::<Vec<_>>(), vec!["one.zip", "two.zip"]);
     assert_eq!(requests[1].data, UploadData::Path(second));
@@ -301,7 +301,7 @@ fn file_upload_uploads_each_picked_file() {
     h.prompt.files.lock().unwrap().push_back(Ok(vec![first.clone(), second.clone()]));
     let uguu = destination(&h, "sxcu:uguu", vec![Ok(uploaded("https://u.example/7")), Ok(uploaded("https://u.example/8"))]);
 
-    assert_eq!(run(&h, Action::FileUpload).unwrap(), Dispatched::Task(TaskId(1)));
+    assert_eq!(run(&h, Action::FileUpload).unwrap(), Dispatched::Tasks((1..=2).map(TaskId).collect()));
     assert!(h.prompt.texts.lock().unwrap().is_empty(), "the file picker answered, so no path was typed");
     let requests = uguu.requests.lock().unwrap();
     assert_eq!(requests.iter().map(|r| r.file_name.as_str()).collect::<Vec<_>>(), vec!["one.zip", "two.zip"]);
@@ -334,7 +334,7 @@ fn folder_upload_submits_one_file_job_per_file_in_the_folder() {
         vec![Ok(uploaded("https://u.example/9")), Ok(uploaded("https://u.example/10")), Ok(uploaded("https://u.example/11"))],
     );
 
-    assert_eq!(run(&h, Action::FolderUpload).unwrap(), Dispatched::Task(TaskId(1)));
+    assert_eq!(run(&h, Action::FolderUpload).unwrap(), Dispatched::Tasks((1..=3).map(TaskId).collect()));
     // Recursive and sorted: the subfolder's file goes after the two in the folder, in name order.
     let requests = uguu.requests.lock().unwrap();
     assert_eq!(requests.iter().map(|r| r.file_name.as_str()).collect::<Vec<_>>(), vec!["a.zip", "b.zip", "deep.zip"]);
@@ -356,7 +356,7 @@ fn folder_upload_of_more_than_ten_files_is_confirmed_then_submitted() {
     h.prompt.confirms.lock().unwrap().push_back(true);
     let uguu = destination(&h, "sxcu:uguu", (0..11).map(|i| Ok(uploaded(&format!("https://u.example/{i}")))).collect());
 
-    assert_eq!(run(&h, Action::FolderUpload).unwrap(), Dispatched::Task(TaskId(1)));
+    assert_eq!(run(&h, Action::FolderUpload).unwrap(), Dispatched::Tasks((1..=11).map(TaskId).collect()));
     assert!(h.prompt.confirms.lock().unwrap().is_empty(), "the folder's eleven files were confirmed");
     assert_eq!(uguu.requests.lock().unwrap().len(), 11);
 }
@@ -391,7 +391,7 @@ fn upload_of_ten_files_does_not_ask() {
     h.prompt.confirms.lock().unwrap().push_back(false);
     let uguu = destination(&h, "sxcu:uguu", (0..10).map(|i| Ok(uploaded(&format!("https://u.example/{i}")))).collect());
 
-    assert_eq!(run(&h, Action::FileUpload).unwrap(), Dispatched::Task(TaskId(1)));
+    assert_eq!(run(&h, Action::FileUpload).unwrap(), Dispatched::Tasks((1..=10).map(TaskId).collect()));
     assert_eq!(h.prompt.confirms.lock().unwrap().len(), 1, "ten files went without asking");
     assert_eq!(uguu.requests.lock().unwrap().len(), 10);
 }
@@ -457,4 +457,19 @@ fn dispatch_with_a_url_downloads_it_and_shortens_it_without_asking() {
 
     let err = run_with(&h, Action::ShortenUrl, ActionInput::Url("not a url".to_owned())).unwrap_err();
     assert!(matches!(err, AppError::Unsupported(_)), "got {err:?}");
+}
+
+#[test]
+fn dispatch_with_several_files_returns_every_task() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path());
+    let (a, b) = (tmp.path().join("a.zip"), tmp.path().join("b.zip"));
+    std::fs::write(&a, b"a").unwrap();
+    std::fs::write(&b, b"b").unwrap();
+    let _uguu = destination(&h, "sxcu:uguu", vec![Ok(uploaded("https://u.example/1")), Ok(uploaded("https://u.example/2"))]);
+
+    // A caller that waits for the tasks (`-autoclose`) needs all of them, not only the first.
+    assert_eq!(run_with(&h, Action::FileUpload, ActionInput::Files(vec![a, b])).unwrap(), Dispatched::Tasks(vec![TaskId(1), TaskId(2)]));
+    // Both ran to the end, so neither is left for a waiter to reconcile against.
+    assert!(h.app.unfinished_tasks().is_empty());
 }

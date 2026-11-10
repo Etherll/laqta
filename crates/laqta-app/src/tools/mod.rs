@@ -8,6 +8,7 @@ mod common;
 mod hash;
 mod images;
 mod indexer;
+mod job;
 mod ocr;
 mod qr;
 mod ruler;
@@ -21,6 +22,7 @@ pub use images::{
     watermark_files,
 };
 pub use indexer::{IndexFormat, IndexOptions, index_folder};
+pub use job::{ToolJob, ToolOutput};
 pub use ocr::ocr_image;
 pub use qr::{qr_decode_file, qr_decode_image, qr_decode_screen, qr_image};
 pub use ruler::{Measurement, measure, px_to_cm, px_to_inches};

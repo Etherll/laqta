@@ -76,10 +76,9 @@ fn audit_bug_nmh_upload_video_action_2() {
     assert_eq!(got, vec![Request::UploadUrl("https://example.invalid/v.mp4".into())], "reply: {reply}");
 }
 
-/// Selected text longer than the IPC line limit (4096 bytes) cannot be forwarded. Uses Laqta's own
+/// Selected text longer than the old 4096-byte IPC line limit must still reach Laqta. Uses Laqta's own
 /// number for text (2) so only the size is under test.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_nmh_long_text_exceeds_ipc_line_limit() {
     let text = "a".repeat(5000);
     let (got, reply) = exchange("long", &format!(r#"{{"Action":2,"URL":"","Text":"{text}"}}"#));

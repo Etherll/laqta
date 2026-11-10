@@ -81,9 +81,11 @@ pub enum ActionInput {
 }
 
 /// What a dispatched action produced.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Dispatched {
     Task(TaskId),
+    /// Several files: one task each, in order.
+    Tasks(Vec<TaskId>),
     Done,
     Exit,
     /// `DisableHotkeys` flipped `settings.disable_hotkeys`; `main` re-registers hotkeys.
@@ -131,6 +133,8 @@ pub struct App {
     pub(crate) window_toggles: crate::tools::WindowToggles,
     /// The history the windows edit, once `main` attaches it (`history.rs`).
     pub(crate) history: std::sync::OnceLock<Arc<dyn laqta_ports::HistoryEdit>>,
+    /// Runs effect presets with text and assets (`effects.rs`). Task holds the same one.
+    pub(crate) effects: Arc<crate::effects::EffectRunner>,
     /// Keeps the event channel open while nobody listens, so sends never fail.
     idle: InactiveReceiver<TaskEvent>,
 }
@@ -147,7 +151,8 @@ impl App {
         events.set_overflow(true);
         let ports = Arc::new(ports);
         let settings = Arc::new(SettingsCell::new(settings));
-        let task = Task::new(Arc::clone(&ports), Arc::clone(&settings), events);
+        let effects = Arc::new(crate::effects::EffectRunner::default());
+        let task = Task::new(Arc::clone(&ports), Arc::clone(&settings), Arc::clone(&effects), events);
         Arc::new(App {
             ports,
             settings,
@@ -159,6 +164,7 @@ impl App {
             watches: std::sync::Mutex::new(Vec::new()),
             window_toggles: Default::default(),
             history: std::sync::OnceLock::new(),
+            effects,
             idle: active.deactivate(),
         })
     }
@@ -185,6 +191,11 @@ impl App {
 
     pub fn stop_all(&self) {
         self.task.stop_all();
+    }
+
+    /// Every task that is queued or running, lowest id first.
+    pub fn unfinished_tasks(&self) -> Vec<TaskId> {
+        self.task.unfinished()
     }
 
     /// A new listener. It sees the events sent after this call.
@@ -565,7 +576,7 @@ impl App {
                 Ok(Dispatched::Done)
             }
             Action::ExitLaqta => Ok(Dispatched::Exit),
-            a if let Some(r) = self.tool_route(a, &ts).await => r,
+            a if let Some(r) = self.guarded_tool_route(a, &ts).await => r,
             Action::ScrollingCapture => self.scrolling_capture(ts, workflow).await,
             Action::AutoCapture => self.auto_capture(None),
             Action::StartAutoCapture => self.auto_capture(Some(true)),
@@ -580,7 +591,11 @@ const MULTI_UPLOAD_CONFIRM_ABOVE: usize = 10;
 
 /// The dispatched result for a batch of jobs: the first job's id, or nothing to wait for when the batch is empty.
 fn first_task(ids: Vec<TaskId>) -> Dispatched {
-    ids.first().map_or(Dispatched::Done, |id| Dispatched::Task(*id))
+    match ids.as_slice() {
+        [] => Dispatched::Done,
+        [id] => Dispatched::Task(*id),
+        _ => Dispatched::Tasks(ids),
+    }
 }
 
 /// The after-capture steps for a region the user finished with `action` (ADR 011: what happens to a

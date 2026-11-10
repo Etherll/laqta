@@ -820,11 +820,12 @@ impl Render for MainWindow {
             .id("main-drop")
             .drag_over::<gpui::ExternalPaths>(move |style, _, _, _| style.bg(drop_tint))
             .on_drop(move |paths: &gpui::ExternalPaths, _, cx| {
-                // `upload_paths` asks before a large batch, as the other upload routes do.
+                // Through `dispatch`, which asks before a large batch, as the other upload routes do.
                 let (app, paths) = (app.clone(), paths.paths().to_vec());
                 cx.background_spawn(async move {
-                    match app.upload_paths(paths, None).await {
-                        Ok(ids) => tracing::info!(count = ids.len(), "dropped files submitted for upload"),
+                    let count = paths.len();
+                    match app.dispatch_with(laqta_domain::Action::FileUpload, laqta_app::ActionInput::Files(paths), None).await {
+                        Ok(_) => tracing::info!(count, "dropped files submitted for upload"),
                         Err(e) => tracing::warn!("dropped files not uploaded: {e}"),
                     }
                 })

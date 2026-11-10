@@ -12,6 +12,33 @@ pub(super) fn has_marker(text: &str) -> bool {
     LEGACY_NAMES.iter().any(|name| text.contains(&format!("${name}$")) || text.contains(&format!("${name}:")))
 }
 
+/// Converts a ShareX 12 `Data` body. Only the two markers ShareX replaces are converted, matched
+/// ignoring ASCII case as ShareX does; the text is otherwise literal, so its braces and backslashes
+/// stay as written.
+pub(super) fn convert_data(text: &str) -> String {
+    replace_ascii_ignore_case(&replace_ascii_ignore_case(text, "$input$", "{input}"), "$filename$", "{filename}")
+}
+
+/// Replaces each `from` in `text`, where `from` is ASCII, matching it ignoring ASCII case.
+fn replace_ascii_ignore_case(text: &str, from: &str, to: &str) -> String {
+    let (haystack, needle) = (text.as_bytes(), from.as_bytes());
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut i = 0;
+    while i + needle.len() <= haystack.len() {
+        if haystack[i..i + needle.len()].eq_ignore_ascii_case(needle) {
+            out.push_str(&text[copied..i]);
+            out.push_str(to);
+            i += needle.len();
+            copied = i;
+        } else {
+            i += 1;
+        }
+    }
+    out.push_str(&text[copied..]);
+    out
+}
+
 /// Converts ShareX 12 text to the current template syntax.
 pub(super) fn convert(text: &str, regexes: &[String]) -> Result<String, SxcuError> {
     let chars: Vec<char> = text.chars().collect();

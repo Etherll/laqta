@@ -67,9 +67,15 @@ impl Registry {
     /// with the same name replaces the earlier one. Returns the id.
     pub fn add_custom(&mut self, json: &str) -> Result<String, SxcuError> {
         let uploader = CustomUploader::parse(json)?;
+        // ShareX leaves `Name` out when it equals the request URL's host, and shows the host instead
+        // (`CustomUploaderItem.ToString`).
         let name = match uploader.name.as_deref().map(str::trim) {
             Some(name) if !name.is_empty() => name.to_owned(),
-            _ => return Err(SxcuError::Json("the file has no `Name`".into())),
+            _ => url::Url::parse(&uploader.request_url)
+                .ok()
+                .and_then(|url| url.host_str().map(without_www))
+                .filter(|host| !host.is_empty())
+                .ok_or_else(|| SxcuError::Json("the file has no `Name` and no host in `RequestURL`".into()))?,
         };
         let id = format!("custom:{name}");
         if !self.add_uploader(id.clone(), uploader) {
@@ -120,5 +126,13 @@ impl fmt::Debug for Registry {
             .field("shorteners", &self.shorteners.len())
             .field("sharers", &self.sharers.len())
             .finish_non_exhaustive()
+    }
+}
+
+/// A host without a leading `www.`, as ShareX's `URLHelpers.GetHostName` gives it.
+fn without_www(host: &str) -> String {
+    match host.get(..4) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("www.") => host[4..].to_owned(),
+        _ => host.to_owned(),
     }
 }

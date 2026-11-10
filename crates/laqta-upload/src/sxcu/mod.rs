@@ -154,7 +154,7 @@ async fn text_body(
     escape: Escape,
 ) -> Result<Body, SxcuError> {
     let data = match &u.data {
-        Some(template) => syntax::render(ctx, template, escape).await?,
+        Some(template) => syntax::render_data(ctx, template, escape).await?,
         None => String::new(),
     };
     let content_type = take_content_type(headers).unwrap_or_else(|| default_type.to_string());

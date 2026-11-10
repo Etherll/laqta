@@ -73,11 +73,6 @@ enum Place {
     At(Bounds<gpui::Pixels>),
 }
 
-/// Leaves a recording window with only what it paints: no outline or shadow from the OS.
-fn plain(window: &Window, cx: &App) {
-    (cx.global::<UiState>().services.native_window)(window, crate::runtime::NativeWindow::PlainPopup);
-}
-
 fn is_wayland() -> bool {
     cfg!(target_os = "linux")
         && std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
@@ -95,7 +90,7 @@ fn popup_on(place: Place, size: gpui::Size<gpui::Pixels>, display: Option<gpui::
     let (bounds, kind) = if is_wayland() {
         (Bounds { origin: point(px(0.), px(0.)), size }, layer_kind(place))
     } else {
-        (crate::popup::placed(x11_bounds(place, size, cx)), WindowKind::PopUp)
+        (x11_bounds(place, size, cx), WindowKind::PopUp)
     };
     WindowOptions {
         titlebar: None,
@@ -207,8 +202,7 @@ fn countdown(seconds: u32, cx: &mut App) {
             return;
         }
     }
-    if let Ok(handle) = cx.open_window(popup(Place::Center, size(px(160.), px(160.)), cx), |window, cx| {
-        plain(window, cx);
+    if let Ok(handle) = crate::popup::open(popup(Place::Center, size(px(160.), px(160.)), cx), cx, |window, cx| {
         let view = cx.new(|_| Countdown { seconds });
         // The view is rounded: keep the root's square theme background out of the corners.
         cx.new(|cx| Root::new(view, window, cx).bg(gpui::transparent_black()))
@@ -253,8 +247,7 @@ fn open_bar(mut state: Bar, cx: &mut App) {
     if let Some(old) = cx.global_mut::<UiState>().recording.bar.take() {
         let _ = old.update(cx, |_, window, _| window.remove_window());
     }
-    if let Ok(handle) = cx.open_window(popup(place, bar, cx), |window, cx| {
-        plain(window, cx);
+    if let Ok(handle) = crate::popup::open(popup(place, bar, cx), cx, |window, cx| {
         let view = cx.new(|_| state);
         // The view is rounded: keep the root's square theme background out of the corners.
         cx.new(|cx| Root::new(view, window, cx).bg(gpui::transparent_black()))
@@ -336,10 +329,9 @@ fn place_border(bar: Bar, scale: f32, cx: &mut App) {
             continue;
         }
         let b = Bounds { origin: point(px(bx), px(by)), size: size(px(bw), px(bh)) };
-        if let Ok(handle) = cx.open_window(popup_on(Place::At(b), b.size, display_id, cx), |window, cx| {
-            plain(window, cx);
-            cx.new(|_| BorderStrip { paint, thickness: t })
-        }) {
+        if let Ok(handle) =
+            crate::popup::open(popup_on(Place::At(b), b.size, display_id, cx), cx, |_, cx| cx.new(|_| BorderStrip { paint, thickness: t }))
+        {
             strips.push(handle.into());
         }
     }

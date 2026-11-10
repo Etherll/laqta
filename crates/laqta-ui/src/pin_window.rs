@@ -23,7 +23,7 @@ pub(crate) fn pin(image: Bitmap, cx: &mut App) {
     // Physical pixels shown at 1:1 on a scale-1 display; HiDPI displays show them at logical size.
     let (w, h) = (image.width().max(16) as f32, image.height().max(16) as f32);
     let options = WindowOptions {
-        window_bounds: Some(crate::chrome::centered(w, h, cx)),
+        window_bounds: Some(crate::chrome::centered(w, window_height(h), cx)),
         titlebar: None,
         kind: WindowKind::PopUp,
         focus: true,
@@ -33,15 +33,19 @@ pub(crate) fn pin(image: Bitmap, cx: &mut App) {
         app_id: Some("laqta-pin".into()),
         ..Default::default()
     };
-    match cx.open_window(options, |window, cx| {
-        let _ = window;
-        cx.new(|cx| PinView { image: render, base: (w, h), zoom: 1.0, focus: cx.focus_handle() })
-    }) {
+    match crate::popup::open(options, cx, |_, cx| cx.new(|cx| PinView { image: render, base: (w, h), zoom: 1.0, focus: cx.focus_handle() }))
+    {
         Ok(handle) => {
             cx.default_global::<Pins>().0.push(handle.into());
         }
         Err(e) => tracing::warn!("pin window failed: {e:#}"),
     }
+}
+
+/// The window is never shorter than the shortest one the platform opens. A shorter image keeps its
+/// own size inside it, centred.
+fn window_height(image_height: f32) -> f32 {
+    image_height.max(crate::popup::min_height())
 }
 
 pub(crate) fn close_all(cx: &mut App) {
@@ -66,6 +70,9 @@ impl Render for PinView {
             .id("pin")
             .track_focus(&self.focus)
             .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
             .border_1()
             .border_color(crate::theme::extra(cx).info)
             .child(img(self.image.clone()).w(px(w)).h(px(h)))
@@ -87,7 +94,7 @@ impl Render for PinView {
                 let next = (this.zoom * if dy > 0.0 { 1.1 } else { 1.0 / 1.1 }).clamp(0.1, 8.0);
                 if (next - this.zoom).abs() > f32::EPSILON {
                     this.zoom = next;
-                    window.resize(size(px(this.base.0 * next), px(this.base.1 * next)));
+                    window.resize(size(px(this.base.0 * next), px(window_height(this.base.1 * next))));
                     cx.notify();
                 }
             }))

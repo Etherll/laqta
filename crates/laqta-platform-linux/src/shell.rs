@@ -17,7 +17,8 @@ fn run_program(program: &Path, args: &[String]) -> laqta_ports::BoxFuture<'stati
 }
 
 impl Shell for XdgShell {
-    fn run(&self, program: &Path, args: &[String], _hidden: bool) -> laqta_ports::BoxFuture<'_, Result<i32, PortError>> {
+    /// Linux has no console window to hide, so the `hidden` flag is ignored.
+    fn run(&self, program: &Path, args: &[String], _: bool) -> laqta_ports::BoxFuture<'_, Result<i32, PortError>> {
         run_program(program, args)
     }
 

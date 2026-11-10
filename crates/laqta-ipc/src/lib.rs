@@ -186,7 +186,7 @@ impl Client {
 
     /// Sends any request and waits for its reply.
     pub fn send_request(&mut self, request: &Request) -> Result<(), String> {
-        let request = protocol::encode(request);
+        let request = protocol::encode_checked(request)?;
         self.reader.get_mut().write_all(request.as_bytes()).map_err(|error| error.to_string())?;
         match protocol::read_line(&mut self.reader).map_err(|error| error.to_string())? {
             Some(line) => protocol::parse_reply(&line),

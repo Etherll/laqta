@@ -5,6 +5,7 @@
 mod ai;
 mod auto_capture;
 mod dispatcher;
+mod effects;
 mod files;
 mod history;
 mod images;
@@ -17,6 +18,7 @@ mod tools;
 mod watch;
 
 pub use dispatcher::{ActionInput, App, Dispatched, Ports};
+pub use effects::EffectText;
 pub use region::Selection;
 pub use task::TaskJob;
 pub use task::UploadSource;

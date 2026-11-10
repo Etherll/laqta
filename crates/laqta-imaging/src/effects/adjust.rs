@@ -16,17 +16,15 @@ pub(super) const LUMA: [f32; 3] = [0.213, 0.715, 0.072];
 const GRAY: [[f32; 3]; 3] = [[LUMA[0]; 3], [LUMA[1]; 3], [LUMA[2]; 3]];
 /// Sepia target, indexed [input][output].
 const SEPIA: [[f32; 3]; 3] = [[0.393, 0.349, 0.272], [0.769, 0.686, 0.534], [0.189, 0.168, 0.131]];
-/// Polaroid matrix, indexed [input][output] in the 5x4 layout (the last row is the offset).
+/// Polaroid matrix (ShareX `SkiaColorMatrixManager.Polaroid`), indexed [input][output] in the 5x4
+/// layout (the last row is the offset).
 const POLAROID: Matrix = [
-    [1.438, -0.122, -0.016, 0.0],
-    [-0.062, 1.378, -0.016, 0.0],
-    [-0.062, -0.122, 1.483, 0.0],
+    [1.438, -0.062, -0.062, 0.0],
+    [-0.122, 1.378, -0.122, 0.0],
+    [-0.016, -0.016, 1.483, 0.0],
     [0.0, 0.0, 0.0, 1.0],
-    [0.03, 0.05, -0.02, 0.0],
+    [-0.03, 0.05, -0.02, 0.0],
 ];
-/// Black & White pushes luma through this slope around mid grey, so it saturates to near black or
-/// near white.
-const BLACK_WHITE_SLOPE: f32 = 4.0;
 
 /// The 5x4 matrix as rows: input r, g, b, a, then the constant; columns are the outputs.
 type Matrix = [[f32; 4]; 5];
@@ -39,7 +37,8 @@ pub(super) fn apply(image: &Bitmap, effect: &Adjust, _cx: &EffectContext<'_>) ->
     }
     let out = match effect {
         Adjust::Alpha { alpha, add } => apply_matrix(image, &flat(&alpha_matrix(*alpha, *add))),
-        Adjust::BlackWhite => apply_matrix(image, &flat(&black_white())),
+        // ShareX `SkiaColorMatrixManager.BlackWhite`: every output takes 1.5 x the input sum, minus 1.
+        Adjust::BlackWhite => apply_matrix(image, &flat(&rgb_matrix([[1.5; 3]; 3], [-1.0; 3]))),
         Adjust::Brightness { value } => apply_matrix(image, &flat(&rgb_matrix(diag(1.0), [value / 100.0; 3]))),
         Adjust::Colorize { color, value } => apply_matrix(image, &flat(&blend(&colorize_target(*color), value / 100.0))),
         Adjust::Contrast { value } => {
@@ -195,10 +194,6 @@ fn alpha_matrix(alpha: f32, add: f32) -> Matrix {
     m[3][3] = alpha;
     m[4][3] = add;
     m
-}
-
-fn black_white() -> Matrix {
-    rgb_matrix(GRAY.map(|row| row.map(|v| v * BLACK_WHITE_SLOPE)), [0.5 * (1.0 - BLACK_WHITE_SLOPE); 3])
 }
 
 /// Each input channel's luma, tinted by the colour's channel for the matching output.

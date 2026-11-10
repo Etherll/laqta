@@ -61,7 +61,6 @@ fn ports() -> Ports {
 }
 
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_tool_route_not_unwind_guarded() {
     let app = App::new(ports(), Settings::default());
     // Catch here so the test reports a clean assertion failure instead of a raw panic.

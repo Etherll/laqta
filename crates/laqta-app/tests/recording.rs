@@ -23,6 +23,7 @@ use tempfile::TempDir;
 
 struct H {
     app: Arc<App>,
+    highlighter: Arc<laqta_ports::fakes::FakeHighlighter>,
     overlay: Arc<FakeOverlay>,
     spawner: Arc<InlineSpawner>,
     media: Arc<FakeMedia>,
@@ -69,6 +70,7 @@ fn window() -> HoverTarget {
 
 fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
     let overlay = Arc::new(FakeOverlay::default());
+    let highlighter = Arc::new(laqta_ports::fakes::FakeHighlighter::default());
     let spawner = Arc::new(InlineSpawner::default());
     let hover = Arc::new(FakeHoverSource::new(vec![window()]));
     *hover.active.lock().unwrap() = Some(window());
@@ -92,7 +94,7 @@ fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
         ocr: Arc::new(laqta_ports::fakes::FakeOcr::default()),
         window_ops: Arc::new(laqta_ports::fakes::FakeWindowOps::default()),
         input: Arc::new(laqta_ports::fakes::FakeInputSynth::default()),
-        highlighter: Arc::new(laqta_ports::fakes::FakeHighlighter::default()),
+        highlighter: highlighter.clone(),
         background: Arc::new(laqta_ports::fakes::FakeBackgroundRemover::default()),
         analyzer: Arc::new(laqta_ports::fakes::FakeAnalyzer::default()),
         inpainter: Arc::new(laqta_ports::fakes::FakeInpainter),
@@ -112,7 +114,7 @@ fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
     edit(&mut settings);
     let app = App::new(ports, settings);
     let events = app.events();
-    H { app, overlay, spawner, media, stream, hover, clipboard, shell, notifier, events, log: Vec::new(), running: Vec::new() }
+    H { app, highlighter, overlay, spawner, media, stream, hover, clipboard, shell, notifier, events, log: Vec::new(), running: Vec::new() }
 }
 
 /// Polls every spawned future once, keeping the ones that are still running. A driver with nothing due does not
@@ -529,10 +531,10 @@ fn highlighter_is_on_only_while_recording() {
         start(&h, Action::ScreenRecorderCustomRegion).unwrap();
         recording_id(&mut h);
         step(&mut h);
-        assert!(h.app.ports().highlighter.is_enabled());
+        assert!(laqta_ports::PointerHighlighter::is_enabled(&*h.highlighter));
         h.app.recording_stop();
         settle(&mut h);
-        assert!(!h.app.ports().highlighter.is_enabled());
+        assert!(!laqta_ports::PointerHighlighter::is_enabled(&*h.highlighter));
     });
 }
 

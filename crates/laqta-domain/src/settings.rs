@@ -339,6 +339,16 @@ mod tests {
     }
 
     #[test]
+    fn same_action_on_two_chords_resolves_to_each_workflow() {
+        let mut s = settings();
+        s.workflows[1].action = s.workflows[0].action;
+        let plain = KeyChord { modifiers: Modifiers::empty(), key: Key::PrintScreen };
+        let ctrl = KeyChord { modifiers: Modifiers::CTRL, key: Key::PrintScreen };
+        assert_eq!(s.workflow_for_hotkey(plain).map(|w| w.id), Some(WorkflowId(1)));
+        assert_eq!(s.workflow_for_hotkey(ctrl).map(|w| w.id), Some(WorkflowId(2)));
+    }
+
+    #[test]
     fn task_settings_resolves_screenshots_dir() {
         let mut s = settings();
 

@@ -57,8 +57,11 @@ pub enum ClipboardContent {
 
 pub type ActionCallback = Arc<dyn Fn(Action) + Send + Sync>;
 
+/// Called with the chord that fired, so the app can pick the workflow bound to that chord.
+pub type HotkeyCallback = Arc<dyn Fn(KeyChord) + Send + Sync>;
+
 pub trait HotkeyRegistrar: Send + Sync {
-    fn register(&self, bindings: &[(KeyChord, Action)], on_fire: ActionCallback) -> Vec<(KeyChord, Result<(), PortError>)>;
+    fn register(&self, bindings: &[(KeyChord, Action)], on_fire: HotkeyCallback) -> Vec<(KeyChord, Result<(), PortError>)>;
     /// Drops every registration so `register` can be called again with new bindings.
     fn unregister_all(&self) {}
 }

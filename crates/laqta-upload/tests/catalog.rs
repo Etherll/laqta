@@ -167,6 +167,19 @@ fn add_custom_registers_the_file_under_its_name() {
     assert!(registry.destination_ids().contains(&(id.clone(), "My Host".to_string())));
 }
 
+/// ShareX leaves `Name` out when it equals the request URL's host.
+#[test]
+fn add_custom_without_a_name_takes_the_request_host() {
+    let mut registry = registry();
+    let id = registry.add_custom(&CUSTOM.replace("  \"Name\": \"My Host\",\n", "")).unwrap();
+    assert_eq!(id, "custom:example.org");
+    assert!(registry.destination(&id).is_some());
+    let www = CUSTOM.replace("  \"Name\": \"My Host\",\n", "").replace("https://example.org/up", "https://WWW.example.net/up");
+    assert_eq!(registry.add_custom(&www).unwrap(), "custom:example.net", "ShareX drops a leading www.");
+    let no_host = r#"{ "DestinationType": "ImageUploader", "RequestURL": "not a url", "Body": "MultipartFormData", "FileFormName": "f" }"#;
+    assert!(registry.add_custom(no_host).is_err());
+}
+
 #[test]
 fn add_custom_with_the_same_name_replaces_the_entry() {
     let mut registry = registry();
@@ -190,7 +203,7 @@ fn add_custom_accepts_a_shortener_file() {
 fn add_custom_rejects_files_it_cannot_register() {
     let mut registry = registry();
     assert!(matches!(registry.add_custom("not json"), Err(SxcuError::Json(_))));
-    assert!(matches!(registry.add_custom(r#"{"RequestURL": "https://x"}"#), Err(SxcuError::Json(_))), "no Name");
+    assert!(matches!(registry.add_custom(r#"{"RequestURL": "not a url"}"#), Err(SxcuError::Json(_))), "no Name and no host");
     assert!(
         matches!(registry.add_custom(r#"{"Name": "X", "RequestURL": "https://x"}"#), Err(SxcuError::Unsupported(_))),
         "no DestinationType"

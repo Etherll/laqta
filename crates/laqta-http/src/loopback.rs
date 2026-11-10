@@ -15,16 +15,24 @@ use crate::HttpError;
 const HEAD_TIMEOUT: Duration = Duration::from_secs(2);
 /// Header lines read before a request is treated as malformed.
 const MAX_HEADER_LINES: usize = 100;
+/// The whole wait for the redirect. An OAuth flow the user abandons ends here instead of leaving
+/// the listener open for good.
+const OVERALL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// Accepts connections until one sends a GET. Answers it with `reply_html` and returns its
-/// request target (path and query). Other methods get a 405 and the listener keeps waiting.
+/// request target (path and query). Other methods get a 405 and the listener keeps waiting. Gives
+/// up with `HttpError::Timeout` when no GET arrives within `OVERALL_TIMEOUT`.
 pub(crate) async fn serve_once(listener: StdListener, reply_html: String) -> Result<String, HttpError> {
     let listener = TcpListener::from_std(listener).map_err(io_error)?;
+    tokio::time::timeout(OVERALL_TIMEOUT, serve_get(&listener, &reply_html)).await.map_err(|_| HttpError::Timeout)?
+}
+
+async fn serve_get(listener: &TcpListener, reply_html: &str) -> Result<String, HttpError> {
     loop {
         let (mut stream, _) = listener.accept().await.map_err(io_error)?;
         match tokio::time::timeout(HEAD_TIMEOUT, read_head(&mut stream)).await {
             Ok(Ok((method, target))) if method.eq_ignore_ascii_case("GET") => {
-                reply(&mut stream, "200 OK", &reply_html).await;
+                reply(&mut stream, "200 OK", reply_html).await;
                 return Ok(target);
             }
             Ok(Ok(_)) => reply(&mut stream, "405 Method Not Allowed", "").await,

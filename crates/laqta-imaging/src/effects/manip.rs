@@ -25,7 +25,7 @@ pub(super) fn apply(image: &Bitmap, effect: &Manip, _cx: &EffectContext<'_>) -> 
         }
         Manip::Rotate { angle, grow, color } => rotate_buf(&base, angle, grow, rgba(color))?,
         Manip::RoundedCorners { radius } => rounded_corners(&base, radius),
-        Manip::Scale { width_pct, height_pct } => resize_buf(&base, percent(base.w, width_pct), percent(base.h, height_pct))?,
+        Manip::Scale { width_pct, height_pct } => scale(&base, width_pct, height_pct)?,
         Manip::Skew { x, y, grow } => skew(&base, x, y, grow)?,
         Manip::CylinderWrap { strength } => manip_m7::cylinder_wrap(&base, strength),
         Manip::DisplacementMap { amount, scale, seed } => manip_m7::displacement(&base, amount, scale, seed),
@@ -171,6 +171,19 @@ fn resize_dims(sw: usize, sh: usize, width: u32, height: u32, keep_aspect: bool)
 /// `len` scaled by a percentage, never below 1 pixel.
 fn percent(len: usize, pct: f32) -> usize {
     ((len as f32) * pct / 100.0).round().max(1.0) as usize
+}
+
+/// `Scale` by a percentage per side. A side at 0% or below is automatic: with the other side set,
+/// the aspect ratio is kept (ShareX `ApplyAspectRatio`); with both at 0% or below, the image is
+/// returned unchanged.
+fn scale(base: &Buf, width_pct: f32, height_pct: f32) -> Result<Buf, EffectError> {
+    let (w, h) = match (width_pct > 0.0, height_pct > 0.0) {
+        (false, false) => return Ok(base.clone()),
+        (true, true) => (percent(base.w, width_pct), percent(base.h, height_pct)),
+        (true, false) => resize_dims(base.w, base.h, percent(base.w, width_pct) as u32, 0, true),
+        (false, true) => resize_dims(base.w, base.h, 0, percent(base.h, height_pct) as u32, true),
+    };
+    resize_buf(base, w, h)
 }
 
 /// Makes the corners transparent, anti-aliased. The radius is clamped to half the shorter side.
