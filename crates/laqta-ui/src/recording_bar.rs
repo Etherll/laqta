@@ -21,6 +21,13 @@ pub(crate) struct RecordingWindows {
     countdown: Option<AnyWindowHandle>,
 }
 
+impl RecordingWindows {
+    /// True when `window` is the bar, the border or the countdown.
+    pub(crate) fn holds(&self, window: AnyWindowHandle) -> bool {
+        self.bar == Some(window) || self.countdown == Some(window) || self.border.contains(&window)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Bar {
     elapsed: u32,

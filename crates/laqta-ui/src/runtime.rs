@@ -439,6 +439,23 @@ impl gpui::Global for UiState {}
 
 gpui::actions!(laqta, [QuitLaqta, OpenSettings, CloseWindow]);
 
+/// Closes `window` for Command+W. On the region overlay that cancels the selection, as Escape
+/// does: removing only the window would leave the session waiting. The recording bar, border and
+/// countdown stay, because the recording they belong to goes on.
+pub(crate) fn close_window(window: gpui::AnyWindowHandle, cx: &mut App) {
+    if cx.has_global::<UiState>() {
+        let state = cx.global::<UiState>();
+        if state.overlay.holds(window) {
+            state.overlay.cancel(cx);
+            return;
+        }
+        if state.recording.holds(window) {
+            return;
+        }
+    }
+    let _ = window.update(cx, |_, window, _| window.remove_window());
+}
+
 /// What a macOS app is expected to have: an application menu with Settings and Quit, their
 /// Command shortcuts and Command+W.
 fn mac_app_menu(dispatch: Arc<dyn Fn(Action) + Send + Sync>, cx: &mut App) {
@@ -448,7 +465,7 @@ fn mac_app_menu(dispatch: Arc<dyn Fn(Action) + Send + Sync>, cx: &mut App) {
     cx.on_action(move |_: &OpenSettings, _| settings(Action::OpenSettings));
     cx.on_action(|_: &CloseWindow, cx| {
         if let Some(window) = cx.active_window() {
-            let _ = window.update(cx, |_, window, _| window.remove_window());
+            close_window(window, cx);
         }
     });
     cx.bind_keys([

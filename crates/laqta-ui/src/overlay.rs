@@ -25,6 +25,19 @@ pub(crate) struct OverlayWindows {
 }
 
 impl OverlayWindows {
+    /// True when `window` is one of the overlay's windows.
+    pub(crate) fn holds(&self, window: AnyWindowHandle) -> bool {
+        self.windows.contains(&window)
+    }
+
+    /// Cancels the selection the way Escape does. The session then closes the windows.
+    pub(crate) fn cancel(&self, cx: &App) {
+        if let Some(model) = &self.model {
+            let on_input = model.read(cx).on_input.clone();
+            on_input(RegionInput::Key { key: RegionKey::Escape, mods: KeyMods::default() });
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn model(&self) -> Option<Entity<OverlayModel>> {
         self.model.clone()

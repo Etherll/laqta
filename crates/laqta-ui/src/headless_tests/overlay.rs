@@ -155,3 +155,34 @@ fn the_wheel_sends_whole_notches(cx: &mut TestAppContext) {
     vcx.simulate_event(scroll(ScrollDelta::Pixels(point(px(0.), px(-25.)))));
     assert_eq!(wheels(&sent), vec![1, -1]);
 }
+
+/// Command+W on the overlay must end the selection, not only remove the window.
+#[gpui::test]
+fn closing_the_overlay_window_cancels_the_selection(cx: &mut TestAppContext) {
+    // SAFETY: tests in this binary don't read this variable concurrently with writing it.
+    unsafe { std::env::set_var("LAQTA_NO_LAYER_SHELL", "1") };
+    let dir = tempfile::tempdir().unwrap();
+    install(cx, services(QueuedSpawner::default(), dir.path()));
+    let frame = Frame {
+        monitor: Monitor {
+            id: MonitorId("m0".into()),
+            name: "m0".into(),
+            rect: PhysRect { x: 0, y: 0, width: 80, height: 60 },
+            scale: 1.0,
+            primary: true,
+        },
+        image: Bitmap::new(80, 60, PixelFormat::Bgra8, vec![0u8; 80 * 60 * 4].into()).unwrap(),
+    };
+    let sent: Arc<std::sync::Mutex<Vec<laqta_domain::region::RegionInput>>> = Arc::default();
+    let log = sent.clone();
+    let images = crate::overlay::render_images(std::slice::from_ref(&frame));
+    cx.update(|cx| crate::overlay::show(vec![frame], images, RegionView::default(), Arc::new(move |i| log.lock().unwrap().push(i)), cx));
+    let window = cx
+        .update(|cx| cx.windows().into_iter().find(|w| cx.global::<crate::runtime::UiState>().overlay.holds(*w)))
+        .expect("an overlay window");
+    cx.update(|cx| crate::runtime::close_window(window, cx));
+    let escaped = |i: &laqta_domain::region::RegionInput| {
+        matches!(i, laqta_domain::region::RegionInput::Key { key: laqta_domain::region::RegionKey::Escape, .. })
+    };
+    assert!(sent.lock().unwrap().iter().any(escaped), "the session is told to cancel");
+}
