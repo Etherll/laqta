@@ -181,9 +181,18 @@ pub(super) async fn render_data(ctx: &Ctx<'_>, src: &str, escape: Escape) -> Res
     let mut i = 0;
     while i < chars.len() {
         match chars[i] {
-            '\\' if matches!(chars.get(i + 1), Some('{' | '}')) => {
-                out.push(chars[i + 1]);
-                i += 2;
+            '\\' => {
+                // A run of backslashes: only an odd run before a brace escapes it, and then its last
+                // backslash is the escape. Every other backslash is body text (`\\\\` in JSON).
+                let end = backslash_run_end(&chars, i);
+                let escapes = (end - i) % 2 == 1 && matches!(chars.get(end), Some('{' | '}'));
+                let literal = if escapes { end - i - 1 } else { end - i };
+                out.extend(std::iter::repeat_n('\\', literal));
+                i = end;
+                if escapes {
+                    out.push(chars[end]);
+                    i += 1;
+                }
             }
             '{' => {
                 let call = data_span(&chars, i).and_then(|end| {
@@ -210,6 +219,11 @@ pub(super) async fn render_data(ctx: &Ctx<'_>, src: &str, escape: Escape) -> Res
     Ok(out)
 }
 
+/// The index after the run of backslashes that starts at `start`.
+fn backslash_run_end(chars: &[char], start: usize) -> usize {
+    start + chars[start..].iter().take_while(|c| **c == '\\').count()
+}
+
 /// The index after the `}` that closes the `{` at `start`, or `None` when it never closes. A
 /// `\{` or `\}` does not count.
 fn data_span(chars: &[char], start: usize) -> Option<usize> {
@@ -217,7 +231,12 @@ fn data_span(chars: &[char], start: usize) -> Option<usize> {
     let mut i = start;
     while i < chars.len() {
         match chars[i] {
-            '\\' if matches!(chars.get(i + 1), Some('{' | '}')) => i += 1,
+            '\\' => {
+                let end = backslash_run_end(chars, i);
+                let escapes = (end - i) % 2 == 1 && matches!(chars.get(end), Some('{' | '}'));
+                // Leave `i` on the last character this arm consumed.
+                i = if escapes { end } else { end - 1 };
+            }
             '{' => depth += 1,
             '}' => {
                 depth = depth.saturating_sub(1);

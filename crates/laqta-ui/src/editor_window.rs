@@ -527,15 +527,14 @@ impl EditorWindow {
             output::write_temp(&dir, &stem, "png", &bytes, std::time::SystemTime::now())
         });
         cx.spawn(async move |this, cx| {
-            let written = written.await;
+            // Submitted here, not in the view update: the upload goes ahead even if the editor was
+            // closed while the image was being written.
+            let message = match written.await {
+                Ok(path) => format!("Uploading ({} task).", services.app.upload_files(vec![path], None).len()),
+                Err(e) => format!("Upload failed: {e}"),
+            };
             let _ = this.update(cx, |this, cx| {
-                this.message = Some(match written {
-                    Ok(path) => {
-                        let ids = services.app.upload_files(vec![path], None);
-                        format!("Uploading ({} task).", ids.len())
-                    }
-                    Err(e) => format!("Upload failed: {e}"),
-                });
+                this.message = Some(message);
                 cx.notify();
             });
         })

@@ -55,6 +55,24 @@ fn legacy_data_marker_in_upper_case_is_converted() {
     assert_eq!(request.body, Body::Bytes { data: br#"{"text":"hello"}"#.to_vec(), content_type: "application/json".into() });
 }
 
+/// A backslash in a `Data` body is body text. Only an odd run right before a brace escapes it, so
+/// a JSON-escaped backslash before a marker leaves the marker working.
+#[test]
+fn data_backslash_runs_before_a_marker() {
+    let body = |data: &str| {
+        let file = json!({ "RequestURL": "https://h/up", "Body": "JSON", "Data": data }).to_string();
+        match build(&file, Some("hi")).expect("builds").body {
+            Body::Bytes { data, .. } => String::from_utf8(data).expect("utf-8"),
+            other => panic!("unexpected body {other:?}"),
+        }
+    };
+    assert_eq!(body(r"a\\{input}"), r"a\\hi", "an even run stays and the marker runs");
+    assert_eq!(body(r"a\\\\{input}"), r"a\\\\hi");
+    assert_eq!(body(r"a\{input\}"), r"a{input}", "an odd run escapes the brace");
+    assert_eq!(body(r"a\\\{input\}"), r"a\\{input}");
+    assert_eq!(body(r"C:\dir\\{input}"), r"C:\dir\\hi");
+}
+
 /// In `.sxcu` syntax, `{prompt:…}` is an alias of `{inputbox:…}`.
 #[test]
 #[ignore = "known issue, not fixed yet"]

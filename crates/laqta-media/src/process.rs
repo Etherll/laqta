@@ -294,10 +294,6 @@ impl Inner {
         if !self.check_alive() {
             return Err(PortError::Failed("the recording stopped unexpectedly".into()));
         }
-        // Audio captured during the pause is stale, so it is dropped before the next segment reads.
-        if let Some(Feed::Pcm(source)) = self.feed.as_mut() {
-            source.discard_pending();
-        }
         self.spawn_segment()
     }
 
@@ -537,6 +533,9 @@ fn feed_stdin(feed: &mut Feed, mut stdin: ChildStdin, stop: &AtomicBool, fps: u3
     match feed {
         Feed::Frames(source) => feed_frames(source.as_mut(), &mut stdin, stop, fps),
         Feed::Pcm(source) => {
+            // The source kept capturing while no segment read it (a pause, and FFmpeg starting up).
+            // That audio is stale, so it is dropped here, right before the first read.
+            source.discard_pending();
             let mut samples = vec![0i16; PCM_CHUNK_SAMPLES];
             let mut bytes = Vec::with_capacity(PCM_CHUNK_SAMPLES * 2);
             while !stop.load(Ordering::SeqCst) {
@@ -745,7 +744,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn resume_discards_the_pending_pcm_once_before_the_next_segment() {
+    fn a_segment_discards_the_pending_pcm_once_before_its_first_read() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let ffmpeg = dir.path().join("ffmpeg");
@@ -768,8 +767,13 @@ mod tests {
             ended: false,
         };
         inner.resume().expect("resume");
-        assert_eq!(discards.load(Ordering::SeqCst), 1);
+        // The feed thread discards; give it a moment to start.
+        let until = Instant::now() + Duration::from_secs(5);
+        while discards.load(Ordering::SeqCst) == 0 && Instant::now() < until {
+            thread::sleep(Duration::from_millis(10));
+        }
         inner.abort();
+        assert_eq!(discards.load(Ordering::SeqCst), 1);
     }
 
     #[test]
