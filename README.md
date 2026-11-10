@@ -156,6 +156,14 @@ there the defaults are <kbd>⌃</kbd>+<kbd>⌥</kbd>+<kbd>2</kbd> for a region a
     <td align="center"><b>Region detection</b>: hover any part of a window, scroll to grow</td>
     <td align="center"><b>Colour picker</b>: pick from screen, copy in any format</td>
   </tr>
+  <tr>
+    <td width="50%"><img alt="Text read in place: every word in the selection is highlighted on the screenshot, and a bar says the text was copied" src="assets/readme/text-read.webp"></td>
+    <td width="50%"><img alt="Four words picked with a drag, shown in blue, with a Copy button under the selection" src="assets/readme/text-select.webp"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Text in place</b>: every word lights up where it is</td>
+    <td align="center"><b>Pick and copy</b>: drag over the words you want</td>
+  </tr>
 </table>
 
 ## 🛠️ Build from source
