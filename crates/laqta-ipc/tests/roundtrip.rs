@@ -128,10 +128,15 @@ fn overlong_request_gets_malformed_reply_and_hangs_up() {
     let name = endpoint.as_str().to_fs_name::<GenericFilePath>().expect("endpoint name");
     let mut stream = BufReader::new(LocalSocketStream::connect(name).expect("connect"));
     let request = format!("action {}\n", "x".repeat(8192));
-    stream.get_mut().write_all(request.as_bytes()).expect("write request");
+    // The server stops reading at its limit and hangs up. Where the socket buffer is smaller than
+    // the request (macOS), that can happen before the last bytes are written.
+    let written = stream.get_mut().write_all(request.as_bytes());
     let mut line = String::new();
-    stream.read_line(&mut line).expect("read reply");
-    assert_eq!(line, "err malformed request\n");
+    let read = stream.read_line(&mut line);
+    if written.is_ok() {
+        read.expect("read reply");
+    }
+    assert!(line == "err malformed request\n" || (written.is_err() && line.is_empty()), "reply: {line:?}");
     // The server hangs up with unread bytes queued, so the peer may see a reset instead of EOF.
     line.clear();
     let _ = stream.read_line(&mut line);

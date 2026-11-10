@@ -111,8 +111,9 @@ mod tests {
         let displays = [retina(), external()];
         let at = |x, y| point_at(&displays, x, y).ok().map(|p| (p.x, p.y));
         assert_eq!(at(600, 400), Some((300.0, 200.0)));
-        // Past the Retina display's 3024 pixels, the 1x display holds the point.
-        assert_eq!(at(3200, 40), Some((3200.0, 40.0)));
+        // Past the Retina display's 3024 pixels, the 1x display holds the point: 176 pixels in,
+        // one point each, from its origin at 1512 points.
+        assert_eq!(at(3200, 40), Some((1688.0, 40.0)));
     }
 
     #[test]

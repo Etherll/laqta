@@ -207,7 +207,7 @@ fn native_window(window: &gpui::Window, what: laqta_ui::NativeWindow) -> bool {
 fn logical_rect() -> Option<laqta_ui::LogicalRectHook> {
     #[cfg(target_os = "macos")]
     {
-        Some(Arc::new(|rect| laqta_platform_macos::logical_rect(rect)))
+        Some(Arc::new(laqta_platform_macos::logical_rect))
     }
     #[cfg(not(target_os = "macos"))]
     {

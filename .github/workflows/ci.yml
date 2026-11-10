@@ -126,7 +126,7 @@ jobs:
   test-macos:
     name: Test (macOS)
     runs-on: macos-15
-    timeout-minutes: 120
+    timeout-minutes: 75
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -152,9 +152,10 @@ jobs:
           scripts/macos-bundle.sh target/debug/laqta target/debug/laqta-nmh 0.0.0 target/mac
       - name: Run the app and take screenshots
         if: ${{ !cancelled() }}
+        timeout-minutes: 12
         run: ci/mac-smoke.sh target/mac/Laqta.app target/mac/smoke
       - name: Keep the screenshots, logs and test report
-        if: ${{ !cancelled() }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: macos-smoke

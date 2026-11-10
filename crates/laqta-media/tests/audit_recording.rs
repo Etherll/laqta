@@ -173,6 +173,13 @@ fn webp_and_apng_recordings_finish_through_the_real_pipeline() {
     for (codec, name) in [(VideoCodec::WebP, "webp"), (VideoCodec::Apng, "apng")] {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = find_ffmpeg("", dir.path()).expect("ffmpeg and ffprobe on PATH");
+        if codec == VideoCodec::WebP {
+            let listed = std::process::Command::new(&paths.ffmpeg).args(["-hide_banner", "-encoders"]).output().expect("list the encoders");
+            if !String::from_utf8_lossy(&listed.stdout).split_whitespace().any(|word| word == "libwebp_anim") {
+                eprintln!("skipping WebP: this ffmpeg has no libwebp_anim");
+                continue;
+            }
+        }
         let media = FfmpegMedia::new(paths, dir.path().join("work"));
         let output = dir.path().join(format!("clip.{}", codec.extension()));
         let input = RecordingInput { video: VideoSource::Frames(Box::new(Paced { left: 15, frame: 0 })), audio: Vec::new() };
