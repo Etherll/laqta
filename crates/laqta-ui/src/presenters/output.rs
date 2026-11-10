@@ -56,10 +56,20 @@ pub fn write_temp(dir: &Path, stem: &str, ext: &str, bytes: &[u8], now: SystemTi
             }
         }
     }
-    let path =
-        (0u32..).map(|n| dir.join(format!("{stem}_{n}.{ext}"))).find(|p| !p.exists()).unwrap_or_else(|| dir.join(format!("{stem}.{ext}")));
-    write_file(&path, bytes)?;
-    Ok(path)
+    // `create_new` reserves the name, so two uploads that finish together never share a file.
+    for n in 0u32.. {
+        let path = dir.join(format!("{stem}_{n}.{ext}"));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                use std::io::Write as _;
+                file.write_all(bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+    }
+    Err(format!("{}: no free file name", dir.display()))
 }
 
 #[cfg(test)]
@@ -73,6 +83,25 @@ mod tests {
         let path = tmp.path().join("a/b/c.bin");
         write_file(&path, b"xy").unwrap();
         assert_eq!(read_file(&path).unwrap(), b"xy");
+    }
+
+    #[test]
+    fn concurrent_temp_writes_never_share_a_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let dir = tmp.path().to_path_buf();
+        let writers: Vec<_> = (0u8..16)
+            .map(|i| {
+                let dir = dir.clone();
+                std::thread::spawn(move || (i, write_temp(&dir, "edit", "png", &[i], now).unwrap()))
+            })
+            .collect();
+        let mut paths = std::collections::HashSet::new();
+        for writer in writers {
+            let (i, path) = writer.join().unwrap();
+            assert_eq!(read_file(&path).unwrap(), [i]);
+            assert!(paths.insert(path));
+        }
     }
 
     #[test]
