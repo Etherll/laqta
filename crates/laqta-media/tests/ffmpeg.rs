@@ -13,7 +13,9 @@ use laqta_domain::geometry::PhysRect;
 use laqta_domain::record::{Quality, RecordSpec, VideoCodec};
 use laqta_media::{FfmpegMedia, argv, find_ffmpeg};
 use laqta_ports::PortError;
-use laqta_ports::recording::{FrameSource, Media, MediaInfo, RecordingHandle, RecordingInput, TranscodeSpec, VideoSource};
+use laqta_ports::recording::{
+    AudioInput, FrameSource, Media, MediaInfo, PcmFormat, PcmSource, RecordingHandle, RecordingInput, TranscodeSpec, VideoSource,
+};
 
 /// Frames paced in real time, so a recording can be paused and killed while it runs. `left` ends
 /// the source after that many frames (None = endless). The same instance is reused across
@@ -212,6 +214,70 @@ fn pause_and_resume_join_two_segments() {
     // Only the two running stretches have frames: about 2 s, not 2.5 s.
     assert_near(info.duration_secs, 2.0, 0.6);
     assert_eq!((info.width, info.height), (64, 48));
+}
+
+/// A 440 Hz tone at wall-clock speed, as an OS loopback gives it.
+struct Tone {
+    started: Option<Instant>,
+    sent: u64,
+    stopped: bool,
+}
+
+impl PcmSource for Tone {
+    fn format(&self) -> PcmFormat {
+        PcmFormat { sample_rate: 48_000, channels: 2 }
+    }
+
+    fn read(&mut self, buf: &mut [i16]) -> Result<usize, PortError> {
+        if self.stopped {
+            return Ok(0);
+        }
+        thread::sleep(Duration::from_millis(10));
+        let due = (self.started.get_or_insert_with(Instant::now).elapsed().as_secs_f64() * 48_000.0) as u64;
+        let frames = (due.saturating_sub(self.sent) as usize).min(buf.len() / 2);
+        for (i, frame) in buf[..frames * 2].chunks_mut(2).enumerate() {
+            let t = (self.sent + i as u64) as f64 / 48_000.0;
+            frame.fill(((t * 440.0 * std::f64::consts::TAU).sin() * 8000.0) as i16);
+        }
+        self.sent += frames as u64;
+        // Never 0 while running: 0 means the end of the sound.
+        if frames == 0 {
+            buf[..2].fill(0);
+            return Ok(2);
+        }
+        Ok(frames * 2)
+    }
+
+    fn stop(&mut self) {
+        self.stopped = true;
+    }
+}
+
+/// macOS hands over frames and system sound together; the sound goes through a named pipe.
+#[cfg(unix)]
+#[test]
+fn raw_frames_and_pcm_sound_are_recorded_together_across_a_pause() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let Some(media) = media(dir.path()) else { return };
+    let output = dir.path().join("sound.mp4");
+    let input = RecordingInput {
+        video: VideoSource::Frames(Box::new(PacedFrames::new(30, None))),
+        audio: vec![AudioInput::Pcm(Box::new(Tone { started: None, sent: 0, stopped: false }))],
+    };
+    let mut recording = block_on(media.start(input, spec(VideoCodec::X264, 30), output.clone())).expect("start");
+    thread::sleep(Duration::from_millis(1500));
+    block_on(recording.pause()).expect("pause");
+    thread::sleep(Duration::from_millis(300));
+    block_on(recording.resume()).expect("resume");
+    thread::sleep(Duration::from_millis(1500));
+    assert!(recording.is_alive());
+    let started = Instant::now();
+    block_on(recording.stop()).expect("stop");
+    assert!(started.elapsed() < Duration::from_secs(4), "stop did not wait on the sound pipe");
+    let info = probe(&media, &output);
+    assert!(info.audio_codec.is_some(), "the recording has a sound stream");
+    assert_near(info.duration_secs, 3.0, 0.9);
+    assert!(!dir.path().join("work").read_dir().is_ok_and(|mut entries| entries.next().is_some()), "the session folder is gone");
 }
 
 #[test]

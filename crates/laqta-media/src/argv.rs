@@ -123,6 +123,12 @@ pub fn record_args_on(
     }
     if stdin_fed && !audio.is_empty() {
         a.flag(&["-shortest"]);
+        // PCM on a pipe of its own arrives in real time beside the frames. `-shortest` holds
+        // output back (10 s by default) while the video encoder is behind, and FFmpeg then stops
+        // reading the sound, which is lost when the segment ends. A short hold keeps both moving.
+        if audio.iter().any(|input| matches!(input, AudioInputDesc::Pcm { pipe, .. } if pipe != "-")) {
+            a.flag(&["-shortest_buf_duration", "0.5"]);
+        }
     }
     for arg in split_args(&spec.custom_args) {
         a.push(arg);
@@ -861,6 +867,16 @@ mod tests {
             &[device("id", "MacBook Microphone")],
         );
         assert!(seq(&args, &["-f", "avfoundation", "-i", ":MacBook Microphone"]));
+    }
+
+    #[test]
+    fn frames_with_piped_pcm_keep_the_shortest_hold_short() {
+        let piped = AudioInputDesc::Pcm { rate: 48_000, channels: 2, pipe: "/s/sound.pcm".into() };
+        let args = record(Host::MacOs, WindowsCapture::Ddagrab, &spec(VideoCodec::X264, Quality::Default), &raw(), &[piped]);
+        assert!(seq(&args, &["-f", "s16le", "-ar", "48000", "-ac", "2", "-i", "/s/sound.pcm"]));
+        assert!(seq(&args, &["-shortest", "-shortest_buf_duration", "0.5"]));
+        let mic = record(Host::Linux, WindowsCapture::Ddagrab, &spec(VideoCodec::X264, Quality::Default), &raw(), &[device("m", "Mic")]);
+        assert!(!mic.iter().any(|arg| arg == "-shortest_buf_duration"), "other recordings are unchanged");
     }
 
     #[test]

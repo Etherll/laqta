@@ -8,7 +8,7 @@
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ExitStatus, Output, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, PoisonError, TryLockError};
@@ -29,6 +29,9 @@ const FINISH_GRACE: Duration = Duration::from_secs(5);
 /// How long a Windows `ddagrab` start is watched for an early failure.
 const CAPTURE_CHECK: Duration = Duration::from_secs(2);
 const PCM_CHUNK_SAMPLES: usize = 4096;
+/// The pipe name a PCM input carries when raw frames have stdin. The recorder replaces it with a
+/// named pipe inside the session folder.
+pub(crate) const SIDE_PIPE: &str = "laqta-side-pcm";
 
 /// The source that feeds FFmpeg's stdin: raw frames for a `RawFrames` video, or PCM for a `Pcm`
 /// audio input on stdin. Only one of the two runs at a time.
@@ -83,6 +86,10 @@ struct Inner {
     output: PathBuf,
     /// The stdin source while no segment runs (between a pause and a resume).
     feed: Option<Feed>,
+    /// The PCM source that has a named pipe of its own, while no segment runs.
+    side: Option<Box<dyn PcmSource>>,
+    /// That named pipe, when the plan has one.
+    side_pipe: Option<PathBuf>,
     current: Option<Segment>,
     /// Finished segments, in order, as file names inside `session`.
     segments: Vec<String>,
@@ -101,6 +108,14 @@ struct Segment {
     feeder: Option<Feeder>,
     /// Without a feed, stdin stays here so that `q` can be sent.
     stdin: Option<ChildStdin>,
+    /// Writes the side PCM source to its named pipe.
+    side: Option<SideFeeder>,
+}
+
+struct SideFeeder {
+    stop: Arc<AtomicBool>,
+    /// Receives the source back once the feed has ended.
+    returned: Receiver<Box<dyn PcmSource>>,
 }
 
 struct Feeder {
@@ -110,21 +125,33 @@ struct Feeder {
 }
 
 impl FfmpegRecorder {
-    /// Starts the first segment. `feed` is the stdin source, when `plan` uses stdin.
+    /// Starts the first segment. `feed` is the stdin source, when `plan` uses stdin. `side` is the
+    /// PCM source of the plan's `SIDE_PIPE` input.
     pub(crate) fn start(
         paths: FfmpegPaths,
-        plan: Plan,
+        mut plan: Plan,
         session: PathBuf,
         output: PathBuf,
         mut feed: Option<Feed>,
+        mut side: Option<Box<dyn PcmSource>>,
     ) -> Result<Self, PortError> {
-        if let Err(err) = validate(&plan) {
+        let stop_sources = |feed: &mut Option<Feed>, side: &mut Option<Box<dyn PcmSource>>| {
             if let Some(feed) = feed.as_mut() {
                 feed.stop();
             }
+            if let Some(side) = side.as_mut() {
+                side.stop();
+            }
+        };
+        if let Err(err) = validate(&plan) {
+            stop_sources(&mut feed, &mut side);
             return Err(err);
         }
-        fs::create_dir_all(&session).map_err(|err| PortError::Failed(format!("create {}: {err}", session.display())))?;
+        if let Err(err) = fs::create_dir_all(&session) {
+            stop_sources(&mut feed, &mut side);
+            return Err(PortError::Failed(format!("create {}: {err}", session.display())));
+        }
+        let side_pipe = place_side_pipe(&mut plan, &session, &mut side);
         // The concat step runs inside the session folder, so the output needs an absolute path.
         let output = match std::path::absolute(&output) {
             Ok(path) => path,
@@ -137,6 +164,8 @@ impl FfmpegRecorder {
             session,
             output,
             feed,
+            side,
+            side_pipe,
             current: None,
             segments: Vec::new(),
             last_log: None,
@@ -254,6 +283,10 @@ impl Inner {
         if argv::stdin_fed(&self.plan.video, &self.plan.audio) && self.feed.is_none() {
             return Err(PortError::Failed("the frame source did not come back after the pause".into()));
         }
+        // FFmpeg would wait for a writer on the pipe for ever.
+        if self.side_pipe.is_some() && self.side.is_none() {
+            return Err(PortError::Failed("the sound source did not come back after the pause".into()));
+        }
         self.index += 1;
         let name = format!("seg-{:04}.mkv", self.index);
         let log = self.session.join(format!("seg-{:04}.log", self.index));
@@ -270,7 +303,18 @@ impl Inner {
             }
             None => (None, stdin),
         };
-        self.current = Some(Segment { name, log, child, feeder, stdin });
+        let side = match (self.side.take(), &self.side_pipe) {
+            (Some(source), Some(pipe)) => match spawn_side_feeder(source, pipe.clone()) {
+                Ok(side) => Some(side),
+                Err(err) => {
+                    kill_and_reap(&mut child);
+                    drop(feeder);
+                    return Err(err);
+                }
+            },
+            _ => None,
+        };
+        self.current = Some(Segment { name, log, child, feeder, stdin, side });
         Ok(())
     }
 
@@ -295,6 +339,9 @@ impl Inner {
         if let Some(mut feed) = self.feed.take() {
             feed.stop();
         }
+        if let Some(mut side) = self.side.take() {
+            side.stop();
+        }
         self.join_segments()
     }
 
@@ -303,9 +350,13 @@ impl Inner {
             kill_and_reap(&mut segment.child);
             // Dropping the receiver makes the feeder stop the source once it sees the broken pipe.
             drop(segment.feeder.take());
+            self.side = segment.side.take().and_then(|side| side.finish(self.side_pipe.as_deref()));
         }
         if let Some(mut feed) = self.feed.take() {
             feed.stop();
+        }
+        if let Some(mut side) = self.side.take() {
+            side.stop();
         }
         let _ = fs::remove_dir_all(&self.session);
     }
@@ -336,6 +387,9 @@ impl Inner {
             }
             (None, None) => {}
         }
+        if let Some(side) = &segment.side {
+            side.stop.store(true, Ordering::SeqCst);
+        }
         if wait_for_exit(&mut segment.child, FINISH_GRACE).is_none() {
             tracing::warn!(segment = %segment.name, "FFmpeg did not finish the segment in time; killing it");
             kill_and_reap(&mut segment.child);
@@ -344,6 +398,12 @@ impl Inner {
             match feeder.returned.recv_timeout(FINISH_GRACE) {
                 Ok(feed) => self.feed = Some(feed),
                 Err(_) => tracing::warn!("the frame source did not return; the recording cannot resume"),
+            }
+        }
+        if let Some(side) = segment.side.take() {
+            self.side = side.finish(self.side_pipe.as_deref());
+            if self.side.is_none() {
+                tracing::warn!("the sound source did not return; the recording cannot resume");
             }
         }
         let written = fs::metadata(self.session.join(&segment.name)).map(|meta| meta.len()).unwrap_or(0);
@@ -494,6 +554,92 @@ fn spawn_ffmpeg(ffmpeg: &Path, args: &[String], log: &Path) -> Result<Child, Por
         .map_err(|err| PortError::Failed(format!("could not start {}: {err}", ffmpeg.display())))
 }
 
+/// Makes the named pipe for the plan's `SIDE_PIPE` input and points the input at it. When the pipe
+/// cannot be made, the recording goes on without that sound: the input is removed and the source
+/// stopped.
+fn place_side_pipe(plan: &mut Plan, session: &Path, side: &mut Option<Box<dyn PcmSource>>) -> Option<PathBuf> {
+    let is_side = |input: &AudioInputDesc| matches!(input, AudioInputDesc::Pcm { pipe, .. } if pipe == SIDE_PIPE);
+    if !plan.audio.iter().any(is_side) {
+        return None;
+    }
+    let path = session.join("sound.pcm");
+    let made = side.is_some() && cfg!(unix) && Command::new("mkfifo").arg(&path).status().is_ok_and(|status| status.success());
+    if !made {
+        tracing::warn!("no pipe for the system sound; recording without it");
+        plan.audio.retain(|input| !is_side(input));
+        if let Some(mut source) = side.take() {
+            source.stop();
+        }
+        return None;
+    }
+    for input in &mut plan.audio {
+        if let AudioInputDesc::Pcm { pipe, .. } = input
+            && pipe == SIDE_PIPE
+        {
+            *pipe = path.to_string_lossy().into_owned();
+        }
+    }
+    Some(path)
+}
+
+impl SideFeeder {
+    /// Stops the feed and takes the source back. The feed thread may still be waiting in `open`
+    /// for FFmpeg to read the pipe (FFmpeg failed before it got there); opening the pipe for
+    /// reading and writing here never blocks and lets that `open` return.
+    fn finish(self, pipe: Option<&Path>) -> Option<Box<dyn PcmSource>> {
+        self.stop.store(true, Ordering::SeqCst);
+        let _reader = pipe.and_then(|pipe| fs::OpenOptions::new().read(true).write(true).open(pipe).ok());
+        self.returned.recv_timeout(FINISH_GRACE).ok()
+    }
+}
+
+/// Moves the side PCM source onto a thread that writes it to the named pipe. Opening the pipe waits
+/// until FFmpeg opens it for reading. The thread closes the pipe when the feed stops or ends.
+fn spawn_side_feeder(source: Box<dyn PcmSource>, pipe: PathBuf) -> Result<SideFeeder, PortError> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let (send, returned) = mpsc::channel();
+    let flag = Arc::clone(&stop);
+    thread::Builder::new()
+        .name("laqta-ffmpeg-sound".to_owned())
+        .spawn(move || {
+            let mut source = source;
+            match fs::OpenOptions::new().write(true).open(&pipe) {
+                Ok(mut file) => feed_pcm(source.as_mut(), &mut file, &flag),
+                Err(err) => tracing::warn!(%err, "could not open the sound pipe"),
+            }
+            if let Err(mpsc::SendError(mut source)) = send.send(source) {
+                source.stop();
+            }
+        })
+        .map_err(|err| PortError::Failed(format!("could not start the sound thread: {err}")))?;
+    Ok(SideFeeder { stop, returned })
+}
+
+/// Writes the source's samples as little-endian 16-bit PCM until `stop` is set, the source ends or
+/// the reader goes away.
+fn feed_pcm(source: &mut dyn PcmSource, out: &mut dyn Write, stop: &AtomicBool) {
+    let mut samples = vec![0i16; PCM_CHUNK_SAMPLES];
+    let mut bytes = Vec::with_capacity(PCM_CHUNK_SAMPLES * 2);
+    while !stop.load(Ordering::SeqCst) {
+        match source.read(&mut samples) {
+            Ok(0) => break,
+            Ok(read) => {
+                bytes.clear();
+                for sample in &samples[..read] {
+                    bytes.extend_from_slice(&sample.to_le_bytes());
+                }
+                if out.write_all(&bytes).is_err() {
+                    break;
+                }
+            }
+            Err(err) => {
+                tracing::warn!(%err, "the PCM source failed");
+                break;
+            }
+        }
+    }
+}
+
 /// The rate FFmpeg reads raw frames at (`-r`), which the feeder paces them to. 0 without them.
 fn raw_fps(video: &VideoInputDesc) -> u32 {
     match video {
@@ -525,28 +671,7 @@ fn spawn_feeder(feed: Feed, stdin: ChildStdin, fps: u32) -> Result<Feeder, PortE
 fn feed_stdin(feed: &mut Feed, mut stdin: ChildStdin, stop: &AtomicBool, fps: u32) {
     match feed {
         Feed::Frames(source) => feed_frames(source.as_mut(), &mut stdin, stop, fps),
-        Feed::Pcm(source) => {
-            let mut samples = vec![0i16; PCM_CHUNK_SAMPLES];
-            let mut bytes = Vec::with_capacity(PCM_CHUNK_SAMPLES * 2);
-            while !stop.load(Ordering::SeqCst) {
-                match source.read(&mut samples) {
-                    Ok(0) => break,
-                    Ok(read) => {
-                        bytes.clear();
-                        for sample in &samples[..read] {
-                            bytes.extend_from_slice(&sample.to_le_bytes());
-                        }
-                        if stdin.write_all(&bytes).is_err() {
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        tracing::warn!(%err, "the PCM source failed");
-                        break;
-                    }
-                }
-            }
-        }
+        Feed::Pcm(source) => feed_pcm(source.as_mut(), &mut stdin, stop),
     }
 }
 
@@ -699,7 +824,8 @@ mod tests {
             desktop_y: 0,
         });
         let paths = FfmpegPaths { ffmpeg: ffmpeg.clone(), ffprobe: ffmpeg };
-        let mut recorder = FfmpegRecorder::start(paths, plan, dir.path().join("session"), dir.path().join("out.mp4"), None).expect("start");
+        let mut recorder =
+            FfmpegRecorder::start(paths, plan, dir.path().join("session"), dir.path().join("out.mp4"), None, None).expect("start");
         assert!(RecordingHandle::is_alive(&mut recorder), "the failed ddagrab attempt must not end the recording");
         locked(&recorder.inner, Inner::abort);
     }
