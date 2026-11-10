@@ -616,7 +616,8 @@ fn spawn_side_feeder(source: Box<dyn PcmSource>, pipe: PathBuf) -> Result<SideFe
                 Ok(mut file) => {
                     let format = source.format();
                     let lead = vec![0u8; lead_silence_bytes(started.elapsed(), format.sample_rate, format.channels)];
-                    if file.write_all(&lead).is_ok() {
+                    // Stopped already: `finish` opened the pipe, not FFmpeg, and nothing reads it.
+                    if !flag.load(Ordering::SeqCst) && file.write_all(&lead).is_ok() {
                         feed_pcm(source.as_mut(), &mut file, &flag);
                     }
                 }
