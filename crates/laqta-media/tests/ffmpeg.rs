@@ -13,9 +13,9 @@ use laqta_domain::geometry::PhysRect;
 use laqta_domain::record::{Quality, RecordSpec, VideoCodec};
 use laqta_media::{FfmpegMedia, argv, find_ffmpeg};
 use laqta_ports::PortError;
-use laqta_ports::recording::{
-    AudioInput, FrameSource, Media, MediaInfo, PcmFormat, PcmSource, RecordingHandle, RecordingInput, TranscodeSpec, VideoSource,
-};
+#[cfg(unix)]
+use laqta_ports::recording::{AudioInput, PcmFormat, PcmSource};
+use laqta_ports::recording::{FrameSource, Media, MediaInfo, RecordingHandle, RecordingInput, TranscodeSpec, VideoSource};
 
 /// Frames paced in real time, so a recording can be paused and killed while it runs. `left` ends
 /// the source after that many frames (None = endless). The same instance is reused across
@@ -217,12 +217,14 @@ fn pause_and_resume_join_two_segments() {
 }
 
 /// A 440 Hz tone at wall-clock speed, as an OS loopback gives it.
+#[cfg(unix)]
 struct Tone {
     started: Option<Instant>,
     sent: u64,
     stopped: bool,
 }
 
+#[cfg(unix)]
 impl PcmSource for Tone {
     fn format(&self) -> PcmFormat {
         PcmFormat { sample_rate: 48_000, channels: 2 }
