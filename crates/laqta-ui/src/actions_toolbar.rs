@@ -48,7 +48,7 @@ pub(crate) fn toggle(cx: &mut App) {
         app_id: Some("laqta-toolbar".into()),
         ..Default::default()
     };
-    match cx.open_window(options, |window, cx| {
+    match crate::popup::open(options, cx, |window, cx| {
         let view = cx.new(|_| ActionsToolbar);
         cx.new(|cx| Root::new(view, window, cx))
     }) {
@@ -107,8 +107,11 @@ pub(crate) fn action_icon(a: Action) -> IconName {
     }
 }
 
-fn short_label(a: Action) -> &'static str {
-    match a {
+/// The button text: a short name looked up as `Toolbar_<Action>`. No bundle carries these keys
+/// yet (the bundles come from ShareX, which has no short names), so every language shows the
+/// English text until a translation adds them.
+fn short_label(a: Action) -> String {
+    let english = match a {
         Action::RectangleRegion => "Region",
         Action::PrintScreen => "Screen",
         Action::ActiveWindow => "Window",
@@ -118,5 +121,6 @@ fn short_label(a: Action) -> &'static str {
         Action::OpenHistory => "History",
         Action::OpenMainWindow => "Laqta",
         _ => "Action",
-    }
+    };
+    crate::i18n::t(&format!("Toolbar_{a:?}"), english)
 }

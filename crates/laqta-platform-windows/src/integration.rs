@@ -309,18 +309,25 @@ impl ShellIntegration for WindowsShellIntegration {
     /// The registry entries go first, whatever happens to the Send To folder: an uninstall with
     /// no `APPDATA` must not leave verbs and file types that point at a removed program.
     fn uninstall(&self) -> Result<(), PortError> {
+        // Run every step even when one fails, then report the first failure.
+        let mut steps: Vec<Result<(), PortError>> = Vec::new();
         for target in ["*", "Directory"] {
-            OpenKey::delete_tree(&verb_key(&self.software, target))?;
+            steps.push(OpenKey::delete_tree(&verb_key(&self.software, target)));
         }
         for (ext, prog_id, _) in FILE_TYPES {
             // Leave an extension that another program has taken over.
-            if let Some(key) = OpenKey::open(&class_key(&self.software, ext))? {
-                drop(key);
-                OpenKey::delete_tree(&class_key(&self.software, ext))?;
-            }
-            OpenKey::delete_tree(&class_key(&self.software, prog_id))?;
+            steps.push(match OpenKey::open(&class_key(&self.software, ext)) {
+                Ok(Some(key)) => {
+                    drop(key);
+                    OpenKey::delete_tree(&class_key(&self.software, ext))
+                }
+                Ok(None) => Ok(()),
+                Err(e) => Err(e),
+            });
+            steps.push(OpenKey::delete_tree(&class_key(&self.software, prog_id)));
         }
-        remove_send_to(&self.send_to_dir.clone()?)
+        steps.push(self.send_to_dir.clone().and_then(|dir| remove_send_to(&dir)));
+        steps.into_iter().collect()
     }
 
     fn install_native_messaging(&self, nmh: &Path) -> Result<(), PortError> {

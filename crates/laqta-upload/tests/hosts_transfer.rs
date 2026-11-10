@@ -223,12 +223,45 @@ fn sftp_command_args_use_batch_mode_the_port_the_key_and_user_at_host() {
         directory: String::new(),
         url_base: "https://files.example.com".to_owned(),
     };
-    assert_eq!(sftp::command_args(&config, None).unwrap(), vec!["-b", "-", "-o", "BatchMode=yes", "-P", "2222", "laqta@example.com"]);
+    assert_eq!(
+        sftp::command_args(&config, None).unwrap(),
+        vec![
+            "-b",
+            "-",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=30",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=4",
+            "-P",
+            "2222",
+            "laqta@example.com"
+        ]
+    );
 
     let key = PathBuf::from(r"C:\keys\id_ed25519");
     assert_eq!(
         sftp::command_args(&config, Some(&key)).unwrap(),
-        vec!["-b", "-", "-o", "BatchMode=yes", "-P", "2222", "-i", r"C:\keys\id_ed25519", "laqta@example.com"]
+        vec![
+            "-b",
+            "-",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=30",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=4",
+            "-P",
+            "2222",
+            "-i",
+            r"C:\keys\id_ed25519",
+            "laqta@example.com"
+        ]
     );
 }
 

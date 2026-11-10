@@ -24,8 +24,9 @@ use laqta_ports::PortError;
 
 use crate::assets::IconName;
 use crate::chrome;
-use crate::presenters::editor_interaction::{EditorInteraction, Step};
+use crate::presenters::editor_interaction::{Batch, EditorInteraction, Step, Submitted, Work};
 use crate::presenters::editor_toolbar;
+use crate::presenters::output;
 use crate::presenters::render_gate::ComputeFn;
 use crate::runtime::UiState;
 use crate::theme::{self, radius, space, text};
@@ -143,7 +144,6 @@ struct EditorWindow {
     /// Input, render gating and snapshot renders (GPUI-free, tested in the presenter).
     interaction: EditorInteraction,
     compute: ComputeFn,
-    spawner: Arc<dyn laqta_ports::Spawner>,
     picture: Option<Arc<RenderImage>>,
     chrome: Chrome,
     reply: Option<EditReply>,
@@ -158,6 +158,8 @@ struct EditorWindow {
     toast_for: Option<String>,
     /// A smart tool at work ("Removing the background…"); others wait for it.
     busy: Option<&'static str>,
+    /// Done was pressed while commands were still running; finish when they end.
+    finish_pending: bool,
 }
 
 /// The editor's AI tools, run on the whole current image.
@@ -211,19 +213,6 @@ pub(crate) fn compute_fn(spawner: Arc<dyn laqta_ports::Spawner>) -> ComputeFn {
     })
 }
 
-/// Runs `f` on the compute pool and waits for it. Only for commands and export paths.
-/// Pointer and key input never use it (`tests/view_guards.rs`).
-fn in_pool<R: Send + 'static>(spawner: &Arc<dyn laqta_ports::Spawner>, f: impl FnOnce() -> R + Send + 'static) -> Option<R> {
-    let (tx, rx) = oneshot::channel();
-    let fut = spawner.run_compute(Box::new(move || {
-        let _ = tx.send(f());
-    }));
-    futures_lite::future::block_on(async move {
-        fut.await;
-        rx.await.ok()
-    })
-}
-
 impl EditorWindow {
     fn new(image: Bitmap, reply: Option<EditReply>, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let services = cx.global::<UiState>().services.clone();
@@ -238,7 +227,6 @@ impl EditorWindow {
         let mut this = EditorWindow {
             interaction: EditorInteraction::new(editor, compute.clone()),
             compute,
-            spawner: services.spawner.clone(),
             picture: None,
             chrome,
             reply,
@@ -250,6 +238,7 @@ impl EditorWindow {
             stage: Rc::new(Cell::new(None)),
             toast_for: None,
             busy: None,
+            finish_pending: false,
         };
         if this.interaction.initial() {
             this.start_render(cx);
@@ -292,75 +281,108 @@ impl EditorWindow {
         cx.notify();
     }
 
-    /// Pointer, key and text input: the engine runs inline (state math only); rendering is async.
+    /// Pointer, key and text input. The engine runs inline (state math only) unless a command is
+    /// running, in which case the input queues behind it. Rendering is async.
     fn input(&mut self, input: EditorInput, window: &mut Window, cx: &mut Context<Self>) {
         // A smart tool replaces the whole image when it lands; edits made meanwhile would be lost.
         if self.busy.is_some() {
             return;
         }
-        let step = self.interaction.input(input);
-        self.apply(step, window, cx);
+        self.submit(Work::Input(input), window, cx);
     }
 
-    /// Commands still run on the pool and wait for it.
+    /// Commands run on the compute pool, in order, and the window never waits for them.
     fn command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
-        let ed = self.interaction.editor();
-        let out = in_pool(&self.spawner, move || ed.lock().unwrap_or_else(|p| p.into_inner()).execute(command));
-        match out {
-            Some(out) => {
-                let step = self.interaction.after_output(out);
-                self.apply(step, window, cx);
-            }
-            None => self.message = Some("The command failed.".into()),
+        // As for input: a smart tool is about to replace the image (it clears `busy` before it does).
+        if self.busy.is_some() {
+            return;
+        }
+        self.submit(Work::Command(command), window, cx);
+    }
+
+    fn submit(&mut self, work: Work, window: &mut Window, cx: &mut Context<Self>) {
+        match self.interaction.submit(work) {
+            Submitted::Step(step) => self.apply(*step, window, cx),
+            Submitted::Started(batch) => self.run_batch(batch, window, cx),
+            Submitted::Queued => {}
         }
     }
 
-    fn export(&self) -> Option<Bitmap> {
-        let ed = self.interaction.editor();
-        in_pool(&self.spawner, move || ed.lock().unwrap_or_else(|p| p.into_inner()).export())
+    fn run_batch(&mut self, batch: Batch, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            let outputs = batch.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                let done = this.interaction.batch_finished(outputs);
+                match done.step {
+                    Some(step) => this.apply(step, window, cx),
+                    None => this.message = Some("The command failed.".into()),
+                }
+                for request in done.requests {
+                    this.request(request, window, cx);
+                }
+                match done.next {
+                    Some(next) => this.run_batch(next, window, cx),
+                    None if std::mem::take(&mut this.finish_pending) => this.finish(window, cx),
+                    None => {}
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
-    fn encode(&self, cx: &App) -> Option<(Vec<u8>, &'static str)> {
-        let img = self.export()?;
+    /// The image encoded off the UI thread.
+    fn encoded(&self, format: ImageFormat, cx: &App) -> impl Future<Output = Result<Vec<u8>, String>> + Send + 'static {
         let codecs = cx.global::<UiState>().services.codecs.clone();
-        let format = cx.global::<UiState>().services.app.settings().defaults.image.format;
         let opts = laqta_imaging::EncodeOptions { format, jpeg_quality: 90 };
-        let bytes = in_pool(&self.spawner, move || codecs.encode(&img, &opts))?.ok()?;
-        Some((bytes, format.extension()))
+        output::encode(self.compute.clone(), codecs, self.interaction.export(), opts)
     }
 
     fn request(&mut self, r: EditorRequest, window: &mut Window, cx: &mut Context<Self>) {
         match r {
             EditorRequest::Save => self.save(false, cx),
             EditorRequest::SaveAs => self.save(true, cx),
-            EditorRequest::Continue => self.finish(window),
+            EditorRequest::Continue => self.finish(window, cx),
             EditorRequest::EraseObject { rect } => self.smart(Smart::Erase(rect), window, cx),
         }
     }
 
-    fn finish(&mut self, window: &mut Window) {
-        if let Some(r) = self.reply.take() {
-            match self.export() {
-                Some(img) => {
-                    let _ = r.send(Ok(img));
-                }
-                None => {
-                    let _ = r.send(Err(PortError::Failed("export failed".into())));
-                }
-            }
+    /// Hands the finished image to whoever opened the editor, then closes the window. The export
+    /// runs on the compute pool; input is ignored while it does.
+    fn finish(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A smart tool is still working on the image: Done waits for the user to press it again.
+        if self.busy.is_some() {
+            return;
         }
-        window.remove_window();
+        // Commands still running or queued belong in the result: finish when they end.
+        if !self.interaction.idle() {
+            self.finish_pending = true;
+            return;
+        }
+        let Some(reply) = self.reply.take() else {
+            window.remove_window();
+            return;
+        };
+        self.busy = Some("Finishing…");
+        cx.notify();
+        let export = self.interaction.export();
+        cx.spawn_in(window, async move |this, cx| {
+            let image = export.await.ok_or_else(|| PortError::Failed("export failed".into()));
+            let _ = reply.send(image);
+            let _ = this.update_in(cx, |_, window, _| window.remove_window());
+        })
+        .detach();
     }
 
     fn save(&mut self, ask: bool, cx: &mut Context<Self>) {
-        let Some((bytes, ext)) = self.encode(cx) else {
-            self.message = Some("Couldn't encode the image.".into());
-            return;
-        };
         let settings = cx.global::<UiState>().services.app.settings();
+        let format = settings.defaults.image.format;
+        let ext = format.extension();
+        let encoded = self.encoded(format, cx);
         let default_dir = settings.screenshots_dir.clone();
         let current = self.path.clone();
         let task = cx.background_spawn(async move {
+            let bytes = encoded.await?;
             let target = match (ask, current) {
                 (false, Some(p)) => Some(p),
                 _ => {
@@ -374,7 +396,7 @@ impl EditorWindow {
                 }
             };
             match target {
-                Some(p) => std::fs::write(&p, &bytes).map(|_| Some(p)).map_err(|e| e.to_string()),
+                Some(p) => output::write_file(&p, &bytes).map(|()| Some(p)),
                 None => Ok(None),
             }
         });
@@ -396,27 +418,16 @@ impl EditorWindow {
         .detach();
     }
 
-    fn png(&self, cx: &App) -> Option<Vec<u8>> {
-        let img = self.export()?;
-        let codecs = cx.global::<UiState>().services.codecs.clone();
-        let opts = laqta_imaging::EncodeOptions { format: ImageFormat::Png, jpeg_quality: 90 };
-        in_pool(&self.spawner, move || codecs.encode(&img, &opts)).and_then(Result::ok)
-    }
-
     fn copy(&mut self, cx: &mut Context<Self>) {
-        let Some(image) = self.export() else {
-            self.message = Some("Copy failed.".into());
-            cx.notify();
-            return;
-        };
+        let export = self.interaction.export();
         let app = cx.global::<UiState>().services.app.clone();
         cx.spawn(async move |this, cx| {
-            let copied = app.copy_image(image).await;
+            let copied = match export.await {
+                Some(image) => app.copy_image(image).await.map_err(|error| format!("Copy failed: {error}")),
+                None => Err("Copy failed.".to_owned()),
+            };
             let _ = this.update(cx, |this, cx| {
-                this.message = Some(match copied {
-                    Ok(()) => "Copied to the clipboard.".into(),
-                    Err(error) => format!("Copy failed: {error}"),
-                });
+                this.message = Some(copied.map_or_else(|e| e, |()| "Copied to the clipboard.".into()));
                 cx.notify();
             });
         })
@@ -425,19 +436,28 @@ impl EditorWindow {
 
     /// Saves a temporary PNG and hands it to Task as a file upload.
     fn upload(&mut self, cx: &mut Context<Self>) {
-        let Some(bytes) = self.png(cx) else { return };
+        let encoded = self.encoded(ImageFormat::Png, cx);
         let services = cx.global::<UiState>().services.clone();
         let dir = services.data_dir.join("edits");
-        let path = dir.join(format!("Laqta_edit_{}.png", std::process::id()));
-        let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, bytes));
-        self.message = Some(match written {
-            Ok(()) => {
-                let ids = services.app.upload_files(vec![path], None);
-                format!("Uploading ({} task).", ids.len())
-            }
-            Err(e) => format!("Upload failed: {e}"),
+        let stem = format!("Laqta_edit_{}", std::process::id());
+        let written = cx.background_spawn(async move {
+            let bytes = encoded.await?;
+            output::write_temp(&dir, &stem, "png", &bytes, std::time::SystemTime::now())
         });
-        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let written = written.await;
+            let _ = this.update(cx, |this, cx| {
+                this.message = Some(match written {
+                    Ok(path) => {
+                        let ids = services.app.upload_files(vec![path], None);
+                        format!("Uploading ({} task).", ids.len())
+                    }
+                    Err(e) => format!("Upload failed: {e}"),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Runs a smart tool on the current image: export on the compute pool, the model through
@@ -505,7 +525,7 @@ impl EditorWindow {
                 .add_filter("Images", &["png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp"])
                 .pick_file()
                 .await?;
-            let bytes = std::fs::read(f.path()).ok()?;
+            let bytes = output::read_file(f.path()).ok()?;
             codecs.decode(&bytes).ok()
         });
         let _ = window;
@@ -524,16 +544,23 @@ impl EditorWindow {
         let fonts = cx.global::<UiState>().services.fonts.clone();
         let font = laqta_editor::FontStyle { size: 64.0, ..laqta_editor::FontStyle::default() };
         let text = e.to_string();
-        let bmp = in_pool(&self.spawner, move || fonts.render_text(&text, &font)).flatten();
-        match bmp {
-            Some(b) => {
-                self.command(Command::SetToolImage(b), window, cx);
-                self.command(Command::SetTool(Tool::Emoji), window, cx);
-            }
-            None => self.message = Some("No emoji font is installed.".into()),
-        }
+        let rendered = crate::presenters::render_gate::compute(&self.compute, move || fonts.render_text(&text, &font));
         self.emoji_open = false;
         cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let bmp = rendered.await.flatten();
+            let _ = this.update_in(cx, |this, window, cx| {
+                match bmp {
+                    Some(b) => {
+                        this.command(Command::SetToolImage(b), window, cx);
+                        this.command(Command::SetTool(Tool::Emoji), window, cx);
+                    }
+                    None => this.message = Some("No emoji font is installed.".into()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn set_style(&mut self, f: impl FnOnce(&mut laqta_editor::Style), window: &mut Window, cx: &mut Context<Self>) {
@@ -583,14 +610,19 @@ impl EditorWindow {
         }
     }
 
-    /// Switches tools on the UI thread: `SetTool` only changes engine state, so it needs neither
-    /// the compute pool nor a wait, and a tool key never blocks the window.
+    /// Switches tools on the UI thread when the engine is free: `SetTool` only changes engine state,
+    /// so it needs no pool job. A busy engine queues it instead, so a tool key never blocks the window.
     fn select_tool(&mut self, t: Tool, window: &mut Window, cx: &mut Context<Self>) {
         self.emoji_open = false;
-        let ed = self.interaction.editor();
-        let out = ed.lock().unwrap_or_else(|p| p.into_inner()).execute(Command::SetTool(t));
-        let step = self.interaction.after_output(out);
-        self.apply(step, window, cx);
+        if self.busy.is_some() {
+            return cx.notify();
+        }
+        match self.interaction.submit_light(Command::SetTool(t)) {
+            Submitted::Step(step) => self.apply(*step, window, cx),
+            Submitted::Started(batch) => self.run_batch(batch, window, cx),
+            Submitted::Queued => {}
+        }
+        cx.notify();
     }
 
     /// Clears a message a few seconds after it appears.
@@ -999,7 +1031,14 @@ impl EditorWindow {
         actions = if continuing {
             actions
                 .child(widgets::pill("save", "Save", widgets::Pill::Default, false, cx.listener(|this, _, _, cx| this.save(false, cx)), cx))
-                .child(widgets::pill("continue", "Done", widgets::Pill::Primary, false, cx.listener(|this, _, w, _| this.finish(w)), cx))
+                .child(widgets::pill(
+                    "continue",
+                    "Done",
+                    widgets::Pill::Primary,
+                    false,
+                    cx.listener(|this, _, w, cx| this.finish(w, cx)),
+                    cx,
+                ))
         } else {
             actions.child(widgets::pill(
                 "save",

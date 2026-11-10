@@ -62,7 +62,6 @@ fn close(a: [u8; 4], b: [u8; 4]) -> bool {
 }
 
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_polaroid_matrix_is_transposed() {
     let want = sharex_apply(&SHAREX_POLAROID, PIXEL);
     let got = laqta_apply(Adjust::Polaroid);
@@ -70,7 +69,6 @@ fn audit_bug_polaroid_matrix_is_transposed() {
 }
 
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_black_white_differs_from_sharex() {
     let want = sharex_apply(&SHAREX_BLACK_WHITE, PIXEL);
     let got = laqta_apply(Adjust::BlackWhite);
@@ -91,7 +89,6 @@ fn audit_bug_contrast_pivots_where_sharex_does_not() {
 /// default is `HeightPercentage = 0`. The import reads the same property names, so a ShareX Scale
 /// preset reaches this kernel as `height_pct: 0`.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_scale_zero_percent_is_not_keep_aspect() {
     use laqta_domain::effects::Manip;
     let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();

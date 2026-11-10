@@ -3,8 +3,8 @@
 use laqta_domain::Action;
 use std::io::{self, BufRead};
 
-/// Longest request or reply line, in bytes, without its line break.
-const MAX_LINE_BYTES: usize = 4096;
+/// Longest request or reply line, in bytes, including its line break.
+const MAX_LINE_BYTES: usize = 1024 * 1024;
 
 const REQUEST_PREFIX: &str = "action ";
 
@@ -183,6 +183,15 @@ pub(crate) fn encode(request: &Request) -> String {
     }
 }
 
+/// Encodes a request as one line, or refuses one longer than the line limit the reader enforces.
+pub(crate) fn encode_checked(request: &Request) -> Result<String, String> {
+    let line = encode(request);
+    if line.len() > MAX_LINE_BYTES {
+        return Err(format!("request is {} bytes, over the {MAX_LINE_BYTES}-byte line limit", line.len()));
+    }
+    Ok(line)
+}
+
 pub(crate) fn parse(line: &str) -> Result<Request, String> {
     let (verb, rest) = line.split_once(' ').ok_or_else(|| "malformed request".to_owned())?;
     if rest.is_empty() {
@@ -252,5 +261,22 @@ mod request_tests {
         }
         assert!(parse("bogus x").is_err());
         assert!(parse("upload ").is_err());
+    }
+
+    #[test]
+    fn encode_checked_refuses_a_line_over_the_limit() {
+        let overhead = encode(&Request::UploadText(String::new())).len();
+        let fits = encode_checked(&Request::UploadText("a".repeat(MAX_LINE_BYTES - overhead))).unwrap();
+        assert_eq!(fits.len(), MAX_LINE_BYTES);
+        let err = encode_checked(&Request::UploadText("a".repeat(MAX_LINE_BYTES - overhead + 1))).unwrap_err();
+        assert!(err.contains(&MAX_LINE_BYTES.to_string()), "{err}");
+    }
+
+    #[test]
+    fn read_line_accepts_a_line_at_the_limit_and_refuses_one_over() {
+        let mut at_limit = io::Cursor::new(format!("{}\n", "a".repeat(MAX_LINE_BYTES - 1)).into_bytes());
+        assert_eq!(read_line(&mut at_limit).unwrap(), Some("a".repeat(MAX_LINE_BYTES - 1)));
+        let mut over = io::Cursor::new(format!("{}\n", "a".repeat(MAX_LINE_BYTES)).into_bytes());
+        assert_eq!(read_line(&mut over).unwrap_err().kind(), io::ErrorKind::InvalidData);
     }
 }

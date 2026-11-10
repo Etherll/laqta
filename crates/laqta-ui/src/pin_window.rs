@@ -21,7 +21,8 @@ use crate::gpu_image::render_image;
 pub(crate) fn pin(image: Bitmap, cx: &mut App) {
     let Some(render) = render_image(&image) else { return };
     // Physical pixels shown at 1:1 on a scale-1 display; HiDPI displays show them at logical size.
-    let (w, h) = (image.width().max(16) as f32, image.height().max(16) as f32);
+    // Never shorter than the shortest window the platform opens.
+    let (w, h) = (image.width().max(16) as f32, (image.height().max(16) as f32).max(crate::popup::min_height()));
     let options = WindowOptions {
         window_bounds: Some(crate::chrome::centered(w, h, cx)),
         titlebar: None,
@@ -33,10 +34,8 @@ pub(crate) fn pin(image: Bitmap, cx: &mut App) {
         app_id: Some("laqta-pin".into()),
         ..Default::default()
     };
-    match cx.open_window(options, |window, cx| {
-        let _ = window;
-        cx.new(|cx| PinView { image: render, base: (w, h), zoom: 1.0, focus: cx.focus_handle() })
-    }) {
+    match crate::popup::open(options, cx, |_, cx| cx.new(|cx| PinView { image: render, base: (w, h), zoom: 1.0, focus: cx.focus_handle() }))
+    {
         Ok(handle) => {
             cx.default_global::<Pins>().0.push(handle.into());
         }

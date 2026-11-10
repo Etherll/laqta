@@ -205,7 +205,7 @@ impl Raw {
         let parameters = text.pairs(parameters)?;
         let headers = text.pairs(headers)?;
         let arguments = text.pairs(arguments)?;
-        let data = text.opt(data)?;
+        let data = text.data(data);
         let mut url = text.opt(url)?;
         let thumbnail_url = text.opt(thumbnail_url)?;
         let deletion_url = text.opt(deletion_url)?;
@@ -259,6 +259,11 @@ impl Text<'_> {
 
     fn opt(&self, value: Option<String>) -> Result<Option<String>, SxcuError> {
         value.map(|v| self.apply(v)).transpose()
+    }
+
+    /// `Data` is ShareX text, not a template: a legacy file only gets its two marker conversions.
+    fn data(&self, value: Option<String>) -> Option<String> {
+        value.map(|v| if self.legacy { migrate::convert_data(&v) } else { v })
     }
 
     fn pairs(&self, pairs: Option<Pairs>) -> Result<Vec<(String, String)>, SxcuError> {

@@ -56,6 +56,9 @@ pub trait PcmSource: Send {
     fn format(&self) -> PcmFormat;
     /// Fills `buf` and returns the samples written; 0 means the source ended.
     fn read(&mut self, buf: &mut [i16]) -> Result<usize, PortError>;
+    /// Drops the samples captured but not read yet. Resume calls it, so audio from before a pause is
+    /// not recorded after it. Sources that buffer nothing keep the default.
+    fn discard_pending(&mut self) {}
     fn stop(&mut self);
 }
 

@@ -65,7 +65,7 @@ pub(crate) fn open(color: Option<Rgba>, cx: &mut App) {
         titlebar: Some(crate::chrome::titlebar("Color picker")),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,
-        app_id: Some("laqta".into()),
+        app_id: Some(crate::APP_ID.into()),
         window_min_size: Some(size(px(400.), px(520.))),
         focus: true,
         ..Default::default()

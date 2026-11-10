@@ -40,7 +40,6 @@ fn read(file: &str, body: &str) -> Result<UploadResult, UploadError> {
 /// runs on it, so a JSON body is written with plain braces. Laqta parses `Data` as a template, so
 /// every uploader written this way fails.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_sharex_json_data_with_plain_braces() {
     let file = json!({ "RequestURL": "https://h/up", "Body": "JSON", "Data": r#"{"text":"{input}"}"# }).to_string();
     let request = build(&file, Some("hello")).expect("a ShareX JSON body must build");

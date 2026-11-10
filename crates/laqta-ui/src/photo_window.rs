@@ -6,7 +6,6 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use futures_channel::oneshot;
 use gpui::{
     App, AppContext as _, Context, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ParentElement as _, Pixels, Render, RenderImage, SharedString, Styled as _, Window, WindowOptions, div, img, px,
@@ -132,18 +131,6 @@ fn to_render_image(b: &Bitmap) -> Option<Arc<RenderImage>> {
     Some(Arc::new(RenderImage::new(SmallVec::<[image::Frame; 1]>::from_elem(image::Frame::new(buffer), 1))))
 }
 
-/// Runs `f` on the compute pool and waits for it.
-fn in_pool<R: Send + 'static>(spawner: &Arc<dyn laqta_ports::Spawner>, f: impl FnOnce() -> R + Send + 'static) -> Option<R> {
-    let (tx, rx) = oneshot::channel();
-    let fut = spawner.run_compute(Box::new(move || {
-        let _ = tx.send(f());
-    }));
-    futures_lite::future::block_on(async move {
-        fut.await;
-        rx.await.ok()
-    })
-}
-
 fn parse_hex(s: &str) -> Option<Rgba> {
     let h = s.trim().trim_start_matches('#');
     if h.len() != 6 {
@@ -164,7 +151,6 @@ struct PhotoWindow {
     queue: std::collections::VecDeque<Edit>,
     /// The render gate asked for a render while a command held the engine.
     render_deferred: bool,
-    spawner: Arc<dyn laqta_ports::Spawner>,
     picture: Option<Arc<RenderImage>>,
     size: (u32, u32),
     path: Option<PathBuf>,
@@ -201,7 +187,6 @@ impl PhotoWindow {
             compute,
             queue: std::collections::VecDeque::new(),
             render_deferred: false,
-            spawner: services.spawner.clone(),
             picture: None,
             size,
             path,
@@ -295,15 +280,6 @@ impl PhotoWindow {
             });
         })
         .detach();
-    }
-
-    /// Waits on the pool. Only for save (flatten).
-    fn with<R: Send + 'static>(&self, f: impl FnOnce(&mut PhotoEditor) -> R + Send + 'static) -> Option<R> {
-        let editor = self.editor();
-        in_pool(&self.spawner, move || {
-            let mut e = editor.lock().unwrap_or_else(|p| p.into_inner());
-            f(&mut e)
-        })
     }
 
     fn exec(&mut self, cmd: Command, cx: &mut Context<Self>) {
@@ -423,7 +399,7 @@ impl PhotoWindow {
             return cx.notify();
         }
         let app = cx.global::<UiState>().services.app.clone();
-        let spawner = self.spawner.clone();
+        let compute = self.compute.clone();
         self.busy = true;
         self.message = Some("Inpainting…".into());
         cx.notify();
@@ -431,7 +407,8 @@ impl PhotoWindow {
             match app.erase(bitmap.clone(), mask.data().to_vec()).await {
                 Ok(b) => Ok((b, false)),
                 Err(laqta_ports::AppError::Cancelled | laqta_ports::AppError::Unsupported(_)) => {
-                    in_pool(&spawner, move || inpaint_fallback(&bitmap, &mask))
+                    crate::presenters::render_gate::compute(&compute, move || inpaint_fallback(&bitmap, &mask))
+                        .await
                         .map(|b| (b, true))
                         .ok_or_else(|| "the compute pool stopped".to_owned())
                 }
@@ -514,19 +491,18 @@ impl PhotoWindow {
     }
 
     fn save(&mut self, ask: bool, cx: &mut Context<Self>) {
-        let Some(img) = self.with(|e| e.flatten()) else { return };
         let services = cx.global::<UiState>().services.clone();
-        let codecs = services.codecs.clone();
         let format = services.app.settings().defaults.image.format;
         let opts = laqta_imaging::EncodeOptions { format, jpeg_quality: 90 };
-        let Some(Ok(bytes)) = in_pool(&self.spawner, move || codecs.encode(&img, &opts)) else {
-            self.message = Some("Couldn't encode the image.".into());
-            return cx.notify();
-        };
+        let editor = self.editor();
+        let flattened =
+            crate::presenters::render_gate::compute(&self.compute, move || editor.lock().unwrap_or_else(|p| p.into_inner()).flatten());
+        let encoded = crate::presenters::output::encode(self.compute.clone(), services.codecs.clone(), flattened, opts);
         let dir = services.app.settings().screenshots_dir.clone();
         let current = self.path.clone();
         let ext = format.extension();
         let task = cx.background_spawn(async move {
+            let bytes = encoded.await?;
             let target = match (ask, current) {
                 (false, Some(p)) => Some(p),
                 _ => rfd::AsyncFileDialog::new()
@@ -537,7 +513,7 @@ impl PhotoWindow {
                     .map(|f| f.path().to_path_buf()),
             };
             match target {
-                Some(p) => std::fs::write(&p, &bytes).map(|_| Some(p)).map_err(|e| e.to_string()),
+                Some(p) => crate::presenters::output::write_file(&p, &bytes).map(|()| Some(p)),
                 None => Ok(None),
             }
         });

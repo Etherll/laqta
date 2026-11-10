@@ -11,8 +11,8 @@ use laqta_domain::{Action, Bitmap, Frame, KeyChord};
 use laqta_domain::region::{HoverTarget, RegionInput};
 
 use crate::{
-    ActionCallback, BoxFuture, CaptureRequest, Clipboard, Clock, HotkeyRegistrar, HoverSource, InputCallback, Notifier, Overlay, PortError,
-    RegionView, Rng, ScreenSource, Shell, Spawner, Toast, Tray, TrayMenu,
+    ActionCallback, BoxFuture, CaptureRequest, Clipboard, Clock, HotkeyCallback, HotkeyRegistrar, HoverSource, InputCallback, Notifier,
+    Overlay, PortError, RegionView, Rng, ScreenSource, Shell, Spawner, Toast, Tray, TrayMenu,
 };
 
 /// Returns the configured frames (or error) on every call. `capture_window` returns `window_image`
@@ -139,7 +139,7 @@ impl Shell for FakeShell {
 /// Records bindings and lets a test fire them.
 #[derive(Default)]
 pub struct FakeHotkeys {
-    pub callback: Mutex<Option<ActionCallback>>,
+    pub callback: Mutex<Option<HotkeyCallback>>,
     pub bindings: Mutex<Vec<(KeyChord, Action)>>,
 }
 
@@ -150,16 +150,17 @@ impl std::fmt::Debug for FakeHotkeys {
 }
 
 impl FakeHotkeys {
-    pub fn fire(&self, action: Action) {
+    /// Fires the chord as the OS would: the callback receives the chord, not the action.
+    pub fn fire(&self, chord: KeyChord) {
         let cb = self.callback.lock().unwrap().clone();
         if let Some(cb) = cb {
-            cb(action);
+            cb(chord);
         }
     }
 }
 
 impl HotkeyRegistrar for FakeHotkeys {
-    fn register(&self, bindings: &[(KeyChord, Action)], on_fire: ActionCallback) -> Vec<(KeyChord, Result<(), PortError>)> {
+    fn register(&self, bindings: &[(KeyChord, Action)], on_fire: HotkeyCallback) -> Vec<(KeyChord, Result<(), PortError>)> {
         *self.callback.lock().unwrap() = Some(on_fire);
         self.bindings.lock().unwrap().extend_from_slice(bindings);
         bindings.iter().map(|(c, _)| (*c, Ok(()))).collect()

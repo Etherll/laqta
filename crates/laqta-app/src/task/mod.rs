@@ -85,6 +85,7 @@ struct Context {
     saves: Arc<Queue>,
     /// The value of `%i` for the next saved file. Starts at 1 and advances once per file written.
     counter: Arc<AtomicU64>,
+    effects: Arc<crate::effects::EffectRunner>,
 }
 
 pub(crate) struct Task {
@@ -95,11 +96,17 @@ pub(crate) struct Task {
     save_slots: Arc<Queue>,
     jobs: Arc<Jobs>,
     counter: Arc<AtomicU64>,
+    effects: Arc<crate::effects::EffectRunner>,
     next_id: AtomicU64,
 }
 
 impl Task {
-    pub(crate) fn new(ports: Arc<Ports>, settings: Arc<SettingsCell>, events: Sender<TaskEvent>) -> Task {
+    pub(crate) fn new(
+        ports: Arc<Ports>,
+        settings: Arc<SettingsCell>,
+        effects: Arc<crate::effects::EffectRunner>,
+        events: Sender<TaskEvent>,
+    ) -> Task {
         Task {
             ports,
             settings,
@@ -108,6 +115,7 @@ impl Task {
             save_slots: Arc::new(Queue::new(SAVE_SLOTS)),
             jobs: Arc::new(Jobs::default()),
             counter: Arc::new(AtomicU64::new(1)),
+            effects,
             next_id: AtomicU64::new(1),
         }
     }
@@ -183,6 +191,7 @@ impl Task {
             reporter: self.reporter.clone(),
             saves: Arc::clone(&self.save_slots),
             counter: Arc::clone(&self.counter),
+            effects: Arc::clone(&self.effects),
         }
     }
 
@@ -233,7 +242,7 @@ pub(crate) async fn compute<T: Send + 'static>(
     }
 }
 
-fn panic_message(payload: &(dyn Any + Send)) -> String {
+pub(crate) fn panic_message(payload: &(dyn Any + Send)) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_owned()
     } else if let Some(message) = payload.downcast_ref::<String>() {

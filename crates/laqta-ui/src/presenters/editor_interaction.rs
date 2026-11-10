@@ -3,10 +3,11 @@
 //! The engine lock is held only for `handle` and `render_job()`. A render runs on the `RenderJob`
 //! snapshot, so the UI thread never waits for a render.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use laqta_domain::Bitmap;
-use laqta_editor::{Chrome, Editor, EditorInput, EditorOutput, EditorRequest};
+use laqta_editor::{Chrome, Command, Editor, EditorInput, EditorOutput, EditorRequest};
 use laqta_ports::BoxFuture;
 
 use super::render_gate::{ComputeFn, RenderGate, compute};
@@ -19,16 +20,65 @@ pub struct Step {
     pub render_now: bool,
 }
 
+/// One piece of work for the engine, kept in the order the user produced it.
+#[derive(Debug)]
+pub enum Work {
+    Input(EditorInput),
+    Command(Command),
+}
+
+/// A batch of work running on the compute pool. Resolves to one output per piece of work, or to
+/// `None` if the engine panicked.
+pub type Batch = BoxFuture<'static, Option<Vec<EditorOutput>>>;
+
+/// What [`EditorInteraction::submit`] did with the work.
+pub enum Submitted {
+    /// It ran at once (an input with nothing running).
+    Step(Box<Step>),
+    /// It started a batch. Await it, then call [`EditorInteraction::batch_finished`].
+    Started(Batch),
+    /// A batch is running; this work runs in the next one.
+    Queued,
+}
+
+/// What the UI does when a batch ends.
+pub struct Finished {
+    /// The newest chrome and whether to render. `None` if the batch failed.
+    pub step: Option<Step>,
+    /// Every request the batch produced, in order.
+    pub requests: Vec<EditorRequest>,
+    /// The work queued meanwhile, already started. Await it like the first batch.
+    pub next: Option<Batch>,
+}
+
+impl std::fmt::Debug for Submitted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Submitted::Step(_) => "Step",
+            Submitted::Started(_) => "Started",
+            Submitted::Queued => "Queued",
+        })
+    }
+}
+
+impl std::fmt::Debug for Finished {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Finished").field("step", &self.step).field("requests", &self.requests).field("next", &self.next.is_some()).finish()
+    }
+}
+
 /// An open editor: the engine, the render gate and the compute pool it renders on.
 pub struct EditorInteraction {
     editor: Arc<Mutex<Editor>>,
     compute: ComputeFn,
     gate: RenderGate,
+    queue: VecDeque<Work>,
+    running: bool,
 }
 
 impl EditorInteraction {
     pub fn new(editor: Editor, compute: ComputeFn) -> Self {
-        Self { editor: Arc::new(Mutex::new(editor)), compute, gate: RenderGate::default() }
+        Self { editor: Arc::new(Mutex::new(editor)), compute, gate: RenderGate::default(), queue: VecDeque::new(), running: false }
     }
 
     pub fn editor(&self) -> Arc<Mutex<Editor>> {
@@ -39,6 +89,92 @@ impl EditorInteraction {
     pub fn input(&mut self, input: EditorInput) -> Step {
         let out = lock(&self.editor).handle(input);
         self.after_output(out)
+    }
+
+    /// Runs work without waiting for it. Commands always run on the compute pool. An input runs
+    /// inline (state math only) unless a batch is running, in which case it queues behind it so the
+    /// engine sees everything in order and the caller never waits for the engine lock.
+    pub fn submit(&mut self, work: Work) -> Submitted {
+        match work {
+            // `try_lock`: a render snapshot or an export may hold the engine for a moment, and the
+            // caller is the UI thread. A busy engine sends the input to the pool instead.
+            Work::Input(input) if !self.running => {
+                let handled = match self.editor.try_lock() {
+                    Ok(mut engine) => Ok(engine.handle(input)),
+                    Err(std::sync::TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner().handle(input)),
+                    Err(std::sync::TryLockError::WouldBlock) => Err(input),
+                };
+                match handled {
+                    Ok(out) => Submitted::Step(Box::new(self.after_output(out))),
+                    Err(input) => {
+                        self.queue.push_back(Work::Input(input));
+                        Submitted::Started(self.start_batch())
+                    }
+                }
+            }
+            work => {
+                self.queue.push_back(work);
+                if self.running { Submitted::Queued } else { Submitted::Started(self.start_batch()) }
+            }
+        }
+    }
+
+    /// Runs a command that only changes engine state (such as `SetTool`) at once when the engine is
+    /// free, so it costs no pool job. A busy engine queues it like any other command. Never waits.
+    pub fn submit_light(&mut self, command: Command) -> Submitted {
+        if !self.running {
+            let out = match self.editor.try_lock() {
+                Ok(mut engine) => Some(engine.execute(command.clone())),
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner().execute(command.clone())),
+                Err(std::sync::TryLockError::WouldBlock) => None,
+            };
+            if let Some(out) = out {
+                return Submitted::Step(Box::new(self.after_output(out)));
+            }
+        }
+        self.submit(Work::Command(command))
+    }
+
+    /// False while a batch runs. Work submitted then is queued, so an export started now could miss it.
+    pub fn idle(&self) -> bool {
+        !self.running
+    }
+
+    fn start_batch(&mut self) -> Batch {
+        self.running = true;
+        let batch: Vec<Work> = self.queue.drain(..).collect();
+        let editor = Arc::clone(&self.editor);
+        compute(&self.compute, move || {
+            let mut engine = lock(&editor);
+            batch
+                .into_iter()
+                .map(|work| match work {
+                    Work::Input(input) => engine.handle(input),
+                    Work::Command(command) => engine.execute(command),
+                })
+                .collect()
+        })
+    }
+
+    /// Call when a batch resolves, with what it resolved to.
+    pub fn batch_finished(&mut self, outputs: Option<Vec<EditorOutput>>) -> Finished {
+        self.running = false;
+        let mut step: Option<Step> = None;
+        let mut requests = Vec::new();
+        for out in outputs.into_iter().flatten() {
+            let mut one = self.after_output(out);
+            requests.extend(one.request.take());
+            one.render_now |= step.as_ref().is_some_and(|s| s.render_now);
+            step = Some(one);
+        }
+        let next = (!self.queue.is_empty()).then(|| self.start_batch());
+        Finished { step, requests, next }
+    }
+
+    /// The finished image, rendered on the compute pool. Resolves to `None` if the export fails.
+    pub fn export(&self) -> BoxFuture<'static, Option<Bitmap>> {
+        let editor = Arc::clone(&self.editor);
+        compute(&self.compute, move || lock(&editor).export())
     }
 
     /// The same rule for an output produced elsewhere, such as a command.
@@ -245,5 +381,41 @@ mod tests {
         assert!(!out.dirty.is_empty());
         let mut ix = EditorInteraction::new(e, compute);
         assert!(ix.after_output(out).render_now);
+    }
+
+    /// A command never runs on the caller's thread, and work submitted while it runs keeps its order.
+    #[test]
+    fn commands_run_on_the_pool_and_later_work_queues_in_order() {
+        use super::{Submitted, Work};
+        let (compute, held) = gated();
+        let mut ix = EditorInteraction::new(editor(), compute);
+        let Submitted::Started(first) = ix.submit(Work::Command(laqta_editor::Command::SetTool(Tool::Rectangle))) else {
+            panic!("a command starts a batch");
+        };
+        assert_eq!(held_len(&held), 1, "the command waits for the pool");
+        assert!(matches!(ix.submit(Work::Input(down(10.0, 10.0))), Submitted::Queued));
+        assert!(matches!(ix.submit(Work::Input(drag(60.0, 60.0))), Submitted::Queued));
+        assert_eq!(held_len(&held), 1, "queued work starts no job of its own");
+        run_next(&held);
+        let done = ix.batch_finished(block_on(first));
+        assert!(done.step.is_some());
+        let next = done.next.unwrap();
+        run_next(&held);
+        let outputs = block_on(next).unwrap();
+        assert_eq!(outputs.len(), 2, "both inputs ran in one batch");
+        let done = ix.batch_finished(Some(outputs));
+        assert!(done.next.is_none());
+        assert!(done.step.unwrap().render_now, "the drag drew a draft");
+        // Idle again: an input runs inline.
+        assert!(matches!(ix.submit(Work::Input(up(60.0, 60.0))), Submitted::Step(_)));
+    }
+
+    #[test]
+    fn a_failed_batch_reports_no_step() {
+        let (compute, _held) = gated();
+        let mut ix = EditorInteraction::new(editor(), compute);
+        let _ = ix.submit(super::Work::Command(laqta_editor::Command::Undo));
+        let done = ix.batch_finished(None);
+        assert!(done.step.is_none() && done.requests.is_empty() && done.next.is_none());
     }
 }

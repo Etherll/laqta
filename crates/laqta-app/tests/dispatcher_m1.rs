@@ -18,6 +18,7 @@ use tempfile::TempDir;
 
 struct H {
     app: Arc<App>,
+    highlighter: Arc<laqta_ports::fakes::FakeHighlighter>,
     overlay: Arc<FakeOverlay>,
     tools: Arc<FakeToolHost>,
     spawner: Arc<InlineSpawner>,
@@ -49,6 +50,7 @@ fn window() -> HoverTarget {
 
 fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
     let overlay = Arc::new(FakeOverlay::default());
+    let highlighter = Arc::new(laqta_ports::fakes::FakeHighlighter::default());
     let tools = Arc::new(FakeToolHost::default());
     let spawner = Arc::new(InlineSpawner::default());
     let hover = FakeHoverSource::new(vec![window()]);
@@ -69,7 +71,7 @@ fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
         ocr: Arc::new(laqta_ports::fakes::FakeOcr::default()),
         window_ops: Arc::new(laqta_ports::fakes::FakeWindowOps::default()),
         input: Arc::new(laqta_ports::fakes::FakeInputSynth::default()),
-        highlighter: Arc::new(laqta_ports::fakes::FakeHighlighter::default()),
+        highlighter: highlighter.clone(),
         background: Arc::new(laqta_ports::fakes::FakeBackgroundRemover::default()),
         analyzer: Arc::new(laqta_ports::fakes::FakeAnalyzer::default()),
         inpainter: Arc::new(laqta_ports::fakes::FakeInpainter),
@@ -87,7 +89,7 @@ fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
     // These tests drag a region and expect the capture at once, not a selection with tools beside it.
     settings.defaults.capture.region.show_tools_after_select = false;
     edit(&mut settings);
-    H { app: App::new(ports, settings), overlay, tools, spawner, screen }
+    H { app: App::new(ports, settings), highlighter, overlay, tools, spawner, screen }
 }
 
 /// A window bitmap that is not the 4x3 crop, so a test can tell which one was saved.
@@ -437,7 +439,7 @@ fn pins_and_highlighter() {
     run(&h, h.app.dispatch(Action::PinToScreenCloseAll, None)).unwrap();
     assert!(h.tools.pins.lock().unwrap().is_empty());
     run(&h, h.app.dispatch(Action::MouseHighlighter, None)).unwrap();
-    assert!(h.app.ports().highlighter.is_enabled());
+    assert!(laqta_ports::PointerHighlighter::is_enabled(&*h.highlighter));
     run(&h, h.app.dispatch(Action::MouseHighlighter, None)).unwrap();
-    assert!(!h.app.ports().highlighter.is_enabled());
+    assert!(!laqta_ports::PointerHighlighter::is_enabled(&*h.highlighter));
 }

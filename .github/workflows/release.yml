@@ -20,8 +20,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The CI checks run first; a failure stops the build and the release.
+  checks:
+    uses: ./.github/workflows/ci.yml
+
   linux:
     name: Build (Linux x86_64)
+    needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -49,7 +54,7 @@ jobs:
           dir="laqta-${GITHUB_REF_NAME}-linux-x86_64"
           mkdir -p "dist/$dir"
           cp target/release/laqta target/release/laqta-nmh LICENSE README.md "dist/$dir/"
-          cp packaging/linux/io.github.etherll.Laqta.desktop "dist/$dir/"
+          sed 's|^Exec=/usr/bin/laqta|Exec=laqta|' packaging/linux/io.github.etherll.Laqta.desktop > "dist/$dir/io.github.etherll.Laqta.desktop"
           cp -r assets/icon "dist/$dir/icons"
           tar -C dist -czf dist/laqta-linux-x86_64.tar.gz "$dir"
           rm -rf "dist/$dir"
@@ -91,6 +96,7 @@ jobs:
 
   windows:
     name: Build (Windows x64)
+    needs: checks
     runs-on: windows-2025
     timeout-minutes: 120
     env:

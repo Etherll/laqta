@@ -6,7 +6,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use futures_channel::oneshot;
 use gpui::{
     App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, RenderImage,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, WindowOptions, div, img, prelude::FluentBuilder as _,
@@ -403,20 +402,15 @@ impl EffectsWindow {
     fn render_preview(&mut self, cx: &mut Context<Self>) {
         let preset = self.preset().clone();
         let sample = self.sample.clone();
-        let spawner = cx.global::<UiState>().services.spawner.clone();
-        let (tx, rx) = oneshot::channel();
-        let fut = spawner.run_compute(Box::new(move || {
-            let cx = laqta_imaging::effects::EffectContext::none();
-            let _ = tx.send(laqta_imaging::effects::apply_preset(&sample, &preset, &cx));
-        }));
+        // Through the app, so the preview gets the text and image files a capture would.
+        let app = cx.global::<UiState>().services.app.clone();
         cx.spawn(async move |this, cx| {
-            fut.await;
-            let result = rx.await;
+            let result = app.apply_preset(sample, preset).await;
             let _ = this.update(cx, |this, cx| {
                 match result {
-                    Ok(Ok(img)) => this.preview = crate::toast::render_image(&img),
-                    Ok(Err(e)) => this.message = Some((format!("Preview: {e}"), false)),
-                    Err(_) => {}
+                    Ok(img) => this.preview = crate::toast::render_image(&img),
+                    Err(laqta_ports::AppError::Cancelled) => {}
+                    Err(e) => this.message = Some((format!("Preview: {e}"), false)),
                 }
                 cx.notify();
             });
@@ -432,7 +426,7 @@ impl EffectsWindow {
                 .add_filter("Images", &["png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp"])
                 .pick_file()
                 .await?;
-            let bytes = std::fs::read(f.path()).ok()?;
+            let bytes = crate::presenters::output::read_file(f.path()).ok()?;
             let name = f.file_name();
             codecs.decode(&bytes).ok().map(|b| (b, name))
         });

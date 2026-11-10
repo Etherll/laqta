@@ -6,7 +6,7 @@ use ashpd::desktop::global_shortcuts::{BindShortcutsOptions, GlobalShortcuts, Ne
 use ashpd::desktop::{CreateSessionOptions, Session};
 use futures_lite::{StreamExt, future};
 use laqta_domain::{Action, Key, KeyChord, Modifiers};
-use laqta_ports::{ActionCallback, HotkeyRegistrar, PortError};
+use laqta_ports::{HotkeyCallback, HotkeyRegistrar, PortError};
 
 /// GlobalShortcuts portal: one session at a time. Shortcut ids come from the action's name
 /// (`PrintScreen` → `print-screen`). A missing portal is `Unsupported`.
@@ -23,7 +23,7 @@ impl PortalShortcuts {
 }
 
 impl HotkeyRegistrar for PortalShortcuts {
-    fn register(&self, bindings: &[(KeyChord, Action)], on_fire: ActionCallback) -> Vec<(KeyChord, Result<(), PortError>)> {
+    fn register(&self, bindings: &[(KeyChord, Action)], on_fire: HotkeyCallback) -> Vec<(KeyChord, Result<(), PortError>)> {
         let all = |r: Result<(), PortError>| bindings.iter().map(|(c, _)| (*c, r.clone())).collect::<Vec<_>>();
         let (ready_tx, ready_rx) = mpsc::channel();
         {
@@ -65,7 +65,7 @@ impl HotkeyRegistrar for PortalShortcuts {
 /// then closes the session. `ready` reports whether the portal exists and accepted the session.
 async fn listen(
     bindings: Vec<(KeyChord, Action)>,
-    on_fire: ActionCallback,
+    on_fire: HotkeyCallback,
     ready: mpsc::Sender<Result<(), PortError>>,
     stop: mpsc::Receiver<()>,
 ) {
@@ -85,11 +85,15 @@ async fn listen(
     };
     // The portal is present: report success now; binding may show a dialog.
     let _ = ready.send(Ok(()));
-    let shortcuts: Vec<NewShortcut> =
-        bindings.iter().map(|(c, a)| NewShortcut::new(shortcut_id(*a), a.label()).preferred_trigger(trigger(*c).as_deref())).collect();
+    let ids = binding_ids(&bindings);
+    let shortcuts: Vec<NewShortcut> = bindings
+        .iter()
+        .zip(&ids)
+        .map(|((c, a), id)| NewShortcut::new(id.as_str(), a.label()).preferred_trigger(trigger(*c).as_deref()))
+        .collect();
     // Dropping the wait cancels the serving future, so a stop also interrupts a pending bind dialog.
     let stopped = blocking::unblock(move || stop.recv());
-    future::or(serve(&portal, &session, &shortcuts, &bindings, &on_fire), async {
+    future::or(serve(&portal, &session, &shortcuts, &bindings, &ids, &on_fire), async {
         let _ = stopped.await;
     })
     .await;
@@ -104,7 +108,8 @@ async fn serve(
     session: &Session<GlobalShortcuts>,
     shortcuts: &[NewShortcut],
     bindings: &[(KeyChord, Action)],
-    on_fire: &ActionCallback,
+    ids: &[String],
+    on_fire: &HotkeyCallback,
 ) {
     match portal.bind_shortcuts(session, shortcuts, None, BindShortcutsOptions::default()).await.map(|r| r.response()) {
         Ok(Ok(_)) => tracing::info!("GlobalShortcuts bound"),
@@ -115,10 +120,24 @@ async fn serve(
         return;
     };
     while let Some(activated) = stream.next().await {
-        if let Some((_, action)) = bindings.iter().find(|(_, a)| shortcut_id(*a) == activated.shortcut_id()) {
-            on_fire(*action);
+        if let Some(index) = ids.iter().position(|id| id == activated.shortcut_id()) {
+            on_fire(bindings[index].0);
         }
     }
+}
+
+/// One portal id per binding, in order. The first binding of an action keeps the action's plain id,
+/// so triggers the user already set in the desktop's settings still apply. A later binding of the
+/// same action (another workflow on another chord) gets `-2`, `-3`, …, so its activation is told
+/// apart from the first.
+fn binding_ids(bindings: &[(KeyChord, Action)]) -> Vec<String> {
+    let mut ids = Vec::with_capacity(bindings.len());
+    for (index, (_, action)) in bindings.iter().enumerate() {
+        let earlier = bindings[..index].iter().filter(|(_, a)| a == action).count();
+        let id = shortcut_id(*action);
+        ids.push(if earlier == 0 { id } else { format!("{id}-{}", earlier + 1) });
+    }
+    ids
 }
 
 /// The shortcut id: the variant name in kebab case (`RectangleRegion` → `rectangle-region`).
@@ -240,5 +259,20 @@ mod tests {
         assert_eq!(trigger(chord("Ctrl+PageUp")).as_deref(), Some("CTRL+Prior"));
         assert_eq!(trigger(chord("Shift+Numpad5")).as_deref(), Some("SHIFT+KP_5"));
         assert_eq!(trigger(chord("Ctrl+Quote")).as_deref(), Some("CTRL+apostrophe"));
+    }
+
+    /// Two workflows on the same action each get their own portal id, and the first keeps the
+    /// plain one.
+    #[test]
+    fn same_action_bindings_get_distinct_ids() {
+        use laqta_domain::{Key, KeyChord, Modifiers};
+        let chord = |key| KeyChord { modifiers: Modifiers::CTRL, key };
+        let bindings = [
+            (chord(Key::F1), Action::RectangleRegion),
+            (chord(Key::F2), Action::PrintScreen),
+            (chord(Key::F3), Action::RectangleRegion),
+            (chord(Key::F4), Action::RectangleRegion),
+        ];
+        assert_eq!(binding_ids(&bindings), ["rectangle-region", "print-screen", "rectangle-region-2", "rectangle-region-3"]);
     }
 }

@@ -131,6 +131,8 @@ pub struct App {
     pub(crate) window_toggles: crate::tools::WindowToggles,
     /// The history the windows edit, once `main` attaches it (`history.rs`).
     pub(crate) history: std::sync::OnceLock<Arc<dyn laqta_ports::HistoryEdit>>,
+    /// Runs effect presets with text and assets (`effects.rs`). Task holds the same one.
+    pub(crate) effects: Arc<crate::effects::EffectRunner>,
     /// Keeps the event channel open while nobody listens, so sends never fail.
     idle: InactiveReceiver<TaskEvent>,
 }
@@ -147,7 +149,8 @@ impl App {
         events.set_overflow(true);
         let ports = Arc::new(ports);
         let settings = Arc::new(SettingsCell::new(settings));
-        let task = Task::new(Arc::clone(&ports), Arc::clone(&settings), events);
+        let effects = Arc::new(crate::effects::EffectRunner::default());
+        let task = Task::new(Arc::clone(&ports), Arc::clone(&settings), Arc::clone(&effects), events);
         Arc::new(App {
             ports,
             settings,
@@ -159,6 +162,7 @@ impl App {
             watches: std::sync::Mutex::new(Vec::new()),
             window_toggles: Default::default(),
             history: std::sync::OnceLock::new(),
+            effects,
             idle: active.deactivate(),
         })
     }
@@ -565,7 +569,7 @@ impl App {
                 Ok(Dispatched::Done)
             }
             Action::ExitLaqta => Ok(Dispatched::Exit),
-            a if let Some(r) = self.tool_route(a, &ts).await => r,
+            a if let Some(r) = self.guarded_tool_route(a, &ts).await => r,
             Action::ScrollingCapture => self.scrolling_capture(ts, workflow).await,
             Action::AutoCapture => self.auto_capture(None),
             Action::StartAutoCapture => self.auto_capture(Some(true)),

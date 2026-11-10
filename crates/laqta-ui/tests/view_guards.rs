@@ -3,7 +3,7 @@
 //! A pointer, key or scroll handler that waits on the compute pool (`in_pool`, `block_on`) or on
 //! the disk (`std::fs`) freezes the window: on a 280 Hz mouse, a full-canvas render per move kept
 //! the editor "Not Responding". This test scans each view's source for the closures
-//! passed to input listeners, follows `this.<fn>(` / `self.<fn>(` calls one level into the same
+//! passed to input listeners, follows `this.<fn>(` / `self.<fn>(` calls through the same
 //! file, and fails on a blocking call. It stands in for type-level enforcement until
 //! `in_pool` is removed from `laqta-ui` entirely.
 
@@ -20,16 +20,14 @@ const LISTENERS: &[&str] = &[
     "on_drag_move(",
     "capture_any_mouse_up(",
     "capture_any_mouse_down(",
+    "on_click(",
 ];
 
 const BLOCKING: &[&str] = &["in_pool(", "block_on(", "std::fs::"];
 
 /// Known exceptions: (file, fn, reason). The scan does not follow calls past an allowed fn.
-/// Each one is a user-requested save, not per-event work.
-const ALLOWED: &[(&str, &str, &str)] = &[
-    ("editor_window.rs", "save", "Ctrl+S / Enter: encodes with in_pool, writes in background_spawn"),
-    ("editor_window.rs", "save_as", "Ctrl+Shift+S: as save"),
-];
+/// Empty on purpose: encoding and file access go through `presenters::output`, off the UI thread.
+const ALLOWED: &[(&str, &str, &str)] = &[];
 
 fn allowed(file: &str, name: &str) -> bool {
     ALLOWED.iter().any(|(f, w, _)| *f == file && *w == name)
@@ -95,9 +93,6 @@ fn fn_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
     Some(balanced(src, brace))
 }
 
-/// How far calls are followed from a handler (handler → fn → fn …).
-const DEPTH: usize = 4;
-
 fn violations(file: &str, src: &str) -> Vec<String> {
     let mut found = Vec::new();
     let mut check = |chain: &str, body: &str| {
@@ -112,7 +107,8 @@ fn violations(file: &str, src: &str) -> Vec<String> {
         check(&listener, body);
         let mut seen: Vec<String> = Vec::new();
         let mut frontier: Vec<(String, &str)> = vec![(listener.clone(), body)];
-        for _ in 0..DEPTH {
+        // Followed to the end of every call chain; `seen` stops cycles.
+        while !frontier.is_empty() {
             let mut next = Vec::new();
             for (chain, b) in &frontier {
                 for name in called(b) {
