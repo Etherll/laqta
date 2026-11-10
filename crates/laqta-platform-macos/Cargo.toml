@@ -1,0 +1,37 @@
+[package]
+name = "laqta-platform-macos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+laqta-domain.workspace = true
+laqta-ports.workspace = true
+tracing.workspace = true
+blocking.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+arboard.workspace = true
+objc2.workspace = true
+block2.workspace = true
+dispatch2.workspace = true
+objc2-foundation.workspace = true
+objc2-app-kit.workspace = true
+objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true
+objc2-core-media.workspace = true
+objc2-core-video.workspace = true
+objc2-screen-capture-kit.workspace = true
+objc2-vision.workspace = true
+objc2-av-foundation.workspace = true
+objc2-service-management.workspace = true
+objc2-application-services.workspace = true
+objc2-security.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

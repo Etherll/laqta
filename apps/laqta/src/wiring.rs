@@ -115,7 +115,29 @@ fn platform(_data: &std::path::Path) -> Result<Platform, String> {
     })
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(target_os = "macos")]
+fn platform(_data: &std::path::Path) -> Result<Platform, String> {
+    let p = laqta_platform_macos::ports();
+    Ok(Platform {
+        screen: p.screen,
+        clipboard: p.clipboard,
+        shell: p.shell,
+        hover: p.hover,
+        hotkeys: p.hotkeys,
+        tray: p.tray,
+        secrets: p.secrets,
+        stream: p.stream,
+        window_ops: p.window_ops,
+        autostart: p.autostart,
+        integration: p.integration,
+        input: p.input,
+        os_ocr: Some(p.ocr),
+        highlighter: p.highlighter,
+        native_recorder: None,
+    })
+}
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 fn platform(_data: &std::path::Path) -> Result<Platform, String> {
     Err("this platform is not supported (ADR 001)".into())
 }

@@ -57,6 +57,9 @@ embed-resource = "3.0.12"
 [target.'cfg(target_os = "linux")'.dependencies]
 laqta-platform-linux.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+laqta-platform-macos.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 laqta-platform-windows.workspace = true
 # The native handle of a GPUI window, for `laqta_platform_windows::plain_popup`.

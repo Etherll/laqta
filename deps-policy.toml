@@ -14,6 +14,7 @@ targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 "laqta-ui"       = ["laqta-app", "laqta-ports", "laqta-domain", "laqta-library", "laqta-imaging", "laqta-editor", "laqta-photo"]  # imaging: thumbnails and the magnifier
 "laqta-platform-linux"   = ["laqta-ports", "laqta-domain"]
 "laqta-platform-windows" = ["laqta-ports", "laqta-domain"]
+"laqta-platform-macos"   = ["laqta-ports", "laqta-domain"]
 "laqta-library"  = ["laqta-ports", "laqta-domain"]
 "laqta-http"     = []
 "laqta-upload"   = ["laqta-ports", "laqta-domain", "laqta-http"]
