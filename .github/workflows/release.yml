@@ -218,7 +218,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
-        with: { path: dist, merge-multiple: true }
+        # Only the packages: the CI checks above also upload test reports and macOS screenshots.
+        with: { path: dist, merge-multiple: true, pattern: "{linux,windows,macos}" }
       - name: SHA256SUMS
         # The in-app updater checks the Windows update package against this list.
         run: cd dist && sha256sum $(ls | grep -v '\.sha256$') > SHA256SUMS && cat SHA256SUMS
