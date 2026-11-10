@@ -86,10 +86,12 @@ pub(crate) fn element_frames(pid: i32, window: Frame) -> Vec<Frame> {
     // SAFETY: a plain constructor; the returned element is owned and released on drop.
     let app = unsafe { AXUIElement::new_application(pid) };
     limit_wait(&app);
-    let Some(root) = find_window(&names, &app, window) else {
+    // One budget for finding the window and walking it: a slow app must not hold up the snapping.
+    let deadline = Instant::now() + WALK_BUDGET;
+    let Some(root) = find_window(&names, &app, window, deadline) else {
         return Vec::new();
     };
-    walk(&names, &root, window, Instant::now() + WALK_BUDGET)
+    walk(&names, &root, window, deadline)
 }
 
 /// Caps how long calls on `element` wait for its app.
@@ -98,9 +100,13 @@ fn limit_wait(element: &AXUIElement) {
     let _ = unsafe { element.set_messaging_timeout(CALL_TIMEOUT) };
 }
 
-/// The app's window drawn at `frame`: its focused window if that fits, else any other of its windows.
-fn find_window(names: &Names, app: &AXUIElement, frame: Frame) -> Option<CFRetained<AXUIElement>> {
+/// The app's window drawn at `frame`: its focused window if that fits, else any other of its
+/// windows. Gives up at `deadline`.
+fn find_window(names: &Names, app: &AXUIElement, frame: Frame, deadline: Instant) -> Option<CFRetained<AXUIElement>> {
     let fits = |window: &CFRetained<AXUIElement>| {
+        if Instant::now() >= deadline {
+            return false;
+        }
         limit_wait(window);
         frame_of(names, window).is_some_and(|found| found.matches(frame, WINDOW_TOLERANCE))
     };

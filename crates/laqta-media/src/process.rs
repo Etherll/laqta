@@ -72,6 +72,30 @@ fn validate(plan: &Plan) -> Result<(), PortError> {
     Ok(())
 }
 
+/// Refuses Animated WebP when this FFmpeg has no `libwebp_anim` (Homebrew's build has none). The
+/// conversion at the end would fail and leave only the intermediate file, so the recording does
+/// not start. A list that cannot be read refuses nothing.
+fn has_its_encoder(ffmpeg: &Path, codec: VideoCodec) -> Result<(), PortError> {
+    if codec != VideoCodec::WebP {
+        return Ok(());
+    }
+    let Ok(listed) = ffmpeg_command(ffmpeg).args(["-hide_banner", "-encoders"]).stdin(Stdio::null()).stderr(Stdio::null()).output() else {
+        return Ok(());
+    };
+    if !listed.status.success() || lists_encoder(&String::from_utf8_lossy(&listed.stdout), "libwebp_anim") {
+        return Ok(());
+    }
+    Err(PortError::Unsupported(format!(
+        "Animated WebP needs an FFmpeg built with libwebp, and {} has none. Choose another format in Settings > Recording.",
+        ffmpeg.display()
+    )))
+}
+
+/// True when `ffmpeg -encoders` output names `encoder` (the second column of its table).
+fn lists_encoder(encoders: &str, encoder: &str) -> bool {
+    encoders.lines().any(|line| line.split_whitespace().nth(1) == Some(encoder))
+}
+
 /// A recording in progress. Its `RecordingHandle` methods run the work on a worker thread.
 pub struct FfmpegRecorder {
     inner: Arc<Mutex<Inner>>,
@@ -145,7 +169,7 @@ impl FfmpegRecorder {
                 side.stop();
             }
         };
-        if let Err(err) = validate(&plan) {
+        if let Err(err) = validate(&plan).and_then(|()| has_its_encoder(&paths.ffmpeg, plan.spec.codec)) {
             stop_sources(&mut feed, &mut side);
             return Err(err);
         }
@@ -899,6 +923,16 @@ mod tests {
 
     fn camera(enabled: bool, device: &str) -> Option<CameraOverlay> {
         Some(CameraOverlay { enabled, device: device.into(), ..CameraOverlay::default() })
+    }
+
+    #[test]
+    fn an_encoder_is_found_by_its_name_column() {
+        let listed = " V....D libx264              libx264 H.264\n V....D libwebp_anim         libwebp WebP image (codec webp)\n";
+        assert!(lists_encoder(listed, "libwebp_anim"));
+        assert!(lists_encoder(listed, "libx264"));
+        // `libwebp` is only a word in a description here, not an encoder.
+        assert!(!lists_encoder(listed, "libwebp"));
+        assert!(!lists_encoder("", "libwebp_anim"));
     }
 
     #[test]

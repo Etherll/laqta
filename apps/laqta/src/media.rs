@@ -34,6 +34,14 @@ impl LazyMedia {
         let work = self.data.join("recordings-tmp");
         let paths = match laqta_media::find_ffmpeg(&(self.configured)(), &self.data) {
             Some(p) => p,
+            // No pinned build to download (macOS): say how to get one, not offer a download.
+            None if !laqta_media::can_download_ffmpeg() => {
+                return Err(PortError::Failed(
+                    "Recording and video tools need FFmpeg, and none was found. Install it (with Homebrew: brew install ffmpeg), \
+                     or choose its location in Settings > Recording."
+                        .into(),
+                ));
+            }
             None => {
                 let ok = self
                     .prompt

@@ -115,6 +115,12 @@ impl PointerHighlighter for MacHighlighter {
         if on {
             permissions::input_monitoring()?;
             *running = Some(Running::start(&self.state)?);
+            // The disc follows mouse events; until the first one it would sit at the screen's
+            // origin, so it starts where the pointer is.
+            if let Some(event) = CGEvent::new(None) {
+                let at = CGEvent::location(Some(&event));
+                crate::disc::follow(at.x, at.y);
+            }
             crate::disc::set_visible(true);
         }
         Ok(())

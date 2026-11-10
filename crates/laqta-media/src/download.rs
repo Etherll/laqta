@@ -56,6 +56,11 @@ fn pinned_for_host() -> Option<Pinned> {
     }
 }
 
+/// True when `download_ffmpeg` has a pinned build for this platform (Windows and Linux).
+pub fn can_download_ffmpeg() -> bool {
+    pinned_for_host().is_some()
+}
+
 pub(crate) fn download_url(pinned: Pinned) -> String {
     format!("{RELEASE_URL}/{RELEASE_TAG}/{}", pinned.file)
 }

@@ -9,7 +9,7 @@ mod locate;
 mod media;
 mod process;
 
-pub use download::download_ffmpeg;
+pub use download::{can_download_ffmpeg, download_ffmpeg};
 pub use locate::{FfmpegPaths, find_ffmpeg};
 pub use media::FfmpegMedia;
 pub use process::FfmpegRecorder;
