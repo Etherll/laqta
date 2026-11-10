@@ -180,8 +180,8 @@ fn data_dir(args: &crate::cli::Args) -> std::path::PathBuf {
     chosen
 }
 
-/// Hands a GPUI window's native handle to the Windows adapter. Other platforms need none of
-/// these calls and answer false.
+/// Hands a GPUI window's native handle to the Windows or macOS adapter. A platform answers false
+/// to a call it does not need.
 fn native_window(window: &gpui::Window, what: laqta_ui::NativeWindow) -> bool {
     #[cfg(windows)]
     {
@@ -195,8 +195,19 @@ fn native_window(window: &gpui::Window, what: laqta_ui::NativeWindow) -> bool {
                 NativeWindow::PlainPopup => laqta_platform_windows::plain_popup(hwnd),
                 NativeWindow::BringToFront => laqta_platform_windows::bring_to_front(hwnd),
                 NativeWindow::HideForCapture => laqta_platform_windows::hide_for_capture(hwnd),
+                NativeWindow::CoverScreen => return false,
             }
             return true;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if what == laqta_ui::NativeWindow::CoverScreen
+            && let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::AppKit(appkit) = handle.as_raw()
+        {
+            return laqta_platform_macos::cover_screen(appkit.ns_view);
         }
     }
     let _ = (window, what);

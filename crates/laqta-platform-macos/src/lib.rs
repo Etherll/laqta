@@ -12,6 +12,7 @@ mod ax;
 mod capture;
 #[cfg(target_os = "macos")]
 mod clipboard;
+mod cover;
 #[cfg(target_os = "macos")]
 mod disc;
 #[cfg(any(target_os = "macos", test))]
@@ -118,3 +119,5 @@ mod imp {
         }
     }
 }
+
+pub use cover::cover_screen;

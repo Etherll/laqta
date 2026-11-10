@@ -287,8 +287,8 @@ impl ToolHost for UiHandle {
     }
 }
 
-/// What `UiServices::native_window` does to a window. All three are Windows behaviour; other
-/// platforms answer false.
+/// What `UiServices::native_window` does to a window. The first three are Windows behaviour and
+/// the last is macOS behaviour; a platform answers false to what it does not need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeWindow {
     /// A borderless popup keeps only what it paints: no outline or shadow drawn by the OS.
@@ -299,6 +299,10 @@ pub enum NativeWindow {
     /// The window leaves the screen at once and ends up minimized, and the call returns when the
     /// desktop has been drawn without it. A plain minimize is animated, and shows in a capture.
     HideForCapture,
+    /// The window covers its whole screen, menu bar and Dock included. macOS keeps a new window
+    /// below the menu bar, which would draw the region overlay's frozen screen lower than the
+    /// real one.
+    CoverScreen,
 }
 
 /// `UiServices::native_window`: true when the platform did what was asked.

@@ -347,7 +347,9 @@ impl Render for OverlayView {
         }
         // Once, when the overlay is on screen: Esc and the tool keys must reach it.
         if !std::mem::replace(&mut self.raised, true) {
-            (cx.global::<UiState>().services.native_window)(window, crate::runtime::NativeWindow::BringToFront);
+            let native = cx.global::<UiState>().services.native_window.clone();
+            native(window, crate::runtime::NativeWindow::BringToFront);
+            native(window, crate::runtime::NativeWindow::CoverScreen);
         }
         let s = window.scale_factor();
         let model = self.model.read(cx);

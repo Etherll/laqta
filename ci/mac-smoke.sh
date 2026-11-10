@@ -21,16 +21,43 @@ step() { # step <name> <seconds> <args...>
   name=$1 wait=$2
   shift 2
   echo "== $name: $*" | tee -a "$out/steps.log"
+  "$bin" "$@" >>"$out/steps.log" 2>&1
+  echo "   exit $?" >>"$out/steps.log"
+  sleep "$wait"
+  shot "$name"
+  alive "$name"
+}
+
+alive() {
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "Laqta died after: $1" | tee -a "$out/steps.log"
+    exit 1
+  fi
+}
+
+escape() {
+  osascript -e 'tell application "System Events" to key code 53' >>"$out/steps.log" 2>&1
+}
+
+# An action that waits for a selection: its request stays open until the selection ends. The
+# overlay is photographed, then Escape ends it; a request still open 20 s later is a hang, and
+# both processes are sampled so the cause can be read without a Mac.
+pick() { # pick <name> <args...>
+  name=$1
+  shift
+  echo "== $name: $* (then Escape)" | tee -a "$out/steps.log"
   "$bin" "$@" >>"$out/steps.log" 2>&1 &
   cli=$!
+  sleep 5
+  shot "$name"
+  escape
   waited=0
-  while kill -0 "$cli" 2>/dev/null && [ "$waited" -lt 30 ]; do
+  while kill -0 "$cli" 2>/dev/null && [ "$waited" -lt 20 ]; do
     sleep 1
     waited=$((waited + 1))
   done
   if kill -0 "$cli" 2>/dev/null; then
-    # The request did not return. Keep both stacks, so the cause can be read without a Mac.
-    echo "   no reply after 30 s: $name" | tee -a "$out/steps.log"
+    echo "   no reply 20 s after Escape: $name" | tee -a "$out/steps.log"
     sample "$pid" 3 -file "$out/hang-$name-app.txt" >/dev/null 2>&1
     sample "$cli" 1 -file "$out/hang-$name-cli.txt" >/dev/null 2>&1
     kill "$cli" 2>/dev/null
@@ -38,12 +65,8 @@ step() { # step <name> <seconds> <args...>
     wait "$cli"
     echo "   exit $?" >>"$out/steps.log"
   fi
-  sleep "$wait"
-  shot "$name"
-  if ! kill -0 "$pid" 2>/dev/null; then
-    echo "Laqta died after: $name" | tee -a "$out/steps.log"
-    exit 1
-  fi
+  shot "$name-after-escape"
+  alive "$name"
 }
 
 sw_vers >"$out/system.txt" 2>&1
@@ -67,15 +90,12 @@ step history 4 --action open-history
 step color-picker 4 --action color-picker
 step print-screen 6 --action print-screen
 osascript -e 'clipboard info' >"$out/clipboard-after-print-screen.txt" 2>&1
-step region-overlay 4 --action rectangle-region
-osascript -e 'tell application "System Events" to key code 53' >>"$out/steps.log" 2>&1 # Esc
-sleep 2
-shot after-escape
-step record-start 6 --action start-screen-recorder
-step record-stop 6 --action stop-screen-recording
-step ocr 5 --action ocr
-osascript -e 'tell application "System Events" to key code 53' >>"$out/steps.log" 2>&1
-sleep 1
+pick region-overlay --action rectangle-region
+pick record-region --action start-screen-recorder
+pick ocr --action ocr
+"$bin" --action stop-screen-recording >>"$out/steps.log" 2>&1 &
+sleep 3
+kill $! 2>/dev/null
 
 ps -o rss=,cputime= -p "$pid" >"$out/process.txt" 2>&1
 "$bin" --action exit >>"$out/steps.log" 2>&1 &

@@ -189,6 +189,16 @@ fn probe(media: &FfmpegMedia, path: &Path) -> MediaInfo {
     block_on(media.probe(path)).expect("probe the output")
 }
 
+/// For a source that ends by itself after `expected` seconds of frames. The frame clock starts
+/// before FFmpeg reads its first frame, and frames that wait are repeated to keep the time, so
+/// the file is longer by FFmpeg's start-up time (about half a second on a macOS runner).
+fn assert_lasts(actual: f64, expected: f64, tolerance: f64) {
+    assert!(
+        actual >= expected - tolerance && actual <= expected + tolerance + 1.0,
+        "expected {expected} +/- {tolerance} plus start-up, got {actual}"
+    );
+}
+
 fn assert_near(actual: f64, expected: f64, tolerance: f64) {
     assert!((actual - expected).abs() <= tolerance, "expected {expected} +/- {tolerance}, got {actual}");
 }
@@ -206,7 +216,7 @@ fn records_mp4_and_probes_it() {
     let info = probe(&media, &output);
     assert_eq!((info.width, info.height), (64, 48));
     assert_eq!(info.video_codec, "h264");
-    assert_near(info.duration_secs, 1.0, 0.4);
+    assert_lasts(info.duration_secs, 1.0, 0.4);
 }
 
 #[test]
@@ -230,10 +240,11 @@ fn pause_and_resume_join_two_segments() {
     assert_eq!((info.width, info.height), (64, 48));
 }
 
-/// A 440 Hz tone at wall-clock speed, as an OS loopback gives it.
+/// A 440 Hz tone at wall-clock speed from the moment it is made, as an OS loopback gives it: the
+/// sound from before FFmpeg opens the pipe is kept and handed over first.
 #[cfg(unix)]
 struct Tone {
-    started: Option<Instant>,
+    started: Instant,
     sent: u64,
     stopped: bool,
 }
@@ -249,7 +260,7 @@ impl PcmSource for Tone {
             return Ok(0);
         }
         thread::sleep(Duration::from_millis(10));
-        let due = (self.started.get_or_insert_with(Instant::now).elapsed().as_secs_f64() * 48_000.0) as u64;
+        let due = (self.started.elapsed().as_secs_f64() * 48_000.0) as u64;
         let frames = (due.saturating_sub(self.sent) as usize).min(buf.len() / 2);
         for (i, frame) in buf[..frames * 2].chunks_mut(2).enumerate() {
             let t = (self.sent + i as u64) as f64 / 48_000.0;
@@ -278,7 +289,7 @@ fn raw_frames_and_pcm_sound_are_recorded_together_across_a_pause() {
     let output = dir.path().join("sound.mp4");
     let input = RecordingInput {
         video: VideoSource::Frames(Box::new(PacedFrames::new(30, None))),
-        audio: vec![AudioInput::Pcm(Box::new(Tone { started: None, sent: 0, stopped: false }))],
+        audio: vec![AudioInput::Pcm(Box::new(Tone { started: Instant::now(), sent: 0, stopped: false }))],
     };
     let mut recording = block_on(media.start(input, spec(VideoCodec::X264, 30), output.clone())).expect("start");
     thread::sleep(Duration::from_millis(1500));
@@ -497,7 +508,7 @@ fn transcode_trims_and_a_thumbnail_is_one_frame() {
         block_on(media.start(input(PacedFrames::new(30, Some(60))), spec(VideoCodec::X264, 30), source.clone())).expect("start");
     thread::sleep(Duration::from_millis(2500));
     block_on(recording.stop()).expect("stop");
-    assert_near(probe(&media, &source).duration_secs, 2.0, 0.5);
+    assert_lasts(probe(&media, &source).duration_secs, 2.0, 0.5);
 
     let trimmed = dir.path().join("trimmed.mp4");
     let trim = TranscodeSpec { start_secs: Some(0.5), duration_secs: Some(1.0), ..TranscodeSpec::default() };

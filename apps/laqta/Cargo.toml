@@ -59,6 +59,8 @@ laqta-platform-linux.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 laqta-platform-macos.workspace = true
+# The native view of a GPUI window, for `laqta_platform_macos::cover_screen`.
+raw-window-handle = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 laqta-platform-windows.workspace = true
