@@ -15,6 +15,7 @@
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <key>NSScreenCaptureUsageDescription</key><string>Laqta captures the screen when you take a screenshot or start a screen recording.</string>
   <key>NSMicrophoneUsageDescription</key><string>Laqta records the microphone when you choose it for a screen recording.</string>
   <key>NSCameraUsageDescription</key><string>Laqta shows the camera in a screen recording when you turn the camera overlay on.</string>
   <!-- "Open With > Laqta" and files dropped on the Dock icon: Laqta uploads them. -->
