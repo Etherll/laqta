@@ -29,6 +29,8 @@ const FINISH_GRACE: Duration = Duration::from_secs(5);
 /// How long a Windows `ddagrab` start is watched for an early failure.
 const CAPTURE_CHECK: Duration = Duration::from_secs(2);
 const PCM_CHUNK_SAMPLES: usize = 4096;
+/// The longest silence put before the sound for FFmpeg's start-up. A longer wait is not a start-up.
+const MAX_LEAD_SILENCE: Duration = Duration::from_secs(5);
 /// The pipe name a PCM input carries when raw frames have stdin. The recorder replaces it with a
 /// named pipe inside the session folder.
 pub(crate) const SIDE_PIPE: &str = "laqta-side-pcm";
@@ -608,8 +610,16 @@ fn spawn_side_feeder(source: Box<dyn PcmSource>, pipe: PathBuf) -> Result<SideFe
         .name("laqta-ffmpeg-sound".to_owned())
         .spawn(move || {
             let mut source = source;
+            // The picture's clock starts now, with this segment; FFmpeg opens the pipe later.
+            let started = Instant::now();
             match fs::OpenOptions::new().write(true).open(&pipe) {
-                Ok(mut file) => feed_pcm(source.as_mut(), &mut file, &flag),
+                Ok(mut file) => {
+                    let format = source.format();
+                    let lead = vec![0u8; lead_silence_bytes(started.elapsed(), format.sample_rate, format.channels)];
+                    if file.write_all(&lead).is_ok() {
+                        feed_pcm(source.as_mut(), &mut file, &flag);
+                    }
+                }
                 Err(err) => tracing::warn!(%err, "could not open the sound pipe"),
             }
             if let Err(mpsc::SendError(mut source)) = send.send(source) {
@@ -618,6 +628,15 @@ fn spawn_side_feeder(source: Box<dyn PcmSource>, pipe: PathBuf) -> Result<SideFe
         })
         .map_err(|err| PortError::Failed(format!("could not start the sound thread: {err}")))?;
     Ok(SideFeeder { stop, returned })
+}
+
+/// Bytes of 16-bit silence that last `waited`, in whole sample frames and at most
+/// `MAX_LEAD_SILENCE`. A source starts its sound when it is first read, which is when FFmpeg opens
+/// the pipe; the picture started `waited` earlier, and the frames from that wait are in the file.
+/// Without this silence the sound would play that much ahead of the picture.
+fn lead_silence_bytes(waited: Duration, sample_rate: u32, channels: u16) -> usize {
+    let frames = (waited.min(MAX_LEAD_SILENCE).as_secs_f64() * f64::from(sample_rate)) as usize;
+    frames * usize::from(channels) * 2
 }
 
 /// Writes the source's samples as little-endian 16-bit PCM until `stop` is set, the source ends or
@@ -833,6 +852,16 @@ mod tests {
             FfmpegRecorder::start(paths, plan, dir.path().join("session"), dir.path().join("out.mp4"), None, None).expect("start");
         assert!(RecordingHandle::is_alive(&mut recorder), "the failed ddagrab attempt must not end the recording");
         locked(&recorder.inner, Inner::abort);
+    }
+
+    #[test]
+    fn the_sound_gets_silence_for_the_time_ffmpeg_took_to_open_the_pipe() {
+        // 250 ms of 48 kHz stereo: 12 000 frames of 4 bytes.
+        assert_eq!(lead_silence_bytes(Duration::from_millis(250), 48_000, 2), 48_000);
+        assert_eq!(lead_silence_bytes(Duration::ZERO, 48_000, 2), 0);
+        // Whole frames only, so the channels stay in step.
+        assert_eq!(lead_silence_bytes(Duration::from_micros(30), 48_000, 2) % 4, 0);
+        assert_eq!(lead_silence_bytes(Duration::from_secs(60), 48_000, 2), 5 * 48_000 * 4);
     }
 
     #[test]
