@@ -45,7 +45,7 @@ Download the latest build for your system:
 <table>
   <tr><td><b>Platform</b></td><td><b>Download</b></td></tr>
   <tr><td><b>Windows installer (x64)</b></td><td><a href="../../releases/latest/download/laqta-windows-x64-setup.exe">laqta-windows-x64-setup.exe</a></td></tr>
-  <tr><td><b>Windows portable (x64)</b></td><td><a href="../../releases/latest/download/laqta-windows-x64-portable.zip">laqta-windows-x64-portable.zip</a></td></tr>
+  <tr><td><b>Windows portable (x64)</b></td><td><a href="../../releases/latest/download/laqta-windows-x64-portable.exe">laqta-windows-x64-portable.exe</a></td></tr>
   <tr><td><b>Linux AppImage (x86_64)</b></td><td><a href="../../releases/latest/download/laqta-linux-x86_64.AppImage">laqta-linux-x86_64.AppImage</a></td></tr>
   <tr><td><b>Debian / Ubuntu (amd64)</b></td><td><a href="../../releases/latest/download/laqta-linux-amd64.deb">laqta-linux-amd64.deb</a></td></tr>
   <tr><td><b>Linux archive (x86_64)</b></td><td><a href="../../releases/latest/download/laqta-linux-x86_64.tar.gz">laqta-linux-x86_64.tar.gz</a></td></tr>
@@ -54,8 +54,8 @@ Download the latest build for your system:
 Every file has a `.sha256` next to it on the [Releases](../../releases) page.
 
 - **Windows:** the installer sets Laqta up for your account, adds Start menu and desktop
-  shortcuts, and keeps it updated. The portable zip runs from any folder and keeps its settings
-  next to `laqta.exe`.
+  shortcuts, and keeps it updated. The portable `.exe` runs from any folder, a USB stick
+  included, and keeps its settings in a `LaqtaData` folder beside it.
 - **Linux:** make the AppImage executable (`chmod +x laqta-linux-x86_64.AppImage`) and run it. On
   Debian or Ubuntu you can instead install the package with
   `sudo apt install ./laqta-linux-amd64.deb`. The archive holds the plain binaries, or you can

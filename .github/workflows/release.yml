@@ -4,7 +4,7 @@ name: Release
 # the packages to a draft GitHub release. Review the draft, then publish it.
 #
 # Asset names carry no version, so the README can link to releases/latest/download/<name>:
-#   laqta-windows-x64-setup.exe, laqta-windows-x64-portable.zip, laqta-linux-x86_64.AppImage,
+#   laqta-windows-x64-setup.exe, laqta-windows-x64-portable.exe, laqta-linux-x86_64.AppImage,
 #   laqta-linux-x86_64.tar.gz, laqta-linux-amd64.deb (each with a .sha256)
 # The Velopack update package (Laqta-<version>-…-full.nupkg and its feed files) and SHA256SUMS are
 # what the in-app updater reads on Windows.
@@ -119,14 +119,10 @@ jobs:
           Get-ChildItem velopack
           Get-ChildItem velopack -Filter *Setup.exe | Move-Item -Destination dist/laqta-windows-x64-setup.exe
           Get-ChildItem velopack -File | Where-Object { $_.Name -notlike '*Portable.zip' } | Move-Item -Destination dist
-          # The portable build: the `portable` file keeps settings and history in LaqtaData next
-          # to laqta.exe, so the folder can live on a USB stick.
-          $dir = "laqta-$env:GITHUB_REF_NAME-windows-x64-portable"
-          New-Item -ItemType Directory -Force "portable/$dir" | Out-Null
-          Copy-Item stage/* "portable/$dir/"
-          New-Item -ItemType File "portable/$dir/portable" | Out-Null
-          Compress-Archive -Path "portable/$dir" -DestinationPath dist/laqta-windows-x64-portable.zip
-          foreach ($f in "laqta-windows-x64-setup.exe", "laqta-windows-x64-portable.zip") {
+          # The portable build is laqta.exe under a name containing "portable", which keeps its
+          # settings and history in LaqtaData next to it.
+          Copy-Item target/release/laqta.exe dist/laqta-windows-x64-portable.exe
+          foreach ($f in "laqta-windows-x64-setup.exe", "laqta-windows-x64-portable.exe") {
             $hash = (Get-FileHash "dist/$f" -Algorithm SHA256).Hash.ToLower()
             "$hash  $f" | Out-File -Encoding ascii "dist/$f.sha256"
           }

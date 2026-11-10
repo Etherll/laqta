@@ -125,9 +125,10 @@ fn pictures_dir() -> std::path::PathBuf {
 }
 
 /// `-sandbox`: a fresh temporary folder, removed on exit. `-portable`: `LaqtaData` next to the
-/// binary, as the `portable` marker file does.
+/// binary, as the `portable` marker file or a "portable" executable name does.
 fn data_dir(args: &crate::cli::Args) -> std::path::PathBuf {
-    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let exe = std::env::current_exe().ok();
+    let exe_dir = exe.as_deref().and_then(|p| p.parent().map(|d| d.to_path_buf()));
     if args.sandbox {
         return std::env::temp_dir().join(format!("laqta-sandbox-{}", std::process::id()));
     }
@@ -137,7 +138,7 @@ fn data_dir(args: &crate::cli::Args) -> std::path::PathBuf {
         return dir.join("LaqtaData");
     }
     let default = dirs::data_local_dir().unwrap_or_else(|| ".".into()).join("Laqta");
-    laqta_library::data_dir(exe_dir.as_deref(), default)
+    laqta_library::data_dir(exe.as_deref(), default)
 }
 
 /// Runs one request and returns the tasks it started; `Ok(None)` means quit.
