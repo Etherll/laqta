@@ -25,6 +25,8 @@ pub struct Step {
 pub enum Work {
     Input(EditorInput),
     Command(Command),
+    /// Export the image as it is at this point in the order, and send it here.
+    Export(futures_channel::oneshot::Sender<Bitmap>),
 }
 
 /// A batch of work running on the compute pool. Resolves to one output per piece of work, or to
@@ -49,6 +51,8 @@ pub struct Finished {
     pub requests: Vec<EditorRequest>,
     /// The work queued meanwhile, already started. Await it like the first batch.
     pub next: Option<Batch>,
+    /// The engine panicked, so the batch's work is lost.
+    pub failed: bool,
 }
 
 impl std::fmt::Debug for Submitted {
@@ -148,9 +152,13 @@ impl EditorInteraction {
             let mut engine = lock(&editor);
             batch
                 .into_iter()
-                .map(|work| match work {
-                    Work::Input(input) => engine.handle(input),
-                    Work::Command(command) => engine.execute(command),
+                .filter_map(|work| match work {
+                    Work::Input(input) => Some(engine.handle(input)),
+                    Work::Command(command) => Some(engine.execute(command)),
+                    Work::Export(image) => {
+                        let _ = image.send(engine.export());
+                        None
+                    }
                 })
                 .collect()
         })
@@ -159,6 +167,7 @@ impl EditorInteraction {
     /// Call when a batch resolves, with what it resolved to.
     pub fn batch_finished(&mut self, outputs: Option<Vec<EditorOutput>>) -> Finished {
         self.running = false;
+        let failed = outputs.is_none();
         let mut step: Option<Step> = None;
         let mut requests = Vec::new();
         for out in outputs.into_iter().flatten() {
@@ -168,13 +177,16 @@ impl EditorInteraction {
             step = Some(one);
         }
         let next = (!self.queue.is_empty()).then(|| self.start_batch());
-        Finished { step, requests, next }
+        Finished { step, requests, next, failed }
     }
 
     /// The finished image, rendered on the compute pool. Resolves to `None` if the export fails.
-    pub fn export(&self) -> BoxFuture<'static, Option<Bitmap>> {
-        let editor = Arc::clone(&self.editor);
-        compute(&self.compute, move || lock(&editor).export())
+    /// The export takes its place in the work order: it holds every edit submitted before this call
+    /// and none submitted after. Handle the `Submitted` as for [`Self::submit`].
+    pub fn export(&mut self) -> (BoxFuture<'static, Option<Bitmap>>, Submitted) {
+        let (send, image) = futures_channel::oneshot::channel();
+        let submitted = self.submit(Work::Export(send));
+        (Box::pin(async move { image.await.ok() }), submitted)
     }
 
     /// The same rule for an output produced elsewhere, such as a command.
@@ -222,7 +234,7 @@ mod tests {
     use laqta_editor::{Command, Editor, EditorInput, EditorKey, EditorRequest, Fonts, Mods, PointerButton, Tool};
     use laqta_ports::BoxFuture;
 
-    use super::{EditorInteraction, lock};
+    use super::{EditorInteraction, Submitted, Work, lock};
     use crate::presenters::render_gate::ComputeFn;
 
     /// Jobs the gated fake holds until a test runs or drops them.
@@ -277,6 +289,26 @@ mod tests {
         e.handle(up(900.0, 800.0));
         e.execute(Command::SetTool(Tool::Select));
         e
+    }
+
+    #[test]
+    fn an_export_holds_the_edits_before_it_and_none_after() {
+        let (compute, held) = gated();
+        let mut ix = EditorInteraction::new(editor(), compute);
+        let (image, submitted) = ix.export();
+        let Submitted::Started(batch) = submitted else { panic!("an idle export starts a batch") };
+        // Submitted after the export, while it waits for the pool.
+        let small = Bitmap::new(4, 4, PixelFormat::Rgba8, vec![0u8; 64].into()).unwrap();
+        assert!(matches!(ix.submit(Work::Command(Command::ReplaceImage(small))), Submitted::Queued));
+
+        run_next(&held);
+        assert_eq!(block_on(image).map(|b| b.width()), Some(2560), "the later edit is not in the export");
+        let done = ix.batch_finished(block_on(batch));
+        assert!(!done.failed && done.step.is_none(), "an export alone is not a failed command");
+        let next = done.next.unwrap_or_else(|| panic!("the queued edit starts next"));
+        run_next(&held);
+        ix.batch_finished(block_on(next));
+        assert_eq!(lock(&ix.editor()).export().width(), 4);
     }
 
     fn down(x: f32, y: f32) -> EditorInput {

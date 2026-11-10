@@ -326,7 +326,8 @@ impl EditorWindow {
                 let done = this.interaction.batch_finished(outputs);
                 match done.step {
                     Some(step) => this.apply(step, window, cx),
-                    None => this.message = Some("The command failed.".into()),
+                    None if done.failed => this.message = Some("The command failed.".into()),
+                    None => {}
                 }
                 for request in done.requests {
                     this.request(request, window, cx);
@@ -337,9 +338,9 @@ impl EditorWindow {
                         for output in std::mem::take(&mut this.deferred) {
                             match output {
                                 Deferred::Finish => this.finish(window, cx),
-                                Deferred::Save { ask } => this.save(ask, cx),
-                                Deferred::Copy => this.copy(cx),
-                                Deferred::Upload => this.upload(cx),
+                                Deferred::Save { ask } => this.save(ask, window, cx),
+                                Deferred::Copy => this.copy(window, cx),
+                                Deferred::Upload => this.upload(window, cx),
                                 Deferred::Smart(op) => this.smart(op, window, cx),
                             }
                         }
@@ -366,16 +367,30 @@ impl EditorWindow {
     }
 
     /// The image encoded off the UI thread.
-    fn encoded(&self, format: ImageFormat, cx: &App) -> impl Future<Output = Result<Vec<u8>, String>> + Send + 'static {
+    fn encoded(
+        &mut self,
+        format: ImageFormat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl Future<Output = Result<Vec<u8>, String>> + Send + 'static {
         let codecs = cx.global::<UiState>().services.codecs.clone();
         let opts = laqta_imaging::EncodeOptions { format, jpeg_quality: 90 };
-        output::encode(self.compute.clone(), codecs, self.interaction.export(), opts)
+        output::encode(self.compute.clone(), codecs, self.export(window, cx), opts)
+    }
+
+    /// The image as it is now: later edits wait behind the export, so they are never in it.
+    fn export(&mut self, window: &mut Window, cx: &mut Context<Self>) -> laqta_ports::BoxFuture<'static, Option<Bitmap>> {
+        let (image, submitted) = self.interaction.export();
+        if let Submitted::Started(batch) = submitted {
+            self.run_batch(batch, window, cx);
+        }
+        image
     }
 
     fn request(&mut self, r: EditorRequest, window: &mut Window, cx: &mut Context<Self>) {
         match r {
-            EditorRequest::Save => self.save(false, cx),
-            EditorRequest::SaveAs => self.save(true, cx),
+            EditorRequest::Save => self.save(false, window, cx),
+            EditorRequest::SaveAs => self.save(true, window, cx),
             EditorRequest::Continue => self.finish(window, cx),
             EditorRequest::EraseObject { rect } => self.smart(Smart::Erase(rect), window, cx),
         }
@@ -398,7 +413,7 @@ impl EditorWindow {
         };
         self.busy = Some("Finishing…");
         cx.notify();
-        let export = self.interaction.export();
+        let export = self.export(window, cx);
         cx.spawn_in(window, async move |this, cx| {
             let image = export.await.ok_or_else(|| PortError::Failed("export failed".into()));
             let _ = reply.send(image);
@@ -407,14 +422,14 @@ impl EditorWindow {
         .detach();
     }
 
-    fn save(&mut self, ask: bool, cx: &mut Context<Self>) {
+    fn save(&mut self, ask: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.defer(Deferred::Save { ask }) {
             return;
         }
         let settings = cx.global::<UiState>().services.app.settings();
         let format = settings.defaults.image.format;
         let ext = format.extension();
-        let encoded = self.encoded(format, cx);
+        let encoded = self.encoded(format, window, cx);
         let default_dir = settings.screenshots_dir.clone();
         let current = self.path.clone();
         let task = cx.background_spawn(async move {
@@ -454,11 +469,11 @@ impl EditorWindow {
         .detach();
     }
 
-    fn copy(&mut self, cx: &mut Context<Self>) {
+    fn copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.defer(Deferred::Copy) {
             return;
         }
-        let export = self.interaction.export();
+        let export = self.export(window, cx);
         let app = cx.global::<UiState>().services.app.clone();
         cx.spawn(async move |this, cx| {
             let copied = match export.await {
@@ -474,11 +489,11 @@ impl EditorWindow {
     }
 
     /// Saves a temporary PNG and hands it to Task as a file upload.
-    fn upload(&mut self, cx: &mut Context<Self>) {
+    fn upload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.defer(Deferred::Upload) {
             return;
         }
-        let encoded = self.encoded(ImageFormat::Png, cx);
+        let encoded = self.encoded(ImageFormat::Png, window, cx);
         let services = cx.global::<UiState>().services.clone();
         let dir = services.data_dir.join("edits");
         let stem = format!("Laqta_edit_{}", std::process::id());
@@ -512,9 +527,7 @@ impl EditorWindow {
         cx.notify();
         let app = cx.global::<UiState>().services.app.clone();
         let prompt = app.settings().cloud.analyzer.prompt.clone();
-        let editor = self.interaction.editor();
-        let export =
-            crate::presenters::render_gate::compute(&self.compute, move || editor.lock().unwrap_or_else(|p| p.into_inner()).export());
+        let export = self.export(window, cx);
         let work = cx.background_spawn(async move {
             let image = export.await.ok_or_else(|| "Couldn't read the image.".to_string())?;
             let fail = |e: laqta_ports::AppError| e.to_string();
@@ -1060,19 +1073,40 @@ impl EditorWindow {
             .flex()
             .items_center()
             .gap(space::S2)
-            .child(widgets::pill("copy", "Copy", widgets::Pill::Default, false, cx.listener(|this, _, _, cx| this.copy(cx)), cx))
-            .child(widgets::pill("upload", "Upload", widgets::Pill::Default, false, cx.listener(|this, _, _, cx| this.upload(cx)), cx))
+            .child(widgets::pill(
+                "copy",
+                "Copy",
+                widgets::Pill::Default,
+                false,
+                cx.listener(|this, _, window, cx| this.copy(window, cx)),
+                cx,
+            ))
+            .child(widgets::pill(
+                "upload",
+                "Upload",
+                widgets::Pill::Default,
+                false,
+                cx.listener(|this, _, window, cx| this.upload(window, cx)),
+                cx,
+            ))
             .child(widgets::pill(
                 "saveas",
                 "Save as…",
                 widgets::Pill::Default,
                 false,
-                cx.listener(|this, _, _, cx| this.save(true, cx)),
+                cx.listener(|this, _, window, cx| this.save(true, window, cx)),
                 cx,
             ));
         actions = if continuing {
             actions
-                .child(widgets::pill("save", "Save", widgets::Pill::Default, false, cx.listener(|this, _, _, cx| this.save(false, cx)), cx))
+                .child(widgets::pill(
+                    "save",
+                    "Save",
+                    widgets::Pill::Default,
+                    false,
+                    cx.listener(|this, _, window, cx| this.save(false, window, cx)),
+                    cx,
+                ))
                 .child(widgets::pill(
                     "continue",
                     "Done",
@@ -1087,7 +1121,7 @@ impl EditorWindow {
                 "Save",
                 widgets::Pill::Primary,
                 false,
-                cx.listener(|this, _, _, cx| this.save(false, cx)),
+                cx.listener(|this, _, window, cx| this.save(false, window, cx)),
                 cx,
             ))
         };
