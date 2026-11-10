@@ -285,7 +285,27 @@ impl PcmSource for Tone {
 fn raw_frames_and_pcm_sound_are_recorded_together_across_a_pause() {
     let dir = tempfile::tempdir().expect("tempdir");
     let Some(media) = media(dir.path()) else { return };
-    let output = dir.path().join("sound.mp4");
+    record_sound_across_a_pause(&media, dir.path());
+}
+
+/// FFmpeg takes about half a second to start on macOS. The recording must come out whole however
+/// long the start takes.
+#[cfg(unix)]
+#[test]
+fn sound_is_whole_when_ffmpeg_is_slow_to_start() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let Some(paths) = find_ffmpeg("", dir.path()) else { return };
+    let slow = dir.path().join("slow-ffmpeg");
+    std::fs::write(&slow, format!("#!/bin/sh\nsleep 0.6\nexec '{}' \"$@\"\n", paths.ffmpeg.display())).expect("write the wrapper");
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).expect("make it executable");
+    let media = FfmpegMedia::new(laqta_media::FfmpegPaths { ffmpeg: slow, ffprobe: paths.ffprobe }, dir.path().join("work"));
+    record_sound_across_a_pause(&media, dir.path());
+}
+
+#[cfg(unix)]
+fn record_sound_across_a_pause(media: &FfmpegMedia, dir: &Path) {
+    let output = dir.join("sound.mp4");
     let input = RecordingInput {
         video: VideoSource::Frames(Box::new(PacedFrames::new(30, None))),
         audio: vec![AudioInput::Pcm(Box::new(Tone { started: None, sent: 0, stopped: false }))],
@@ -300,10 +320,17 @@ fn raw_frames_and_pcm_sound_are_recorded_together_across_a_pause() {
     let started = Instant::now();
     block_on(recording.stop()).expect("stop");
     assert!(started.elapsed() < Duration::from_secs(4), "stop did not wait on the sound pipe");
-    let info = probe(&media, &output);
+    let info = probe(media, &output);
     assert!(info.audio_codec.is_some(), "the recording has a sound stream");
-    assert_near(info.duration_secs, 3.0, 0.9);
-    assert!(!dir.path().join("work").read_dir().is_ok_and(|mut entries| entries.next().is_some()), "the session folder is gone");
+    // Which stream is short says where the time went, so a failure names both.
+    let streams = Command::new(&media.paths().ffprobe)
+        .args(["-v", "error", "-count_packets", "-show_entries", "stream=codec_type,start_time,duration,nb_read_packets", "-of", "compact"])
+        .arg(&output)
+        .output()
+        .expect("run ffprobe");
+    let streams = String::from_utf8_lossy(&streams.stdout).replace('\n', "; ");
+    assert!((info.duration_secs - 3.0).abs() <= 0.9, "expected 3 +/- 0.9, got {}: {streams}", info.duration_secs);
+    assert!(!dir.join("work").read_dir().is_ok_and(|mut entries| entries.next().is_some()), "the session folder is gone");
 }
 
 /// Silence that records when it was stopped.
