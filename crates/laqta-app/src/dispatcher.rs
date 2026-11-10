@@ -193,6 +193,11 @@ impl App {
         self.task.stop_all();
     }
 
+    /// Every task that is queued or running, lowest id first.
+    pub fn unfinished_tasks(&self) -> Vec<TaskId> {
+        self.task.unfinished()
+    }
+
     /// A new listener. It sees the events sent after this call.
     pub fn events(&self) -> Receiver<TaskEvent> {
         self.idle.activate_cloned()

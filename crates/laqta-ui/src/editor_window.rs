@@ -357,7 +357,9 @@ impl EditorWindow {
         if self.interaction.idle() {
             return false;
         }
-        if !self.deferred.contains(&output) {
+        // One smart tool at a time, as when one is already at work: a second one is not kept.
+        let second_smart = matches!(output, Deferred::Smart(_)) && self.deferred.iter().any(|d| matches!(d, Deferred::Smart(_)));
+        if !second_smart && !self.deferred.contains(&output) {
             self.deferred.push(output);
         }
         true

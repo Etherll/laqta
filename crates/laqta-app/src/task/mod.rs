@@ -165,6 +165,10 @@ impl Task {
         }
     }
 
+    pub(crate) fn unfinished(&self) -> Vec<TaskId> {
+        self.jobs.ids()
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn stop_all(&self) {
         for id in self.jobs.ids() {

@@ -494,9 +494,16 @@ impl PhotoWindow {
         let services = cx.global::<UiState>().services.clone();
         let format = services.app.settings().defaults.image.format;
         let opts = laqta_imaging::EncodeOptions { format, jpeg_quality: 90 };
-        let editor = self.editor();
-        let flattened =
-            crate::presenters::render_gate::compute(&self.compute, move || editor.lock().unwrap_or_else(|p| p.into_inner()).flatten());
+        // The flatten takes its turn in the edit queue, so the file holds every edit made before Save.
+        let (flat, flattened) = futures_channel::oneshot::channel();
+        self.edit(
+            move |editor| {
+                let _ = flat.send(editor.flatten());
+                Ok(())
+            },
+            cx,
+        );
+        let flattened: laqta_ports::BoxFuture<'static, Option<Bitmap>> = Box::pin(async move { flattened.await.ok() });
         let encoded = crate::presenters::output::encode(self.compute.clone(), services.codecs.clone(), flattened, opts);
         let dir = services.app.settings().screenshots_dir.clone();
         let current = self.path.clone();

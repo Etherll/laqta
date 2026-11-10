@@ -470,4 +470,6 @@ fn dispatch_with_several_files_returns_every_task() {
 
     // A caller that waits for the tasks (`-autoclose`) needs all of them, not only the first.
     assert_eq!(run_with(&h, Action::FileUpload, ActionInput::Files(vec![a, b])).unwrap(), Dispatched::Tasks(vec![TaskId(1), TaskId(2)]));
+    // Both ran to the end, so neither is left for a waiter to reconcile against.
+    assert!(h.app.unfinished_tasks().is_empty());
 }

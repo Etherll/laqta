@@ -654,7 +654,10 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                     Ok(laqta_ports::TaskEvent::StatusChanged { id, status: laqta_ports::TaskStatus::InQueue }) => {
                         pending.insert(id);
                     }
-                    Ok(_) | Err(async_broadcast::RecvError::Overflowed(_)) => {}
+                    Ok(_) => {}
+                    // Events were dropped, so `pending` may hold tasks that ended or miss new ones:
+                    // take the list from Task itself.
+                    Err(async_broadcast::RecvError::Overflowed(_)) => pending = app.unfinished_tasks().into_iter().collect(),
                     Err(async_broadcast::RecvError::Closed) => break,
                 }
             }
