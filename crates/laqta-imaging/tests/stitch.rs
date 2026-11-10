@@ -234,3 +234,43 @@ fn stitch_frame_of_another_size_is_refused() {
     assert_eq!(stitcher.push(&narrow), StitchStep::NoMatch);
     assert_eq!(stitcher.result().pixels(), first.pixels());
 }
+
+/// A scrollbar thumb at the right edge sits at a different height in every frame. The side strips
+/// are left out of the comparison, so the scroll still joins (ShareX's `ignoreSideOffset`).
+#[test]
+fn stitch_ignores_a_scrollbar_that_moves_at_the_side() {
+    let page = make_page(11);
+    let frames: Vec<Bitmap> = OFFSETS
+        .iter()
+        .enumerate()
+        .map(|(index, &offset)| {
+            let mut px = frame(&page, offset, &[], &[]).pixels().to_vec();
+            // A 4-pixel thumb, 30 rows tall, that moves down 7 rows per frame.
+            for row in (index * 7)..(index * 7 + 30) {
+                let end = (row + 1) * ROW;
+                px[end - 16..end].copy_from_slice(&[200u8, 200, 200, 255].repeat(4));
+            }
+            bitmap(H, px)
+        })
+        .collect();
+    let (result, steps) = stitch(&frames, StitchOptions::default());
+    assert_eq!(steps, plain_steps());
+    assert_eq!(result.height(), PAGE_ROWS);
+}
+
+/// One frame whose overlap rows were spoilt (captured mid-animation) is joined at the offset the
+/// scroll has used so far, and the capture goes on (ShareX's best guess).
+#[test]
+fn stitch_joins_an_unmatched_frame_at_the_best_offset_so_far() {
+    let page = make_page(12);
+    let mut frames = cut_frames(&page, &[0, 37, 74, 111, 148], &[], &[]);
+    // The third scroll's frame: its top 63 rows, which should overlap the frame before, are noise.
+    let mut spoilt = frames[3].pixels().to_vec();
+    spoilt[..63 * ROW].copy_from_slice(&noise(63, 0x51ed));
+    frames[3] = bitmap(H, spoilt);
+    let (result, steps) = stitch(&frames, StitchOptions::default());
+    // The guess adds the same 37 rows; the frame after it matches the spoilt frame's lower rows.
+    assert_eq!(steps, vec![added(37), added(37), added(37), added(37)]);
+    assert_eq!(result.height(), 148 + H);
+    assert_eq!(&result.pixels()[(111 + 63) as usize * ROW..], &page[(111 + 63) as usize * ROW..(148 + H) as usize * ROW]);
+}

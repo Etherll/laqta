@@ -263,7 +263,15 @@ impl Render for ColorWindow {
                             .text_color(t.muted_foreground)
                             .child(row.label),
                     )
-                    .child(div().flex_1().min_w_0().truncate().text_size(text::LABEL).font_family("monospace").child(row.value))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(text::LABEL)
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .child(row.value),
+                    )
                     .child(widgets::icon(IconName::Copy, t.muted_foreground).size(px(14.)))
                     .on_click(cx.listener(move |this, _, _, cx| this.copy(value.clone(), cx))),
             );

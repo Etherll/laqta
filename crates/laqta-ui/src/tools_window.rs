@@ -825,7 +825,7 @@ impl Render for ToolsWindow {
                     .p(px(12.))
                     .rounded(crate::theme::radius::LG)
                     .bg(cx.theme().secondary)
-                    .font_family("monospace")
+                    .font_family(cx.theme().mono_font_family.clone())
                     .text_sm()
                     .whitespace_normal()
                     .child(self.output.clone()),

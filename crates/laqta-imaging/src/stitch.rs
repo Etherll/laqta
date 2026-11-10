@@ -4,6 +4,11 @@
 //!
 //! Rows are compared by a 64-bit hash of their RGB values (alpha is left out). Screen captures are
 //! pixel-exact, so an overlap is either found exactly or not at all.
+//!
+//! Two rules follow ShareX's `ScrollingCaptureManager`. A strip at each side of the frame is left
+//! out of the comparison, because a scrollbar there moves with every scroll and would break every
+//! match. And a frame with no overlap is joined at the offset of the best overlap seen so far (the
+//! page most likely scrolled the same distance), so one bad frame does not end the capture.
 
 use laqta_domain::{Bitmap, PixelFormat};
 
@@ -61,6 +66,8 @@ pub struct Stitcher {
     last: Bitmap,
     /// Hashes of the content rows of `last`.
     last_hashes: Vec<u64>,
+    /// The longest overlap found so far, as (rows of the new frame it ended at, its length).
+    best: Option<(usize, usize)>,
 }
 
 impl Stitcher {
@@ -74,8 +81,9 @@ impl Stitcher {
         let content_end = height - bottom;
         let px = last.pixels();
         let image = px[..content_end as usize * stride].to_vec();
-        let last_hashes = row_hashes(px, stride, top, content_end);
+        let last_hashes = row_hashes(px, width, top, content_end);
         Self {
+            best: None,
             width,
             height,
             top,
@@ -99,12 +107,20 @@ impl Stitcher {
         let stride = self.stride();
         let content_end = self.height - self.bottom;
         let px = frame.pixels();
-        let hashes = row_hashes(px, stride, self.top, content_end);
+        let hashes = row_hashes(px, self.width, self.top, content_end);
         if hashes == self.last_hashes {
             return StitchStep::NoChange;
         }
         let overlap = find_overlap(&self.last_hashes, &hashes, self.min_overlap, self.max_search);
-        let from = overlap.map_or(0, |(start, len)| start + len);
+        if let Some((start, len)) = overlap
+            && self.best.is_none_or(|(_, best_len)| len > best_len)
+        {
+            self.best = Some((start + len, len));
+        }
+        // No overlap: join where the best overlap so far ended, as ShareX's best guess does.
+        let guess = self.best.map(|(end, _)| end).filter(|&end| end < hashes.len());
+        let joined = overlap.map(|(start, len)| start + len).or(guess);
+        let from = joined.unwrap_or(0);
         let new_rows = hashes.len() - from;
         if overlap.is_some() && new_rows == 0 {
             return StitchStep::NoChange;
@@ -115,7 +131,7 @@ impl Stitcher {
         self.image_rows += new_rows as u32;
         self.last = frame;
         self.last_hashes = hashes;
-        if overlap.is_some() { StitchStep::Added { new_rows: new_rows as u32 } } else { StitchStep::NoMatch }
+        if joined.is_some() { StitchStep::Added { new_rows: new_rows as u32 } } else { StitchStep::NoMatch }
     }
 
     /// The stitched image, Rgba8: the joined rows, then the last frame's bottom ignore rows.
@@ -153,12 +169,19 @@ fn find_overlap(last: &[u64], new: &[u64], min_overlap: usize, max_search: usize
     best
 }
 
-/// Hashes of frame rows `from..to`, RGB only.
-fn row_hashes(px: &[u8], stride: usize, from: u32, to: u32) -> Vec<u64> {
+/// The columns left out of the comparison at each side of a frame `width` wide: a twentieth of the
+/// width and at least 50 pixels, but never more than a third (ShareX's `ignoreSideOffset`).
+fn side_margin(width: u32) -> usize {
+    (width / 20).max(50).min(width / 3) as usize
+}
+
+/// Hashes of frame rows `from..to`, RGB only, without the side margins.
+fn row_hashes(px: &[u8], width: u32, from: u32, to: u32) -> Vec<u64> {
+    let (stride, side) = (width as usize * 4, side_margin(width) * 4);
     (from..to)
         .map(|y| {
             let start = y as usize * stride;
-            row_hash(&px[start..start + stride])
+            row_hash(&px[start + side..start + stride - side])
         })
         .collect()
 }

@@ -907,7 +907,9 @@ impl EffectsWindow {
             ));
         let mut body = div().flex().flex_col().gap(space::S1).child(header.pb(space::S2));
         if self.json {
-            return body.child(Textarea::new(&self.params).h(px(240.)).font_family("monospace").text_size(text::SMALL)).into_any_element();
+            return body
+                .child(Textarea::new(&self.params).h(px(240.)).font_family(cx.theme().mono_font_family.clone()).text_size(text::SMALL))
+                .into_any_element();
         }
         if self.fields.is_empty() {
             body = body.child(
