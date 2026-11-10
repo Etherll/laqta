@@ -1218,6 +1218,7 @@ fn pin_qr_ocr() {
             rect: PhysRect { x: 0, y: 0, width: 8, height: 4 },
             text: "hello".into(),
             confidence: 0.9,
+            words: Vec::new(),
         });
         let mut events = rig.app.events();
 

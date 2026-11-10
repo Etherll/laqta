@@ -1,0 +1,38 @@
+# ADR 031: Text is read in place on the overlay
+
+Status: accepted (2026-11-10). Amends ADR 029: decision 7 (the text window is no longer the first surface for an OCR result) and the `CopyText` row of decision 3 (the toolbar's text button no longer ends the session).
+
+**Context.**
+- Text capture closed the overlay, ran the recogniser, and opened a window with the text in a box beside a small copy of the image. The user could not see which words on the screen had been read, and getting three words out of a paragraph meant selecting them again in a text box.
+- Reading text off a frozen screen is usually done where the text is: the words light up on the screenshot, and a drag over them picks the ones to copy.
+- The overlay already keeps a settled selection on screen with tools beside it (ADR 029), and the Region session already owns the selection's pixels. `OcrResult` already carries a rectangle per line.
+
+**Decision.**
+1. **The Region session reads the selection's text, and `RegionView::text` carries it.** The overlay asks with `RegionInput::Text(TextCommand::Read)`. Like `Annotated`, the session takes `Text` inputs before they reach the state machine: the recogniser and the clipboard are the app's. From then on the text follows the selection: each new settled selection is cropped and read, and the old text goes with the old selection.
+   - `TextLayer::Reading`, `Read { result, copied }` and `Failed(message)` are what the overlay paints. The rectangles are in the selection's own pixels. Every view carries the layer, and the `Arc` of a result tells the overlay a new result from a repaint.
+   - The recogniser runs beside the input loop (`next`): an input that is waiting goes first, so Escape never waits for a slow model, and a read whose selection is gone is dropped.
+   - A finished read copies the whole text at once, as text capture always did. `TextCommand::Copy(words)` then replaces it with what the user picked.
+   - `TextCommand::Close` leaves the text and goes back to the selection and its toolbar. `TextCommand::OpenWindow` ends the session and hands the crop and the result to `ToolHost::show_ocr`, the text window, which stays for editing and saving the text.
+2. **Text capture is a session of its own kind** (`region::read_text`, `Kind::Text`). It keeps the selection (as `show_tools_after_select` does) but has no toolbar and no mode bar, reads every selection without being asked, and sets `RegionView::text_only`. Nothing is captured: it ends when the user closes it. The toolbar's text button, the mode bar's Text button and `Shift+C` do the same inside a capture session, and there `Close` returns to the capture.
+3. **`Ocr::ready()` says whether the recogniser can answer without a question first.** The lazy adapter downloads its models on first use and asks before it does; that window would open under the overlay. So the session reads in place only from a ready recogniser. Otherwise `Read` ends the selection with `SelectionAction::CopyText`, and text capture picks its area first, as before: the question, the download and the text window all happen with the overlay gone. The adapter now remembers a "No" until Laqta restarts when the OS engine can stand in, so that choice is asked once and reads in place afterwards.
+4. **Words have boxes.** `OcrLine::words` holds a rectangle per word when the engine can place them.
+   - Windows.Media.Ocr reports them; the adapter kept only their union and now keeps them.
+   - PP-OCR's recogniser emits each character at a time step along its input, so the step gives the character's place in the line (`o1::ctc_positions`, `o1::ctc_words`). A line read on its side gets none.
+   - Where an engine places only lines (Vision), the presenter divides the line by the usual width of each character. That is close for proportional type and good enough to pick words; right-to-left lines are measured from the right, and characters of scripts written without spaces are picked one by one.
+5. **The overlay paints and picks; the presenter decides** (ADR 017). `presenters/text_layer` is GPUI-free: the word layout, which word a point means, the selection a drag makes (a range of words in reading order), the text it copies, the bar's line, and the timing of every animation as plain functions of elapsed time. `overlay_text` keeps the clock and paints.
+   - Inside a selection whose text shows, the left button picks words: a press takes a word, a drag takes everything to the word under or nearest the pointer, a double click takes the line, Shift stretches. The handles still resize the selection and a drag outside it still draws a new one, which is read again. The arrow keys do nothing there: a nudge would start a read on every press.
+   - `Ctrl+C` copies the picked words, or everything; `Ctrl+A` picks everything; Enter copies and leaves; Escape drops the picked words, then leaves.
+   - Motion: a band of light crosses the selection while it is read, the words come in one after another from the left, and a copy brightens what was copied. All of it is skipped when the system asks for reduced motion (`App::reduce_motion`), and frames are requested only while something moves.
+
+**Rejected.**
+- **The overlay calling the recogniser or the clipboard.** Windows reach AI work through `App` methods (ADR 029), and here the session already holds the crop. Routing the read and the copy through the session keeps both testable with the fakes and keeps `laqta-ui` out of the ports.
+- **A new window over the selection after the overlay closes.** The frozen screen goes away with the overlay, so the words would sit on a live screen that no longer matches, and the selection could not be adjusted.
+- **Locking the selection while its text shows**, as annotations do. A locked selection cannot be redrawn, so reading a second paragraph would mean starting over.
+- **Selecting by character.** Engines place words at best; a character position would be a guess inside a guess. Words in reading order are what the boxes can honestly support.
+- **Showing the model-download question over the overlay.** The overlay is a topmost surface on every platform; raising another window above it is a platform matter per backend. Falling back to the old flow needs none of it.
+
+**Consequences.**
+- `SelectionAction::CopyText` stays, for the not-ready fallback and for workflows that set `DO_OCR`; a toolbar click no longer produces it when the recogniser is ready. Text read in place creates no Task and no history entry, as the OCR tool never did.
+- `RegionInput` grows a second variant the state machine ignores. If a third appears, they should move to their own channel.
+- The session future now races two sources. The order is fixed (input first), and the tests script a recogniser that answers when told to.
+- Word boxes from PP-OCR are approximate by half a character either way; the highlight pads them slightly. Vision's lines are divided by rule until someone asks it for word ranges.

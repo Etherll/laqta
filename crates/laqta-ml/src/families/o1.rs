@@ -327,6 +327,83 @@ pub fn ctc_greedy(steps: &[(usize, f32)], classes: &[String]) -> (String, f32) {
     (text, confidence)
 }
 
+/// Where `ctc_greedy` read each character: for every class it emits, the middle of the run of time
+/// steps that repeat it, as a fraction of all the steps (0 is the left edge of the recogniser's
+/// input, 1 the right), with the class's text. The texts in order are `ctc_greedy`'s text.
+pub fn ctc_positions<'a>(steps: &[(usize, f32)], classes: &'a [String]) -> Vec<(f32, &'a str)> {
+    let total = steps.len() as f32;
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < steps.len() {
+        let index = steps[at].0;
+        let mut end = at + 1;
+        while end < steps.len() && steps[end].0 == index {
+            end += 1;
+        }
+        if index != 0
+            && let Some(character) = classes.get(index)
+        {
+            out.push(((at + end) as f32 / 2.0 / total, character.as_str()));
+        }
+        at = end;
+    }
+    out
+}
+
+/// The words of one line with a box each, from `ctc_positions`. `visible` is the part of the
+/// recogniser's input that the line's crop fills (the rest is padding), and `rect` is the line in
+/// source pixels. Each character is given half the line's usual character pitch on either side of
+/// where it was read, a word spans its characters, and neighbours that would overlap meet halfway.
+/// Whitespace classes separate words and are in none.
+pub fn ctc_words(positions: &[(f32, &str)], visible: f32, rect: PhysRect) -> Vec<(PhysRect, String)> {
+    let along = |position: f32| if visible > 0.0 { (position / visible).clamp(0.0, 1.0) } else { 0.0 };
+    let places: Vec<f32> = positions.iter().map(|(position, _)| along(*position)).collect();
+    let mut pitches: Vec<f32> = places.windows(2).map(|pair| (pair[1] - pair[0]).abs()).filter(|pitch| *pitch > 0.0).collect();
+    pitches.sort_by(f32::total_cmp);
+    // A line of one character has no pitch: that character is the whole line.
+    let half = pitches.get(pitches.len() / 2).map_or(1.0, |pitch| pitch / 2.0);
+    let mut spans: Vec<(f32, f32, String)> = Vec::new();
+    let mut open = false;
+    for ((_, text), &place) in positions.iter().zip(&places) {
+        if text.chars().all(char::is_whitespace) {
+            open = false;
+            continue;
+        }
+        match spans.last_mut().filter(|_| open) {
+            Some(span) => {
+                span.0 = span.0.min(place - half);
+                span.1 = span.1.max(place + half);
+                span.2.push_str(text);
+            }
+            None => spans.push((place - half, place + half, (*text).to_owned())),
+        }
+        open = true;
+    }
+    for i in 1..spans.len() {
+        if spans[i].0 < spans[i - 1].1 {
+            let middle = (spans[i].0 + spans[i - 1].1) / 2.0;
+            spans[i - 1].1 = middle;
+            spans[i].0 = middle;
+        }
+    }
+    let width = rect.width as f32;
+    spans
+        .into_iter()
+        .map(|(from, to, text)| {
+            let left = (from.clamp(0.0, 1.0) * width).round() as u32;
+            let right = (to.clamp(0.0, 1.0) * width).round() as u32;
+            let word = PhysRect { x: rect.x.saturating_add_unsigned(left), width: right.saturating_sub(left).max(1), ..rect };
+            (word, text)
+        })
+        .collect()
+}
+
+/// Whether `rec_crop` turns a region of this shape on its side before it is read. The characters
+/// of such a line run down the region, so `ctc_words` cannot place them along its width.
+pub fn rec_turns(rect: PhysRect) -> bool {
+    rect.height as f32 >= REC_VERTICAL_RATIO * rect.width as f32
+}
+
 /// Parses a dictionary file: one entry per line. `\r` before a newline is removed, and nothing else is
 /// trimmed, so a space entry survives.
 pub fn parse_dictionary(text: &str) -> Vec<String> {
@@ -544,6 +621,49 @@ mod tests {
         let (text, confidence) = ctc_greedy(&[(0, 0.9), (0, 0.9)], &strings(&["", "a"]));
         assert!(text.is_empty());
         assert_eq!(confidence, 0.0);
+    }
+
+    #[test]
+    fn ctc_positions_are_the_middles_of_the_runs_and_spell_the_same_text() {
+        let classes = strings(&["", "a", "b", " "]);
+        // Ten steps: a a _ b _ _ space _ a _
+        let steps: Vec<(usize, f32)> = [1, 1, 0, 2, 0, 0, 3, 0, 1, 0].iter().map(|&index| (index, 0.9)).collect();
+        let positions = ctc_positions(&steps, &classes);
+        assert_eq!(positions.iter().map(|(_, text)| *text).collect::<String>(), ctc_greedy(&steps, &classes).0);
+        assert_eq!(positions.iter().map(|(at, _)| *at).collect::<Vec<_>>(), vec![0.1, 0.35, 0.65, 0.85]);
+        assert!(ctc_positions(&[], &classes).is_empty());
+    }
+
+    #[test]
+    fn ctc_words_span_their_characters_and_leave_the_spaces_out() {
+        let line = PhysRect { x: 100, y: 10, width: 200, height: 20 };
+        // "ab cd" read evenly across the crop, which fills the left half of a padded input.
+        let positions = [(0.05, "a"), (0.15, "b"), (0.25, " "), (0.35, "c"), (0.45, "d")];
+        let words = ctc_words(&positions, 0.5, line);
+        assert_eq!(
+            words,
+            vec![(PhysRect { x: 100, width: 80, ..line }, "ab".to_owned()), (PhysRect { x: 220, width: 80, ..line }, "cd".to_owned())]
+        );
+    }
+
+    #[test]
+    fn ctc_words_that_would_overlap_meet_halfway_and_stay_inside_the_line() {
+        let line = PhysRect { x: 100, y: 10, width: 200, height: 20 };
+        let positions = [(0.1, "a"), (0.5, "b"), (0.55, " "), (0.6, "c"), (1.0, "d")];
+        let words = ctc_words(&positions, 1.0, line);
+        assert_eq!(
+            words,
+            vec![(PhysRect { x: 100, width: 110, ..line }, "ab".to_owned()), (PhysRect { x: 210, width: 90, ..line }, "cd".to_owned())]
+        );
+        // One character has no pitch to measure: it is the whole line.
+        assert_eq!(ctc_words(&[(0.3, "x")], 1.0, line), vec![(line, "x".to_owned())]);
+        assert!(ctc_words(&[(0.3, " ")], 1.0, line).is_empty());
+    }
+
+    #[test]
+    fn a_region_read_on_its_side_is_the_one_rec_crop_turns() {
+        assert!(rec_turns(PhysRect { x: 0, y: 0, width: 20, height: 30 }));
+        assert!(!rec_turns(PhysRect { x: 0, y: 0, width: 21, height: 30 }));
     }
 
     #[test]

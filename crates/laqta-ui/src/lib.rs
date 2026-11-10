@@ -20,6 +20,7 @@ mod gpu_image;
 mod history_window;
 mod main_window;
 mod overlay;
+mod overlay_text;
 mod overlay_tools;
 mod perf;
 mod photo_window;

@@ -108,7 +108,7 @@ fn recognize_blocking(image: &Bitmap, language: &str) -> Result<OcrResult, PortE
             // SAFETY: a plain getter on an observation Vision just returned.
             let bounds = unsafe { observation.boundingBox() };
             let rect = pixel_rect(bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height, image.width(), image.height());
-            lines.push(OcrLine { rect, text: best.string().to_string(), confidence: best.confidence() });
+            lines.push(OcrLine { rect, text: best.string().to_string(), confidence: best.confidence(), words: Vec::new() });
         }
         // Reading order: top to bottom, then left to right. The sort is stable.
         lines.sort_by_key(|line| (line.rect.y, line.rect.x));

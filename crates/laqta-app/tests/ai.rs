@@ -7,14 +7,15 @@ use std::sync::{Arc, Mutex};
 
 use futures_lite::future::{block_on, poll_once};
 use laqta_app::{App, Dispatched, Ports};
-use laqta_domain::region::{HoverTarget, RegionCommand, RegionInput};
+use laqta_domain::region::{Button, HoverTarget, KeyMods, RegionCommand, RegionInput, RegionKey, TextCommand};
 use laqta_domain::{Action, Bitmap, Frame, Monitor, MonitorId, PhysRect, PixelFormat, Settings};
 use laqta_ports::fakes::{
     ClipboardBehaviour, CountingRng, FakeAnalyzer, FakeBackgroundRemover, FakeClipboard, FakeHoverSource, FakeNotifier, FakeOcr,
     FakeOverlay, FakeScreen, FakeShell, FakeToolHost, InlineSpawner, ManualClock,
 };
 use laqta_ports::{
-    AppError, BackgroundRemover, BoxFuture, HostInfo, ImageAnalyzer, Inpainter, Ocr, OcrLine, OcrResult, PortError, ToolHost, ToolWindow,
+    AppError, BackgroundRemover, BoxFuture, HostInfo, ImageAnalyzer, Inpainter, Ocr, OcrLine, OcrResult, PortError, TextLayer, ToolHost,
+    ToolWindow,
 };
 
 /// Fails every call with `error`.
@@ -147,7 +148,7 @@ fn image() -> Bitmap {
 }
 
 fn line(text: &str) -> OcrLine {
-    OcrLine { rect: PhysRect { x: 0, y: 0, width: 8, height: 4 }, text: text.into(), confidence: 0.9 }
+    OcrLine { rect: PhysRect { x: 0, y: 0, width: 8, height: 4 }, text: text.into(), confidence: 0.9, words: Vec::new() }
 }
 
 fn assert_nothing_else_happened(h: &H) {
@@ -262,8 +263,103 @@ fn port_errors_become_app_errors() {
     }
 }
 
-/// Dispatches the OCR action and answers its region session with a full-desktop selection.
+/// Dispatches the OCR action and drags over the whole desktop. The text is read in place: the overlay stays
+/// open and shows it. `last` is then sent, which ends the session. Returns what the overlay showed before
+/// `last`, and how the route ended.
+fn read_in_place(h: &H, last: RegionInput) -> (Option<TextLayer>, Result<Dispatched, AppError>) {
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    pool.install(|| {
+        block_on(async {
+            let mut fut = h.app.dispatch(Action::Ocr, None);
+            while !h.overlay.is_open() {
+                assert!(poll_once(&mut fut).await.is_none());
+            }
+            h.overlay.send(RegionInput::PointerDown { x: 0, y: 0, button: Button::Left });
+            h.overlay.send(RegionInput::PointerMove { x: 7, y: 3 });
+            h.overlay.send(RegionInput::PointerUp { x: 7, y: 3, button: Button::Left });
+            assert!(poll_once(&mut fut).await.is_none(), "reading the text does not end the route");
+            assert!(h.overlay.is_open(), "the overlay stays up with the text on it");
+            let shown = h.overlay.last_view().and_then(|view| view.text);
+            h.overlay.send(last);
+            (shown, fut.await)
+        })
+    })
+}
+
+fn escape() -> RegionInput {
+    RegionInput::Key { key: RegionKey::Escape, mods: KeyMods::default() }
+}
+
+#[test]
+fn the_ocr_route_reads_the_text_in_place_and_copies_it() {
+    let h = harness();
+    h.ocr.result.lock().unwrap().lines.extend([line("hello"), line("world")]);
+
+    let (shown, ended) = read_in_place(&h, escape());
+
+    let Some(TextLayer::Read { result, copied }) = shown else { panic!("the overlay shows what was read, not {shown:?}") };
+    assert_eq!(result.text(), "hello\nworld");
+    assert!(copied);
+    assert_eq!(h.ocr.seen.lock().unwrap().as_slice(), &[(8, 4)], "the selection was read");
+    assert_eq!(h.clipboard.texts.lock().unwrap().as_slice(), &["hello\nworld".to_owned()]);
+    assert!(matches!(ended, Err(AppError::Cancelled)), "Escape closes the overlay");
+    assert!(h.tools.ocr.lock().unwrap().is_empty(), "no window opens");
+    assert!(h.tools.texts.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_ocr_route_copies_the_words_the_user_picked() {
+    let h = harness();
+    h.ocr.result.lock().unwrap().lines.extend([line("hello"), line("world")]);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    pool.install(|| {
+        block_on(async {
+            let mut fut = h.app.dispatch(Action::Ocr, None);
+            while !h.overlay.is_open() {
+                assert!(poll_once(&mut fut).await.is_none());
+            }
+            h.overlay.send(RegionInput::PointerDown { x: 0, y: 0, button: Button::Left });
+            h.overlay.send(RegionInput::PointerUp { x: 7, y: 3, button: Button::Left });
+            // The text is read and shown before the user can pick anything from it.
+            assert!(poll_once(&mut fut).await.is_none());
+            h.overlay.send(RegionInput::Text(TextCommand::Copy("world".to_owned())));
+            h.overlay.send(RegionInput::Key { key: RegionKey::Enter, mods: KeyMods::default() });
+            assert_eq!(fut.await.unwrap(), Dispatched::Done, "Enter ends a text capture");
+        })
+    });
+    assert_eq!(h.clipboard.texts.lock().unwrap().as_slice(), &["hello\nworld".to_owned(), "world".to_owned()]);
+}
+
+#[test]
+fn the_ocr_route_opens_the_text_window_when_asked() {
+    let h = harness();
+    h.ocr.result.lock().unwrap().lines.extend([line("hello"), line("world")]);
+
+    let (_, ended) = read_in_place(&h, RegionInput::Text(TextCommand::OpenWindow));
+
+    assert!(matches!(ended, Err(AppError::Cancelled)));
+    let shown = h.tools.ocr.lock().unwrap();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].0, (8, 4), "the window gets the selected image");
+    assert_eq!(shown[0].1.text(), "hello\nworld");
+}
+
+#[test]
+fn the_ocr_route_shows_a_failed_recognition_on_the_overlay() {
+    let h = harness_with(Some(Arc::new(Failing(PortError::Failed("no model".into())))));
+
+    let (shown, ended) = read_in_place(&h, escape());
+
+    assert!(matches!(shown, Some(TextLayer::Failed(message)) if message.contains("no model")));
+    assert!(matches!(ended, Err(AppError::Cancelled)));
+    assert!(h.tools.ocr.lock().unwrap().is_empty());
+    assert!(h.clipboard.texts.lock().unwrap().is_empty());
+}
+
+/// Dispatches the OCR action with a recogniser that is not ready (it would first ask about its models, under
+/// the overlay) and answers its region session with a full-desktop selection.
 fn run_ocr_route(h: &H) -> Result<Dispatched, AppError> {
+    h.ocr.not_ready.store(true, std::sync::atomic::Ordering::SeqCst);
     let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
     pool.install(|| {
         block_on(async {
@@ -278,7 +374,7 @@ fn run_ocr_route(h: &H) -> Result<Dispatched, AppError> {
 }
 
 #[test]
-fn the_ocr_route_shows_the_result_window_and_copies_the_text() {
+fn the_ocr_route_of_a_recogniser_that_is_not_ready_shows_the_result_window_and_copies_the_text() {
     let h = harness();
     h.ocr.result.lock().unwrap().lines.extend([line("hello"), line("world")]);
 
@@ -293,7 +389,7 @@ fn the_ocr_route_shows_the_result_window_and_copies_the_text() {
 }
 
 #[test]
-fn the_ocr_route_shows_an_empty_result_without_touching_the_clipboard() {
+fn the_ocr_route_of_a_recogniser_that_is_not_ready_shows_an_empty_result_without_touching_the_clipboard() {
     let h = harness();
 
     assert_eq!(run_ocr_route(&h).unwrap(), Dispatched::Done);
@@ -302,16 +398,6 @@ fn the_ocr_route_shows_an_empty_result_without_touching_the_clipboard() {
     assert_eq!(shown.len(), 1);
     assert!(shown[0].1.lines.is_empty());
     assert!(h.clipboard.texts.lock().unwrap().is_empty());
-}
-
-#[test]
-fn the_ocr_route_reports_a_failed_recognition() {
-    let h = harness_with(Some(Arc::new(Failing(PortError::Failed("no model".into())))));
-
-    let error = run_ocr_route(&h).unwrap_err();
-
-    assert!(matches!(error, AppError::Io(s) if s == "no model"));
-    assert!(h.tools.ocr.lock().unwrap().is_empty());
 }
 
 #[test]

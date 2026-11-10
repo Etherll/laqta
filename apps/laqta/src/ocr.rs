@@ -2,7 +2,7 @@
 //! models through verified fetch and runs them with `laqta-ml`.
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use laqta_domain::Bitmap;
@@ -27,6 +27,26 @@ pub struct LazyOcr {
     fallback: Option<Arc<dyn Ocr>>,
     /// The engine and the (det, rec, provider) it was built for.
     ready: Mutex<Option<(EngineKey, Arc<ModelOcr>)>>,
+    /// The user turned the download down and the OS engine reads instead. Not asked again until
+    /// Laqta restarts; the models can still be installed from the settings.
+    declined: AtomicBool,
+}
+
+/// What `LazyOcr` runs with the current settings, and what of it is not on disk yet.
+struct Plan {
+    key: EngineKey,
+    dir: PathBuf,
+    lib: PathBuf,
+    ort: &'static laqta_ml::catalog::OrtArchive,
+    runtime: Arc<Runtime>,
+    /// Catalog entries to download; custom models are already on disk.
+    wanted: Vec<&'static laqta_ml::catalog::ModelEntry>,
+}
+
+impl Plan {
+    fn complete(&self) -> bool {
+        self.lib.exists() && self.wanted.is_empty()
+    }
 }
 
 impl std::fmt::Debug for LazyOcr {
@@ -47,10 +67,15 @@ impl LazyOcr {
         options: crate::models::SharedModelOptions,
         fallback: Option<Arc<dyn Ocr>>,
     ) -> Self {
-        LazyOcr { data, prompt: ui.clone(), options, notifier: ui, fallback, ready: Mutex::new(None) }
+        LazyOcr { data, prompt: ui.clone(), options, notifier: ui, fallback, ready: Mutex::new(None), declined: AtomicBool::new(false) }
     }
 
-    async fn get(&self) -> Result<Arc<ModelOcr>, PortError> {
+    /// The models were turned down and the OS engine stands in.
+    fn uses_fallback(&self) -> bool {
+        self.fallback.is_some() && self.declined.load(Ordering::Relaxed)
+    }
+
+    fn plan(&self) -> Result<Plan, PortError> {
         let options = self.options.read().map(|o| o.clone()).unwrap_or_default();
         let det_default =
             catalog().default_for(Task::OcrDet).ok_or_else(|| PortError::Unsupported("no OCR detection model in the catalog".into()))?;
@@ -59,19 +84,28 @@ impl LazyOcr {
         let det_id = options.ocr_det.clone().unwrap_or_else(|| det_default.id.clone());
         let rec_id = options.ocr_rec.clone().unwrap_or_else(|| rec_default.id.clone());
         let key = (det_id.clone(), rec_id.clone(), options.provider);
+        let dir = self.data.join("models");
+        let ort =
+            laqta_ml::install::ort_for_host().ok_or_else(|| PortError::Unsupported("no onnxruntime build for this platform".into()))?;
+        let lib = laqta_ml::install::library_path(&dir, ort);
+        let runtime = Arc::new(Runtime::new(lib.clone(), dir.clone(), crate::models::provider(options.provider)));
+        let wanted: Vec<_> =
+            [&det_id, &rec_id].into_iter().filter_map(|id| catalog().model(id)).filter(|e| !runtime.is_installed(e)).collect();
+        Ok(Plan { key, dir, lib, ort, runtime, wanted })
+    }
+
+    async fn get(&self) -> Result<Arc<ModelOcr>, PortError> {
+        // Asked and answered already: the caller reads with the OS engine.
+        if self.uses_fallback() {
+            return Err(PortError::Cancelled);
+        }
+        let Plan { key, dir, lib, ort: ort_entry, runtime, wanted } = self.plan()?;
         if let Some((k, o)) = self.ready.lock().ok().and_then(|g| g.clone())
             && k == key
         {
             return Ok(o);
         }
-        let dir = self.data.join("models");
-        let ort_entry =
-            laqta_ml::install::ort_for_host().ok_or_else(|| PortError::Unsupported("no onnxruntime build for this platform".into()))?;
-        let lib = laqta_ml::install::library_path(&dir, ort_entry);
-        let runtime = Arc::new(Runtime::new(lib.clone(), dir.clone(), crate::models::provider(options.provider)));
-        // Catalog entries to download; custom models are already on disk.
-        let wanted: Vec<_> =
-            [&det_id, &rec_id].into_iter().filter_map(|id| catalog().model(id)).filter(|e| !runtime.is_installed(e)).collect();
+        let (det_id, rec_id) = (key.0.clone(), key.1.clone());
         if !lib.exists() || !wanted.is_empty() {
             let mb = (if lib.exists() { 0 } else { ort_entry.size_bytes } + wanted.iter().map(|e| e.size_bytes).sum::<u64>()) / 1_000_000;
             let ok = self
@@ -86,6 +120,7 @@ impl LazyOcr {
                 )
                 .await?;
             if !ok {
+                self.declined.store(true, Ordering::Relaxed);
                 return Err(PortError::Cancelled);
             }
             let notifier = &self.notifier;
@@ -122,5 +157,10 @@ impl Ocr for LazyOcr {
             l.extend(f.languages());
         }
         l
+    }
+    /// True once nothing stands between a call and its answer: the models are on disk, or the user
+    /// chose the OS engine. Until then `recognize` opens the download question first.
+    fn ready(&self) -> bool {
+        self.uses_fallback() || self.plan().is_ok_and(|plan| plan.complete())
     }
 }

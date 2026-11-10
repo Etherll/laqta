@@ -86,6 +86,8 @@ there the defaults are <kbd>⌃</kbd>+<kbd>⌥</kbd>+<kbd>2</kbd> for a region a
   grow the selection to the enclosing part.
 * **Act on the selection:** a toolbar next to it copies, saves, pins, uploads, edits, or reads the
   text out of it. You can also draw on the selection before you capture it.
+* **Text right where it is:** the words in your selection light up on the screenshot itself. Drag
+  over the ones you want and copy them, with no extra window.
 * Magnifier, crosshair, pixel info and an optional mode bar for screenshot or video, colour
   picker and text capture.
 
@@ -102,7 +104,8 @@ there the defaults are <kbd>⌃</kbd>+<kbd>⌥</kbd>+<kbd>2</kbd> for a region a
 * A layered photo editor with styles, masks and blend modes.
 
 ### ✨ AI tools
-* **Text recognition (OCR)** for a region or an image. It runs offline.
+* **Text recognition (OCR)** for a region or an image. It runs offline, and on a region it
+  highlights the words in place so you can pick the ones to copy.
 * **Background removal** and an **object eraser** with local ONNX models, on the GPU where
   available (DirectML on Windows, CUDA on Linux).
 * **Image analysis** through any OpenAI-compatible provider, such as OpenAI, Gemini or

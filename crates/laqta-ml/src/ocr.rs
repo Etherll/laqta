@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use futures_channel::oneshot;
 use laqta_domain::{Bitmap, PhysRect};
-use laqta_ports::{BoxFuture, Ocr, OcrLine, OcrResult, PortError};
+use laqta_ports::{BoxFuture, Ocr, OcrLine, OcrResult, OcrWord, PortError};
 use ndarray::Array4;
 use ort::inputs;
 use ort::session::Session;
@@ -113,7 +113,7 @@ fn recognise(runtime: &Runtime, det: &str, rec: &str, bitmap: &Bitmap) -> Result
         .collect();
     let mut by_width: Vec<usize> = (0..crops.len()).collect();
     by_width.sort_by_key(|&i| crops[i].1);
-    let mut read: Vec<Option<(String, f32)>> = vec![None; crops.len()];
+    let mut read: Vec<Option<(String, f32, Vec<OcrWord>)>> = vec![None; crops.len()];
     let mut table: Option<Vec<String>> = None;
     runtime.with_session(Task::OcrRec, rec, |session| {
         for batch in by_width.chunks(o1::REC_BATCH) {
@@ -136,7 +136,21 @@ fn recognise(runtime: &Runtime, det: &str, rec: &str, bitmap: &Bitmap) -> Result
             let Some(classes_table) = table.as_deref() else { continue };
             for (k, &i) in batch.iter().enumerate() {
                 let rows = &scores[k * steps * classes..(k + 1) * steps * classes];
-                read[i] = Some(o1::ctc_greedy(&o1::best_per_step(rows, classes), classes_table));
+                let best = o1::best_per_step(rows, classes);
+                let (text, confidence) = o1::ctc_greedy(&best, classes_table);
+                // The time steps run along the padded input, so each character's step tells where
+                // in the line it sits: that gives every word a box (ADR 031). A line read on its
+                // side has none.
+                let (rect, scaled, _) = &crops[i];
+                let words = if o1::rec_turns(*rect) {
+                    Vec::new()
+                } else {
+                    o1::ctc_words(&o1::ctc_positions(&best, classes_table), *scaled as f32 / width as f32, *rect)
+                        .into_iter()
+                        .map(|(rect, text)| OcrWord { rect, text })
+                        .collect()
+                };
+                read[i] = Some((text, confidence, words));
             }
         }
         Ok(())
@@ -145,8 +159,8 @@ fn recognise(runtime: &Runtime, det: &str, rec: &str, bitmap: &Bitmap) -> Result
         .iter()
         .zip(read)
         .filter_map(|((rect, _, _), read)| {
-            let (text, confidence) = read?;
-            (!text.trim().is_empty()).then_some(OcrLine { rect: *rect, text, confidence })
+            let (text, confidence, words) = read?;
+            (!text.trim().is_empty()).then_some(OcrLine { rect: *rect, text, confidence, words })
         })
         .collect();
     Ok(OcrResult { lines })

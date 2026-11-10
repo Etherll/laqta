@@ -9,6 +9,23 @@ use laqta_domain::{Bitmap, Frame};
 
 use crate::PortError;
 
+/// The text of the selection, read in place (ADR 031). The overlay paints it over the selection's
+/// own pixels, so the user sees which words were found and picks the ones to copy.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TextLayer {
+    /// The recogniser is running on the selection.
+    Reading,
+    /// What it found. The rects are in the selection's pixels: (0, 0) is its top-left corner. An
+    /// empty result means the selection holds no text.
+    Read {
+        result: Arc<crate::OcrResult>,
+        /// The whole text is on the clipboard already.
+        copied: bool,
+    },
+    /// The recogniser failed, with its message.
+    Failed(String),
+}
+
 /// Everything the overlay paints. Coordinates are physical virtual-desktop pixels.
 #[derive(Clone, Debug, Default)]
 pub struct RegionView {
@@ -43,6 +60,12 @@ pub struct RegionView {
     pub mode_bar: bool,
     /// The session picks one pixel (the screen colour picker): a click picks, nothing is drawn.
     pub pick_point: bool,
+    /// The text read from `selected`, while the session reads text in place. Every view carries it
+    /// until the selection changes or the user leaves the text.
+    pub text: Option<TextLayer>,
+    /// The session exists to read text (text capture): it has no capture toolbar to go back to,
+    /// so leaving the text ends it.
+    pub text_only: bool,
 }
 
 impl PartialEq for RegionView {
@@ -69,6 +92,8 @@ impl PartialEq for RegionView {
             locked,
             mode_bar,
             pick_point,
+            text,
+            text_only,
         } = self;
         let same_image = match (selection_image, &other.selection_image) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -93,6 +118,8 @@ impl PartialEq for RegionView {
             && *locked == other.locked
             && *mode_bar == other.mode_bar
             && *pick_point == other.pick_point
+            && *text == other.text
+            && *text_only == other.text_only
     }
 }
 
@@ -197,8 +224,10 @@ pub trait ToolHost: Send + Sync {
         Err(PortError::Unsupported("text results".into()))
     }
 
-    /// Shows an OCR result beside the image it was read from: the text window for text capture. A host
-    /// without a window of its own shows the recognised text with `show_text`.
+    /// Shows an OCR result beside the image it was read from, as editable text: the text window. Text
+    /// capture reads in place on the overlay (ADR 031) and comes here when the recogniser is not
+    /// ready, or when the user asks for the text in a window. A host without a window of its own
+    /// shows the recognised text with `show_text`.
     fn show_ocr(&self, image: laqta_domain::Bitmap, result: crate::OcrResult) -> Result<(), PortError> {
         let _ = image;
         let text = result.text();

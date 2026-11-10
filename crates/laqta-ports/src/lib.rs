@@ -19,7 +19,7 @@ pub use desktop::{ActionCallback, Clipboard, ClipboardContent, HotkeyCallback, H
 pub use error::PortError;
 pub use history::HistoryEdit;
 pub use notify::{HostInfo, Notifier, Rng, Sound, Toast};
-pub use overlay::{EditorHost, HoverSource, InputCallback, Overlay, RegionView, ToolHost, ToolKind, ToolWindow};
+pub use overlay::{EditorHost, HoverSource, InputCallback, Overlay, RegionView, TextLayer, ToolHost, ToolKind, ToolWindow};
 pub use recording::{
     AudioInput, FrameSource, Media, MediaInfo, OsScreenRef, PcmFormat, PcmSource, RecordingHandle, RecordingInput, ScreenStream,
     TranscodeSpec, VideoSource,
@@ -28,7 +28,7 @@ pub use runtime::{Clock, Spawner};
 pub use screen::{CaptureRequest, ScreenSource};
 pub use task::{AppError, TaskEvent, TaskId, TaskStatus};
 pub use tools::{
-    Autostart, BackgroundRemover, FileWatcher, ImageAnalyzer, Inpainter, InputSynth, Ocr, OcrLine, OcrResult, PointerHighlighter,
+    Autostart, BackgroundRemover, FileWatcher, ImageAnalyzer, Inpainter, InputSynth, Ocr, OcrLine, OcrResult, OcrWord, PointerHighlighter,
     RemoteEntry, RemoteStorage, ShellIntegration, WatchCallback, WatchHandle, WindowOps,
 };
 pub use upload::{

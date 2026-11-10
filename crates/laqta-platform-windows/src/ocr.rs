@@ -6,7 +6,7 @@ use laqta_domain::geometry::PhysRect;
 use laqta_domain::{Bitmap, PixelFormat};
 
 #[cfg(windows)]
-use laqta_ports::{BoxFuture, Ocr, OcrLine, OcrResult, PortError};
+use laqta_ports::{BoxFuture, Ocr, OcrLine, OcrResult, OcrWord, PortError};
 #[cfg(windows)]
 use windows::Globalization::Language;
 #[cfg(windows)]
@@ -175,20 +175,25 @@ fn recognize_on_thread(image: Bitmap, language: String) -> Result<OcrResult, Por
 }
 
 /// One WinRT line as a port line: the union of its words' rectangles, or nothing when it has none.
+/// The words keep their own rectangles, so the overlay can mark each one (ADR 031).
 #[cfg(windows)]
 fn map_line(line: &windows::Media::Ocr::OcrLine, scale_x: f32, scale_y: f32) -> Result<Option<OcrLine>, PortError> {
-    let words = line.Words().map_err(failed("reading OCR words"))?;
+    let found = line.Words().map_err(failed("reading OCR words"))?;
     let mut edges = Vec::new();
-    for index in 0..words.Size().map_err(failed("reading OCR words"))? {
-        let word = words.GetAt(index).map_err(failed("reading an OCR word"))?;
+    let mut words = Vec::new();
+    for index in 0..found.Size().map_err(failed("reading OCR words"))? {
+        let word = found.GetAt(index).map_err(failed("reading an OCR word"))?;
         let rect = word.BoundingRect().map_err(failed("reading an OCR word's rectangle"))?;
-        edges.push(Edges::from_xywh(rect.X, rect.Y, rect.Width, rect.Height));
+        let edge = Edges::from_xywh(rect.X, rect.Y, rect.Width, rect.Height);
+        let text = word.Text().map_err(failed("reading an OCR word"))?.to_string();
+        words.push(OcrWord { rect: to_physical(edge, scale_x, scale_y), text });
+        edges.push(edge);
     }
     let Some(bounds) = union(&edges) else {
         return Ok(None);
     };
     let text = line.Text().map_err(failed("reading an OCR line"))?.to_string();
-    Ok(Some(OcrLine { rect: to_physical(bounds, scale_x, scale_y), text, confidence: 1.0 }))
+    Ok(Some(OcrLine { rect: to_physical(bounds, scale_x, scale_y), text, confidence: 1.0, words }))
 }
 
 /// The engine for `language` (a BCP-47 tag), or for the user's profile languages when it is empty.
