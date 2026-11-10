@@ -685,9 +685,11 @@ fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use laqta_domain::geometry::PhysRect;
+    #[cfg(unix)]
     use std::sync::atomic::AtomicUsize;
 
     use laqta_domain::record::{CameraOverlay, Quality};
+    #[cfg(unix)]
     use laqta_ports::PcmFormat;
 
     use super::*;
