@@ -277,13 +277,13 @@ fn registry(action: &str, e: windows::core::Error) -> PortError {
 #[cfg(windows)]
 impl ShellIntegration for WindowsShellIntegration {
     fn is_installed(&self) -> Result<bool, PortError> {
-        let send_to_dir = self.send_to_dir.clone()?;
         for target in ["*", "Directory"] {
             if OpenKey::open(&verb_key(&self.software, target))?.is_none() {
                 return Ok(false);
             }
         }
-        Ok(send_to_dir.join(SEND_TO_FILE).is_file())
+        // The registry verbs are there; only the Send To file needs the folder.
+        Ok(self.send_to_dir.clone()?.join(SEND_TO_FILE).is_file())
     }
 
     fn install(&self, executable: &Path) -> Result<(), PortError> {
@@ -306,8 +306,9 @@ impl ShellIntegration for WindowsShellIntegration {
         write_send_to(&send_to_dir, executable)
     }
 
+    /// The registry entries go first, whatever happens to the Send To folder: an uninstall with
+    /// no `APPDATA` must not leave verbs and file types that point at a removed program.
     fn uninstall(&self) -> Result<(), PortError> {
-        let send_to_dir = self.send_to_dir.clone()?;
         for target in ["*", "Directory"] {
             OpenKey::delete_tree(&verb_key(&self.software, target))?;
         }
@@ -319,7 +320,7 @@ impl ShellIntegration for WindowsShellIntegration {
             }
             OpenKey::delete_tree(&class_key(&self.software, prog_id))?;
         }
-        remove_send_to(&send_to_dir)
+        remove_send_to(&self.send_to_dir.clone()?)
     }
 
     fn install_native_messaging(&self, nmh: &Path) -> Result<(), PortError> {

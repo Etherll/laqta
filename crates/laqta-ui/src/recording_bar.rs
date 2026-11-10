@@ -282,8 +282,8 @@ const TALL_STRIP: f32 = 40.0;
 #[derive(Clone, Copy)]
 enum Paint {
     All,
-    TopEdge,
-    BottomEdge,
+    /// A line as thick as the border, this far below the window's top.
+    Line(f32),
 }
 
 /// Four thin windows just outside the area, so the border never appears in the recording. Any
@@ -308,10 +308,14 @@ fn place_border(bar: Bar, scale: f32, cx: &mut App) {
     let (x, y, w, h) = (f32::from(a.origin.x) - ox, f32::from(a.origin.y) - oy, f32::from(a.size.width), f32::from(a.size.height));
     // Windows also rounds a narrow window up by a pixel, so the left strip starts one pixel out.
     let (tall, slack) = if cfg!(windows) { (TALL_STRIP - t, 1.0) } else { (0.0, 0.0) };
-    let (top, bottom) = if cfg!(windows) { (Paint::BottomEdge, Paint::TopEdge) } else { (Paint::All, Paint::All) };
+    // The tall top strip sits above the area with its line at the bottom. Near the top of the
+    // screen there is no room above, so it starts at the screen edge and its transparent rest
+    // hangs over the area instead.
+    let top_y = (y - t - tall).max(0.0).min(y - t);
+    let (top, bottom) = if cfg!(windows) { (Paint::Line(y - t - top_y), Paint::Line(0.0)) } else { (Paint::All, Paint::All) };
     let mut strips = Vec::new();
     for (bx, by, bw, bh, paint) in [
-        (x - t, y - t - tall, w + 2.0 * t, t + tall, top),
+        (x - t, top_y, w + 2.0 * t, t + tall, top),
         (x - t, y + h, w + 2.0 * t, t + tall, bottom),
         (x - t - slack, y, t, h, Paint::All),
         (x + w, y, t, h, Paint::All),
@@ -343,11 +347,12 @@ struct BorderStrip {
 
 impl Render for BorderStrip {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let line = div().w_full().h(px(self.thickness)).bg(cx.theme().danger);
         match self.paint {
             Paint::All => div().size_full().bg(cx.theme().danger),
-            Paint::TopEdge => div().size_full().flex().flex_col().justify_start().child(line),
-            Paint::BottomEdge => div().size_full().flex().flex_col().justify_end().child(line),
+            Paint::Line(offset) => div()
+                .size_full()
+                .relative()
+                .child(div().absolute().left_0().top(px(offset)).w_full().h(px(self.thickness)).bg(cx.theme().danger)),
         }
     }
 }
