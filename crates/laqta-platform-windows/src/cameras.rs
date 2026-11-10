@@ -3,17 +3,36 @@
 use laqta_ports::PortError;
 use windows::Win32::Media::MediaFoundation::{
     IMFActivate, IMFAttributes, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
-    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID, MFCreateAttributes, MFEnumDeviceSources,
+    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID, MF_VERSION, MFCreateAttributes, MFEnumDeviceSources, MFSTARTUP_LITE, MFShutdown,
+    MFStartup,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::core::PWSTR;
 
 use crate::loopback::Mta;
 
+/// Media Foundation, started for one listing. Its calls fail before `MFStartup`.
+struct MediaFoundation;
+
+impl MediaFoundation {
+    fn start() -> windows::core::Result<Self> {
+        // SAFETY: plain call; each success is paired with `MFShutdown` in `Drop`.
+        unsafe { MFStartup(MF_VERSION, MFSTARTUP_LITE) }.map(|()| MediaFoundation)
+    }
+}
+
+impl Drop for MediaFoundation {
+    fn drop(&mut self) {
+        // SAFETY: pairs the `MFStartup` in `start`.
+        let _ = unsafe { MFShutdown() };
+    }
+}
+
 /// Camera names, the system's first camera first. This blocks, so run it off the async worker.
 pub(crate) fn list() -> Result<Vec<String>, PortError> {
     let failed = |step: &'static str| move |e: windows::core::Error| PortError::Failed(format!("{step}: {e}"));
     let _com = Mta::enter();
+    let _media_foundation = MediaFoundation::start().map_err(failed("camera list"))?;
     let mut attributes: Option<IMFAttributes> = None;
     // SAFETY: `attributes` is a valid out pointer.
     unsafe { MFCreateAttributes(&raw mut attributes, 1) }.map_err(failed("camera list"))?;

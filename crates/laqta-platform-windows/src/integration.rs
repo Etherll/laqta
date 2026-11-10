@@ -334,6 +334,25 @@ impl ShellIntegration for WindowsShellIntegration {
     }
 }
 
+#[cfg(windows)]
+impl WindowsShellIntegration {
+    /// Removes what `install_native_messaging` wrote: the two browser keys and the manifests. The
+    /// uninstaller calls it, because the host program the manifests name is about to be deleted.
+    pub fn remove_native_messaging(&self) -> Result<(), PortError> {
+        OpenKey::delete_tree(&host_key(&self.software, r"Google\Chrome"))?;
+        OpenKey::delete_tree(&host_key(&self.software, "Mozilla"))?;
+        let dir = self.nmh_dir.clone()?;
+        for manifest in [CHROME_MANIFEST, FIREFOX_MANIFEST] {
+            match std::fs::remove_file(dir.join(manifest)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(PortError::Failed(format!("{manifest}: {e}"))),
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Points a browser's native-messaging key at its manifest.
 #[cfg(windows)]
 fn register_host(key: &str, manifest: &Path) -> Result<(), PortError> {

@@ -172,6 +172,12 @@ fn record(session: &Arc<Session>, job: Job, ready: &mpsc::Sender<Result<(), Port
             return Ok(());
         }
     };
+    // `start` gave up waiting and the caller has moved on to another recorder for this path.
+    if session.halted() {
+        capture.close();
+        stop_source(audio);
+        return Ok(());
+    }
     if let Err(error) = Sink::create(&output, (width, height), fps, bitrate, has_audio).map(|sink| session.install(sink)) {
         capture.close();
         stop_source(audio);
