@@ -479,6 +479,6 @@ fn button(
         .when_some(icon, |d, icon| d.child(gpui_component::Icon::new(icon).size(px(15.)).text_color(fg)))
         .when_some(label, |d, label| d.child(div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(fg).child(label)))
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-        .on_click(move |_, _, cx| model.update(cx, |m, cx| act(m, cx)))
+        .on_click(move |_, _, cx| model.update(cx, act))
         .into_any_element()
 }
