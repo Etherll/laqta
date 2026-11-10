@@ -145,6 +145,11 @@ mod imp {
     /// Stops Windows drawing its own outline and shadow around a borderless popup (a toast, the
     /// recording bar, a border strip), so only what the popup paints shows. `hwnd` is the window's
     /// native handle. Windows 10 has no outline setting; that call fails there and is ignored.
+    /// Removes the browser native-messaging registration, for the uninstaller.
+    pub fn remove_native_messaging() -> Result<(), PortError> {
+        integration::WindowsShellIntegration::default().remove_native_messaging()
+    }
+
     pub fn plain_popup(hwnd: isize) {
         use windows::Win32::Foundation::HWND;
         use windows::Win32::Graphics::Dwm::{

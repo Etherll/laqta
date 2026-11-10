@@ -434,8 +434,11 @@ fn video_input(a: &mut Argv, spec: &RecordSpec, video: &VideoInputDesc, capture:
 fn audio_input(a: &mut Argv, host: Host, input: &AudioInputDesc) {
     match input {
         AudioInputDesc::Device { id, name, .. } => match host {
+            // The id is dshow's exact "alternative name" when the adapter could build one; the
+            // friendly name is cut to 31 characters and can match two devices.
             Host::Windows => {
-                a.flag(&["-f", "dshow", "-i"]).push(format!("audio={name}"));
+                let device = if id.starts_with("@device_") { id } else { name };
+                a.flag(&["-f", "dshow", "-i"]).push(format!("audio={device}"));
             }
             Host::Linux => {
                 a.flag(&["-f", "pulse", "-i"]).push(id.as_str());
@@ -855,6 +858,15 @@ mod tests {
             &[device("{0.0.1}", "Microphone (Realtek)")],
         );
         assert!(seq(&args, &["-f", "dshow", "-i", "audio=Microphone (Realtek)"]));
+        let exact = r"@device_cm_{33D9A762-90C8-11D0-BD43-00A0C911CE86}\wave_{0A1B2C3D-0000-0000-0000-000000000000}";
+        let args = record(
+            Host::Windows,
+            WindowsCapture::Ddagrab,
+            &spec(VideoCodec::X264, Quality::Default),
+            &windows_target(),
+            &[device(exact, "Microphone (Realtek High Definition")],
+        );
+        assert!(args.iter().any(|arg| *arg == format!("audio={exact}")), "the exact dshow name wins over the cut friendly name");
         assert!(seq(&args, &["-map", "1:a"]));
     }
 

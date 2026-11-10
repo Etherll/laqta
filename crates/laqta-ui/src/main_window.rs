@@ -819,9 +819,16 @@ impl Render for MainWindow {
             .text_size(text::BODY)
             .id("main-drop")
             .drag_over::<gpui::ExternalPaths>(move |style, _, _, _| style.bg(drop_tint))
-            .on_drop(move |paths: &gpui::ExternalPaths, _, _| {
-                let ids = app.upload_files(paths.paths().to_vec(), None);
-                tracing::info!(count = ids.len(), "dropped files submitted for upload");
+            .on_drop(move |paths: &gpui::ExternalPaths, _, cx| {
+                // `upload_paths` asks before a large batch, as the other upload routes do.
+                let (app, paths) = (app.clone(), paths.paths().to_vec());
+                cx.background_spawn(async move {
+                    match app.upload_paths(paths, None).await {
+                        Ok(ids) => tracing::info!(count = ids.len(), "dropped files submitted for upload"),
+                        Err(e) => tracing::warn!("dropped files not uploaded: {e}"),
+                    }
+                })
+                .detach();
             })
             .child(chrome::TitleBar::new().leading(chrome::wordmark(), theme::SIDEBAR_W))
             .child(
