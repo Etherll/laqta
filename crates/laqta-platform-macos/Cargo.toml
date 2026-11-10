@@ -35,3 +35,4 @@ objc2-security.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+futures-lite.workspace = true

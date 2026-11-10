@@ -11,8 +11,13 @@ use laqta_domain::Action;
 
 /// Blanks `window`, and once the blank frame is drawn, takes it off the screen and dispatches
 /// `action`. Where the platform can remove the window without an animation it does (Windows);
-/// elsewhere the window is minimized.
+/// elsewhere the window is minimized. On macOS nothing is hidden.
 pub(crate) fn then_dispatch(action: Action, dispatch: Arc<dyn Fn(Action) + Send + Sync>, window: &mut Window, cx: &mut App) {
+    // macOS captures leave Laqta's own windows out (ADR 030), so the window stays where it is.
+    if cfg!(target_os = "macos") {
+        dispatch(action);
+        return;
+    }
     blank_then(window, cx, move |window, cx| {
         let hide = cx.try_global::<crate::runtime::UiState>().map(|state| state.services.native_window.clone());
         if !hide.is_some_and(|hide| hide(window, crate::runtime::NativeWindow::HideForCapture)) {

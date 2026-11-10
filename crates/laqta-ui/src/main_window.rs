@@ -366,7 +366,7 @@ fn capture_card(c: &CaptureCard, featured: bool, hotkeys: &[(KeyChord, Action)],
     // A 32px tile: the shared 36px tile, shrunk for these compact cards.
     let tile = widgets::icon_tile(c.glyph, featured, cx).size(px(32.)).rounded(radius::SM + px(2.));
     let mut top = div().flex().items_start().justify_between().child(tile);
-    if let Some(keys) = hotkey_label(hotkeys, c.action) {
+    if let Some(keys) = hotkey_label(hotkeys, c.action, crate::host_os()) {
         top = top.child(widgets::kbd(keys, cx));
     }
     let el = widgets::card(cx).id(c.id).flex().flex_col().gap(space::S3).p(space::S4).hover(move |s| s.bg(wash)).child(top).child(

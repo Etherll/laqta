@@ -764,7 +764,7 @@ impl EditorWindow {
         let undo = widgets::icon_button(
             "undo",
             IconName::Undo2,
-            "Undo  ·  Ctrl+Z",
+            format!("Undo  ·  {}", crate::presenters::hotkeys::shortcut_text("Ctrl+Z", crate::host_os())),
             false,
             cx.listener(|this, _, w, cx| {
                 if this.chrome.can_undo {
@@ -777,7 +777,7 @@ impl EditorWindow {
         let redo = widgets::icon_button(
             "redo",
             IconName::Redo2,
-            "Redo  ·  Ctrl+Y",
+            format!("Redo  ·  {}", crate::presenters::hotkeys::shortcut_text("Ctrl+Y", crate::host_os())),
             false,
             cx.listener(|this, _, w, cx| {
                 if this.chrome.can_redo {

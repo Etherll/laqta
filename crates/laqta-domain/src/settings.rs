@@ -239,6 +239,22 @@ impl Settings {
     }
 }
 
+impl Settings {
+    /// `default_for`, with the hotkeys `os` can type. Mac keyboards have no Print Screen key, and
+    /// macOS keeps Command+Shift+3, 4 and 5 for its own screenshots, so there the five workflows
+    /// are Control+Option+1 to 5.
+    pub fn default_for_os(pictures_dir: PathBuf, os: crate::record::Os) -> Settings {
+        let mut settings = Settings::default_for(pictures_dir);
+        if os == crate::record::Os::MacOs {
+            let digits = [Key::Digit1, Key::Digit2, Key::Digit3, Key::Digit4, Key::Digit5];
+            for (workflow, key) in settings.workflows.iter_mut().zip(digits) {
+                workflow.hotkey = Some(KeyChord { modifiers: Modifiers::CTRL | Modifiers::ALT, key });
+            }
+        }
+        settings
+    }
+}
+
 /// The default hotkey workflows, ids 1..=5.
 fn default_workflows() -> Vec<Workflow> {
     let entries = [
@@ -270,6 +286,17 @@ mod tests {
 
     fn settings() -> Settings {
         Settings::default_for(PathBuf::from("/pics"))
+    }
+
+    #[test]
+    fn macos_defaults_avoid_print_screen_and_stay_distinct() {
+        use crate::record::Os;
+        let mac = Settings::default_for_os("/p".into(), Os::MacOs);
+        let chords: Vec<KeyChord> = mac.hotkey_bindings().iter().map(|(chord, _)| *chord).collect();
+        assert_eq!(chords.len(), 5);
+        assert!(chords.iter().all(|c| c.key != Key::PrintScreen && c.modifiers == Modifiers::CTRL | Modifiers::ALT));
+        assert!(crate::hotkey::find_conflicts(&mac.hotkey_bindings()).is_empty());
+        assert_eq!(Settings::default_for_os("/p".into(), Os::Linux), Settings::default_for("/p".into()));
     }
 
     #[test]

@@ -25,18 +25,26 @@ const AUDIO_BITRATE: &str = "192k";
 pub enum Host {
     Windows,
     Linux,
+    MacOs,
 }
 
 impl Host {
     /// The host this build runs on.
     pub fn current() -> Host {
-        if cfg!(windows) { Host::Windows } else { Host::Linux }
+        if cfg!(windows) {
+            Host::Windows
+        } else if cfg!(target_os = "macos") {
+            Host::MacOs
+        } else {
+            Host::Linux
+        }
     }
 
     pub fn os(self) -> laqta_domain::record::Os {
         match self {
             Host::Windows => laqta_domain::record::Os::Windows,
             Host::Linux => laqta_domain::record::Os::Linux,
+            Host::MacOs => laqta_domain::record::Os::MacOs,
         }
     }
 }
@@ -440,6 +448,10 @@ fn audio_input(a: &mut Argv, host: Host, input: &AudioInputDesc) {
             Host::Linux => {
                 a.flag(&["-f", "pulse", "-i"]).push(id.as_str());
             }
+            // avfoundation names an input `video:audio`; an empty video part means audio only.
+            Host::MacOs => {
+                a.flag(&["-f", "avfoundation", "-i"]).push(format!(":{name}"));
+            }
         },
         AudioInputDesc::Pcm { rate, channels, pipe } => {
             a.flag(&["-f", "s16le"]).opt("-ar", rate).opt("-ac", channels).flag(&["-i"]).push(pipe.as_str());
@@ -466,6 +478,7 @@ fn camera_device(host: Host, cam: &laqta_domain::record::CameraOverlay) -> Optio
     match (host, cam.device.trim()) {
         (Host::Linux, "") => Some("/dev/video0".into()),
         (Host::Windows, "") => None,
+        (Host::MacOs, "") => Some("default".into()),
         (_, name) => Some(name.to_owned()),
     }
 }
@@ -480,6 +493,10 @@ fn camera_input(a: &mut Argv, host: Host, cam: &laqta_domain::record::CameraOver
         }
         Host::Windows => {
             a.flag(&["-f", "dshow", "-i"]).push(format!("video={device}"));
+        }
+        // avfoundation refuses a camera without a frame rate it supports; 30 is common to all.
+        Host::MacOs => {
+            a.flag(&["-f", "avfoundation", "-framerate", "30", "-i"]).push(format!("{device}:none"));
         }
     }
 }
@@ -829,6 +846,18 @@ mod tests {
         let args = record(Host::Linux, WindowsCapture::Ddagrab, &spec(VideoCodec::X264, Quality::Default), &x11_target(), &[]);
         assert!(seq(&args, &["-f", "x11grab", "-framerate", "30", "-video_size", "1920x1080", "-draw_mouse", "1", "-i", ":0+100,200"]));
         assert!(!args.iter().any(|arg| arg == "-vf"));
+    }
+
+    #[test]
+    fn macos_opens_a_microphone_through_avfoundation() {
+        let args = record(
+            Host::MacOs,
+            WindowsCapture::Ddagrab,
+            &spec(VideoCodec::X264, Quality::Default),
+            &raw(),
+            &[device("id", "MacBook Microphone")],
+        );
+        assert!(seq(&args, &["-f", "avfoundation", "-i", ":MacBook Microphone"]));
     }
 
     #[test]

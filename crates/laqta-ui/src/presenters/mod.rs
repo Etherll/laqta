@@ -9,6 +9,7 @@ pub mod effect_params;
 pub mod history;
 pub mod hotkeys;
 pub mod library;
+pub mod open_urls;
 pub mod photo_interaction;
 pub mod render_gate;
 pub mod settings;

@@ -5104,6 +5104,7 @@ dependencies = [
  "block2 0.6.2",
  "blocking",
  "dispatch2",
+ "futures-lite",
  "laqta-domain",
  "laqta-ports",
  "objc2 0.6.5",

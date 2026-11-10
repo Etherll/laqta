@@ -197,6 +197,11 @@ fn overlay_kind() -> WindowKind {
     }
 }
 
+/// Whether the shortcut modifier is held: Ctrl, or Command on macOS.
+fn ctrl(m: &gpui::Modifiers) -> bool {
+    m.control || (cfg!(target_os = "macos") && m.platform)
+}
+
 #[cfg(not(target_os = "linux"))]
 fn overlay_kind() -> WindowKind {
     WindowKind::PopUp
@@ -594,7 +599,7 @@ impl OverlayView {
         };
         let mods = crate::editor_window::mods(m);
         if editing {
-            if !m.control
+            if !ctrl(m)
                 && let Some(ch) = ev.keystroke.key_char.clone().filter(|c| !c.is_empty() && !c.chars().any(char::is_control))
             {
                 self.model.update(cx, |model, cx| model.editor_input(EditorInput::Text(ch), cx));
@@ -608,7 +613,7 @@ impl OverlayView {
         if shown
             && let Some(item) = crate::presenters::capture_toolbar::key_item(
                 key,
-                crate::presenters::capture_toolbar::Mods { ctrl: m.control, shift: m.shift, alt: m.alt },
+                crate::presenters::capture_toolbar::Mods { ctrl: ctrl(m), shift: m.shift, alt: m.alt },
             )
         {
             self.model.update(cx, |model, cx| model.pick(item, cx));
@@ -633,7 +638,7 @@ impl OverlayView {
             return;
         }
         if let Some(key) = region_key(key) {
-            self.send(RegionInput::Key { key, mods: KeyMods { shift: m.shift, ctrl: m.control, alt: m.alt } }, cx);
+            self.send(RegionInput::Key { key, mods: KeyMods { shift: m.shift, ctrl: ctrl(m), alt: m.alt } }, cx);
         }
     }
 }

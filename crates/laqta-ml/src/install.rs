@@ -12,7 +12,13 @@ use crate::error::MlError;
 
 /// The archive entry for this machine.
 pub fn ort_for_host() -> Option<&'static OrtArchive> {
-    let os = if cfg!(windows) { "windows" } else { "linux" };
+    let os = if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
     catalog().onnxruntime_for(os, std::env::consts::ARCH)
 }
 

@@ -12,6 +12,8 @@ mod ax;
 mod capture;
 #[cfg(target_os = "macos")]
 mod clipboard;
+#[cfg(target_os = "macos")]
+mod disc;
 #[cfg(any(target_os = "macos", test))]
 mod displays;
 #[cfg(target_os = "macos")]
@@ -57,11 +59,13 @@ mod imp {
     use std::sync::Arc;
 
     use laqta_ports::{
-        Autostart, Clipboard, HotkeyRegistrar, HoverSource, InputSynth, Ocr, PointerHighlighter, ScreenSource, ScreenStream, SecretStore, Shell,
-        ShellIntegration, Tray, WindowOps,
+        Autostart, Clipboard, HotkeyRegistrar, HoverSource, InputSynth, Ocr, PointerHighlighter, ScreenSource, ScreenStream, SecretStore,
+        Shell, ShellIntegration, Tray, WindowOps,
     };
 
-    use crate::{autostart, capture, clipboard, highlight, hotkeys, hover, input, integration, ocr, secrets, shell, stream, tray, window_ops};
+    use crate::{
+        autostart, capture, clipboard, highlight, hotkeys, hover, input, integration, ocr, secrets, shell, stream, tray, window_ops,
+    };
 
     /// The macOS adapters, ready to hand to `laqta_app::Ports`.
     pub struct MacPorts {
@@ -102,7 +106,7 @@ mod imp {
             integration: Arc::new(integration::MacIntegration),
             input: Arc::new(input::MacInput),
             ocr: Arc::new(ocr::VisionOcr),
-            highlighter: Arc::new(highlight::MacHighlighter),
+            highlighter: Arc::new(highlight::MacHighlighter::default()),
         }
     }
 }

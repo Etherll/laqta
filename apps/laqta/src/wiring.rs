@@ -142,6 +142,19 @@ fn platform(_data: &std::path::Path) -> Result<Platform, String> {
     Err("this platform is not supported (ADR 001)".into())
 }
 
+/// First-run settings, with the hotkeys this OS can type.
+fn default_settings() -> Settings {
+    use laqta_domain::record::Os;
+    let os = if cfg!(windows) {
+        Os::Windows
+    } else if cfg!(target_os = "macos") {
+        Os::MacOs
+    } else {
+        Os::Linux
+    };
+    Settings::default_for_os(pictures_dir(), os)
+}
+
 fn pictures_dir() -> std::path::PathBuf {
     dirs::picture_dir().or_else(|| dirs::home_dir().map(|h| h.join("Pictures"))).unwrap_or_else(|| "Pictures".into())
 }
@@ -233,14 +246,14 @@ async fn run_request(
 
 fn load_settings(store: &SettingsStore) -> Settings {
     if !store.path().exists() {
-        return Settings::default_for(pictures_dir());
+        return default_settings();
     }
     match store.load::<Settings>(SETTINGS_VERSION, &[]) {
         Ok(mut s) => {
             // A file without `screenshots_dir` gets the serde default, a relative path that would put captures in
             // the folder Laqta was started from.
             if s.screenshots_dir == Settings::default().screenshots_dir {
-                s.screenshots_dir = Settings::default_for(pictures_dir()).screenshots_dir;
+                s.screenshots_dir = default_settings().screenshots_dir;
             } else if s.screenshots_dir.is_relative()
                 && let Some(home) = dirs::home_dir()
             {
@@ -250,7 +263,7 @@ fn load_settings(store: &SettingsStore) -> Settings {
         }
         Err(e) => {
             tracing::error!("settings could not be loaded ({e}); using defaults");
-            Settings::default_for(pictures_dir())
+            default_settings()
         }
     }
 }

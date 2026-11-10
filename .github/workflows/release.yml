@@ -1,11 +1,11 @@
 name: Release
 
-# Pushing a version tag (v0.1.0, v0.2.0-beta.1, …) builds Laqta for Linux and Windows and attaches
+# Pushing a version tag (v0.1.0, v0.2.0-beta.1, …) builds Laqta for Linux, Windows and macOS and attaches
 # the packages to a draft GitHub release. Review the draft, then publish it.
 #
 # Asset names carry no version, so the README can link to releases/latest/download/<name>:
 #   laqta-windows-x64-setup.exe, laqta-windows-x64-portable.exe, laqta-linux-x86_64.AppImage,
-#   laqta-linux-x86_64.tar.gz, laqta-linux-amd64.deb (each with a .sha256)
+#   laqta-linux-x86_64.tar.gz, laqta-linux-amd64.deb, laqta-macos-universal.dmg (each with a .sha256)
 # The Velopack update package (Laqta-<version>-…-full.nupkg and its feed files) and SHA256SUMS are
 # what the in-app updater reads on Windows.
 on:
@@ -131,9 +131,71 @@ jobs:
           name: windows
           path: dist/*
 
+  # One universal app for Apple silicon and Intel (ADR 030). With the signing secrets set the app
+  # is signed with a Developer ID and notarized; without them it is ad-hoc signed, and macOS asks
+  # the user to allow it in System Settings on first open.
+  macos:
+    name: Build (macOS universal)
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build both architectures
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked -p laqta -p laqta-nmh --target $target
+          done
+          mkdir -p universal dist
+          for bin in laqta laqta-nmh; do
+            lipo -create -output universal/$bin target/aarch64-apple-darwin/release/$bin target/x86_64-apple-darwin/release/$bin
+          done
+      - name: Import the signing certificate
+        if: env.MACOS_CERTIFICATE_P12 != ''
+        run: |
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > cert.p12
+          security create-keychain -p build build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p build build.keychain
+          security import cert.p12 -k build.keychain -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k build build.keychain
+          rm cert.p12
+      - name: Bundle and sign
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          case "$version" in [0-9]*) ;; *) version=0.0.0 ;; esac
+          if [ -z "$MACOS_CERTIFICATE_P12" ]; then unset MACOS_SIGN_IDENTITY; fi
+          scripts/macos-bundle.sh universal/laqta universal/laqta-nmh "$version" build
+          build/Laqta.app/Contents/MacOS/laqta --version
+      - name: Disk image
+        run: |
+          mkdir dmg && cp -R build/Laqta.app dmg/ && ln -s /Applications dmg/Applications
+          hdiutil create -volname Laqta -srcfolder dmg -ov -format UDZO dist/laqta-macos-universal.dmg
+      - name: Notarize
+        if: env.MACOS_CERTIFICATE_P12 != '' && env.APPLE_ID != ''
+        run: |
+          codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" dist/laqta-macos-universal.dmg
+          xcrun notarytool submit dist/laqta-macos-universal.dmg --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple dist/laqta-macos-universal.dmg
+          spctl --assess --type open --context context:primary-signature -v dist/laqta-macos-universal.dmg
+      - name: Checksum
+        run: cd dist && shasum -a 256 laqta-macos-universal.dmg > laqta-macos-universal.dmg.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+
   release:
     name: Draft the GitHub release
-    needs: [linux, windows]
+    needs: [linux, windows, macos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:

@@ -325,7 +325,7 @@ fn button(model: Entity<OverlayModel>, item: Item, active: bool, enabled: bool) 
         _ => (gpui::transparent_black(), rgba(0xffffff, 0.88), rgba(0xffffff, 0.12)),
     };
     let tip = match bar::shortcut(item) {
-        Some(keys) => format!("{}  ·  {keys}", bar::label(item)),
+        Some(keys) => format!("{}  ·  {}", bar::label(item), crate::presenters::hotkeys::shortcut_text(keys, crate::host_os())),
         None => bar::label(item).to_owned(),
     };
     let id = match item {

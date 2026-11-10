@@ -119,3 +119,46 @@ jobs:
           name: junit-windows
           path: target/nextest/ci/junit.xml
           if-no-files-found: ignore
+
+  # macOS (ADR 030). No Mac is on the development machine, so this job is the proof: lint and tests,
+  # the adapter's contract tests against the real OS, and a run of the app with a screenshot per
+  # step. It does not fail the workflow until W2 is signed off.
+  test-macos:
+    name: Test (macOS)
+    runs-on: macos-15
+    timeout-minutes: 120
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with: { tool: "cargo-nextest@0.9.151" }
+      # Recording and the video tools run FFmpeg.
+      - run: brew install ffmpeg
+      # The lint job runs on Linux, so the macOS-only code is linted here.
+      - name: Clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        if: ${{ !cancelled() }}
+        run: cargo nextest run --workspace --profile ci --no-fail-fast
+      - name: Adapter contract tests (output shown)
+        if: ${{ !cancelled() }}
+        run: cargo test -p laqta-platform-macos --test contract -- --nocapture --test-threads=1
+      - name: Build the app bundle
+        if: ${{ !cancelled() }}
+        run: |
+          cargo build -p laqta -p laqta-nmh
+          scripts/macos-bundle.sh target/debug/laqta target/debug/laqta-nmh 0.0.0 target/mac
+      - name: Run the app and take screenshots
+        if: ${{ !cancelled() }}
+        run: ci/mac-smoke.sh target/mac/Laqta.app target/mac/smoke
+      - name: Keep the screenshots, logs and test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-smoke
+          path: |
+            target/mac/smoke
+            target/nextest/ci/junit.xml
+          if-no-files-found: ignore

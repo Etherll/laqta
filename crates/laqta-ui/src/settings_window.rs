@@ -608,7 +608,11 @@ impl SettingsWindow {
                     .child(widgets::row_with("Theme", None::<&str>, Slot::Hug, widgets::choice("theme", theme, cx), cx))
                     .child(widgets::row_with(
                         "Language",
-                        Some("Some text may still be in English. The tray menu changes after a restart."),
+                        Some(if cfg!(target_os = "macos") {
+                            "Some text may still be in English. The menu bar menu changes after a restart."
+                        } else {
+                            "Some text may still be in English. The tray menu changes after a restart."
+                        }),
                         Slot::Field,
                         self.language_picker(cx),
                         cx,
@@ -1054,7 +1058,13 @@ impl SettingsWindow {
                     ))
                     .child(widgets::action_row(
                         if running { "Timed capture is running" } else { "Timed capture is off" },
-                        Some(if running { "Stop it here, from the tray or with its hotkey." } else { "Start saves these settings first." }),
+                        Some(if running && cfg!(target_os = "macos") {
+                            "Stop it here, from the menu bar or with its hotkey."
+                        } else if running {
+                            "Stop it here, from the tray or with its hotkey."
+                        } else {
+                            "Start saves these settings first."
+                        }),
                         toggle,
                         cx,
                     )),
@@ -1375,7 +1385,11 @@ impl SettingsWindow {
             Ok(on) => widgets::switch_row(
                 "autostart",
                 "Start Laqta when I sign in",
-                Some("Laqta starts in the tray. Applies now."),
+                Some(if cfg!(target_os = "macos") {
+                    "Laqta starts in the menu bar. Applies now."
+                } else {
+                    "Laqta starts in the tray. Applies now."
+                }),
                 on,
                 cx.listener(|this, c: &bool, _, cx| {
                     let services = cx.global::<UiState>().services.clone();
@@ -1422,7 +1436,14 @@ impl SettingsWindow {
             ),
             Err(e) => widgets::row_with("“Upload with Laqta” menu item", Some(format!("Not available here: {e}")), Slot::Hug, div(), cx),
         };
-        page().child(widgets::section("Startup", cx).child(startup)).child(widgets::section("File manager", cx).child(file_manager)).child(
+        // Finder takes no menu entries from a plain app, so macOS says how to send a file instead.
+        let (files_title, file_manager) = if cfg!(target_os = "macos") {
+            let how = "Drag a file onto Laqta in the Dock, or right-click it and choose Open With > Laqta.";
+            ("Finder", widgets::row_with("Upload from Finder", Some(how.to_string()), Slot::Hug, div(), cx))
+        } else {
+            ("File manager", file_manager)
+        };
+        page().child(widgets::section("Startup", cx).child(startup)).child(widgets::section(files_title, cx).child(file_manager)).child(
             widgets::section("Browser", cx).child(widgets::action_row(
                 "Browser extension",
                 Some("Lets the ShareX browser extension (Chrome, Firefox) send pages, images and links to Laqta."),
@@ -2117,7 +2138,7 @@ impl SettingsWindow {
             match chord {
                 Some(c) => {
                     let mut caps = base;
-                    for cap in crate::presenters::hotkeys::keycaps(c) {
+                    for cap in crate::presenters::hotkeys::keycaps(c, crate::host_os()) {
                         caps = caps.child(
                             div()
                                 .px(px(6.))
