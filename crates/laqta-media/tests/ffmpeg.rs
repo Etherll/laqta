@@ -258,9 +258,14 @@ impl PcmSource for Tone {
         if self.stopped {
             return Ok(0);
         }
-        thread::sleep(Duration::from_millis(10));
-        let due = (self.started.get_or_insert_with(Instant::now).elapsed().as_secs_f64() * 48_000.0) as u64;
-        let frames = (due.saturating_sub(self.sent) as usize).min(buf.len() / 2);
+        // Wait only when nothing is due. A sleep before every read would cap the tone at one buffer
+        // per sleep, and a sleep that runs long (50 ms on a macOS runner) then falls behind the clock.
+        let started = *self.started.get_or_insert_with(Instant::now);
+        let due = |started: Instant| (started.elapsed().as_secs_f64() * 48_000.0) as u64;
+        if due(started) <= self.sent {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let frames = (due(started).saturating_sub(self.sent) as usize).min(buf.len() / 2);
         for (i, frame) in buf[..frames * 2].chunks_mut(2).enumerate() {
             let t = (self.sent + i as u64) as f64 / 48_000.0;
             frame.fill(((t * 440.0 * std::f64::consts::TAU).sin() * 8000.0) as i16);
