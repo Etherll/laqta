@@ -304,6 +304,12 @@ pub enum NativeWindow {
 /// `UiServices::native_window`: true when the platform did what was asked.
 pub type NativeWindowHook = Arc<dyn Fn(&gpui::Window, NativeWindow) -> bool + Send + Sync>;
 
+/// `UiServices::logical_rect`: a rect in the ports' physical pixels as `[x, y, width, height]` in
+/// the desktop's logical pixels. Windows and X11 need none: there a rect divided by its display's
+/// scale is its logical rect. macOS has no physical desktop, so its adapter lays one out and is the
+/// only one that can map back (ADR 030).
+pub type LogicalRectHook = Arc<dyn Fn(laqta_domain::geometry::PhysRect) -> Option<[f32; 4]> + Send + Sync>;
+
 /// Checks for an update: the message to show and whether `install_update` can apply it here.
 pub type UpdateCheck = Arc<dyn Fn() -> laqta_ports::BoxFuture<'static, Result<(String, bool), String>> + Send + Sync>;
 pub type UpdateInstall = Arc<dyn Fn() -> laqta_ports::BoxFuture<'static, Result<(), String>> + Send + Sync>;
@@ -382,6 +388,8 @@ pub struct UiServices {
     /// Asks the platform to do something to a window that GPUI has no call for. It returns
     /// false where the platform needs nothing done, or can't do it.
     pub native_window: NativeWindowHook,
+    /// Maps a physical rect to logical desktop pixels where dividing by the scale is not enough.
+    pub logical_rect: Option<LogicalRectHook>,
     /// Run at login.
     pub autostart: Arc<dyn laqta_ports::Autostart>,
     /// "Upload with Laqta" in file managers, Send To, and the browser native-messaging host.

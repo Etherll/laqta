@@ -43,7 +43,9 @@ mod widgets;
 #[cfg(test)]
 mod headless_tests;
 
-pub use runtime::{HotkeyReport, ModelProgress, ModelRow, ModelService, NativeWindow, UiHandle, UiReceiver, UiServices, run};
+pub use runtime::{
+    HotkeyReport, LogicalRectHook, ModelProgress, ModelRow, ModelService, NativeWindow, UiHandle, UiReceiver, UiServices, run,
+};
 
 /// The OS this build runs on, for the parts of the core that differ by platform.
 pub(crate) fn host_os() -> laqta_domain::record::Os {

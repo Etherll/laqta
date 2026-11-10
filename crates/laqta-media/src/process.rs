@@ -202,6 +202,11 @@ impl Drop for FfmpegRecorder {
             locked(&self.inner, |state| {
                 if let Some(mut segment) = state.current.take() {
                     kill_and_reap(&mut segment.child);
+                    // The sound thread may still wait for FFmpeg to open its pipe.
+                    state.side = segment.side.take().and_then(|side| side.finish(state.side_pipe.as_deref()));
+                }
+                if let Some(mut side) = state.side.take() {
+                    side.stop();
                 }
             });
         }

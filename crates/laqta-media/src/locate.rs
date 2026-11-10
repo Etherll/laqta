@@ -1,4 +1,5 @@
-//! Finding FFmpeg and FFprobe: the configured path, then the downloaded copy, then `PATH`.
+//! Finding FFmpeg and FFprobe: the configured path, then the downloaded copy, then `PATH`, then (on
+//! macOS) the folders Homebrew installs into.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -11,11 +12,21 @@ pub struct FfmpegPaths {
 }
 
 /// Finds FFmpeg. `configured` is a binary or a folder that holds both binaries (empty = not set).
-/// Then `<data_dir>/ffmpeg/bin` (where `download_ffmpeg` puts them), then `PATH`.
+/// Then `<data_dir>/ffmpeg/bin` (where `download_ffmpeg` puts them), then `PATH`. An app started
+/// from Finder or the Dock gets a `PATH` without Homebrew, so on macOS its folders are looked in last.
 pub fn find_ffmpeg(configured: &str, data_dir: &Path) -> Option<FfmpegPaths> {
     let path_var = std::env::var_os("PATH").unwrap_or_default();
-    find_with(configured, data_dir, &path_var)
+    let extra: &[&str] = if cfg!(target_os = "macos") { &HOMEBREW_DIRS } else { &[] };
+    find_with(configured, data_dir, &path_var).or_else(|| first_pair(extra))
 }
+
+/// The first of `dirs` that holds both binaries.
+fn first_pair<P: AsRef<Path>>(dirs: &[P]) -> Option<FfmpegPaths> {
+    dirs.iter().find_map(|dir| pair_in(dir.as_ref()))
+}
+
+/// Where Homebrew puts its programs: Apple silicon, then Intel.
+const HOMEBREW_DIRS: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
 
 /// `find_ffmpeg` with the `PATH` value passed in, so tests need not change the environment.
 pub(crate) fn find_with(configured: &str, data_dir: &Path, path_var: &OsStr) -> Option<FfmpegPaths> {
@@ -68,6 +79,18 @@ mod tests {
     fn touch(path: &Path) {
         std::fs::create_dir_all(path.parent().expect("parent")).expect("create dir");
         std::fs::write(path, b"").expect("write file");
+    }
+
+    #[test]
+    fn the_first_folder_with_both_binaries_wins() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (only_ffmpeg, both) = (dir.path().join("a"), dir.path().join("b"));
+        touch(&only_ffmpeg.join(exe_name("ffmpeg")));
+        touch(&both.join(exe_name("ffmpeg")));
+        touch(&both.join(exe_name("ffprobe")));
+        let found = first_pair(&[dir.path().join("missing"), only_ffmpeg, both.clone()]).expect("found");
+        assert_eq!(found.ffmpeg, both.join(exe_name("ffmpeg")));
+        assert_eq!(first_pair::<PathBuf>(&[]), None);
     }
 
     #[test]

@@ -203,6 +203,18 @@ fn native_window(window: &gpui::Window, what: laqta_ui::NativeWindow) -> bool {
     false
 }
 
+/// The platform's mapping from physical to logical desktop pixels, where it has one (macOS).
+fn logical_rect() -> Option<laqta_ui::LogicalRectHook> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(Arc::new(|rect| laqta_platform_macos::logical_rect(rect)))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// True when `dir` exists or can be made, and a file can be created in it.
 fn writable(dir: &std::path::Path) -> bool {
     let probe = dir.join(format!(".laqta-write-{}", std::process::id()));
@@ -676,6 +688,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             secrets: platform.secrets.clone(),
             prompt: Arc::new(ui.clone()),
             native_window: Arc::new(native_window),
+            logical_rect: logical_rect(),
             fonts: crate::fonts::fonts(),
             spawner: spawner.clone(),
             codecs: laqta_imaging::Codecs::builtin(),

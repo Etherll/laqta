@@ -282,6 +282,49 @@ fn raw_frames_and_pcm_sound_are_recorded_together_across_a_pause() {
     assert!(!dir.path().join("work").read_dir().is_ok_and(|mut entries| entries.next().is_some()), "the session folder is gone");
 }
 
+/// Silence that records when it was stopped.
+#[cfg(unix)]
+struct Silence(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+#[cfg(unix)]
+impl PcmSource for Silence {
+    fn format(&self) -> PcmFormat {
+        PcmFormat { sample_rate: 48_000, channels: 2 }
+    }
+
+    fn read(&mut self, buf: &mut [i16]) -> Result<usize, PortError> {
+        thread::sleep(Duration::from_millis(10));
+        buf.fill(0);
+        Ok(buf.len())
+    }
+
+    fn stop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// A recorder dropped before FFmpeg opened the sound pipe: the sound thread is still waiting in
+/// `open`, and must be let go so the source is stopped. The "FFmpeg" here never opens the pipe.
+#[cfg(unix)]
+#[test]
+fn dropping_the_recorder_stops_a_sound_source_whose_pipe_was_never_opened() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("ffmpeg");
+    std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").expect("write the stand-in");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("make it executable");
+    let media = FfmpegMedia::new(laqta_media::FfmpegPaths { ffmpeg: script.clone(), ffprobe: script }, dir.path().join("work"));
+    let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let input = RecordingInput {
+        video: VideoSource::Frames(Box::new(PacedFrames::new(30, None))),
+        audio: vec![AudioInput::Pcm(Box::new(Silence(stopped.clone())))],
+    };
+    let recording = block_on(media.start(input, spec(VideoCodec::X264, 30), dir.path().join("never.mp4"))).expect("start");
+    thread::sleep(Duration::from_millis(300));
+    drop(recording);
+    assert!(stopped.load(std::sync::atomic::Ordering::SeqCst), "the sound source was stopped when the recorder was dropped");
+}
+
 #[test]
 fn a_fast_source_is_paced_to_wall_time() {
     let dir = tempfile::tempdir().expect("tempdir");
