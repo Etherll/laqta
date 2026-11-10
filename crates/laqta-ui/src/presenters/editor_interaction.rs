@@ -31,7 +31,16 @@ pub enum Work {
 
 /// A batch of work running on the compute pool. Resolves to one output per piece of work, or to
 /// `None` if the engine panicked.
-pub type Batch = BoxFuture<'static, Option<Vec<EditorOutput>>>;
+pub type Batch = BoxFuture<'static, Option<Vec<Ran>>>;
+
+/// What one piece of batched work produced.
+#[derive(Debug)]
+pub struct Ran {
+    out: EditorOutput,
+    /// The image right after this work, taken when the work made a request (Save, Done, erase):
+    /// later work in the same batch must not be in what the request reads.
+    snapshot: Option<Bitmap>,
+}
 
 /// What [`EditorInteraction::submit`] did with the work.
 pub enum Submitted {
@@ -48,7 +57,8 @@ pub struct Finished {
     /// The newest chrome and whether to render. `None` if the batch failed.
     pub step: Option<Step>,
     /// Every request the batch produced, in order.
-    pub requests: Vec<EditorRequest>,
+    /// With the image as it was when the request was made.
+    pub requests: Vec<(EditorRequest, Option<Bitmap>)>,
     /// The work queued meanwhile, already started. Await it like the first batch.
     pub next: Option<Batch>,
     /// The engine panicked, so the batch's work is lost.
@@ -67,7 +77,11 @@ impl std::fmt::Debug for Submitted {
 
 impl std::fmt::Debug for Finished {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Finished").field("step", &self.step).field("requests", &self.requests).field("next", &self.next.is_some()).finish()
+        f.debug_struct("Finished")
+            .field("step", &self.step)
+            .field("requests", &self.requests.len())
+            .field("next", &self.next.is_some())
+            .finish()
     }
 }
 
@@ -152,27 +166,31 @@ impl EditorInteraction {
             let mut engine = lock(&editor);
             batch
                 .into_iter()
-                .filter_map(|work| match work {
-                    Work::Input(input) => Some(engine.handle(input)),
-                    Work::Command(command) => Some(engine.execute(command)),
-                    Work::Export(image) => {
-                        let _ = image.send(engine.export());
-                        None
-                    }
+                .filter_map(|work| {
+                    let out = match work {
+                        Work::Input(input) => engine.handle(input),
+                        Work::Command(command) => engine.execute(command),
+                        Work::Export(image) => {
+                            let _ = image.send(engine.export());
+                            return None;
+                        }
+                    };
+                    let snapshot = out.request.is_some().then(|| engine.export());
+                    Some(Ran { out, snapshot })
                 })
                 .collect()
         })
     }
 
     /// Call when a batch resolves, with what it resolved to.
-    pub fn batch_finished(&mut self, outputs: Option<Vec<EditorOutput>>) -> Finished {
+    pub fn batch_finished(&mut self, outputs: Option<Vec<Ran>>) -> Finished {
         self.running = false;
         let failed = outputs.is_none();
         let mut step: Option<Step> = None;
         let mut requests = Vec::new();
-        for out in outputs.into_iter().flatten() {
+        for Ran { out, snapshot } in outputs.into_iter().flatten() {
             let mut one = self.after_output(out);
-            requests.extend(one.request.take());
+            requests.extend(one.request.take().map(|request| (request, snapshot)));
             one.render_now |= step.as_ref().is_some_and(|s| s.render_now);
             step = Some(one);
         }
@@ -309,6 +327,26 @@ mod tests {
         run_next(&held);
         ix.batch_finished(block_on(next));
         assert_eq!(lock(&ix.editor()).export().width(), 4);
+    }
+
+    #[test]
+    fn a_queued_request_reads_the_image_from_its_place_in_the_order() {
+        let (compute, held) = gated();
+        let mut ix = EditorInteraction::new(editor(), compute);
+        let Submitted::Started(first) = ix.submit(Work::Command(Command::SetTool(Tool::Select))) else { panic!("starts a batch") };
+        // Done is pressed while that runs, then the image is replaced: both wait in one batch.
+        let enter = EditorInput::Key { key: EditorKey::Enter, mods: Mods::default() };
+        assert!(matches!(ix.submit(Work::Input(enter)), Submitted::Queued));
+        let small = Bitmap::new(4, 4, PixelFormat::Rgba8, vec![0u8; 64].into()).unwrap();
+        assert!(matches!(ix.submit(Work::Command(Command::ReplaceImage(small))), Submitted::Queued));
+
+        run_next(&held);
+        let second = ix.batch_finished(block_on(first)).next.unwrap_or_else(|| panic!("the queued work starts next"));
+        run_next(&held);
+        let done = ix.batch_finished(block_on(second));
+        let [(request, snapshot)] = done.requests.as_slice() else { panic!("one request, got {}", done.requests.len()) };
+        assert_eq!(*request, EditorRequest::Continue);
+        assert_eq!(snapshot.as_ref().map(Bitmap::width), Some(2560), "the later replacement is not in it");
     }
 
     fn down(x: f32, y: f32) -> EditorInput {

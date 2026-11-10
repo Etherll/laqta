@@ -173,7 +173,9 @@ impl Raw {
             .into_iter()
             .flatten(),
         );
-        texts.into_iter().any(migrate::has_marker)
+        // ShareX matches the two `Data` markers ignoring case, so `$INPUT$` marks a legacy file too.
+        let data = self.data.as_deref().map(str::to_ascii_lowercase).unwrap_or_default();
+        texts.into_iter().any(migrate::has_marker) || data.contains("$input$") || data.contains("$filename$")
     }
 
     pub(super) fn into_uploader(self) -> Result<CustomUploader, SxcuError> {

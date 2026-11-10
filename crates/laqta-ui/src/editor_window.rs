@@ -287,7 +287,7 @@ impl EditorWindow {
             self.start_render(cx);
         }
         if let Some(r) = step.request {
-            self.request(r, window, cx);
+            self.request(r, None, window, cx);
         }
         cx.notify();
     }
@@ -329,8 +329,8 @@ impl EditorWindow {
                     None if done.failed => this.message = Some("The command failed.".into()),
                     None => {}
                 }
-                for request in done.requests {
-                    this.request(request, window, cx);
+                for (request, snapshot) in done.requests {
+                    this.request(request, snapshot, window, cx);
                 }
                 match done.next {
                     Some(next) => this.run_batch(next, window, cx),
@@ -370,12 +370,12 @@ impl EditorWindow {
     fn encoded(
         &mut self,
         format: ImageFormat,
-        window: &mut Window,
+        image: laqta_ports::BoxFuture<'static, Option<Bitmap>>,
         cx: &mut Context<Self>,
     ) -> impl Future<Output = Result<Vec<u8>, String>> + Send + 'static {
         let codecs = cx.global::<UiState>().services.codecs.clone();
         let opts = laqta_imaging::EncodeOptions { format, jpeg_quality: 90 };
-        output::encode(self.compute.clone(), codecs, self.export(window, cx), opts)
+        output::encode(self.compute.clone(), codecs, image, opts)
     }
 
     /// The image as it is now: later edits wait behind the export, so they are never in it.
@@ -387,24 +387,43 @@ impl EditorWindow {
         image
     }
 
-    fn request(&mut self, r: EditorRequest, window: &mut Window, cx: &mut Context<Self>) {
+    /// Acts on a request from the engine. `snapshot` is the image as it was when the request was
+    /// made, when later work may already have changed the engine.
+    fn request(&mut self, r: EditorRequest, snapshot: Option<Bitmap>, window: &mut Window, cx: &mut Context<Self>) {
         match r {
-            EditorRequest::Save => self.save(false, window, cx),
-            EditorRequest::SaveAs => self.save(true, window, cx),
-            EditorRequest::Continue => self.finish(window, cx),
-            EditorRequest::EraseObject { rect } => self.smart(Smart::Erase(rect), window, cx),
+            EditorRequest::Save => self.save_from(false, snapshot, window, cx),
+            EditorRequest::SaveAs => self.save_from(true, snapshot, window, cx),
+            EditorRequest::Continue => self.finish_from(snapshot, window, cx),
+            EditorRequest::EraseObject { rect } => self.smart_from(Smart::Erase(rect), snapshot, window, cx),
+        }
+    }
+
+    /// `snapshot` as a ready image, or an export queued now.
+    fn image(
+        &mut self,
+        snapshot: Option<Bitmap>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> laqta_ports::BoxFuture<'static, Option<Bitmap>> {
+        match snapshot {
+            Some(image) => Box::pin(async move { Some(image) }),
+            None => self.export(window, cx),
         }
     }
 
     /// Hands the finished image to whoever opened the editor, then closes the window. The export
     /// runs on the compute pool; input is ignored while it does.
     fn finish(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.finish_from(None, window, cx);
+    }
+
+    fn finish_from(&mut self, snapshot: Option<Bitmap>, window: &mut Window, cx: &mut Context<Self>) {
         // A smart tool is still working on the image: Done waits for the user to press it again.
         if self.busy.is_some() {
             return;
         }
         // Commands still running or queued belong in the result: finish when they end.
-        if self.defer(Deferred::Finish) {
+        if snapshot.is_none() && self.defer(Deferred::Finish) {
             return;
         }
         let Some(reply) = self.reply.take() else {
@@ -413,7 +432,7 @@ impl EditorWindow {
         };
         self.busy = Some("Finishing…");
         cx.notify();
-        let export = self.export(window, cx);
+        let export = self.image(snapshot, window, cx);
         cx.spawn_in(window, async move |this, cx| {
             let image = export.await.ok_or_else(|| PortError::Failed("export failed".into()));
             let _ = reply.send(image);
@@ -423,13 +442,18 @@ impl EditorWindow {
     }
 
     fn save(&mut self, ask: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.defer(Deferred::Save { ask }) {
+        self.save_from(ask, None, window, cx);
+    }
+
+    fn save_from(&mut self, ask: bool, snapshot: Option<Bitmap>, window: &mut Window, cx: &mut Context<Self>) {
+        if snapshot.is_none() && self.defer(Deferred::Save { ask }) {
             return;
         }
         let settings = cx.global::<UiState>().services.app.settings();
         let format = settings.defaults.image.format;
         let ext = format.extension();
-        let encoded = self.encoded(format, window, cx);
+        let image = self.image(snapshot, window, cx);
+        let encoded = self.encoded(format, image, cx);
         let default_dir = settings.screenshots_dir.clone();
         let current = self.path.clone();
         let task = cx.background_spawn(async move {
@@ -493,7 +517,8 @@ impl EditorWindow {
         if self.defer(Deferred::Upload) {
             return;
         }
-        let encoded = self.encoded(ImageFormat::Png, window, cx);
+        let image = self.export(window, cx);
+        let encoded = self.encoded(ImageFormat::Png, image, cx);
         let services = cx.global::<UiState>().services.clone();
         let dir = services.data_dir.join("edits");
         let stem = format!("Laqta_edit_{}", std::process::id());
@@ -520,14 +545,18 @@ impl EditorWindow {
     /// Runs a smart tool on the current image: export on the compute pool, the model through
     /// `App`, then the result back into the editor (an undoable step) or a text window.
     fn smart(&mut self, op: Smart, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy.is_some() || self.defer(Deferred::Smart(op)) {
+        self.smart_from(op, None, window, cx);
+    }
+
+    fn smart_from(&mut self, op: Smart, snapshot: Option<Bitmap>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy.is_some() || (snapshot.is_none() && self.defer(Deferred::Smart(op))) {
             return;
         }
         self.busy = Some(op.busy());
         cx.notify();
         let app = cx.global::<UiState>().services.app.clone();
         let prompt = app.settings().cloud.analyzer.prompt.clone();
-        let export = self.export(window, cx);
+        let export = self.image(snapshot, window, cx);
         let work = cx.background_spawn(async move {
             let image = export.await.ok_or_else(|| "Couldn't read the image.".to_string())?;
             let fail = |e: laqta_ports::AppError| e.to_string();

@@ -46,6 +46,15 @@ fn audit_bug_sharex_json_data_with_plain_braces() {
     assert_eq!(request.body, Body::Bytes { data: br#"{"text":"hello"}"#.to_vec(), content_type: "application/json".into() });
 }
 
+/// ShareX replaces the two legacy `Data` markers ignoring case, so a file whose only legacy sign is
+/// an uppercase one is still converted.
+#[test]
+fn legacy_data_marker_in_upper_case_is_converted() {
+    let file = json!({ "RequestURL": "https://h/up", "Body": "JSON", "Data": r#"{"text":"$INPUT$"}"# }).to_string();
+    let request = build(&file, Some("hello")).expect("a legacy JSON body must build");
+    assert_eq!(request.body, Body::Bytes { data: br#"{"text":"hello"}"#.to_vec(), content_type: "application/json".into() });
+}
+
 /// In `.sxcu` syntax, `{prompt:…}` is an alias of `{inputbox:…}`.
 #[test]
 #[ignore = "known issue, not fixed yet"]
