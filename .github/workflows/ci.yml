@@ -18,6 +18,13 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # No debug info in CI: smaller cache, faster linking of the ~100 test binaries.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # sccache keeps compiled workspace crates in the Actions cache, so a PR only rebuilds the crates
+  # it changed (rust-cache keeps dependencies but drops workspace and vendored crates). Every job
+  # sets it up right after checkout, since cargo fails without the wrapper on PATH.
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
   # The platform contract tests drive the screen and clipboard; CI gives them a virtual display.
   LAQTA_CONTRACT: "1"
   LINUX_DEPS: >-
@@ -32,7 +39,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
+        # Only main saves: per-PR caches overflowed the 10 GB limit and evicted main's.
+        with: { save-if: "${{ github.ref == 'refs/heads/main' }}" }
       - uses: taiki-e/install-action@v2
         with: { tool: "cargo-deny@0.20.2" }
       - run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS
@@ -48,7 +58,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
+        # Only main saves: per-PR caches overflowed the 10 GB limit and evicted main's.
+        with: { save-if: "${{ github.ref == 'refs/heads/main' }}" }
       - uses: taiki-e/install-action@v2
         with: { tool: "cargo-nextest@0.9.151" }
       - run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS xvfb x11-xserver-utils ffmpeg
@@ -76,7 +89,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
+        # Only main saves: per-PR caches overflowed the 10 GB limit and evicted main's.
+        with: { save-if: "${{ github.ref == 'refs/heads/main' }}" }
       - uses: taiki-e/install-action@v2
         with: { tool: "cargo-nextest@0.9.151" }
       - run: sudo apt-get update && sudo apt-get install -y sway swaybg $LINUX_DEPS
@@ -96,6 +112,31 @@ jobs:
           path: target/nextest/ci/junit.xml
           if-no-files-found: ignore
 
+  # The two Windows jobs build on a Dev Drive (ReFS, Defender in performance mode), which is
+  # faster for the many small files a Rust build writes. The repo is copied there and every
+  # cargo step runs from the copy.
+  lint-windows:
+    name: Lint (Windows clippy)
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      VCPKGRS_TRIPLET: x64-windows-static-md
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - uses: samypr100/setup-dev-drive@v4
+        with: { drive-size: 12GB, workspace-copy: true }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ env.DEV_DRIVE_WORKSPACE }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # SQLite for laqta-library (ADR 026).
+      - run: vcpkg install "sqlite3[fts5]:x64-windows-static-md"
+      - run: echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+      # The lint job runs on Linux, so the Windows-only code is linted here.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
+
   test-windows:
     name: Test (Windows)
     runs-on: windows-2025
@@ -104,21 +145,25 @@ jobs:
       VCPKGRS_TRIPLET: x64-windows-static-md
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - uses: samypr100/setup-dev-drive@v4
+        with: { drive-size: 12GB, workspace-copy: true }
       - uses: Swatinem/rust-cache@v2
-      # SQLite for laqta-library (ADR 026).
+        with:
+          workspaces: ${{ env.DEV_DRIVE_WORKSPACE }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: vcpkg install "sqlite3[fts5]:x64-windows-static-md"
       - run: echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
       - uses: taiki-e/install-action@v2
         with: { tool: "cargo-nextest@0.9.151" }
-      # The lint job runs on Linux, so the Windows-only code is linted here.
-      - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo nextest run --workspace --profile ci
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
       - name: Keep the test report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: junit-windows
-          path: target/nextest/ci/junit.xml
+          path: ${{ env.DEV_DRIVE_WORKSPACE }}/target/nextest/ci/junit.xml
           if-no-files-found: ignore
 
   # macOS (ADR 030). No Mac is on the development machine, so this job is the proof: lint and tests,
@@ -131,7 +176,10 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
+        # Only main saves: per-PR caches overflowed the 10 GB limit and evicted main's.
+        with: { save-if: "${{ github.ref == 'refs/heads/main' }}" }
       - uses: taiki-e/install-action@v2
         with: { tool: "cargo-nextest@0.9.151" }
       # Recording and the video tools run FFmpeg.

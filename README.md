@@ -48,7 +48,7 @@ Download the latest build for your system:
   <tr><td><b>Windows portable (x64)</b></td><td><a href="../../releases/latest/download/laqta-windows-x64-portable.exe">laqta-windows-x64-portable.exe</a></td></tr>
   <tr><td><b>Linux AppImage (x86_64)</b></td><td><a href="../../releases/latest/download/laqta-linux-x86_64.AppImage">laqta-linux-x86_64.AppImage</a></td></tr>
   <tr><td><b>Debian / Ubuntu (amd64)</b></td><td><a href="../../releases/latest/download/laqta-linux-amd64.deb">laqta-linux-amd64.deb</a></td></tr>
-  <tr><td><b>Linux archive (x86_64)</b></td><td><a href="../../releases/latest/download/laqta-linux-x86_64.tar.gz">laqta-linux-x86_64.tar.gz</a></td></tr>
+  <tr><td><b>Linux archive (x86_64)</b></td><td><a href="../../releases/latest/download/laqta-linux-x86_64.tar.zst">laqta-linux-x86_64.tar.zst</a></td></tr>
 </table>
 
 Every file has a `.sha256` next to it on the [Releases](../../releases) page.

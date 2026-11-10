@@ -5,7 +5,7 @@ name: Release
 #
 # Asset names carry no version, so the README can link to releases/latest/download/<name>:
 #   laqta-windows-x64-setup.exe, laqta-windows-x64-portable.exe, laqta-linux-x86_64.AppImage,
-#   laqta-linux-x86_64.tar.gz, laqta-linux-amd64.deb, laqta-macos-universal.dmg (each with a .sha256)
+#   laqta-linux-x86_64.tar.zst, laqta-linux-amd64.deb, laqta-macos-universal.dmg (each with a .sha256)
 # The Velopack update package (Laqta-<version>-…-full.nupkg and its feed files) and SHA256SUMS are
 # what the in-app updater reads on Windows.
 on:
@@ -32,6 +32,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+        # Only main saves: per-PR caches overflowed the 10 GB limit and evicted main's.
+        with: { save-if: "${{ github.ref == 'refs/heads/main' }}" }
       - run: >-
           sudo apt-get update && sudo apt-get install -y
           libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev libxcb1-dev
@@ -56,7 +58,8 @@ jobs:
           cp target/release/laqta target/release/laqta-nmh LICENSE README.md "dist/$dir/"
           sed 's|^Exec=/usr/bin/laqta|Exec=laqta|' packaging/linux/io.github.etherll.Laqta.desktop > "dist/$dir/io.github.etherll.Laqta.desktop"
           cp -r assets/icon "dist/$dir/icons"
-          tar -C dist -czf dist/laqta-linux-x86_64.tar.gz "$dir"
+          # zstd -19: about a quarter smaller than gzip -9, and faster to unpack.
+          tar -C dist -cf - "$dir" | zstd -19 -T0 -q -o dist/laqta-linux-x86_64.tar.zst
           rm -rf "dist/$dir"
           # The .deb takes its version from Cargo.toml and its dependencies from dpkg-shlibdeps.
           cargo deb -p laqta --no-build -o dist/laqta-linux-amd64.deb
@@ -88,7 +91,7 @@ jobs:
           ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool --runtime-file runtime-x86_64 -n "$PWD/$app" "$PWD/dist/laqta-linux-x86_64.AppImage"
           ./dist/laqta-linux-x86_64.AppImage --appimage-extract-and-run --version
       - name: Checksums
-        run: cd dist && for f in *.tar.gz *.deb *.AppImage; do sha256sum "$f" > "$f.sha256"; done
+        run: cd dist && for f in *.tar.zst *.deb *.AppImage; do sha256sum "$f" > "$f.sha256"; done
       - uses: actions/upload-artifact@v4
         with:
           name: linux
@@ -104,6 +107,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+        # Only main saves: per-PR caches overflowed the 10 GB limit and evicted main's.
+        with: { save-if: "${{ github.ref == 'refs/heads/main' }}" }
       - run: vcpkg install "sqlite3[fts5]:x64-windows-static-md"
       - run: echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
       - run: cargo build --release --locked -p laqta -p laqta-nmh
@@ -154,6 +159,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+        # Only main saves: per-PR caches overflowed the 10 GB limit and evicted main's.
+        with: { save-if: "${{ github.ref == 'refs/heads/main' }}" }
       - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Build both architectures
         run: |
