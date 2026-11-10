@@ -94,11 +94,11 @@ mod imp {
     }
 
     /// A rect in the ports' physical pixels as `[x, y, width, height]` in global points, which are
-    /// GPUI's logical pixels. `None` when no display is known.
+    /// GPUI's logical pixels, cut to the one display a recording of it covers. `None` when no
+    /// display is known.
     pub fn logical_rect(rect: laqta_domain::geometry::PhysRect) -> Option<[f32; 4]> {
         let displays = crate::displays::list();
-        let (_, x, y, width, height) = crate::displays::to_points(&displays, rect)?;
-        Some([x as f32, y as f32, width as f32, height as f32])
+        crate::displays::to_points_on_display(&displays, rect).map(|r| r.map(|v| v as f32))
     }
 
     pub fn ports() -> MacPorts {

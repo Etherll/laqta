@@ -84,6 +84,16 @@ pub(crate) fn to_points(displays: &[Display], rect: PhysRect) -> Option<(&Displa
     Some((d, x, y, f64::from(rect.width) / s, f64::from(rect.height) / s))
 }
 
+/// `to_points`, cut to the display it picked, as `[x, y, width, height]`. A recording covers one
+/// display (ADR 030), so this is the part of a recording area that is in the file, and where its
+/// border and bar belong. `None` when no display is known or nothing of the rect is on the display.
+pub(crate) fn to_points_on_display(displays: &[Display], rect: PhysRect) -> Option<[f64; 4]> {
+    let (d, x, y, width, height) = to_points(displays, rect)?;
+    let (left, top) = (x.max(d.x), y.max(d.y));
+    let (right, bottom) = ((x + width).min(d.x + d.width), (y + height).min(d.y + d.height));
+    (right > left && bottom > top).then_some([left, top, right - left, bottom - top])
+}
+
 /// Turns premultiplied BGRA into straight alpha in place: Core Graphics draws premultiplied, and
 /// a `Bitmap` holds straight alpha.
 pub(crate) fn unpremultiply_bgra(pixels: &mut [u8]) {
@@ -170,6 +180,18 @@ mod tests {
             layout_scale: 2.0,
             primary: true,
         }
+    }
+
+    #[test]
+    fn a_rect_across_two_displays_is_cut_to_the_one_under_its_centre() {
+        let displays = [retina(), external()];
+        // 2000 pixels wide, starting 600 pixels before the Retina display's right edge (3024):
+        // the centre is on the external display, whose pixels are one point each from 1512.
+        let across = PhysRect { x: 2424, y: 100, width: 2000, height: 400 };
+        assert_eq!(to_points_on_display(&displays, across), Some([1512.0, 100.0, 1400.0, 400.0]));
+        // A rect inside one display is unchanged.
+        let inside = PhysRect { x: 200, y: 100, width: 400, height: 200 };
+        assert_eq!(to_points_on_display(&displays, inside), Some([100.0, 50.0, 200.0, 100.0]));
     }
 
     fn external() -> Display {
