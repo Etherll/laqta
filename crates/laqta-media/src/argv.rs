@@ -32,6 +32,13 @@ impl Host {
     pub fn current() -> Host {
         if cfg!(windows) { Host::Windows } else { Host::Linux }
     }
+
+    pub fn os(self) -> laqta_domain::record::Os {
+        match self {
+            Host::Windows => laqta_domain::record::Os::Windows,
+            Host::Linux => laqta_domain::record::Os::Linux,
+        }
+    }
 }
 
 /// How Windows captures a `Target`. `ddagrab` is the default. `gdigrab` is the fallback

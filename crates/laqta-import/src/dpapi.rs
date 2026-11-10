@@ -26,8 +26,13 @@ pub(crate) fn unprotect(blob: &[u8]) -> Option<Vec<u8>> {
     // SAFETY: `input` points at `blob`, which outlives the call. On success `output` holds memory from
     // LocalAlloc, which is copied out and freed below.
     unsafe { CryptUnprotectData(&input, None, None, None, None, 0, &mut output) }.ok()?;
-    // SAFETY: the call succeeded, so `output.pbData` points at `output.cbData` readable bytes.
-    let plain = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec();
+    let plain = if output.cbData == 0 {
+        // An empty output may have a null pointer, so nothing is read.
+        Vec::new()
+    } else {
+        // SAFETY: the call succeeded, so `output.pbData` points at `output.cbData` readable bytes.
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec()
+    };
     // SAFETY: `output.pbData` came from CryptUnprotectData and is freed exactly once.
     let _ = unsafe { LocalFree(Some(HLOCAL(output.pbData.cast()))) };
     Some(plain)

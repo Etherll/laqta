@@ -128,6 +128,18 @@ pub fn apply(theme: Theme, cx: &mut App) {
     });
 }
 
+/// Re-applies `Theme::System` when the OS switches between light and dark. Every window reports
+/// the change, so it only acts when the kit theme no longer matches.
+pub(crate) fn follow_system(theme: Theme, window: &gpui::Window, cx: &mut App) {
+    if theme != Theme::System {
+        return;
+    }
+    let dark = matches!(window.appearance(), gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark);
+    if KitTheme::global(cx).is_dark() != dark {
+        apply(Theme::System, cx);
+    }
+}
+
 /// Registers the bundled UI fonts with GPUI and makes them the theme fonts. Called when the first
 /// window opens, so the tray-only process never loads them (ARCHITECTURE §1.4).
 pub(crate) fn ensure_fonts(cx: &mut App) {

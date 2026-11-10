@@ -160,6 +160,18 @@ impl laqta_ports::Prompt for UiHandle {
             }
         })
     }
+    fn pick_file(&self, title: &str, extensions: &[&str]) -> laqta_ports::BoxFuture<'_, Result<PathBuf, PortError>> {
+        let mut d = rfd::AsyncFileDialog::new().set_title(title);
+        if !extensions.is_empty() {
+            d = d.add_filter(extensions.join(", "), extensions);
+        }
+        Box::pin(async move {
+            match d.pick_file().await {
+                Some(f) => Ok(f.path().to_path_buf()),
+                None => Err(PortError::Cancelled),
+            }
+        })
+    }
     fn pick_folder(&self, title: &str) -> laqta_ports::BoxFuture<'_, Result<PathBuf, PortError>> {
         let title = title.to_string();
         Box::pin(async move {
@@ -275,6 +287,23 @@ impl ToolHost for UiHandle {
     }
 }
 
+/// What `UiServices::native_window` does to a window. All three are Windows behaviour; other
+/// platforms answer false.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeWindow {
+    /// A borderless popup keeps only what it paints: no outline or shadow drawn by the OS.
+    PlainPopup,
+    /// The window becomes the foreground window and gets the keyboard, which the OS withholds
+    /// from the region overlay once Laqta's main window has minimized.
+    BringToFront,
+    /// The window leaves the screen at once and ends up minimized, and the call returns when the
+    /// desktop has been drawn without it. A plain minimize is animated, and shows in a capture.
+    HideForCapture,
+}
+
+/// `UiServices::native_window`: true when the platform did what was asked.
+pub type NativeWindowHook = Arc<dyn Fn(&gpui::Window, NativeWindow) -> bool + Send + Sync>;
+
 /// Checks for an update: the message to show and whether `install_update` can apply it here.
 pub type UpdateCheck = Arc<dyn Fn() -> laqta_ports::BoxFuture<'static, Result<(String, bool), String>> + Send + Sync>;
 pub type UpdateInstall = Arc<dyn Fn() -> laqta_ports::BoxFuture<'static, Result<(), String>> + Send + Sync>;
@@ -348,6 +377,11 @@ pub struct UiServices {
     /// Update check and install.
     pub check_update: UpdateCheck,
     pub install_update: UpdateInstall,
+    /// The system file and folder pickers (the `Prompt` port).
+    pub prompt: Arc<dyn laqta_ports::Prompt>,
+    /// Asks the platform to do something to a window that GPUI has no call for. It returns
+    /// false where the platform needs nothing done, or can't do it.
+    pub native_window: NativeWindowHook,
     /// Run at login.
     pub autostart: Arc<dyn laqta_ports::Autostart>,
     /// "Upload with Laqta" in file managers, Send To, and the browser native-messaging host.
@@ -417,6 +451,14 @@ pub fn run(services: UiServices, rx: UiReceiver) {
         cx.observe_new(|_: &mut gpui_component::Root, window: Option<&mut gpui::Window>, _| {
             if let Some(window) = window {
                 crate::perf::first_frame("window", window);
+                // "System" follows the OS theme while Laqta runs, not only at start.
+                window
+                    .observe_window_appearance(|window, cx| {
+                        let Some(state) = cx.try_global::<UiState>() else { return };
+                        let theme = state.services.app.settings().theme;
+                        crate::theme::follow_system(theme, window, cx);
+                    })
+                    .detach();
             }
         })
         .detach();

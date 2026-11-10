@@ -1,3 +1,5 @@
+// A GUI program on Windows: no console window opens with it (see `attach_parent_console`).
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! Composition root (ARCHITECTURE §2.5): parses the CLI, claims the single instance,
 //! builds the runtime and ports, wires every entry point to `App::dispatch`, and runs GPUI.
 
@@ -22,6 +24,8 @@ mod wiring;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    #[cfg(windows)]
+    laqta_platform_windows::attach_parent_console();
     // The Windows installer (Velopack) runs the app with `--veloapp-install`, `--veloapp-updated`,
     // `--veloapp-obsolete` or `--veloapp-uninstall` and expects it to exit at once.
     if let Some(hook) = std::env::args().nth(1).filter(|a| a.starts_with("--veloapp-")) {

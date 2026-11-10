@@ -248,3 +248,17 @@ pub(crate) fn sheet(window: &Window, cx: &App) -> gpui::Div {
     // In dark the tone step separates sheet and chrome; in light it is too faint without a line.
     if t.is_dark() { sheet } else { sheet.border_t_1().border_l_1().border_color(t.sidebar_border) }
 }
+
+/// A window of `width` x `height` logical pixels in the middle of the primary display's work area
+/// (the screen without the taskbar). On a small or scaled screen the window shrinks to fit it, so
+/// its title bar and bottom buttons stay on the screen.
+pub(crate) fn centered(width: f32, height: f32, cx: &gpui::App) -> gpui::WindowBounds {
+    let wanted = gpui::size(gpui::px(width), gpui::px(height));
+    let Some(area) = cx.primary_display().map(|display| display.visible_bounds()) else {
+        return gpui::WindowBounds::centered(wanted, cx);
+    };
+    let margin = gpui::px(16.);
+    let fit = gpui::size(wanted.width.min(area.size.width - margin), wanted.height.min(area.size.height - margin));
+    let origin = gpui::point(area.origin.x + (area.size.width - fit.width) / 2.0, area.origin.y + (area.size.height - fit.height) / 2.0);
+    gpui::WindowBounds::Windowed(gpui::Bounds { origin, size: fit })
+}

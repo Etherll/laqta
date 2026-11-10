@@ -431,7 +431,7 @@ impl Mode {
             Mode::FullScreen => "Capture every monitor",
             Mode::Monitor => "Capture this monitor",
             Mode::EditAfter => "Open in the editor after capturing",
-            Mode::ColorPicker => "Pick a colour from the screen",
+            Mode::ColorPicker => "Pick a color from the screen",
             Mode::Text => "Copy the text in the area you select",
             Mode::Close => "Close  ·  Esc",
         }

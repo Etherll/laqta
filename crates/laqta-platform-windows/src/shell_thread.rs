@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use laqta_domain::{Action, KeyChord, Modifiers};
 use laqta_ports::{ActionCallback, HotkeyRegistrar, PortError, Tray, TrayMenu};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{ERROR_HOTKEY_ALREADY_REGISTERED, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, UnregisterHotKey,
@@ -270,10 +270,10 @@ fn register_hotkeys(hwnd: HWND, bindings: &[(KeyChord, Action)], on_fire: Action
     for (index, (chord, action)) in bindings.iter().enumerate() {
         let id = index as i32 + 1;
         let result = match keys::vk(chord.key) {
-            None => Err(PortError::Unsupported(format!("key {:?}", chord.key))),
+            None => Err(PortError::Failed(format!("{chord} uses a key Windows cannot register"))),
             // SAFETY: plain Win32 call on this thread's window.
             Some(vk) => unsafe { RegisterHotKey(Some(hwnd), id, modifiers(chord.modifiers) | MOD_NOREPEAT, vk) }
-                .map_err(|e| PortError::Failed(format!("hotkey is taken by another program ({e})"))),
+                .map_err(|e| PortError::Failed(refusal_text(&chord.to_string(), win32_code(&e), &e.message()))),
         };
         if result.is_ok() {
             registered.insert(id, *action);
@@ -286,6 +286,22 @@ fn register_hotkeys(hwnd: HWND, bindings: &[(KeyChord, Action)], on_fire: Action
         s.on_hotkey = Some(on_fire);
     });
     results
+}
+
+/// The Win32 error code inside an `HRESULT`. Win32 errors arrive as `0x8007xxxx`; anything else
+/// is returned as it is.
+fn win32_code(e: &windows::core::Error) -> u32 {
+    let hr = e.code().0 as u32;
+    if hr >> 16 == 0x8007 { hr & 0xFFFF } else { hr }
+}
+
+/// The text shown for a hotkey that Windows refused.
+fn refusal_text(chord: &str, code: u32, system_message: &str) -> String {
+    if code == ERROR_HOTKEY_ALREADY_REGISTERED.0 {
+        format!("{chord} is taken by another program")
+    } else {
+        format!("Windows refused {chord}: {system_message}")
+    }
 }
 
 fn modifiers(m: Modifiers) -> HOT_KEY_MODIFIERS {
@@ -362,5 +378,20 @@ fn show_menu(hwnd: HWND) {
         && let Some(item) = menu.items.get(chosen as usize - 1)
     {
         callback(item.action);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refusal_text;
+
+    #[test]
+    fn a_hotkey_already_taken_says_so() {
+        assert_eq!(refusal_text("Ctrl+Shift+S", 1409, "ignored"), "Ctrl+Shift+S is taken by another program");
+    }
+
+    #[test]
+    fn other_refusals_carry_the_system_message() {
+        assert_eq!(refusal_text("Ctrl+Shift+S", 5, "Access is denied."), "Windows refused Ctrl+Shift+S: Access is denied.");
     }
 }

@@ -5,6 +5,7 @@
 
 mod editor;
 mod overlay;
+mod settings;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -181,6 +182,8 @@ pub(crate) fn services(spawner: QueuedSpawner, dir: &Path) -> UiServices {
         models: Arc::new(NoModels),
         check_update: Arc::new(|| Box::pin(async { Err("tests".into()) })),
         install_update: Arc::new(|| Box::pin(async { Err("tests".into()) })),
+        prompt: Arc::new(laqta_ports::fakes::FakePrompt::default()),
+        native_window: Arc::new(|_, _| false),
         autostart: Arc::new(NoShell),
         integration: Arc::new(NoShell),
         fonts: laqta_editor::Fonts::empty(),

@@ -3,8 +3,8 @@
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, Div, Entity, FocusHandle, FontWeight, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, WindowBounds,
-    WindowOptions, div, img, prelude::FluentBuilder as _, px, size,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, WindowOptions, div,
+    img, prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement as _;
@@ -31,7 +31,7 @@ pub(crate) fn open(cx: &mut App) {
         return;
     }
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(1180.), px(760.)), cx)),
+        window_bounds: Some(crate::chrome::centered(1180., 760., cx)),
         titlebar: Some(crate::chrome::titlebar("Laqta")),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,
@@ -185,19 +185,16 @@ impl MainWindow {
 
     /// Copies an image to the clipboard (read off the UI thread); other files copy their path.
     fn copy_item(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
-        let Some(format) = crate::history_window::clipboard_format(&path) else {
+        if !crate::history_window::is_picture(&path) {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(path.display().to_string()));
             self.flash("Copied the file path", cx);
             return;
-        };
-        let task = cx.background_spawn(async move { std::fs::read(&path) });
+        }
+        let app = cx.global::<UiState>().services.app.clone();
         cx.spawn(async move |this, cx| {
-            let result = task.await;
+            let result = app.copy_image_file(path).await;
             let _ = this.update(cx, |this, cx| match result {
-                Ok(bytes) => {
-                    cx.write_to_clipboard(gpui::ClipboardItem::new_image(&gpui::Image::from_bytes(format, bytes)));
-                    this.flash("Copied", cx);
-                }
+                Ok(()) => this.flash("Copied", cx),
                 Err(e) => tracing::warn!("copy: {e}"),
             });
         })

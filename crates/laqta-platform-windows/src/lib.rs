@@ -12,6 +12,8 @@ mod autostart;
 #[cfg(any(windows, test))]
 mod backdrop;
 #[cfg(windows)]
+mod cameras;
+#[cfg(windows)]
 mod capture_dxgi;
 #[cfg(windows)]
 mod capture_gdi;
@@ -130,6 +132,78 @@ mod imp {
     pub fn set_dpi_awareness() {
         // SAFETY: plain Win32 call with a predefined constant.
         let _ = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    }
+
+    /// Laqta is a GUI program (no console window of its own). When it is started from a terminal,
+    /// this joins that terminal's console so `--version`, `--help` and errors still print there.
+    pub fn attach_parent_console() {
+        use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+        // SAFETY: plain Win32 call; it fails harmlessly when there is no parent console.
+        let _ = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+    }
+
+    /// Stops Windows drawing its own outline and shadow around a borderless popup (a toast, the
+    /// recording bar, a border strip), so only what the popup paints shows. `hwnd` is the window's
+    /// native handle. Windows 10 has no outline setting; that call fails there and is ignored.
+    pub fn plain_popup(hwnd: isize) {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Graphics::Dwm::{
+            DWMNCRP_DISABLED, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_NCRENDERING_POLICY, DwmSetWindowAttribute,
+        };
+        let hwnd = HWND(hwnd as *mut core::ffi::c_void);
+        let (none, off) = (DWMWA_COLOR_NONE, DWMNCRP_DISABLED.0);
+        // SAFETY: each value outlives its call and the size passed is its own. A handle that is
+        // no longer a window makes the calls fail, which is ignored.
+        unsafe {
+            let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, (&raw const none).cast(), size_of::<u32>() as u32);
+            let _ = DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, (&raw const off).cast(), size_of::<i32>() as u32);
+        }
+    }
+
+    /// Takes the window `hwnd` off the screen at once and leaves it minimized, then waits until the
+    /// desktop has been drawn without it. Minimizing a visible window is animated, and a capture
+    /// taken during the animation shows the window; hiding is not animated. Call it on the thread
+    /// that owns the window.
+    pub fn hide_for_capture(hwnd: isize) {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Graphics::Dwm::DwmFlush;
+        use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOWMINNOACTIVE, ShowWindow};
+        let hwnd = HWND(hwnd as *mut core::ffi::c_void);
+        // SAFETY: plain Win32 calls; a handle that is no longer a window makes them fail harmlessly.
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+            let _ = ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
+            // One pass may already have been under way; the second one started after the change.
+            let _ = DwmFlush();
+            let _ = DwmFlush();
+        }
+    }
+
+    /// Makes the window `hwnd` the foreground window, so it gets the keyboard. Windows refuses a
+    /// plain request from a program that is not in the foreground, which Laqta no longer is once
+    /// its main window has minimized for a capture. Joining the foreground window's input queue
+    /// for the call lifts that refusal. Call it on the thread that owns the window.
+    pub fn bring_to_front(hwnd: isize) {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+        use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+        use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow};
+        let hwnd = HWND(hwnd as *mut core::ffi::c_void);
+        // SAFETY: plain Win32 calls on handles that are only read. Each fails harmlessly when a
+        // window is gone, and the two input queues are separated again before returning.
+        unsafe {
+            let foreground = GetForegroundWindow();
+            if foreground == hwnd {
+                return;
+            }
+            let (this, other) = (GetCurrentThreadId(), GetWindowThreadProcessId(foreground, None));
+            let joined = other != 0 && other != this && AttachThreadInput(this, other, true).as_bool();
+            let _ = SetForegroundWindow(hwnd);
+            let _ = SetFocus(Some(hwnd));
+            if joined {
+                let _ = AttachThreadInput(this, other, false);
+            }
+        }
     }
 
     /// Removes the tray icon and stops the shell thread. Call it before the process exits, or

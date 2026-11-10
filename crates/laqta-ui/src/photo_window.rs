@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use futures_channel::oneshot;
 use gpui::{
     App, AppContext as _, Context, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement as _, Pixels, Render, RenderImage, SharedString, Styled as _, Window, WindowBounds, WindowOptions, div, img, px, size,
+    ParentElement as _, Pixels, Render, RenderImage, SharedString, Styled as _, Window, WindowOptions, div, img, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputState};
@@ -100,7 +100,7 @@ pub(crate) fn open(image: Option<Bitmap>, path: Option<PathBuf>, cx: &mut App) {
     }
     let image = image.unwrap_or_else(|| blank(1280, 800));
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(1280.), px(820.)), cx)),
+        window_bounds: Some(crate::chrome::centered(1280., 820., cx)),
         titlebar: Some(crate::chrome::titlebar("Photo editor")),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,

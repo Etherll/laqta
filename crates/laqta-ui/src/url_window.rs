@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, AppContext as _, ClipboardItem, Context, IntoElement, ParentElement as _, Render, RenderImage, Styled as _, Window, WindowBounds,
-    WindowOptions, div, img, px, size,
+    App, AppContext as _, ClipboardItem, Context, IntoElement, ParentElement as _, Render, RenderImage, Styled as _, Window, WindowOptions,
+    div, img, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::{ActiveTheme as _, Root};
@@ -21,7 +21,7 @@ fn qr_image(url: &str) -> Option<Arc<RenderImage>> {
 pub(crate) fn open(url: String, qr: bool, cx: &mut App) {
     crate::theme::ensure_fonts(cx);
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(520.), px(if qr { 560. } else { 200. })), cx)),
+        window_bounds: Some(crate::chrome::centered(520., if qr { 560. } else { 200. }, cx)),
         titlebar: Some(crate::chrome::titlebar(if qr { "QR code" } else { "Upload finished" })),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,

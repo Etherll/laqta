@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Window, WindowBounds,
-    WindowOptions, div, px, size,
+    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Window, WindowOptions, div,
+    px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputState};
@@ -19,7 +19,7 @@ use crate::widgets;
 
 pub(crate) fn open(cx: &mut App) {
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(820.), px(620.)), cx)),
+        window_bounds: Some(crate::chrome::centered(820., 620., cx)),
         titlebar: Some(crate::chrome::titlebar("Remote storage")),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,

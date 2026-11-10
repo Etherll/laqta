@@ -196,7 +196,21 @@ fn write_target(source: &mut impl Read, target: &Target) -> Result<(), String> {
         let mut out = File::create(&part).map_err(|err| format!("create {}: {err}", part.display()))?;
         io::copy(source, &mut out).map_err(|err| format!("extract {}: {err}", target.entry))?;
     }
-    fs::rename(&part, &target.dest).map_err(|err| format!("place {}: {err}", target.dest.display()))
+    place(&part, &target.dest).map_err(|err| format!("place {}: {err}", target.dest.display()))
+}
+
+/// Moves `part` onto `dest`. Windows refuses to replace a program that is running (a recording in
+/// progress) but lets it be renamed, so a refused replace moves the old file to `<dest>.old`
+/// first. The next download removes that file.
+fn place(part: &Path, dest: &Path) -> io::Result<()> {
+    let old = sibling(dest, ".old");
+    let _ = fs::remove_file(&old);
+    let Err(refused) = fs::rename(part, dest) else { return Ok(()) };
+    if fs::rename(dest, &old).is_err() {
+        let _ = fs::remove_file(part);
+        return Err(refused);
+    }
+    fs::rename(part, dest)
 }
 
 fn sibling(path: &Path, suffix: &str) -> PathBuf {
@@ -338,5 +352,17 @@ mod tests {
         let bin = dir.path().join("bin");
         assert!(extract_build(&archive, ArchiveKind::TarXz, &bin).is_err());
         assert!(!bin.join(exe_name("ffmpeg")).exists());
+    }
+
+    #[test]
+    fn placing_replaces_the_old_file_and_clears_a_stale_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (part, dest, old) = (dir.path().join("ffmpeg.part"), dir.path().join("ffmpeg"), dir.path().join("ffmpeg.old"));
+        fs::write(&dest, "old").expect("write");
+        fs::write(&old, "older").expect("write");
+        fs::write(&part, "new").expect("write");
+        place(&part, &dest).expect("place");
+        assert_eq!(fs::read_to_string(&dest).expect("read"), "new");
+        assert!(!old.exists() && !part.exists());
     }
 }

@@ -20,7 +20,10 @@ pub(crate) use crate::gpu_image::render_image;
 
 pub(crate) fn show(toast: Toast, cx: &mut App) {
     let Some(display) = cx.primary_display() else { return };
-    let area = display.bounds();
+    // The work area keeps the toast clear of the Windows taskbar. Where the platform reports no
+    // work area (it equals the whole display), a panel's height is left free at the bottom right.
+    let area = display.visible_bounds();
+    let panel = if area == display.bounds() { 40.0 } else { 0.0 };
     let has_image = toast.image.is_some();
     let w = (toast.options.width as f32).clamp(240.0, 600.0);
     let h = if has_image { (toast.options.height as f32).clamp(120.0, 500.0) } else { 72.0 };
@@ -30,9 +33,9 @@ pub(crate) fn show(toast: Toast, cx: &mut App) {
         ToastPlacement::TopLeft => (ax + MARGIN, ay + MARGIN),
         ToastPlacement::TopRight => (ax + aw - w - MARGIN, ay + MARGIN),
         ToastPlacement::BottomLeft => (ax + MARGIN, ay + ah - h - MARGIN),
-        ToastPlacement::BottomRight => (ax + aw - w - MARGIN, ay + ah - h - MARGIN - 40.0),
+        ToastPlacement::BottomRight => (ax + aw - w - MARGIN, ay + ah - h - MARGIN - panel),
     };
-    let bounds = Bounds { origin: point(px(x), px(y)), size: size(px(w), px(h)) };
+    let bounds = crate::popup::placed(Bounds { origin: point(px(x), px(y)), size: size(px(w), px(h)) });
     let options = WindowOptions {
         titlebar: None,
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -50,6 +53,7 @@ pub(crate) fn show(toast: Toast, cx: &mut App) {
     let duration = Duration::from_millis(toast.options.duration_ms.max(500) as u64);
     let fade = Duration::from_millis(toast.options.fade_ms.min(5000) as u64);
     let result = cx.open_window(options, move |window, cx| {
+        (cx.global::<UiState>().services.native_window)(window, crate::runtime::NativeWindow::PlainPopup);
         let view = cx.new(|_| ToastView { image: toast.image.as_ref().and_then(render_image), toast, fading: false });
         // Stay for `duration`, fade out over `fade`, then close.
         let v = view.clone();

@@ -19,22 +19,26 @@ pub async fn check() -> Result<Option<Release>, String> {
 pub fn describe(release: &Option<Release>) -> String {
     match release {
         None => format!("Laqta {} is up to date.", env!("CARGO_PKG_VERSION")),
-        Some(r) if cfg!(windows) => format!("Laqta {} is available ({}). Install it from here.", r.tag, r.url),
+        Some(r) if update_exe().is_some() => format!("Laqta {} is available ({}). Install it from here.", r.tag, r.url),
+        Some(r) if cfg!(windows) => format!("Laqta {} is available. This copy doesn't update itself: download it from {}", r.tag, r.url),
         Some(r) => format!("Laqta {} is available: {}. Update through your package manager or download it there.", r.tag, r.url),
     }
 }
 
-/// Windows: downloads the package next to the install and starts `Update.exe apply`. Velopack's
-/// layout puts `Update.exe` one folder above the running `current\laqta.exe`.
-pub async fn install(release: Release, data: PathBuf) -> Result<(), String> {
+/// The installer's `Update.exe`, when this copy came from the Windows setup program: Velopack's
+/// layout puts it one folder above the running `current\laqta.exe`. `None` for a portable copy
+/// and on Linux, where Laqta can't update itself.
+pub fn update_exe() -> Option<PathBuf> {
     if !cfg!(windows) {
-        return Err("updates are installed by the package manager on Linux".into());
+        return None;
     }
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let update_exe = exe.parent().and_then(|d| d.parent()).map(|d| d.join("Update.exe")).ok_or("no install folder")?;
-    if !update_exe.exists() {
-        return Err(format!("{} is missing; this copy was not installed with the setup program", update_exe.display()));
-    }
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.parent()?.join("Update.exe")).filter(|path| path.exists())
+}
+
+/// Windows: downloads the package next to the install and starts `Update.exe apply`.
+pub async fn install(release: Release, data: PathBuf) -> Result<(), String> {
+    let update_exe = update_exe().ok_or("this copy was not installed with the setup program; download the new version instead")?;
     let dir = data.join("updates");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let current = current();

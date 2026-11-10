@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Context, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, ParentElement as _, Render, RenderImage, ScrollEvent, Styled as _, Window, WindowBounds, WindowDecorations, WindowKind,
+    MouseDownEvent, ParentElement as _, Render, RenderImage, ScrollEvent, Styled as _, Window, WindowDecorations, WindowKind,
     WindowOptions, div, img, px, size,
 };
 use laqta_domain::Bitmap;
@@ -23,7 +23,7 @@ pub(crate) fn pin(image: Bitmap, cx: &mut App) {
     // Physical pixels shown at 1:1 on a scale-1 display; HiDPI displays show them at logical size.
     let (w, h) = (image.width().max(16) as f32, image.height().max(16) as f32);
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(w), px(h)), cx)),
+        window_bounds: Some(crate::chrome::centered(w, h, cx)),
         titlebar: None,
         kind: WindowKind::PopUp,
         focus: true,

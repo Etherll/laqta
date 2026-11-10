@@ -64,9 +64,24 @@ pub(crate) fn render_images(frames: &[Frame]) -> Vec<Option<Arc<RenderImage>>> {
 
 use crate::gpu_image::render_image;
 
-/// Pairs each frame with a display: both sorted by position (left to right, then top to bottom).
+/// Pairs each frame with a display. Windows and X11 put a display at its physical origin divided
+/// by its scale, so a frame's monitor names its display exactly, whatever the mix of scales. Where
+/// that doesn't hold for every frame (Wayland lays displays out itself), both are sorted by
+/// position (left to right, then top to bottom).
 fn match_displays(frames: &[Frame], cx: &App) -> Vec<Option<Bounds<Pixels>>> {
     let mut displays: Vec<_> = cx.displays().into_iter().map(|d| (d.bounds(), d.id())).collect();
+    let exact: Vec<_> = frames
+        .iter()
+        .filter_map(|f| {
+            let scale = f.monitor.scale.max(0.1);
+            let (x, y) = (f.monitor.rect.x as f32 / scale, f.monitor.rect.y as f32 / scale);
+            displays.iter().find(|(b, _)| (f32::from(b.origin.x) - x).abs() < 1.0 && (f32::from(b.origin.y) - y).abs() < 1.0).copied()
+        })
+        .collect();
+    let distinct = exact.iter().enumerate().all(|(i, a)| exact[..i].iter().all(|b| b.1 != a.1));
+    if exact.len() == frames.len() && distinct {
+        return exact.into_iter().map(|(bounds, _)| Some(bounds)).collect();
+    }
     displays.sort_by(|a, b| {
         let (ax, ay) = (f32::from(a.0.origin.x), f32::from(a.0.origin.y));
         let (bx, by) = (f32::from(b.0.origin.x), f32::from(b.0.origin.y));
@@ -135,10 +150,11 @@ fn open_window(
         let r = model.read(cx).monitors[index].rect;
         Bounds { origin: point(px(r.x as f32), px(r.y as f32)), size: size(px(r.width as f32), px(r.height as f32)) }
     });
+    let wanted_y = matches!(kind, WindowKind::PopUp).then_some(bounds.origin.y);
     let options = WindowOptions {
         titlebar: None,
         window_bounds: Some(if matches!(kind, WindowKind::PopUp) {
-            WindowBounds::Windowed(bounds)
+            WindowBounds::Windowed(crate::popup::placed(bounds))
         } else {
             WindowBounds::Fullscreen(bounds)
         }),
@@ -155,7 +171,7 @@ fn open_window(
     let handle = cx
         .open_window(options, |window, cx| {
             crate::perf::first_frame("overlay", window);
-            let view = cx.new(|cx| OverlayView::new(model, index, cx));
+            let view = cx.new(|cx| OverlayView::new(model, index, wanted_y, cx));
             let focus = view.read(cx).focus.clone();
             window.focus(&focus, cx);
             view
@@ -225,6 +241,10 @@ struct OverlayView {
     focus: FocusHandle,
     /// Wheel travel not yet sent, in notches; touchpads scroll in fractions of one.
     wheel: f32,
+    /// Where a popup overlay was meant to open, until its first render checked it.
+    wanted_y: Option<Pixels>,
+    /// Whether the window was brought to the front after it opened.
+    raised: bool,
 }
 
 /// Pixels of touchpad scrolling that count as one wheel notch.
@@ -249,9 +269,9 @@ fn color(rgb: u32, alpha: f32) -> Hsla {
 }
 
 impl OverlayView {
-    fn new(model: Entity<OverlayModel>, index: usize, cx: &mut Context<Self>) -> Self {
+    fn new(model: Entity<OverlayModel>, index: usize, wanted_y: Option<Pixels>, cx: &mut Context<Self>) -> Self {
         cx.observe(&model, |_, _, cx| cx.notify()).detach();
-        OverlayView { model, index, focus: cx.focus_handle(), wheel: 0.0 }
+        OverlayView { model, index, focus: cx.focus_handle(), wheel: 0.0, wanted_y, raised: false }
     }
 
     fn send(&self, input: RegionInput, cx: &App) {
@@ -304,6 +324,13 @@ fn boxed(l: &Local) -> Div {
 
 impl Render for OverlayView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(wanted_y) = self.wanted_y.take() {
+            crate::popup::observe(window, wanted_y);
+        }
+        // Once, when the overlay is on screen: Esc and the tool keys must reach it.
+        if !std::mem::replace(&mut self.raised, true) {
+            (cx.global::<UiState>().services.native_window)(window, crate::runtime::NativeWindow::BringToFront);
+        }
         let s = window.scale_factor();
         let model = self.model.read(cx);
         let mon = &model.monitors[self.index];
@@ -463,7 +490,7 @@ impl Render for OverlayView {
             if contains(origin, view.cursor) {
                 root = root.child(crate::overlay_tools::hint(
                     win_w,
-                    "Click to pick a colour  ·  Arrow keys move one pixel  ·  Enter picks  ·  Esc closes",
+                    "Click to pick a color  ·  Arrow keys move one pixel  ·  Enter picks  ·  Esc closes",
                 ));
             }
         } else if self.index == 0 && view.regions.is_empty() && view.drawing.is_none() && !view.mode_bar {

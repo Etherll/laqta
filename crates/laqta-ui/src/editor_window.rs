@@ -12,7 +12,7 @@ use std::rc::Rc;
 use gpui::{
     App, AppContext as _, Bounds, ClipboardItem, Context, Div, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, WindowBounds, WindowOptions, div, img, prelude::FluentBuilder as _, px, size,
+    StatefulInteractiveElement as _, Styled as _, Window, WindowOptions, div, img, prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
@@ -106,7 +106,7 @@ pub(crate) fn open(image: Option<Bitmap>, reply: Option<EditReply>, path: Option
         return;
     };
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(1180.), px(820.)), cx)),
+        window_bounds: Some(crate::chrome::centered(1180., 820., cx)),
         titlebar: Some(chrome::titlebar("Laqta editor")),
         window_decorations: chrome::decorations(),
         app_owns_titlebar_drag: true,
@@ -404,14 +404,23 @@ impl EditorWindow {
     }
 
     fn copy(&mut self, cx: &mut Context<Self>) {
-        self.message = Some(match self.png(cx) {
-            Some(bytes) => {
-                cx.write_to_clipboard(ClipboardItem::new_image(&gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes)));
-                "Copied to the clipboard.".into()
-            }
-            None => "Copy failed.".into(),
-        });
-        cx.notify();
+        let Some(image) = self.export() else {
+            self.message = Some("Copy failed.".into());
+            cx.notify();
+            return;
+        };
+        let app = cx.global::<UiState>().services.app.clone();
+        cx.spawn(async move |this, cx| {
+            let copied = app.copy_image(image).await;
+            let _ = this.update(cx, |this, cx| {
+                this.message = Some(match copied {
+                    Ok(()) => "Copied to the clipboard.".into(),
+                    Err(error) => format!("Copy failed: {error}"),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Saves a temporary PNG and hands it to Task as a file upload.

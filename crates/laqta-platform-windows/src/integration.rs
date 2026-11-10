@@ -39,8 +39,9 @@ const VERB: &str = "Upload with Laqta";
 #[derive(Debug)]
 pub struct WindowsShellIntegration {
     software: String,
-    send_to_dir: PathBuf,
-    nmh_dir: PathBuf,
+    /// An error when its variable is unset. The methods that write to it report that before they write anything.
+    send_to_dir: Result<PathBuf, PortError>,
+    nmh_dir: Result<PathBuf, PortError>,
 }
 
 #[cfg(windows)]
@@ -54,9 +55,11 @@ impl Default for WindowsShellIntegration {
     }
 }
 
+/// `rest` under the directory `var` names. An unset or empty variable is an error that names it.
 #[cfg(windows)]
-fn env_dir(var: &str, rest: &str) -> PathBuf {
-    env::var_os(var).map(PathBuf::from).unwrap_or_default().join(rest)
+fn env_dir(var: &str, rest: &str) -> Result<PathBuf, PortError> {
+    let base = env::var_os(var).filter(|base| !base.is_empty()).ok_or_else(|| PortError::Failed(format!("{var} is not set")))?;
+    Ok(PathBuf::from(base).join(rest))
 }
 
 /// The verb key for `target`: `*` for files, `Directory` for folders.
@@ -78,9 +81,11 @@ fn host_key(software: &str, vendor: &str) -> String {
     format!(r"{software}\{vendor}\NativeMessagingHosts\{HOST_NAME}")
 }
 
-/// The Send To script: starts Laqta with the selected paths. cmd wants CRLF line endings.
+/// The Send To script: starts Laqta with the selected paths. cmd wants CRLF line endings. cmd expands `%name%`
+/// in a batch file, so each `%` in the executable path is doubled. `%*` stays as it is.
 pub(crate) fn send_to_script(executable: &Path) -> String {
-    format!("@start \"\" \"{}\" %*\r\n", executable.display())
+    let exe = executable.display().to_string().replace('%', "%%");
+    format!("@start \"\" \"{exe}\" %*\r\n")
 }
 
 /// Writes the Send To script into `dir`.
@@ -272,15 +277,17 @@ fn registry(action: &str, e: windows::core::Error) -> PortError {
 #[cfg(windows)]
 impl ShellIntegration for WindowsShellIntegration {
     fn is_installed(&self) -> Result<bool, PortError> {
+        let send_to_dir = self.send_to_dir.clone()?;
         for target in ["*", "Directory"] {
             if OpenKey::open(&verb_key(&self.software, target))?.is_none() {
                 return Ok(false);
             }
         }
-        Ok(self.send_to_dir.join(SEND_TO_FILE).is_file())
+        Ok(send_to_dir.join(SEND_TO_FILE).is_file())
     }
 
     fn install(&self, executable: &Path) -> Result<(), PortError> {
+        let send_to_dir = self.send_to_dir.clone()?;
         for target in ["*", "Directory"] {
             let key = verb_key(&self.software, target);
             let verb = OpenKey::create(&key)?;
@@ -296,10 +303,11 @@ impl ShellIntegration for WindowsShellIntegration {
             OpenKey::create(&format!(r"{class}\DefaultIcon"))?.set_string(None, &format!("\"{}\",0", executable.display()))?;
             OpenKey::create(&format!(r"{class}\shell\open\command"))?.set_string(None, &format!("\"{}\" \"%1\"", executable.display()))?;
         }
-        write_send_to(&self.send_to_dir, executable)
+        write_send_to(&send_to_dir, executable)
     }
 
     fn uninstall(&self) -> Result<(), PortError> {
+        let send_to_dir = self.send_to_dir.clone()?;
         for target in ["*", "Directory"] {
             OpenKey::delete_tree(&verb_key(&self.software, target))?;
         }
@@ -311,14 +319,15 @@ impl ShellIntegration for WindowsShellIntegration {
             }
             OpenKey::delete_tree(&class_key(&self.software, prog_id))?;
         }
-        remove_send_to(&self.send_to_dir)
+        remove_send_to(&send_to_dir)
     }
 
     fn install_native_messaging(&self, nmh: &Path) -> Result<(), PortError> {
+        let nmh_dir = self.nmh_dir.clone()?;
         if !nmh.is_absolute() {
             return Err(PortError::Failed(format!("the native host path must be absolute: {}", nmh.display())));
         }
-        let (chrome, firefox) = write_host_manifests(&self.nmh_dir, nmh)?;
+        let (chrome, firefox) = write_host_manifests(&nmh_dir, nmh)?;
         register_host(&host_key(&self.software, r"Google\Chrome"), &chrome)?;
         register_host(&host_key(&self.software, "Mozilla"), &firefox)
     }
@@ -380,6 +389,11 @@ mod tests {
     #[test]
     fn send_to_script_starts_laqta_with_the_selection_and_uses_crlf() {
         assert_eq!(send_to_script(Path::new(r"C:\Laqta\laqta.exe")), "@start \"\" \"C:\\Laqta\\laqta.exe\" %*\r\n");
+    }
+
+    #[test]
+    fn send_to_script_doubles_percent_signs_in_the_path() {
+        assert_eq!(send_to_script(Path::new(r"C:\50%off\laqta.exe")), "@start \"\" \"C:\\50%%off\\laqta.exe\" %*\r\n");
     }
 
     #[test]

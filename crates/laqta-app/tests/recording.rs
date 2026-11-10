@@ -203,6 +203,34 @@ fn custom_region_starts_with_an_even_size() {
 }
 
 #[test]
+fn an_unnamed_camera_is_the_first_one_the_stream_lists() {
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let camera_on = |s: &mut Settings| {
+            custom_region(s);
+            s.defaults.recording.camera.enabled = true;
+        };
+        // A platform that lists cameras: the first one is named for the recorder.
+        let h = harness(tmp.path(), camera_on);
+        *h.stream.cameras.lock().unwrap() = Some(vec!["Integrated Camera".into(), "USB Camera".into()]);
+        assert_eq!(start(&h, Action::ScreenRecorderCustomRegion).unwrap(), Dispatched::Done);
+        assert_eq!(calls(&h), vec!["start X264 4x4 camera=Integrated Camera".to_owned()]);
+        // A platform whose recorder picks the camera itself: the name stays empty.
+        let h = harness(tmp.path(), camera_on);
+        assert_eq!(start(&h, Action::ScreenRecorderCustomRegion).unwrap(), Dispatched::Done);
+        assert_eq!(calls(&h), vec!["start X264 4x4 camera=".to_owned()]);
+        // A camera the user named is kept.
+        let h = harness(tmp.path(), |s| {
+            camera_on(s);
+            s.defaults.recording.camera.device = "USB Camera".into();
+        });
+        *h.stream.cameras.lock().unwrap() = Some(vec!["Integrated Camera".into()]);
+        assert_eq!(start(&h, Action::ScreenRecorderCustomRegion).unwrap(), Dispatched::Done);
+        assert_eq!(calls(&h), vec!["start X264 4x4 camera=USB Camera".to_owned()]);
+    });
+}
+
+#[test]
 fn drawn_region_starts_with_an_even_size() {
     in_pool(|| {
         let tmp = TempDir::new().unwrap();

@@ -117,6 +117,12 @@ pub trait Prompt: Send + Sync {
         Box::pin(async { Err(PortError::Unsupported("file picker".into())) })
     }
 
+    /// One file, limited to `extensions` (without dots) when it is not empty.
+    fn pick_file(&self, title: &str, extensions: &[&str]) -> BoxFuture<'_, Result<std::path::PathBuf, PortError>> {
+        let _ = (title, extensions);
+        Box::pin(async { Err(PortError::Unsupported("file picker".into())) })
+    }
+
     fn pick_folder(&self, title: &str) -> BoxFuture<'_, Result<std::path::PathBuf, PortError>> {
         let _ = title;
         Box::pin(async { Err(PortError::Unsupported("folder picker".into())) })

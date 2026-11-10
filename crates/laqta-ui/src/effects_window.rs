@@ -9,8 +9,8 @@ use std::sync::Arc;
 use futures_channel::oneshot;
 use gpui::{
     App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, RenderImage,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, WindowBounds, WindowOptions, div, img,
-    prelude::FluentBuilder as _, px, relative, size,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, WindowOptions, div, img, prelude::FluentBuilder as _,
+    px, relative, size,
 };
 use gpui_component::input::{Input, InputEvent, InputState, NumberInput, Textarea, TextareaState};
 use gpui_component::switch::Switch;
@@ -26,6 +26,8 @@ use crate::widgets::{self, Choice, Pill, Segment};
 
 const SIDEBAR_W: f32 = 236.0;
 const PANE_W: f32 = 404.0;
+/// The preview's narrowest width: its header holds the two segments and the sample button.
+const PREVIEW_MIN_W: f32 = 300.0;
 /// The settings column inside a row: wide enough for a number stepper or a dropdown.
 const CONTROL_W: f32 = 176.0;
 /// The header band every column shares, so their titles line up.
@@ -56,11 +58,12 @@ pub(crate) fn open(path: Option<PathBuf>, cx: &mut App) {
 /// Opens the window on `opened` (the decoded image at `path` and its GPUI copy), or on the sample image.
 fn open_on(path: Option<PathBuf>, opened: Option<(Bitmap, Option<Arc<RenderImage>>)>, cx: &mut App) {
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(1180.), px(780.)), cx)),
+        window_bounds: Some(crate::chrome::centered(1180., 780., cx)),
         titlebar: Some(crate::chrome::titlebar("Image effects")),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,
-        window_min_size: Some(size(px(960.), px(560.))),
+        // The sidebar, the pane, and a preview wide enough for its header (segments + button).
+        window_min_size: Some(size(px(SIDEBAR_W + PANE_W + PREVIEW_MIN_W), px(560.))),
         app_id: Some(crate::APP_ID.into()),
         ..Default::default()
     };
@@ -1115,18 +1118,22 @@ impl EffectsWindow {
         let stage = stage.child(div().text_size(text::CAPTION).text_color(t.muted_foreground).child(caption));
         div()
             .flex_1()
-            .min_w_0()
+            .min_w(px(PREVIEW_MIN_W))
             .h_full()
             .flex()
             .flex_col()
             .bg(x.stage)
             .child(
+                // The two controls wrap onto two lines when the pane is narrow.
                 div()
-                    .h(px(HEADER_H))
+                    .min_h(px(HEADER_H))
                     .flex_none()
                     .px(space::S5)
+                    .py(space::S2)
                     .flex()
+                    .flex_wrap()
                     .items_center()
+                    .gap(space::S3)
                     .child(widgets::segmented(segs, cx))
                     .child(div().flex_1())
                     .child(widgets::pill(

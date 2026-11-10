@@ -24,6 +24,7 @@ mod overlay_tools;
 mod perf;
 mod photo_window;
 mod pin_window;
+mod popup;
 mod prompt_window;
 mod recording_bar;
 mod remote_window;
@@ -42,4 +43,16 @@ mod widgets;
 #[cfg(test)]
 mod headless_tests;
 
-pub use runtime::{HotkeyReport, ModelProgress, ModelRow, ModelService, UiHandle, UiReceiver, UiServices, run};
+pub use runtime::{HotkeyReport, ModelProgress, ModelRow, ModelService, NativeWindow, UiHandle, UiReceiver, UiServices, run};
+
+/// The OS this build runs on, for the parts of the core that differ by platform.
+pub(crate) fn host_os() -> laqta_domain::record::Os {
+    use laqta_domain::record::Os;
+    if cfg!(windows) {
+        Os::Windows
+    } else if cfg!(target_os = "macos") {
+        Os::MacOs
+    } else {
+        Os::Linux
+    }
+}

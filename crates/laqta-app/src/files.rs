@@ -75,20 +75,37 @@ pub(crate) async fn read(spawner: &dyn Spawner, path: PathBuf) -> io::Result<Vec
     blocking(spawner, move || std::fs::read(&path)).await
 }
 
-/// The files directly inside `dir`, sorted by path. Folders are skipped, and so is anything inside them.
-pub(crate) async fn list_dir(spawner: &dyn Spawner, dir: PathBuf) -> io::Result<Vec<PathBuf>> {
+/// The files to upload for `paths`. Each folder expands to every file inside it, recursively. Other paths pass
+/// through unchanged, so a missing path still fails in the task that uploads it. Symbolic links to files are kept.
+/// Links to folders found inside a folder are not followed, so a loop cannot run forever.
+pub(crate) async fn files_under(spawner: &dyn Spawner, paths: Vec<PathBuf>) -> io::Result<Vec<PathBuf>> {
     blocking(spawner, move || {
-        let mut files = Vec::new();
-        for entry in std::fs::read_dir(&dir)? {
-            let path = entry?.path();
-            if path.is_file() {
-                files.push(path);
+        let mut out = Vec::new();
+        for path in paths {
+            if path.is_dir() {
+                collect_files(&path, &mut out)?;
+            } else {
+                out.push(path);
             }
         }
-        files.sort();
-        Ok(files)
+        Ok(out)
     })
     .await
+}
+
+/// Pushes the files under `dir` onto `out`, depth first. The entries of each folder are sorted by path.
+fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
+    let mut entries = std::fs::read_dir(dir)?.collect::<io::Result<Vec<_>>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            collect_files(&path, out)?;
+        } else if path.is_file() {
+            out.push(path);
+        }
+    }
+    Ok(())
 }
 
 /// The first `max` bytes of the file at `path`, or the whole file when it is shorter.
@@ -366,17 +383,53 @@ mod tests {
     }
 
     #[test]
-    fn list_dir_takes_the_files_directly_inside_sorted() {
+    fn files_under_expands_folders_recursively_in_sorted_order() {
         let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("b.txt"), b"b").unwrap();
-        std::fs::write(dir.path().join("a.txt"), b"a").unwrap();
-        std::fs::create_dir(dir.path().join("sub")).unwrap();
-        std::fs::write(dir.path().join("sub").join("deep.txt"), b"d").unwrap();
+        std::fs::write(dir.path().join("b.zip"), b"b").unwrap();
+        std::fs::write(dir.path().join("a.zip"), b"a").unwrap();
+        std::fs::write(dir.path().join(".hidden"), b"h").unwrap();
+        std::fs::create_dir(dir.path().join("nested")).unwrap();
+        std::fs::write(dir.path().join("nested").join("deep.zip"), b"d").unwrap();
         let spawner = InlineSpawner::default();
 
-        let listed = block_on(list_dir(&spawner, dir.path().to_path_buf())).unwrap();
-        assert_eq!(listed, vec![dir.path().join("a.txt"), dir.path().join("b.txt")]);
-        assert_eq!(block_on(read(&spawner, dir.path().join("a.txt"))).unwrap(), b"a".to_vec());
+        let listed = block_on(files_under(&spawner, vec![dir.path().to_path_buf()])).unwrap();
+        assert_eq!(
+            listed,
+            vec![
+                dir.path().join(".hidden"),
+                dir.path().join("a.zip"),
+                dir.path().join("b.zip"),
+                dir.path().join("nested").join("deep.zip"),
+            ]
+        );
+        assert_eq!(blocking_calls(&spawner), 1);
+    }
+
+    #[test]
+    fn files_under_passes_files_and_missing_paths_through() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("one.png");
+        std::fs::write(&file, b"x").unwrap();
+        let missing = dir.path().join("gone.png");
+        let spawner = InlineSpawner::default();
+
+        let listed = block_on(files_under(&spawner, vec![file.clone(), missing.clone()])).unwrap();
+        assert_eq!(listed, vec![file, missing]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn files_under_skips_links_to_folders_and_keeps_links_to_files() {
+        let dir = TempDir::new().unwrap();
+        let folder = dir.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("inside.txt"), b"i").unwrap();
+        std::os::unix::fs::symlink(folder.join("inside.txt"), folder.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(&folder, folder.join("loop")).unwrap();
+        let spawner = InlineSpawner::default();
+
+        let listed = block_on(files_under(&spawner, vec![folder.clone()])).unwrap();
+        assert_eq!(listed, vec![folder.join("inside.txt"), folder.join("link.txt")]);
     }
 
     #[test]

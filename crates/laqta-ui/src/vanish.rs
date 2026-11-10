@@ -9,18 +9,23 @@ use gpui::{App, Context, Subscription, Window};
 use gpui_component::{is_window_blank, set_window_blank};
 use laqta_domain::Action;
 
-/// Blanks `window`, and once the blank frame is drawn, minimizes it and dispatches `action`.
+/// Blanks `window`, and once the blank frame is drawn, takes it off the screen and dispatches
+/// `action`. Where the platform can remove the window without an animation it does (Windows);
+/// elsewhere the window is minimized.
 pub(crate) fn then_dispatch(action: Action, dispatch: Arc<dyn Fn(Action) + Send + Sync>, window: &mut Window, cx: &mut App) {
-    blank_then(window, cx, move |window| {
-        window.minimize_window();
+    blank_then(window, cx, move |window, cx| {
+        let hide = cx.try_global::<crate::runtime::UiState>().map(|state| state.services.native_window.clone());
+        if !hide.is_some_and(|hide| hide(window, crate::runtime::NativeWindow::HideForCapture)) {
+            window.minimize_window();
+        }
         dispatch(action);
     });
 }
 
 /// Blanks `window` and runs `then` once the blank frame is drawn.
-fn blank_then(window: &mut Window, cx: &mut App, then: impl FnOnce(&mut Window) + 'static) {
+fn blank_then(window: &mut Window, cx: &mut App, then: impl FnOnce(&mut Window, &mut App) + 'static) {
     set_window_blank(window, true, cx);
-    window.on_next_frame(move |window, _| then(window));
+    window.on_next_frame(then);
 }
 
 /// Draws the view's window again when it is activated (restored from the taskbar, or reopened).
@@ -59,7 +64,7 @@ mod tests {
         let ran = Arc::new(AtomicUsize::new(0));
         let counter = ran.clone();
 
-        vcx.update(|window, cx| blank_then(window, cx, move |_| _ = counter.fetch_add(1, Ordering::SeqCst)));
+        vcx.update(|window, cx| blank_then(window, cx, move |_, _| _ = counter.fetch_add(1, Ordering::SeqCst)));
         assert!(vcx.update(|window, cx| is_window_blank(window, cx)));
         assert_eq!(ran.load(Ordering::SeqCst), 0, "nothing runs before the blank frame is drawn");
 
