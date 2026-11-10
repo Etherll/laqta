@@ -36,7 +36,7 @@ impl Autostart for LinuxAutostart {
 
     fn set_enabled(&self, enabled: bool, executable: &Path) -> Result<(), PortError> {
         let path = self.dir.join(FILE_NAME);
-        if enabled { write_file(&path, &desktop_entry(executable), 0o644) } else { remove_if_exists(&path) }
+        if enabled { write_file(&path, &desktop_entry(&launcher(executable)), 0o644) } else { remove_if_exists(&path) }
     }
 }
 
@@ -47,6 +47,19 @@ pub(crate) fn xdg_dir(var: &str, fallback: &str) -> PathBuf {
         .map(PathBuf::from)
         .filter(|dir| dir.is_absolute())
         .unwrap_or_else(|| env::home_dir().unwrap_or_default().join(fallback))
+}
+
+/// The path a desktop entry should start. Inside an AppImage, `executable` lives in a mount that
+/// changes on every run, so the entry starts the AppImage file (`$APPIMAGE`) instead.
+pub(crate) fn launcher(executable: &Path) -> PathBuf {
+    launcher_from(executable, env::var_os("APPIMAGE"), env::var_os("APPDIR"))
+}
+
+fn launcher_from(executable: &Path, appimage: Option<std::ffi::OsString>, appdir: Option<std::ffi::OsString>) -> PathBuf {
+    match (appimage.map(PathBuf::from), appdir.map(PathBuf::from)) {
+        (Some(image), Some(dir)) if image.is_absolute() && executable.starts_with(&dir) => image,
+        _ => executable.to_path_buf(),
+    }
 }
 
 /// The `Exec` value that runs `executable` followed by `args`. The path is quoted with the reserved
@@ -132,7 +145,7 @@ mod tests {
 
     use laqta_ports::Autostart;
 
-    use super::{LinuxAutostart, exec_value, is_hidden};
+    use super::{LinuxAutostart, exec_value, is_hidden, launcher_from};
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("laqta-{}-{name}", std::process::id()));
@@ -169,5 +182,16 @@ mod tests {
         // Inside quotes `"`, `` ` ``, `$` and `\` are escaped, `%` is doubled, and the file's own
         // string escaping doubles every backslash again.
         assert_eq!(exec_value(Path::new(r#"/x/"$`\%"#), ""), r#""/x/\\"\\$\\`\\\\%%""#);
+    }
+
+    #[test]
+    fn an_appimage_starts_the_image_file_not_its_mount() {
+        let exe = Path::new("/tmp/.mount_LaqtaX1/usr/bin/laqta");
+        let image = || Some("/home/me/Apps/Laqta.AppImage".into());
+        let dir = || Some("/tmp/.mount_LaqtaX1".into());
+        assert_eq!(launcher_from(exe, image(), dir()), Path::new("/home/me/Apps/Laqta.AppImage"));
+        // Outside an AppImage, or with a stray variable, the executable itself is started.
+        assert_eq!(launcher_from(exe, None, None), exe);
+        assert_eq!(launcher_from(Path::new("/usr/bin/laqta"), image(), dir()), Path::new("/usr/bin/laqta"));
     }
 }

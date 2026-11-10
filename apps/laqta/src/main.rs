@@ -22,6 +22,19 @@ mod wiring;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    // The Windows installer (Velopack) runs the app with `--veloapp-install`, `--veloapp-updated`,
+    // `--veloapp-obsolete` or `--veloapp-uninstall` and expects it to exit at once.
+    if let Some(hook) = std::env::args().nth(1).filter(|a| a.starts_with("--veloapp-")) {
+        // On uninstall, remove the sign-in entry and the Explorer menu items that point at it.
+        #[cfg(windows)]
+        if hook == "--veloapp-uninstall" {
+            let ports = laqta_platform_windows::ports();
+            let _ = ports.autostart.set_enabled(false, std::path::Path::new(""));
+            let _ = ports.integration.uninstall();
+        }
+        let _ = hook;
+        return ExitCode::SUCCESS;
+    }
     let args = match cli::parse(std::env::args().skip(1)) {
         Ok(cli::Command::Version) => {
             println!("laqta {}", env!("CARGO_PKG_VERSION"));

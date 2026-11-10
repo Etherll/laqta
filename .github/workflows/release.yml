@@ -4,7 +4,10 @@ name: Release
 # the packages to a draft GitHub release. Review the draft, then publish it.
 #
 # Asset names carry no version, so the README can link to releases/latest/download/<name>:
-#   laqta-windows-x64.zip, laqta-linux-x86_64.tar.gz, laqta-linux-amd64.deb (each with a .sha256)
+#   laqta-windows-x64-setup.exe, laqta-windows-x64-portable.zip, laqta-linux-x86_64.AppImage,
+#   laqta-linux-x86_64.tar.gz, laqta-linux-amd64.deb (each with a .sha256)
+# The Velopack update package (Laqta-<version>-…-full.nupkg and its feed files) and SHA256SUMS are
+# what the in-app updater reads on Windows.
 on:
   push:
     tags: ["v*"]
@@ -52,7 +55,35 @@ jobs:
           rm -rf "dist/$dir"
           # The .deb takes its version from Cargo.toml and its dependencies from dpkg-shlibdeps.
           cargo deb -p laqta --no-build -o dist/laqta-linux-amd64.deb
-          cd dist && for f in *.tar.gz *.deb; do sha256sum "$f" > "$f.sha256"; done
+      - name: AppImage
+        env:
+          APPIMAGETOOL_URL: https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+          RUNTIME_URL: https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+          RUNTIME_SHA256: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+        run: |
+          curl -sSLf -o appimagetool "$APPIMAGETOOL_URL"
+          curl -sSLf -o runtime-x86_64 "$RUNTIME_URL"
+          echo "$APPIMAGETOOL_SHA256  appimagetool" | sha256sum -c
+          echo "$RUNTIME_SHA256  runtime-x86_64" | sha256sum -c
+          chmod +x appimagetool
+          app=Laqta.AppDir id=io.github.etherll.Laqta
+          mkdir -p $app/usr/bin $app/usr/share/applications
+          cp target/release/laqta target/release/laqta-nmh $app/usr/bin/
+          sed 's|^Exec=/usr/bin/laqta|Exec=laqta|' packaging/linux/$id.desktop > $app/usr/share/applications/$id.desktop
+          cp $app/usr/share/applications/$id.desktop $app/
+          for size in 16 32 64 128 256 512; do
+            mkdir -p $app/usr/share/icons/hicolor/${size}x${size}/apps
+            cp assets/icon/laqta-$size.png $app/usr/share/icons/hicolor/${size}x${size}/apps/$id.png
+          done
+          mkdir -p $app/usr/share/icons/hicolor/scalable/apps
+          cp assets/icon/laqta.svg $app/usr/share/icons/hicolor/scalable/apps/$id.svg
+          cp assets/icon/laqta-256.png $app/$id.png
+          ln -s usr/bin/laqta $app/AppRun
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool --runtime-file runtime-x86_64 -n "$PWD/$app" "$PWD/dist/laqta-linux-x86_64.AppImage"
+          ./dist/laqta-linux-x86_64.AppImage --appimage-extract-and-run --version
+      - name: Checksums
+        run: cd dist && for f in *.tar.gz *.deb *.AppImage; do sha256sum "$f" > "$f.sha256"; done
       - uses: actions/upload-artifact@v4
         with:
           name: linux
@@ -70,16 +101,35 @@ jobs:
       - run: vcpkg install "sqlite3[fts5]:x64-windows-static-md"
       - run: echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
       - run: cargo build --release --locked -p laqta -p laqta-nmh
+      - name: Install Velopack
+        run: dotnet tool install vpk --version 1.2.161 --tool-path .vpk
       - name: Package
         shell: pwsh
         run: |
-          $dir = "laqta-$env:GITHUB_REF_NAME-windows-x64"
-          New-Item -ItemType Directory -Force "dist/$dir" | Out-Null
-          Copy-Item target/release/laqta.exe, target/release/laqta-nmh.exe, LICENSE, README.md "dist/$dir/"
-          Compress-Archive -Path "dist/$dir" -DestinationPath "dist/laqta-windows-x64.zip"
-          Remove-Item -Recurse "dist/$dir"
-          $hash = (Get-FileHash "dist/laqta-windows-x64.zip" -Algorithm SHA256).Hash.ToLower()
-          "$hash  laqta-windows-x64.zip" | Out-File -Encoding ascii "dist/laqta-windows-x64.zip.sha256"
+          # The version comes from Cargo.toml, so a manual run from a branch packs too.
+          $version = ((cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages | Where-Object name -eq laqta).version
+          New-Item -ItemType Directory -Force dist, stage | Out-Null
+          Copy-Item target/release/laqta.exe, target/release/laqta-nmh.exe, LICENSE, README.md stage/
+          # The installer and the update package. Laqta answers the --veloapp-* hooks itself and
+          # does not link the Velopack SDK, so the SDK check is skipped.
+          .vpk/vpk pack --packId Laqta --packVersion $version --packTitle Laqta --packAuthors "Laqta contributors" `
+            --packDir stage --mainExe laqta.exe --icon assets/icon/laqta.ico `
+            --shortcuts Desktop,StartMenuRoot --skipVeloAppCheck --outputDir velopack
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem velopack
+          Get-ChildItem velopack -Filter *Setup.exe | Move-Item -Destination dist/laqta-windows-x64-setup.exe
+          Get-ChildItem velopack -File | Where-Object { $_.Name -notlike '*Portable.zip' } | Move-Item -Destination dist
+          # The portable build: the `portable` file keeps settings and history in LaqtaData next
+          # to laqta.exe, so the folder can live on a USB stick.
+          $dir = "laqta-$env:GITHUB_REF_NAME-windows-x64-portable"
+          New-Item -ItemType Directory -Force "portable/$dir" | Out-Null
+          Copy-Item stage/* "portable/$dir/"
+          New-Item -ItemType File "portable/$dir/portable" | Out-Null
+          Compress-Archive -Path "portable/$dir" -DestinationPath dist/laqta-windows-x64-portable.zip
+          foreach ($f in "laqta-windows-x64-setup.exe", "laqta-windows-x64-portable.zip") {
+            $hash = (Get-FileHash "dist/$f" -Algorithm SHA256).Hash.ToLower()
+            "$hash  $f" | Out-File -Encoding ascii "dist/$f.sha256"
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: windows
@@ -95,6 +145,9 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with: { path: dist, merge-multiple: true }
+      - name: SHA256SUMS
+        # The in-app updater checks the Windows update package against this list.
+        run: cd dist && sha256sum $(ls | grep -v '\.sha256$') > SHA256SUMS && cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
