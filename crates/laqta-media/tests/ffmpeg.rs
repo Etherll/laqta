@@ -290,7 +290,7 @@ impl PcmSource for Tone {
 fn raw_frames_and_pcm_sound_are_recorded_together_across_a_pause() {
     let dir = tempfile::tempdir().expect("tempdir");
     let Some(media) = media(dir.path()) else { return };
-    record_sound_across_a_pause(&media, dir.path());
+    record_sound_across_a_pause(&media, dir.path(), Duration::from_millis(1500));
 }
 
 /// FFmpeg takes about half a second to start on macOS. The recording must come out whole however
@@ -305,22 +305,25 @@ fn sound_is_whole_when_ffmpeg_is_slow_to_start() {
     std::fs::write(&slow, format!("#!/bin/sh\nsleep 0.6\nexec '{}' \"$@\"\n", paths.ffmpeg.display())).expect("write the wrapper");
     std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).expect("make it executable");
     let media = FfmpegMedia::new(laqta_media::FfmpegPaths { ffmpeg: slow, ffprobe: paths.ffprobe }, dir.path().join("work"));
-    record_sound_across_a_pause(&media, dir.path());
+    // Long stretches: a stop that comes while the frames from the wait are still being written
+    // cuts them, which is not what this test is about.
+    record_sound_across_a_pause(&media, dir.path(), Duration::from_secs(3));
 }
 
+/// Records two stretches of `stretch` with a pause between, and expects a file of both.
 #[cfg(unix)]
-fn record_sound_across_a_pause(media: &FfmpegMedia, dir: &Path) {
+fn record_sound_across_a_pause(media: &FfmpegMedia, dir: &Path, stretch: Duration) {
     let output = dir.join("sound.mp4");
     let input = RecordingInput {
         video: VideoSource::Frames(Box::new(PacedFrames::new(30, None))),
         audio: vec![AudioInput::Pcm(Box::new(Tone { started: None, sent: 0, stopped: false }))],
     };
     let mut recording = block_on(media.start(input, spec(VideoCodec::X264, 30), output.clone())).expect("start");
-    thread::sleep(Duration::from_millis(1500));
+    thread::sleep(stretch);
     block_on(recording.pause()).expect("pause");
     thread::sleep(Duration::from_millis(300));
     block_on(recording.resume()).expect("resume");
-    thread::sleep(Duration::from_millis(1500));
+    thread::sleep(stretch);
     assert!(recording.is_alive());
     let started = Instant::now();
     block_on(recording.stop()).expect("stop");
@@ -334,7 +337,8 @@ fn record_sound_across_a_pause(media: &FfmpegMedia, dir: &Path) {
         .output()
         .expect("run ffprobe");
     let streams = String::from_utf8_lossy(&streams.stdout).replace('\n', "; ");
-    assert!((info.duration_secs - 3.0).abs() <= 0.9, "expected 3 +/- 0.9, got {}: {streams}", info.duration_secs);
+    let expected = stretch.as_secs_f64() * 2.0;
+    assert!((info.duration_secs - expected).abs() <= expected * 0.3, "expected {expected} +/- 30%, got {}: {streams}", info.duration_secs);
     assert!(!dir.join("work").read_dir().is_ok_and(|mut entries| entries.next().is_some()), "the session folder is gone");
 }
 
