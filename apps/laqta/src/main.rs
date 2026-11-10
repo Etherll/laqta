@@ -34,9 +34,15 @@ fn main() -> ExitCode {
         #[cfg(windows)]
         if hook == "--veloapp-uninstall" {
             let ports = laqta_platform_windows::ports();
-            let _ = ports.autostart.set_enabled(false, std::path::Path::new(""));
-            let _ = ports.integration.uninstall();
-            let _ = laqta_platform_windows::remove_native_messaging();
+            if let Err(e) = ports.autostart.set_enabled(false, std::path::Path::new("")) {
+                eprintln!("laqta: {e}");
+            }
+            if let Err(e) = ports.integration.uninstall() {
+                eprintln!("laqta: {e}");
+            }
+            if let Err(e) = laqta_platform_windows::remove_native_messaging() {
+                eprintln!("laqta: {e}");
+            }
         }
         let _ = hook;
         return ExitCode::SUCCESS;
@@ -61,11 +67,18 @@ fn main() -> ExitCode {
         None => None,
         Some(Ok(laqta_ipc::Claim::Primary(server))) => Some(server),
         Some(Ok(laqta_ipc::Claim::Secondary(mut client))) => {
-            if args.requests.is_empty() {
+            let mut forward: Vec<laqta_ipc::Request> = args
+                .import_uploaders
+                .iter()
+                .chain(&args.import_effects)
+                .map(|p| laqta_ipc::Request::Upload(std::path::absolute(p).unwrap_or_else(|_| p.clone())))
+                .collect();
+            forward.extend(args.requests.iter().cloned());
+            if forward.is_empty() {
                 println!("Laqta is already running");
                 return ExitCode::SUCCESS;
             }
-            for request in &args.requests {
+            for request in &forward {
                 if let Err(e) = client.send_request(request) {
                     eprintln!("laqta: {e}");
                     return ExitCode::from(1);

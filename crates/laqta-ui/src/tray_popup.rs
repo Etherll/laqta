@@ -35,7 +35,7 @@ pub(crate) fn toggle(cx: &mut App) {
         app_id: Some("laqta-menu".into()),
         ..Default::default()
     };
-    match cx.open_window(options, |window, cx| {
+    match crate::popup::open(options, cx, |window, cx| {
         let view = cx.new(|_| TrayPopup { menu });
         cx.new(|cx| Root::new(view, window, cx))
     }) {

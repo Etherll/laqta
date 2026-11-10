@@ -94,6 +94,13 @@ pub struct OrtArchive {
     pub library: String,
 }
 
+impl OrtArchive {
+    /// True if the hash is still the placeholder, so the archive cannot be downloaded yet.
+    pub fn is_pending(&self) -> bool {
+        self.sha256 == PENDING_HASH
+    }
+}
+
 /// The parsed catalog.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Catalog {

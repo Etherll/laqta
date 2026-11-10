@@ -16,9 +16,8 @@ pub struct OsRng;
 impl Rng for OsRng {
     fn next_u64(&self) -> u64 {
         let mut b = [0u8; 8];
-        if getrandom::fill(&mut b).is_err() {
-            // getrandom only fails if the OS has no entropy source; fall back to the clock-seeded generator.
-            return fastrand::u64(..);
+        if let Err(e) = getrandom::fill(&mut b) {
+            panic!("the OS entropy source (getrandom) is unavailable: {e}");
         }
         u64::from_le_bytes(b)
     }

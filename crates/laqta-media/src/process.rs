@@ -264,9 +264,16 @@ impl Inner {
         let (feeder, stdin) = match self.feed.take() {
             Some(feed) => {
                 let Some(stdin) = stdin else {
+                    kill_and_reap(&mut child);
                     return Err(PortError::Failed("FFmpeg stdin is not piped".into()));
                 };
-                (Some(spawn_feeder(feed, stdin, raw_fps(&self.plan.video))?), None)
+                match spawn_feeder(feed, stdin, raw_fps(&self.plan.video)) {
+                    Ok(feeder) => (Some(feeder), None),
+                    Err(err) => {
+                        kill_and_reap(&mut child);
+                        return Err(err);
+                    }
+                }
             }
             None => (None, stdin),
         };
@@ -526,6 +533,9 @@ fn feed_stdin(feed: &mut Feed, mut stdin: ChildStdin, stop: &AtomicBool, fps: u3
     match feed {
         Feed::Frames(source) => feed_frames(source.as_mut(), &mut stdin, stop, fps),
         Feed::Pcm(source) => {
+            // The source kept capturing while no segment read it (a pause, and FFmpeg starting up).
+            // That audio is stale, so it is dropped here, right before the first read.
+            source.discard_pending();
             let mut samples = vec![0i16; PCM_CHUNK_SAMPLES];
             let mut bytes = Vec::with_capacity(PCM_CHUNK_SAMPLES * 2);
             while !stop.load(Ordering::SeqCst) {
@@ -674,7 +684,12 @@ fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use laqta_domain::geometry::PhysRect;
+    #[cfg(unix)]
+    use std::sync::atomic::AtomicUsize;
+
     use laqta_domain::record::{CameraOverlay, Quality};
+    #[cfg(unix)]
+    use laqta_ports::PcmFormat;
 
     use super::*;
 
@@ -702,6 +717,63 @@ mod tests {
         let mut recorder = FfmpegRecorder::start(paths, plan, dir.path().join("session"), dir.path().join("out.mp4"), None).expect("start");
         assert!(RecordingHandle::is_alive(&mut recorder), "the failed ddagrab attempt must not end the recording");
         locked(&recorder.inner, Inner::abort);
+    }
+
+    /// A PCM source with nothing to read that counts `discard_pending` calls.
+    #[cfg(unix)]
+    struct CountingPcm {
+        discards: Arc<AtomicUsize>,
+    }
+
+    #[cfg(unix)]
+    impl PcmSource for CountingPcm {
+        fn format(&self) -> PcmFormat {
+            PcmFormat { sample_rate: 48_000, channels: 2 }
+        }
+
+        fn read(&mut self, _buf: &mut [i16]) -> Result<usize, PortError> {
+            Ok(0)
+        }
+
+        fn discard_pending(&mut self) {
+            self.discards.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn stop(&mut self) {}
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_segment_discards_the_pending_pcm_once_before_its_first_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ffmpeg = dir.path().join("ffmpeg");
+        fs::write(&ffmpeg, "#!/bin/sh\nexec sleep 30\n").expect("script");
+        fs::set_permissions(&ffmpeg, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let session = dir.path().join("session");
+        fs::create_dir_all(&session).expect("session");
+        let discards = Arc::new(AtomicUsize::new(0));
+        let mut inner = Inner {
+            paths: FfmpegPaths { ffmpeg: ffmpeg.clone(), ffprobe: ffmpeg },
+            plan: plan(VideoCodec::X264, Host::Linux, None),
+            capture: WindowsCapture::Ddagrab,
+            session,
+            output: dir.path().join("out.mp4"),
+            feed: Some(Feed::Pcm(Box::new(CountingPcm { discards: Arc::clone(&discards) }))),
+            current: None,
+            segments: Vec::new(),
+            last_log: None,
+            index: 0,
+            ended: false,
+        };
+        inner.resume().expect("resume");
+        // The feed thread discards; give it a moment to start.
+        let until = Instant::now() + Duration::from_secs(5);
+        while discards.load(Ordering::SeqCst) == 0 && Instant::now() < until {
+            thread::sleep(Duration::from_millis(10));
+        }
+        inner.abort();
+        assert_eq!(discards.load(Ordering::SeqCst), 1);
     }
 
     #[test]

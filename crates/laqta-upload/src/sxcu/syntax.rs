@@ -154,6 +154,107 @@ pub(super) async fn render(ctx: &Ctx<'_>, src: &str, escape: Escape) -> Result<S
     eval(&nodes, ctx, escape).await
 }
 
+/// The functions a `Data` body may call. Any other `{...}` stays literal, so JSON or XML written
+/// with plain braces is sent as it is. Keep this in step with `call`.
+const DATA_FUNCTIONS: [&str; 13] = [
+    "input",
+    "filename",
+    "random",
+    "select",
+    "inputbox",
+    "outputbox",
+    "base64",
+    "response",
+    "responseurl",
+    "header",
+    "json",
+    "xml",
+    "regex",
+];
+
+/// Renders a `Data` body. A `{...}` span runs only when it is one call to a function in
+/// `DATA_FUNCTIONS`; every other brace is literal. `\{` and `\}` are literal braces. Top-level call
+/// results are escaped for the body type.
+pub(super) async fn render_data(ctx: &Ctx<'_>, src: &str, escape: Escape) -> Result<String, SxcuError> {
+    let chars: Vec<char> = src.chars().collect();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => {
+                // A run of backslashes: only an odd run before a brace escapes it, and then its last
+                // backslash is the escape. Every other backslash is body text (`\\\\` in JSON).
+                let end = backslash_run_end(&chars, i);
+                let escapes = (end - i) % 2 == 1 && matches!(chars.get(end), Some('{' | '}'));
+                let literal = if escapes { end - i - 1 } else { end - i };
+                out.extend(std::iter::repeat_n('\\', literal));
+                i = end;
+                if escapes {
+                    out.push(chars[end]);
+                    i += 1;
+                }
+            }
+            '{' => {
+                let call = data_span(&chars, i).and_then(|end| {
+                    let nodes = parse(&chars[i..end].iter().collect::<String>()).ok()?;
+                    is_data_call(&nodes).then_some((end, nodes))
+                });
+                match call {
+                    Some((end, nodes)) => {
+                        out.push_str(&eval(&nodes, ctx, escape).await?);
+                        i = end;
+                    }
+                    None => {
+                        out.push('{');
+                        i += 1;
+                    }
+                }
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The index after the run of backslashes that starts at `start`.
+fn backslash_run_end(chars: &[char], start: usize) -> usize {
+    start + chars[start..].iter().take_while(|c| **c == '\\').count()
+}
+
+/// The index after the `}` that closes the `{` at `start`, or `None` when it never closes. A
+/// `\{` or `\}` does not count.
+fn data_span(chars: &[char], start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut i = start;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => {
+                let end = backslash_run_end(chars, i);
+                let escapes = (end - i) % 2 == 1 && matches!(chars.get(end), Some('{' | '}'));
+                // Leave `i` on the last character this arm consumed.
+                i = if escapes { end } else { end - 1 };
+            }
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn is_data_call(nodes: &[Node]) -> bool {
+    matches!(nodes, [Node::Call { name, .. }] if DATA_FUNCTIONS.contains(&name.as_str()))
+}
+
 fn eval<'a>(nodes: &'a [Node], ctx: &'a Ctx<'a>, escape: Escape) -> BoxFuture<'a, Result<String, SxcuError>> {
     Box::pin(async move {
         let mut out = String::new();

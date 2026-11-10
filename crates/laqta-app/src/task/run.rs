@@ -274,11 +274,7 @@ impl Job {
             return image;
         };
         let kept = image.clone();
-        let work = move || -> Result<Bitmap, AppError> {
-            laqta_imaging::effects::apply_preset(&image, &preset, &laqta_imaging::effects::EffectContext::none())
-                .map_err(|error| AppError::Io(error.to_string()))
-        };
-        match compute(self.cx.ports.spawner.as_ref(), work).await {
+        match self.cx.effects.apply(&self.cx.ports, image, preset).await {
             Ok(out) => out,
             Err(error) => {
                 self.step_failed("effects", error);

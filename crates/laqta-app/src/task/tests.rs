@@ -78,7 +78,7 @@ fn ports(spawner: Arc<dyn Spawner>) -> Arc<Ports> {
 fn task_on(spawner: Arc<dyn Spawner>, settings: Settings) -> (Task, Receiver<TaskEvent>) {
     let (mut tx, rx) = async_broadcast::broadcast::<TaskEvent>(256);
     tx.set_overflow(true);
-    let task = Task::new(ports(spawner), Arc::new(SettingsCell::new(settings)), tx);
+    let task = Task::new(ports(spawner), Arc::new(SettingsCell::new(settings)), Arc::default(), tx);
     (task, rx)
 }
 

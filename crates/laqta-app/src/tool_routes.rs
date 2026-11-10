@@ -1,14 +1,17 @@
 //! Dispatcher routes for the tools. Windowed tools open `ToolWindow::Tool`; capture-based tools
 //! (screen colour picker, ruler, pin, OCR, QR scan) run a Region session first and show the result.
 
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
+use futures_lite::FutureExt;
 use laqta_domain::Action;
 use laqta_domain::workflow::TaskSettings;
 use laqta_ports::{AppError, ClipboardContent, ToolKind, ToolWindow};
 
-use crate::dispatcher::{App, Dispatched, Ports};
+use crate::dispatcher::{App, Dispatched};
 use crate::region::{self, Selection};
+use crate::task::panic_message;
 
 /// The windowed tool an action opens, if it is one.
 pub(crate) fn tool_kind(action: Action) -> Option<ToolKind> {
@@ -55,11 +58,6 @@ fn centre_pixel(sel: &Selection) -> laqta_domain::color::Rgba {
 }
 
 impl App {
-    /// The ports, for the tool windows that call `laqta_app::tools` functions directly.
-    pub fn ports(&self) -> &Ports {
-        &self.ports
-    }
-
     async fn select_on_screen(&self, ts: &TaskSettings) -> Result<Selection, AppError> {
         let frames = self.frames(ts).await?;
         region::pick(&self.ports, frames, &ts.capture.region).await
@@ -68,6 +66,14 @@ impl App {
     fn show(&self, title: &str, text: &str) -> Result<Dispatched, AppError> {
         self.ports.tools.show_text(title, text).map_err(AppError::from)?;
         Ok(Dispatched::Done)
+    }
+
+    /// `tool_route` under the unwind guard (ADR 020): a panic in a tool route becomes `AppError::Panic`.
+    pub(crate) async fn guarded_tool_route(self: &Arc<Self>, action: Action, ts: &TaskSettings) -> Option<Result<Dispatched, AppError>> {
+        match AssertUnwindSafe(self.tool_route(action, ts)).catch_unwind().await {
+            Ok(route) => route,
+            Err(payload) => Some(Err(AppError::Panic(panic_message(&*payload)))),
+        }
     }
 
     /// `None` when `action` is not a tool route.

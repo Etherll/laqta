@@ -6,10 +6,10 @@ use std::sync::{Arc, Mutex};
 
 use laqta_app::{App, Dispatched, Ports, UploadSource};
 use laqta_domain::settings::SETTINGS_VERSION;
-use laqta_domain::{Action, KeyChord, Settings};
+use laqta_domain::{Action, KeyChord, Settings, WorkflowId};
 use laqta_library::{History, SettingsStore};
 use laqta_ports::{
-    ActionCallback, Clipboard, Clock, HotkeyRegistrar, HoverSource, PortError, ScreenSource, Shell, Spawner, Tray, TrayMenu,
+    ActionCallback, Clipboard, Clock, HotkeyCallback, HotkeyRegistrar, HoverSource, PortError, ScreenSource, Shell, Spawner, Tray, TrayMenu,
 };
 use laqta_ui::{UiHandle, UiServices};
 
@@ -176,6 +176,17 @@ fn writable(dir: &std::path::Path) -> bool {
     ok
 }
 
+/// What a dispatch means to the caller of a request: the task it started, or `Ok(None)` to quit.
+fn dispatched(result: Result<Dispatched, laqta_ports::AppError>) -> Result<Option<Vec<laqta_ports::TaskId>>, String> {
+    match result {
+        Ok(Dispatched::Exit) => Ok(None),
+        Ok(Dispatched::Task(id)) => Ok(Some(vec![id])),
+        Ok(Dispatched::Tasks(ids)) => Ok(Some(ids)),
+        Ok(_) | Err(laqta_ports::AppError::Cancelled) => Ok(Some(vec![])),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Runs one request and returns the tasks it started; `Ok(None)` means quit.
 async fn run_request(
     app: &Arc<App>,
@@ -184,16 +195,18 @@ async fn run_request(
 ) -> Result<Option<Vec<laqta_ports::TaskId>>, String> {
     use crate::requests::Route;
     match crate::requests::route(request, &app.settings())? {
-        Route::Dispatch(action, workflow) => match app.dispatch(action, workflow).await {
-            Ok(Dispatched::Exit) => Ok(None),
-            Ok(Dispatched::Task(id)) => Ok(Some(vec![id])),
-            Ok(_) | Err(laqta_ports::AppError::Cancelled) => Ok(Some(vec![])),
-            Err(e) => Err(e.to_string()),
-        },
-        Route::Upload(UploadSource::File(path), workflow) => {
-            app.upload_paths(vec![path], workflow).await.map(Some).map_err(|e| e.to_string())
+        Route::Dispatch(action, workflow) => dispatched(app.dispatch(action, workflow).await),
+        // Uploads enter through `dispatch` too (ADR 015), as the action with its input.
+        Route::Upload(source, workflow) => {
+            use laqta_app::ActionInput;
+            let (action, input) = match source {
+                UploadSource::File(path) | UploadSource::SavedFile(path) => (Action::FileUpload, ActionInput::Files(vec![path])),
+                UploadSource::Text(text) => (Action::UploadText, ActionInput::Text(text)),
+                UploadSource::Url(url) => (Action::UploadUrl, ActionInput::Url(url)),
+                UploadSource::ShortenUrl(url) => (Action::ShortenUrl, ActionInput::Url(url)),
+            };
+            dispatched(app.dispatch_with(action, input, workflow).await)
         }
-        Route::Upload(source, workflow) => Ok(Some(vec![app.upload_source(source, workflow)])),
         Route::ImportUploader(path) => importer.uploader(&path).map(|id| {
             tracing::info!(%id, "custom uploader imported");
             Some(vec![])
@@ -249,7 +262,7 @@ fn hotkey_reports() -> HotkeyReports {
 /// Makes the platform's hotkeys match the app's current bindings unless they already do. Returns whether the platform
 /// refused every chord as unsupported; false when the bindings were already registered. The settings are read under the lock,
 /// so the last run to take it leaves the latest bindings registered.
-fn sync_hotkeys(app: &App, hotkeys: &dyn HotkeyRegistrar, registered: &RegisteredBindings, on_fire: ActionCallback) -> bool {
+fn sync_hotkeys(app: &App, hotkeys: &dyn HotkeyRegistrar, registered: &RegisteredBindings, on_fire: HotkeyCallback) -> bool {
     let mut current = registered.lock().unwrap_or_else(|e| e.into_inner());
     let bindings = app.settings().hotkey_bindings();
     if current.as_ref() == Some(&bindings) {
@@ -286,8 +299,10 @@ fn sync_hotkeys(app: &App, hotkeys: &dyn HotkeyRegistrar, registered: &Registere
 
 pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<(), String> {
     let mut startup: Vec<laqta_ipc::Request> = Vec::new();
-    startup.extend(args.import_uploaders.iter().cloned().map(laqta_ipc::Request::Upload));
-    startup.extend(args.import_effects.iter().cloned().map(laqta_ipc::Request::Upload));
+    // Absolute, as the second instance sends them: the working folder can change before they are read.
+    let import = |path: &std::path::PathBuf| laqta_ipc::Request::Upload(std::path::absolute(path).unwrap_or_else(|_| path.clone()));
+    startup.extend(args.import_uploaders.iter().map(import));
+    startup.extend(args.import_effects.iter().map(import));
     startup.extend(args.requests.iter().cloned());
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let spawner = AppSpawner::start(clock.clone()).map_err(|e| format!("cannot start the app worker: {e}"))?;
@@ -394,18 +409,36 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         app.attach_history(h.clone());
         spawner.spawn(Box::pin(laqta_library::record_task_events(h.clone(), app.events(), clock.clone())));
     }
+    // One font set for the windows and for the text of drawing effects (ADR 024).
+    let fonts = crate::fonts::fonts();
+    {
+        let fonts = fonts.clone();
+        app.attach_effect_text(Arc::new(move |spec: &laqta_domain::effects::TextSpec| {
+            let font = laqta_editor::FontStyle {
+                family: spec.font_family.clone(),
+                size: spec.size,
+                bold: spec.bold,
+                italic: spec.italic,
+                color: spec.color,
+                padding: 0.0,
+                ..laqta_editor::FontStyle::default()
+            };
+            fonts.render_text(&spec.text, &font)
+        }));
+    }
 
-    // Every entry point goes through `dispatch` (ADR 015). A hotkey runs the first enabled workflow
-    // bound to its action, so that workflow's settings apply.
-    let dispatch_slot: Arc<Mutex<Option<ActionCallback>>> = Arc::new(Mutex::new(None));
-    let dispatch: ActionCallback = {
-        let app = app.clone();
+    // Every entry point goes through `dispatch` (ADR 015). The tray runs an action with the first enabled
+    // workflow bound to it; a hotkey runs the workflow bound to the chord that fired, so that workflow's
+    // settings apply.
+    let hotkey_slot: Arc<Mutex<Option<HotkeyCallback>>> = Arc::new(Mutex::new(None));
+    let run_action: Arc<dyn Fn(Action, Option<WorkflowId>) + Send + Sync> = {
         let spawner = spawner.clone();
         let quit_tx = quit_tx.clone();
         let hotkeys = hotkeys.clone();
         let registered = registered.clone();
-        let slot = dispatch_slot.clone();
-        Arc::new(move |action: Action| {
+        let slot = hotkey_slot.clone();
+        let app = app.clone();
+        Arc::new(move |action: Action, workflow: Option<WorkflowId>| {
             let app = app.clone();
             let quit_tx = quit_tx.clone();
             let hotkeys = hotkeys.clone();
@@ -413,7 +446,6 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             let slot = slot.clone();
             let blocking = spawner.clone();
             spawner.spawn(Box::pin(async move {
-                let workflow = app.settings().workflows.iter().find(|w| w.enabled && w.action == action).map(|w| w.id);
                 match app.dispatch(action, workflow).await {
                     Ok(Dispatched::Exit) => {
                         let _ = quit_tx.send(());
@@ -438,8 +470,26 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             }));
         })
     };
-    if let Ok(mut s) = dispatch_slot.lock() {
-        *s = Some(dispatch.clone());
+    // The tray runs an action with the first enabled workflow bound to it.
+    let dispatch: ActionCallback = {
+        let app = app.clone();
+        let run_action = run_action.clone();
+        Arc::new(move |action: Action| {
+            let workflow = app.settings().workflows.iter().find(|w| w.enabled && w.action == action).map(|w| w.id);
+            run_action(action, workflow);
+        })
+    };
+    // A hotkey runs the workflow bound to the chord that fired. A chord with no enabled workflow is dropped.
+    let hotkey_dispatch: HotkeyCallback = {
+        let app = app.clone();
+        let run_action = run_action.clone();
+        Arc::new(move |chord: KeyChord| match app.settings().workflow_for_hotkey(chord) {
+            Some(workflow) => run_action(workflow.action, Some(workflow.id)),
+            None => tracing::debug!(%chord, "no enabled workflow is bound to this hotkey"),
+        })
+    };
+    if let Ok(mut s) = hotkey_slot.lock() {
+        *s = Some(hotkey_dispatch.clone());
     }
 
     // Sandbox mode writes no settings; `-NoHotkeys` registers none.
@@ -454,7 +504,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         let hotkeys = hotkeys.clone();
         let registered = registered.clone();
         let accounts = accounts.clone();
-        let dispatch = dispatch.clone();
+        let hotkey_dispatch = hotkey_dispatch.clone();
         let uploaders = uploaders.clone();
         let host_deps = host_deps.clone();
         let spawner = spawner.clone();
@@ -476,7 +526,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             app.set_settings(s.clone());
             // Keyring reads and the hotkey portal can each take seconds; the caller (often the UI
             // thread) returns at once. Hotkeys re-register only when the bindings changed.
-            let (app_b, hotkeys, registered, dispatch) = (app.clone(), hotkeys.clone(), registered.clone(), dispatch.clone());
+            let (app_b, hotkeys, registered, hotkey_dispatch) = (app.clone(), hotkeys.clone(), registered.clone(), hotkey_dispatch.clone());
             let (uploaders, host_deps, accounts) = (uploaders.clone(), host_deps.clone(), accounts.clone());
             let blocking = spawner.clone();
             spawner.spawn(Box::pin(async move {
@@ -488,7 +538,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                             crate::uploads::apply_accounts(&uploaders, &app_b.settings().hosts, &host_deps);
                         }
                         if use_hotkeys {
-                            sync_hotkeys(&app_b, hotkeys.as_ref(), &registered, dispatch);
+                            sync_hotkeys(&app_b, hotkeys.as_ref(), &registered, hotkey_dispatch);
                         }
                     }))
                     .await;
@@ -528,10 +578,10 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     // Hotkey registration can wait seconds on Wayland's portal, and the tray tooltip depends on its
     // result, so both run on a startup thread while the main thread goes on to the UI.
     let start_shell = {
-        let (app, hotkeys, registered, dispatch, tray) =
-            (app.clone(), hotkeys.clone(), registered.clone(), dispatch.clone(), platform.tray.clone());
+        let (app, hotkeys, registered, hotkey_dispatch, dispatch, tray) =
+            (app.clone(), hotkeys.clone(), registered.clone(), hotkey_dispatch.clone(), dispatch.clone(), platform.tray.clone());
         move || {
-            if use_hotkeys && sync_hotkeys(&app, hotkeys.as_ref(), &registered, dispatch.clone()) {
+            if use_hotkeys && sync_hotkeys(&app, hotkeys.as_ref(), &registered, hotkey_dispatch.clone()) {
                 menu.tooltip = laqta_ui::presenters::tray::TOOLTIP_NO_HOTKEY.to_string();
             }
             // With no tray icon the main window is the only way in, so it opens even on a silent
@@ -604,7 +654,10 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                     Ok(laqta_ports::TaskEvent::StatusChanged { id, status: laqta_ports::TaskStatus::InQueue }) => {
                         pending.insert(id);
                     }
-                    Ok(_) | Err(async_broadcast::RecvError::Overflowed(_)) => {}
+                    Ok(_) => {}
+                    // Events were dropped, so `pending` may hold tasks that ended or miss new ones:
+                    // take the list from Task itself.
+                    Err(async_broadcast::RecvError::Overflowed(_)) => pending = app.unfinished_tasks().into_iter().collect(),
                     Err(async_broadcast::RecvError::Closed) => break,
                 }
             }
@@ -641,7 +694,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             secrets: platform.secrets.clone(),
             prompt: Arc::new(ui.clone()),
             native_window: Arc::new(native_window),
-            fonts: crate::fonts::fonts(),
+            fonts: fonts.clone(),
             spawner: spawner.clone(),
             codecs: laqta_imaging::Codecs::builtin(),
             import_sharex: {

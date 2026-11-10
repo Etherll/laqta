@@ -34,7 +34,7 @@ pub(crate) fn open(result: TextResult, cx: &mut App) {
         titlebar: Some(crate::chrome::titlebar(result.title.clone())),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,
-        app_id: Some("laqta".into()),
+        app_id: Some(crate::APP_ID.into()),
         window_min_size: Some(size(px(480.), px(320.))),
         focus: true,
         ..Default::default()

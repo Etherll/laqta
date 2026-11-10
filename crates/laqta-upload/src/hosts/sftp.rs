@@ -123,6 +123,13 @@ pub fn command_args(config: &SftpConfig, key: Option<&Path>) -> Result<Vec<Strin
         // Fails instead of prompting: a password or an unknown host key would hang the batch.
         "-o".to_owned(),
         "BatchMode=yes".to_owned(),
+        // A server that never answers, or stops answering, ends the batch instead of hanging it.
+        "-o".to_owned(),
+        "ConnectTimeout=30".to_owned(),
+        "-o".to_owned(),
+        "ServerAliveInterval=15".to_owned(),
+        "-o".to_owned(),
+        "ServerAliveCountMax=4".to_owned(),
         "-P".to_owned(),
         config.port.to_string(),
     ];
@@ -369,11 +376,11 @@ async fn put(
             "SFTP password sign-in is not available on Windows; set a key file for this destination".to_owned(),
         ));
     }
-    on_worker(move || windows_put(&config, &name, data)).await?
+    on_worker(move |cancelled| windows_put(&config, &name, data, cancelled)).await?
 }
 
 #[cfg(windows)]
-fn windows_put(config: &SftpConfig, name: &str, data: UploadData) -> Result<(), UploadError> {
+fn windows_put(config: &SftpConfig, name: &str, data: UploadData, cancelled: &std::sync::atomic::AtomicBool) -> Result<(), UploadError> {
     let (local, temporary) = match data {
         UploadData::Path(path) => (path, None),
         UploadData::Bytes(bytes) => {
@@ -381,7 +388,7 @@ fn windows_put(config: &SftpConfig, name: &str, data: UploadData) -> Result<(), 
             (path.clone(), Some(path))
         }
     };
-    let result = run_batch(config, name, &local);
+    let result = run_batch(config, name, &local, cancelled);
     if let Some(path) = temporary {
         let _ = std::fs::remove_file(path);
     }
@@ -389,10 +396,10 @@ fn windows_put(config: &SftpConfig, name: &str, data: UploadData) -> Result<(), 
 }
 
 #[cfg(windows)]
-fn run_batch(config: &SftpConfig, name: &str, local: &Path) -> Result<(), UploadError> {
+fn run_batch(config: &SftpConfig, name: &str, local: &Path, cancelled: &std::sync::atomic::AtomicBool) -> Result<(), UploadError> {
     let script = batch_script(&config.directory, local, name)?;
     let args = command_args(config, config.key_path.as_deref())?;
-    let output = run_sftp(&args, &script)?;
+    let output = run_sftp(&args, &script, cancelled)?;
     if output.status.success() { Ok(()) } else { Err(sftp_failure(&output.stderr)) }
 }
 
@@ -408,8 +415,10 @@ fn sftp_program() -> PathBuf {
     PathBuf::from("sftp.exe")
 }
 
+/// Runs the batch and waits for it. When `cancelled` is set (the upload's future was dropped), the
+/// child is killed and reaped, so a cancelled upload leaves no `sftp.exe` behind.
 #[cfg(windows)]
-fn run_sftp(args: &[String], script: &str) -> Result<std::process::Output, UploadError> {
+fn run_sftp(args: &[String], script: &str, cancelled: &std::sync::atomic::AtomicBool) -> Result<std::process::Output, UploadError> {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
 
@@ -433,7 +442,36 @@ fn run_sftp(args: &[String], script: &str) -> Result<std::process::Output, Uploa
         // A failed write means sftp already exited; its status and stderr explain why.
         let _ = stdin.write_all(script.as_bytes());
     }
-    child.wait_with_output().map_err(io_failure)
+    // Drain both pipes on their own threads so a full pipe can't stall the child while we poll it.
+    let drain = |pipe: Option<Box<dyn io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn io::Read + Send>));
+    let stderr = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn io::Read + Send>));
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io_failure(error));
+            }
+        }
+        if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(UploadError::Cancelled);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    Ok(std::process::Output { status, stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() })
 }
 
 #[cfg(windows)]
@@ -460,18 +498,32 @@ fn write_temporary(bytes: &[u8]) -> Result<PathBuf, UploadError> {
     Ok(path)
 }
 
-/// Runs blocking `work` on its own thread and resolves with its result on any executor. A panic
-/// in `work` becomes `BadResponse`, which is not retried.
+/// Sets its flag when dropped: held by the upload's future, so dropping the future tells the worker.
+#[cfg(windows)]
+struct CancelOnDrop(Arc<std::sync::atomic::AtomicBool>);
+
+#[cfg(windows)]
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Runs blocking `work` on its own thread and resolves with its result on any executor. `work`
+/// gets a flag that turns true when this future is dropped before the work ends. A panic in `work`
+/// becomes `BadResponse`, which is not retried.
 #[cfg(windows)]
 async fn on_worker<R, F>(work: F) -> Result<R, UploadError>
 where
     R: Send + 'static,
-    F: FnOnce() -> R + Send + 'static,
+    F: FnOnce(&std::sync::atomic::AtomicBool) -> R + Send + 'static,
 {
     let slot = Arc::new(Mutex::new(Slot { value: None, waker: None }));
     let writer = Arc::clone(&slot);
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _cancel_on_drop = CancelOnDrop(Arc::clone(&cancelled));
     std::thread::spawn(move || {
-        let value = catch_unwind(AssertUnwindSafe(work));
+        let value = catch_unwind(AssertUnwindSafe(|| work(&cancelled)));
         let waker = {
             let mut slot = lock(&writer);
             slot.value = Some(value);

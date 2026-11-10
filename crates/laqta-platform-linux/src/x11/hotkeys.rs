@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use laqta_domain::{Action, Key, KeyChord, Modifiers};
-use laqta_ports::{ActionCallback, HotkeyRegistrar, PortError};
+use laqta_ports::{HotkeyCallback, HotkeyRegistrar, PortError};
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{ConnectionExt as _, GrabMode, ModMask, Window};
@@ -29,8 +29,8 @@ struct Grab {
     keycode: u8,
     /// The chord's modifiers, without the NumLock and CapsLock bits.
     modifiers: ModMask,
-    action: Action,
-    on_fire: ActionCallback,
+    chord: KeyChord,
+    on_fire: HotkeyCallback,
 }
 
 impl Session {
@@ -60,9 +60,9 @@ fn event_loop(conn: &RustConnection, grabs: &Mutex<Vec<Grab>>) {
         let fired = lock(grabs)
             .iter()
             .find(|g| g.keycode == press.detail && u16::from(g.modifiers) == state)
-            .map(|g| (g.action, Arc::clone(&g.on_fire)));
-        if let Some((action, on_fire)) = fired {
-            on_fire(action);
+            .map(|g| (g.chord, Arc::clone(&g.on_fire)));
+        if let Some((chord, on_fire)) = fired {
+            on_fire(chord);
         }
     }
 }
@@ -227,7 +227,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl HotkeyRegistrar for X11Hotkeys {
-    fn register(&self, bindings: &[(KeyChord, Action)], on_fire: ActionCallback) -> Vec<(KeyChord, Result<(), PortError>)> {
+    fn register(&self, bindings: &[(KeyChord, Action)], on_fire: HotkeyCallback) -> Vec<(KeyChord, Result<(), PortError>)> {
         let all_err = |e: PortError| bindings.iter().map(|(c, _)| (*c, Err(e.clone()))).collect::<Vec<_>>();
         let mut guard = lock(&self.session);
         if guard.is_none() {
@@ -248,7 +248,7 @@ impl HotkeyRegistrar for X11Hotkeys {
         let keycode_of = |sym: u32| mapping.keysyms.chunks(per).position(|syms| syms.contains(&sym)).map(|i| min + i as u8);
 
         let mut results = Vec::with_capacity(bindings.len());
-        for (chord, action) in bindings {
+        for (chord, _) in bindings {
             let Some(sym) = keysym(chord.key) else {
                 results.push((*chord, Err(PortError::Unsupported(format!("no X keysym for {:?}", chord.key)))));
                 continue;
@@ -265,7 +265,7 @@ impl HotkeyRegistrar for X11Hotkeys {
             // A chord registered again replaces its earlier binding, so one key press fires once.
             let mut grabs = lock(&session.grabs);
             grabs.retain(|g| g.keycode != keycode || u16::from(g.modifiers) != u16::from(modifiers));
-            grabs.push(Grab { keycode, modifiers, action: *action, on_fire: Arc::clone(&on_fire) });
+            grabs.push(Grab { keycode, modifiers, chord: *chord, on_fire: Arc::clone(&on_fire) });
             results.push((*chord, Ok(())));
         }
         let _ = session.conn.flush();

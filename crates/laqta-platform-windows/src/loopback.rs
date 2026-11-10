@@ -128,6 +128,11 @@ impl PcmSource for WasapiLoopback {
         }
     }
 
+    /// Clears the buffered samples: the audio captured during a pause is stale on resume.
+    fn discard_pending(&mut self) {
+        self.shared.lock().samples.clear();
+    }
+
     fn stop(&mut self) {
         self.shared.end();
         if let Some(thread) = self.thread.take() {

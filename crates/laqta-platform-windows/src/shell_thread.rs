@@ -18,7 +18,7 @@ use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
 use laqta_domain::{Action, KeyChord, Modifiers};
-use laqta_ports::{ActionCallback, HotkeyRegistrar, PortError, Tray, TrayMenu};
+use laqta_ports::{ActionCallback, HotkeyCallback, HotkeyRegistrar, PortError, Tray, TrayMenu};
 use windows::Win32::Foundation::{ERROR_HOTKEY_ALREADY_REGISTERED, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -43,7 +43,7 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 type HotkeyResults = Vec<(KeyChord, Result<(), PortError>)>;
 
 enum Command {
-    Hotkeys { bindings: Vec<(KeyChord, Action)>, on_fire: ActionCallback, reply: mpsc::Sender<HotkeyResults> },
+    Hotkeys { bindings: Vec<(KeyChord, Action)>, on_fire: HotkeyCallback, reply: mpsc::Sender<HotkeyResults> },
     Tray { menu: TrayMenu, on_select: ActionCallback, reply: mpsc::Sender<Result<(), PortError>> },
     UnregisterAll { reply: mpsc::Sender<()> },
     Shutdown { reply: mpsc::Sender<()> },
@@ -56,8 +56,8 @@ static WINDOW: OnceLock<Result<isize, String>> = OnceLock::new();
 /// State owned by the shell thread, touched only from its window procedure.
 #[derive(Default)]
 struct State {
-    hotkeys: HashMap<i32, Action>,
-    on_hotkey: Option<ActionCallback>,
+    hotkeys: HashMap<i32, KeyChord>,
+    on_hotkey: Option<HotkeyCallback>,
     tray: Option<(TrayMenu, ActionCallback)>,
     icon_added: bool,
     taskbar_created: u32,
@@ -71,7 +71,7 @@ thread_local! {
 pub(crate) struct WindowsHotkeys;
 
 impl HotkeyRegistrar for WindowsHotkeys {
-    fn register(&self, bindings: &[(KeyChord, Action)], on_fire: ActionCallback) -> HotkeyResults {
+    fn register(&self, bindings: &[(KeyChord, Action)], on_fire: HotkeyCallback) -> HotkeyResults {
         let bindings = bindings.to_vec();
         let chords: Vec<KeyChord> = bindings.iter().map(|(c, _)| *c).collect();
         match send(|reply| Command::Hotkeys { bindings, on_fire, reply }) {
@@ -170,8 +170,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let s = s.borrow();
                 s.hotkeys.get(&id).copied().zip(s.on_hotkey.clone())
             });
-            if let Some((action, callback)) = fire {
-                callback(action);
+            if let Some((chord, callback)) = fire {
+                callback(chord);
             }
             LRESULT(0)
         }
@@ -263,11 +263,11 @@ fn unregister_hotkeys(hwnd: HWND) {
     }
 }
 
-fn register_hotkeys(hwnd: HWND, bindings: &[(KeyChord, Action)], on_fire: ActionCallback) -> HotkeyResults {
+fn register_hotkeys(hwnd: HWND, bindings: &[(KeyChord, Action)], on_fire: HotkeyCallback) -> HotkeyResults {
     unregister_hotkeys(hwnd);
     let mut registered = HashMap::new();
     let mut results = Vec::with_capacity(bindings.len());
-    for (index, (chord, action)) in bindings.iter().enumerate() {
+    for (index, (chord, _)) in bindings.iter().enumerate() {
         let id = index as i32 + 1;
         let result = match keys::vk(chord.key) {
             None => Err(PortError::Failed(format!("{chord} uses a key Windows cannot register"))),
@@ -276,7 +276,7 @@ fn register_hotkeys(hwnd: HWND, bindings: &[(KeyChord, Action)], on_fire: Action
                 .map_err(|e| PortError::Failed(refusal_text(&chord.to_string(), win32_code(&e), &e.message()))),
         };
         if result.is_ok() {
-            registered.insert(id, *action);
+            registered.insert(id, *chord);
         }
         results.push((*chord, result));
     }

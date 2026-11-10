@@ -127,7 +127,7 @@ fn overlong_request_gets_malformed_reply_and_hangs_up() {
     server.serve(handler);
     let name = endpoint.as_str().to_fs_name::<GenericFilePath>().expect("endpoint name");
     let mut stream = BufReader::new(LocalSocketStream::connect(name).expect("connect"));
-    let request = format!("action {}\n", "x".repeat(8192));
+    let request = format!("action {}\n", "x".repeat(1024 * 1024));
     stream.get_mut().write_all(request.as_bytes()).expect("write request");
     let mut line = String::new();
     stream.read_line(&mut line).expect("read reply");

@@ -209,7 +209,7 @@ fn spec(kind: ToolKind) -> Spec {
 use crate::gpu_image::render_image;
 
 fn decode_file(path: &Path, codecs: &laqta_imaging::Codecs) -> Result<Bitmap, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let bytes = crate::presenters::output::read_file(path)?;
     codecs.decode(&bytes).map_err(|e| e.to_string())
 }
 
@@ -469,7 +469,11 @@ impl ToolsWindow {
             // Decoding picks its file first.
             let task = cx.background_spawn(async move {
                 let Some(file) = rfd::AsyncFileDialog::new().pick_file().await else { return Ok(None) };
-                t::qr_decode_file(app.ports(), file.path()).await.map(Some).map_err(|e| e.to_string())
+                match app.run_tool(t::ToolJob::QrDecodeFile(file.path().to_path_buf())).await {
+                    Ok(t::ToolOutput::Lines(codes)) => Ok(Some(codes)),
+                    Ok(_) => Ok(Some(Vec::new())),
+                    Err(e) => Err(e.to_string()),
+                }
             });
             self.busy = true;
             cx.spawn(async move |this, cx| {
@@ -524,9 +528,18 @@ enum Job {
 
 impl Job {
     async fn run(self, app: &laqta_app::App, codecs: &laqta_imaging::Codecs) -> Result<(String, Option<Bitmap>), String> {
-        let ports = app.ports();
-        let e = |e: laqta_ports::AppError| e.to_string();
+        use t::{ToolJob as J, ToolOutput as O};
         let text = |s: String| Ok((s, None));
+        // One tool run through the app. `$out` names the output shape this job produces.
+        macro_rules! run {
+            ($job:expr, $out:path) => {
+                match app.run_tool($job).await.map_err(|e| e.to_string())? {
+                    $out(v) => v,
+                    other => return Err(format!("unexpected tool output: {other:?}")),
+                }
+            };
+        }
+        let done = |out: O| matches!(out, O::Done).then_some(()).ok_or("unexpected tool output");
         match self {
             Job::Colour(s) => {
                 let c = t::parse_color(&s).ok_or("not a color")?;
@@ -540,7 +553,7 @@ impl Job {
                 Ok((format!("{} — {}×{}", p.display(), b.width(), b.height()), Some(b)))
             }
             Job::Compare(a, b, tol) => {
-                let d = t::compare_files(ports, &a, &b, tol).await.map_err(e)?;
+                let d = run!(J::Compare { a, b, tolerance: tol }, O::Diff);
                 let pct = if d.total == 0 { 0.0 } else { d.changed as f64 * 100.0 / d.total as f64 };
                 Ok((
                     format!("{} of {} pixels differ ({pct:.2}%); largest channel difference {}.", d.changed, d.total, d.max_delta),
@@ -548,58 +561,69 @@ impl Job {
                 ))
             }
             Job::Icon(p, sizes) => {
-                let out = t::make_icon(ports, &p, &sizes, &with_suffix(&p, "", Some("ico"))).await.map_err(e)?;
+                let out = with_suffix(&p, "", Some("ico"));
+                let out = run!(J::Icon { path: p, sizes, out }, O::Path);
                 text(format!("Wrote {}", out.display()))
             }
             Job::Combine(paths, horizontal, spacing) => {
                 use laqta_imaging::tools::combine::{Align, Orientation};
                 let o = if horizontal { Orientation::Horizontal } else { Orientation::Vertical };
                 let out = dir_of(&paths[0]).join("combined.png");
-                let out = t::combine_files(ports, &paths, o, Align::Start, spacing, &out).await.map_err(e)?;
+                let out = run!(J::Combine { paths, orientation: o, align: Align::Start, spacing, out }, O::Path);
                 let img = decode_file(&out, codecs).ok();
                 Ok((format!("Wrote {}", out.display()), img))
             }
-            Job::Split(p, rows, cols) => text(list(&t::split_file(ports, &p, rows, cols, &dir_of(&p)).await.map_err(e)?)),
+            Job::Split(p, rows, cols) => {
+                let out_dir = dir_of(&p);
+                text(list(&run!(J::Split { path: p, rows, cols, out_dir }, O::Paths)))
+            }
             Job::Resize(paths, w, h, keep) => {
                 let dir = dir_of(paths.first().ok_or("choose images first")?);
-                text(list(&t::resize_files(ports, &paths, w, h, keep, &dir).await.map_err(e)?))
+                text(list(&run!(J::Resize { paths, width: w, height: h, keep_aspect: keep, out_dir: dir }, O::Paths)))
             }
             Job::Convert(paths, format, q) => {
                 let dir = dir_of(paths.first().ok_or("choose images first")?);
-                text(list(&t::convert_files(ports, &paths, format, q, &dir).await.map_err(e)?))
+                text(list(&run!(J::Convert { paths, format, quality: q, out_dir: dir }, O::Paths)))
             }
             Job::Watermark(paths, mark, placement, opacity) => {
                 let dir = dir_of(paths.first().ok_or("choose images first")?);
-                text(list(&t::watermark_files(ports, &paths, &mark, placement, opacity, &dir).await.map_err(e)?))
+                text(list(&run!(J::Watermark { paths, mark, placement, opacity, out_dir: dir }, O::Paths)))
             }
             Job::Thumbs(paths, w, h) => {
                 let dir = dir_of(paths.first().ok_or("choose images first")?);
-                text(list(&t::thumbnail_files(ports, &paths, w, h, &dir).await.map_err(e)?))
+                text(list(&run!(J::Thumbnails { paths, max_width: w, max_height: h, out_dir: dir }, O::Paths)))
             }
             Job::Video(p, ext, codec, width) => {
                 let out = with_suffix(&p, "-converted", Some(&ext));
                 let spec = laqta_ports::TranscodeSpec { codec: Some(codec), width, ..Default::default() };
-                t::convert_video(ports, &p, &out, spec).await.map_err(e)?;
+                done(app.run_tool(J::ConvertVideo { input: p, output: out.clone(), spec }).await.map_err(|e| e.to_string())?)?;
                 text(format!("Wrote {}", out.display()))
             }
             Job::Trim(p, start, dur) => {
                 let out = with_suffix(&p, "-trimmed", None);
-                t::trim_video(ports, &p, &out, start, dur).await.map_err(e)?;
+                done(
+                    app.run_tool(J::TrimVideo { input: p, output: out.clone(), start_secs: start, duration_secs: dur })
+                        .await
+                        .map_err(|e| e.to_string())?,
+                )?;
                 text(format!("Wrote {}", out.display()))
             }
-            Job::VideoThumbs(p, n) => text(list(&t::video_thumbnails(ports, &p, &dir_of(&p), n).await.map_err(e)?)),
+            Job::VideoThumbs(p, n) => {
+                let out_dir = dir_of(&p);
+                text(list(&run!(J::VideoThumbnails { input: p, out_dir, count: n }, O::Paths)))
+            }
             Job::Gif(p, fps, w) => {
                 let out = with_suffix(&p, "", Some("gif"));
-                t::make_gif(ports, &p, &out, fps, w).await.map_err(e)?;
+                done(app.run_tool(J::Gif { input: p, output: out.clone(), fps, width: w }).await.map_err(|e| e.to_string())?)?;
                 text(format!("Wrote {}", out.display()))
             }
             Job::QrMake(s) => {
-                let b = t::qr_image(&s, 8).map_err(e)?;
+                let b = t::qr_image(&s, 8).map_err(|e| e.to_string())?;
                 Ok((s, Some(b)))
             }
             Job::QrDecode => text(String::new()),
             Job::Hash(p, expected) => {
-                let rows = t::hash_file(ports, &p, &t::HashKind::ALL).await.map_err(e)?;
+                let rows = run!(J::Hash { path: p, kinds: t::HashKind::ALL.to_vec() }, O::Hashes);
                 let mut out: Vec<String> = rows.iter().map(|(k, v)| format!("{k:?}: {v}")).collect();
                 if !expected.is_empty() {
                     let hit = rows.iter().find(|(_, v)| t::compare_hash(&expected, v));
@@ -614,7 +638,7 @@ impl Job {
                 text(out.join("\n"))
             }
             Job::Meta(p) => {
-                let rows = t::read_metadata(ports, &p).await.map_err(e)?;
+                let rows = run!(J::Metadata(p), O::Pairs);
                 text(if rows.is_empty() {
                     "No metadata.".into()
                 } else {
@@ -623,14 +647,14 @@ impl Job {
             }
             Job::Strip(paths) => {
                 let dir = dir_of(paths.first().ok_or("choose files first")?);
-                text(list(&t::strip_metadata_files(ports, &paths, &dir).await.map_err(e)?))
+                text(list(&run!(J::StripMetadata { paths, out_dir: dir }, O::Paths)))
             }
             Job::Index(dir, choice, depth) => {
                 let format = [t::IndexFormat::Text, t::IndexFormat::Html, t::IndexFormat::Json, t::IndexFormat::Xml][choice];
                 let options = t::IndexOptions { max_depth: depth, ..Default::default() };
-                text(t::index_folder(ports, &dir, format, options).await.map_err(e)?)
+                text(run!(J::Index { dir, format, options }, O::Text))
             }
-            Job::Clipboard => match ports.clipboard.get().map_err(|e| e.to_string())? {
+            Job::Clipboard => match run!(J::Clipboard, O::Clipboard) {
                 None => text("The clipboard is empty.".into()),
                 Some(ClipboardContent::Text(s)) => text(format!("Text ({} characters):\n\n{s}", s.chars().count())),
                 Some(ClipboardContent::Image(b)) => Ok((format!("Image {}×{}", b.width(), b.height()), Some(b))),
@@ -639,14 +663,8 @@ impl Job {
                 }
             },
             Job::Borderless(title, on) => {
-                let needle = title.to_lowercase();
-                let targets = ports.hover.targets().await.map_err(|e| e.to_string())?;
-                let target = targets
-                    .into_iter()
-                    .find(|w| !needle.is_empty() && w.title.to_lowercase().contains(&needle))
-                    .ok_or("no window has that title")?;
-                ports.window_ops.set_borderless(&target, on).map_err(|e| e.to_string())?;
-                text(format!("{} \"{}\".", if on { "Removed the border of" } else { "Restored the border of" }, target.title))
+                let title = run!(J::Borderless { title, on }, O::Window).ok_or("no window has that title")?;
+                text(format!("{} \"{}\".", if on { "Removed the border of" } else { "Restored the border of" }, title))
             }
         }
     }
@@ -798,7 +816,7 @@ impl Render for ToolsWindow {
                     let out = out.clone();
                     cx.background_spawn(async move {
                         if let Some(f) = rfd::AsyncFileDialog::new().set_file_name(format!("index.{ext}")).save_file().await
-                            && let Err(e) = std::fs::write(f.path(), out)
+                            && let Err(e) = crate::presenters::output::write_file(f.path(), out.as_bytes())
                         {
                             tracing::warn!("index not saved: {e}");
                         }
