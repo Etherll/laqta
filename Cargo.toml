@@ -183,10 +183,16 @@ opt-level = 2
 opt-level = 2
 
 [profile.release]
-lto = "fat"
-codegen-units = 1
+lto = "thin"
 strip = "symbols"
 # panic stays "unwind" (ADR 020)
+
+# What users download (release.yml builds it for tags). Fat LTO in one codegen unit takes about 60%
+# longer to build than `release` but makes a smaller binary: 72 MB instead of 94 MB on Linux.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

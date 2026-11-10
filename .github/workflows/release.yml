@@ -18,6 +18,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Tags build the `dist` profile (fat LTO, what users download); manual runs build the quicker
+  # `release` profile.
+  BUILD_PROFILE: ${{ startsWith(github.ref, 'refs/tags/v') && 'dist' || 'release' }}
 
 jobs:
   # The CI checks run first; a failure stops the build and the release.
@@ -49,20 +52,20 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME does not match version $version in Cargo.toml"
             exit 1
           fi
-      - run: cargo build --release --locked -p laqta -p laqta-nmh
+      - run: cargo build --profile $BUILD_PROFILE --locked -p laqta -p laqta-nmh
       - name: Package
         run: |
           mkdir -p dist
           dir="laqta-${GITHUB_REF_NAME}-linux-x86_64"
           mkdir -p "dist/$dir"
-          cp target/release/laqta target/release/laqta-nmh LICENSE README.md "dist/$dir/"
+          cp target/$BUILD_PROFILE/laqta target/$BUILD_PROFILE/laqta-nmh LICENSE README.md "dist/$dir/"
           sed 's|^Exec=/usr/bin/laqta|Exec=laqta|' packaging/linux/io.github.etherll.Laqta.desktop > "dist/$dir/io.github.etherll.Laqta.desktop"
           cp -r assets/icon "dist/$dir/icons"
           # zstd -19: about a quarter smaller than gzip -9, and faster to unpack.
           tar -C dist -cf - "$dir" | zstd -19 -T0 -q -o dist/laqta-linux-x86_64.tar.zst
           rm -rf "dist/$dir"
           # The .deb takes its version from Cargo.toml and its dependencies from dpkg-shlibdeps.
-          cargo deb -p laqta --no-build -o dist/laqta-linux-amd64.deb
+          cargo deb -p laqta --no-build --profile $BUILD_PROFILE -o dist/laqta-linux-amd64.deb
       - name: AppImage
         env:
           APPIMAGETOOL_URL: https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
@@ -77,7 +80,7 @@ jobs:
           chmod +x appimagetool
           app=Laqta.AppDir id=io.github.etherll.Laqta
           mkdir -p $app/usr/bin $app/usr/share/applications
-          cp target/release/laqta target/release/laqta-nmh $app/usr/bin/
+          cp target/$BUILD_PROFILE/laqta target/$BUILD_PROFILE/laqta-nmh $app/usr/bin/
           sed 's|^Exec=/usr/bin/laqta|Exec=laqta|' packaging/linux/$id.desktop > $app/usr/share/applications/$id.desktop
           cp $app/usr/share/applications/$id.desktop $app/
           for size in 16 32 64 128 256 512; do
@@ -111,7 +114,7 @@ jobs:
         with: { save-if: "${{ github.ref == 'refs/heads/main' }}" }
       - run: vcpkg install "sqlite3[fts5]:x64-windows-static-md"
       - run: echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
-      - run: cargo build --release --locked -p laqta -p laqta-nmh
+      - run: cargo build --profile $env:BUILD_PROFILE --locked -p laqta -p laqta-nmh
       - name: Install Velopack
         run: dotnet tool install vpk --version 1.2.161 --tool-path .vpk
       - name: Package
@@ -120,7 +123,7 @@ jobs:
           # The version comes from Cargo.toml, so a manual run from a branch packs too.
           $version = ((cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages | Where-Object name -eq laqta).version
           New-Item -ItemType Directory -Force dist, stage | Out-Null
-          Copy-Item target/release/laqta.exe, target/release/laqta-nmh.exe, LICENSE, README.md stage/
+          Copy-Item "target/$env:BUILD_PROFILE/laqta.exe", "target/$env:BUILD_PROFILE/laqta-nmh.exe", LICENSE, README.md stage/
           # The installer and the update package. Laqta answers the --veloapp-* hooks itself and
           # does not link the Velopack SDK, so the SDK check is skipped.
           .vpk/vpk pack --packId Laqta --packVersion $version --packTitle Laqta --packAuthors "Laqta contributors" `
@@ -132,7 +135,7 @@ jobs:
           Get-ChildItem velopack -File | Where-Object { $_.Name -notlike '*Portable.zip' } | Move-Item -Destination dist
           # The portable build is laqta.exe under a name containing "portable", which keeps its
           # settings and history in LaqtaData next to it.
-          Copy-Item target/release/laqta.exe dist/laqta-windows-x64-portable.exe
+          Copy-Item "target/$env:BUILD_PROFILE/laqta.exe" dist/laqta-windows-x64-portable.exe
           foreach ($f in "laqta-windows-x64-setup.exe", "laqta-windows-x64-portable.exe") {
             $hash = (Get-FileHash "dist/$f" -Algorithm SHA256).Hash.ToLower()
             "$hash  $f" | Out-File -Encoding ascii "dist/$f.sha256"
@@ -165,11 +168,11 @@ jobs:
       - name: Build both architectures
         run: |
           for target in aarch64-apple-darwin x86_64-apple-darwin; do
-            cargo build --release --locked -p laqta -p laqta-nmh --target $target
+            cargo build --profile $BUILD_PROFILE --locked -p laqta -p laqta-nmh --target $target
           done
           mkdir -p universal dist
           for bin in laqta laqta-nmh; do
-            lipo -create -output universal/$bin target/aarch64-apple-darwin/release/$bin target/x86_64-apple-darwin/release/$bin
+            lipo -create -output universal/$bin target/aarch64-apple-darwin/$BUILD_PROFILE/$bin target/x86_64-apple-darwin/$BUILD_PROFILE/$bin
           done
       - name: Import the signing certificate
         if: env.MACOS_CERTIFICATE_P12 != ''
