@@ -158,12 +158,23 @@ struct EditorWindow {
     toast_for: Option<String>,
     /// A smart tool at work ("Removing the background…"); others wait for it.
     busy: Option<&'static str>,
-    /// Done was pressed while commands were still running; finish when they end.
-    finish_pending: bool,
+    /// Outputs asked for while commands were still running or queued; they run when the queue drains,
+    /// so they see every edit made before them.
+    deferred: Vec<Deferred>,
+}
+
+/// An output that reads the image, so it waits for queued edits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Deferred {
+    Finish,
+    Save { ask: bool },
+    Copy,
+    Upload,
+    Smart(Smart),
 }
 
 /// The editor's AI tools, run on the whole current image.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Smart {
     CopyText,
     RemoveBackground,
@@ -238,7 +249,7 @@ impl EditorWindow {
             stage: Rc::new(Cell::new(None)),
             toast_for: None,
             busy: None,
-            finish_pending: false,
+            deferred: Vec::new(),
         };
         if this.interaction.initial() {
             this.start_render(cx);
@@ -322,13 +333,34 @@ impl EditorWindow {
                 }
                 match done.next {
                     Some(next) => this.run_batch(next, window, cx),
-                    None if std::mem::take(&mut this.finish_pending) => this.finish(window, cx),
-                    None => {}
+                    None => {
+                        for output in std::mem::take(&mut this.deferred) {
+                            match output {
+                                Deferred::Finish => this.finish(window, cx),
+                                Deferred::Save { ask } => this.save(ask, cx),
+                                Deferred::Copy => this.copy(cx),
+                                Deferred::Upload => this.upload(cx),
+                                Deferred::Smart(op) => this.smart(op, window, cx),
+                            }
+                        }
+                    }
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// True when `output` has to wait: commands are still running or queued, and the output must
+    /// include them. It is kept and runs when they end.
+    fn defer(&mut self, output: Deferred) -> bool {
+        if self.interaction.idle() {
+            return false;
+        }
+        if !self.deferred.contains(&output) {
+            self.deferred.push(output);
+        }
+        true
     }
 
     /// The image encoded off the UI thread.
@@ -355,8 +387,7 @@ impl EditorWindow {
             return;
         }
         // Commands still running or queued belong in the result: finish when they end.
-        if !self.interaction.idle() {
-            self.finish_pending = true;
+        if self.defer(Deferred::Finish) {
             return;
         }
         let Some(reply) = self.reply.take() else {
@@ -375,6 +406,9 @@ impl EditorWindow {
     }
 
     fn save(&mut self, ask: bool, cx: &mut Context<Self>) {
+        if self.defer(Deferred::Save { ask }) {
+            return;
+        }
         let settings = cx.global::<UiState>().services.app.settings();
         let format = settings.defaults.image.format;
         let ext = format.extension();
@@ -419,6 +453,9 @@ impl EditorWindow {
     }
 
     fn copy(&mut self, cx: &mut Context<Self>) {
+        if self.defer(Deferred::Copy) {
+            return;
+        }
         let export = self.interaction.export();
         let app = cx.global::<UiState>().services.app.clone();
         cx.spawn(async move |this, cx| {
@@ -436,6 +473,9 @@ impl EditorWindow {
 
     /// Saves a temporary PNG and hands it to Task as a file upload.
     fn upload(&mut self, cx: &mut Context<Self>) {
+        if self.defer(Deferred::Upload) {
+            return;
+        }
         let encoded = self.encoded(ImageFormat::Png, cx);
         let services = cx.global::<UiState>().services.clone();
         let dir = services.data_dir.join("edits");
@@ -463,7 +503,7 @@ impl EditorWindow {
     /// Runs a smart tool on the current image: export on the compute pool, the model through
     /// `App`, then the result back into the editor (an undoable step) or a text window.
     fn smart(&mut self, op: Smart, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy.is_some() {
+        if self.busy.is_some() || self.defer(Deferred::Smart(op)) {
             return;
         }
         self.busy = Some(op.busy());

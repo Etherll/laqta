@@ -81,9 +81,11 @@ pub enum ActionInput {
 }
 
 /// What a dispatched action produced.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Dispatched {
     Task(TaskId),
+    /// Several files: one task each, in order.
+    Tasks(Vec<TaskId>),
     Done,
     Exit,
     /// `DisableHotkeys` flipped `settings.disable_hotkeys`; `main` re-registers hotkeys.
@@ -584,7 +586,11 @@ const MULTI_UPLOAD_CONFIRM_ABOVE: usize = 10;
 
 /// The dispatched result for a batch of jobs: the first job's id, or nothing to wait for when the batch is empty.
 fn first_task(ids: Vec<TaskId>) -> Dispatched {
-    ids.first().map_or(Dispatched::Done, |id| Dispatched::Task(*id))
+    match ids.as_slice() {
+        [] => Dispatched::Done,
+        [id] => Dispatched::Task(*id),
+        _ => Dispatched::Tasks(ids),
+    }
 }
 
 /// The after-capture steps for a region the user finished with `action` (ADR 011: what happens to a

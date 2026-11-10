@@ -181,6 +181,7 @@ fn dispatched(result: Result<Dispatched, laqta_ports::AppError>) -> Result<Optio
     match result {
         Ok(Dispatched::Exit) => Ok(None),
         Ok(Dispatched::Task(id)) => Ok(Some(vec![id])),
+        Ok(Dispatched::Tasks(ids)) => Ok(Some(ids)),
         Ok(_) | Err(laqta_ports::AppError::Cancelled) => Ok(Some(vec![])),
         Err(e) => Err(e.to_string()),
     }
@@ -195,8 +196,7 @@ async fn run_request(
     use crate::requests::Route;
     match crate::requests::route(request, &app.settings())? {
         Route::Dispatch(action, workflow) => dispatched(app.dispatch(action, workflow).await),
-        // Uploads enter through `dispatch` too (ADR 015), as the action with its input. A folder's
-        // later tasks reach the caller as task events.
+        // Uploads enter through `dispatch` too (ADR 015), as the action with its input.
         Route::Upload(source, workflow) => {
             use laqta_app::ActionInput;
             let (action, input) = match source {
