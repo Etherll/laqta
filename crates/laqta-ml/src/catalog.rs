@@ -265,6 +265,8 @@ mod tests {
     fn the_shipped_onnxruntime_is_listed_for_both_systems() {
         assert!(catalog().onnxruntime_for("linux", "x86_64").is_some());
         assert!(catalog().onnxruntime_for("windows", "x86_64").is_some());
+        assert!(catalog().onnxruntime_for("macos", "aarch64").is_some());
+        assert!(catalog().onnxruntime_for("macos", "x86_64").is_some());
     }
 
     #[test]

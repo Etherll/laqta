@@ -80,7 +80,7 @@ internal panel and one 4K external monitor.
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ Outer: delivery and drivers                                                   │
-│   laqta-ui (views + presenters) · laqta-platform-{windows,linux} ·          │
+│   laqta-ui (views + presenters) · laqta-platform-{windows,linux,macos} ·    │
 │   laqta-upload · laqta-cloud · laqta-ml · laqta-media · laqta-library ·  │
 │   laqta-import · laqta-ipc · laqta-update ·                              │
 │   laqta-http (library)                                                      │
@@ -360,6 +360,7 @@ saves (the token goes to `<data>/screencast-token`). Platform crates never touch
 | `laqta-ipc` | Single-instance lock and forwarding of commands between instances, over a named pipe (Windows) or a Unix socket (Linux). It owns the text names of actions used by the CLI and the IPC protocol |
 | `laqta-platform-windows` | Stills through DXGI duplication with a GDI fallback (HDR via DXGI 1.6). Transparent windows are captured twice, over white and over black pop-ups, and the alpha comes from the difference. Hover targets from `EnumWindows` + UI Automation. Hotkeys and the tray on a dedicated message-loop thread. Credential Manager, the Run-key autostart, shell verbs and Send To. The native recorder (a `Media` adapter on Windows.Graphics.Capture, with WASAPI loopback). It has no toast code: notifications are GPUI toasts |
 | `laqta-platform-linux` | Capture, hover and hotkey backends with their Wayland fallbacks (ADR 019). Also: SNI tray with a DBusMenu menu (`ksni`), Secret Service, XDG autostart, AT-SPI. The overlay is not here: its layer-shell backend is in `laqta-ui`. There are no freedesktop notifications; toasts are GPUI's |
+| `laqta-platform-macos` | Stills and recording frames through ScreenCaptureKit, which leaves Laqta's own app out, with system audio from the same stream. Hover targets from the window list and the Accessibility API. Carbon hotkeys, an `NSStatusItem` menu, the pasteboard, Keychain, `SMAppService` autostart, Vision OCR. AppKit work runs on the main queue. Points become physical pixels in `displays` (ADR 030) |
 
 ### 2.5 Composition root (`apps/laqta`)
 
@@ -574,7 +575,7 @@ crates/
   laqta-upload/  (catalog/*.sxcu, hosts/<host>.rs; nine hosts have a host-<host> feature)
   laqta-http/  laqta-cloud/  laqta-update/  laqta-media/  laqta-library/  laqta-ml/  (catalog/models.toml, families/<family>.rs)
   laqta-import/  laqta-ui/  (src/presenters/)
-  laqta-ipc/  laqta-platform-windows/  laqta-platform-linux/  apps/
+  laqta-ipc/  laqta-platform-windows/  laqta-platform-linux/  laqta-platform-macos/  apps/
   laqta/  composition root
   laqta-nmh/  native-messaging host
 vendor/  patched `blocking` and `gpui-component` (vendor/README.md)
@@ -641,6 +642,7 @@ Full records are in [`adr/`](adr/).
 | [027](adr/027-photo-uses-editor.md) | `laqta-photo` depends on `laqta-editor` for fonts and text layout (its rasterizer is private, so shapes and brushes use tiny-skia directly) | a copy of those parts in `laqta-photo`; a shared third crate |
 | [028](adr/028-ui-design-system.md) | One design system in `laqta-ui`: theme tokens, shared components, bundled Inter and Space Grotesk, `gpui-kit-assets` icons, a custom titlebar | inline styling per window; a design-system crate; the platform UI font; the system titlebar |
 | [029](adr/029-capture-toolbar-and-in-place-annotation.md) | A selected region stays adjustable under a capture toolbar; the overlay hosts the Editor engine on the selection while the app owns the pixels; the chosen action becomes Task flags; AI work is `App` use cases | the Region session hosting the engine; an editor window for every annotation; windows calling AI ports |
+| [030](adr/030-macos.md) | macOS through one adapter crate on `objc2`, ScreenCaptureKit and Carbon hotkeys, proven in CI | a Finder Sync extension; macOS 13; a Swift helper |
 
 ---
 

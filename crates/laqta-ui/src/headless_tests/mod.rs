@@ -184,6 +184,7 @@ pub(crate) fn services(spawner: QueuedSpawner, dir: &Path) -> UiServices {
         install_update: Arc::new(|| Box::pin(async { Err("tests".into()) })),
         prompt: Arc::new(laqta_ports::fakes::FakePrompt::default()),
         native_window: Arc::new(|_, _| false),
+        logical_rect: None,
         autostart: Arc::new(NoShell),
         integration: Arc::new(NoShell),
         fonts: laqta_editor::Fonts::empty(),

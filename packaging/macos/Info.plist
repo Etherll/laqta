@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>Laqta</string>
+  <key>CFBundleDisplayName</key><string>Laqta</string>
+  <key>CFBundleIdentifier</key><string>io.github.etherll.Laqta</string>
+  <key>CFBundleExecutable</key><string>laqta</string>
+  <key>CFBundleIconFile</key><string>laqta</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleShortVersionString</key><string>@VERSION@</string>
+  <key>CFBundleVersion</key><string>@VERSION@</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <key>NSScreenCaptureUsageDescription</key><string>Laqta captures the screen when you take a screenshot or start a screen recording.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Laqta records the microphone when you choose it for a screen recording.</string>
+  <key>NSCameraUsageDescription</key><string>Laqta shows the camera in a screen recording when you turn the camera overlay on.</string>
+  <!-- "Open With > Laqta" and files dropped on the Dock icon: Laqta uploads them. -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key><string>File</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array><string>public.data</string></array>
+    </dict>
+  </array>
+</dict>
+</plist>

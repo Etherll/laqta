@@ -287,8 +287,8 @@ impl ToolHost for UiHandle {
     }
 }
 
-/// What `UiServices::native_window` does to a window. All three are Windows behaviour; other
-/// platforms answer false.
+/// What `UiServices::native_window` does to a window. The first three are Windows behaviour and
+/// the last is macOS behaviour; a platform answers false to what it does not need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeWindow {
     /// A borderless popup keeps only what it paints: no outline or shadow drawn by the OS.
@@ -299,10 +299,20 @@ pub enum NativeWindow {
     /// The window leaves the screen at once and ends up minimized, and the call returns when the
     /// desktop has been drawn without it. A plain minimize is animated, and shows in a capture.
     HideForCapture,
+    /// The window covers its whole screen, menu bar and Dock included. macOS keeps a new window
+    /// below the menu bar, which would draw the region overlay's frozen screen lower than the
+    /// real one.
+    CoverScreen,
 }
 
 /// `UiServices::native_window`: true when the platform did what was asked.
 pub type NativeWindowHook = Arc<dyn Fn(&gpui::Window, NativeWindow) -> bool + Send + Sync>;
+
+/// `UiServices::logical_rect`: a rect in the ports' physical pixels as `[x, y, width, height]` in
+/// the desktop's logical pixels. Windows and X11 need none: there a rect divided by its display's
+/// scale is its logical rect. macOS has no physical desktop, so its adapter lays one out and is the
+/// only one that can map back (ADR 030).
+pub type LogicalRectHook = Arc<dyn Fn(laqta_domain::geometry::PhysRect) -> Option<[f32; 4]> + Send + Sync>;
 
 /// Checks for an update: the message to show and whether `install_update` can apply it here.
 pub type UpdateCheck = Arc<dyn Fn() -> laqta_ports::BoxFuture<'static, Result<(String, bool), String>> + Send + Sync>;
@@ -382,6 +392,8 @@ pub struct UiServices {
     /// Asks the platform to do something to a window that GPUI has no call for. It returns
     /// false where the platform needs nothing done, or can't do it.
     pub native_window: NativeWindowHook,
+    /// Maps a physical rect to logical desktop pixels where dividing by the scale is not enough.
+    pub logical_rect: Option<LogicalRectHook>,
     /// Run at login.
     pub autostart: Arc<dyn laqta_ports::Autostart>,
     /// "Upload with Laqta" in file managers, Send To, and the browser native-messaging host.
@@ -429,10 +441,72 @@ pub(crate) struct UiState {
 
 impl gpui::Global for UiState {}
 
+gpui::actions!(laqta, [QuitLaqta, OpenSettings, CloseWindow]);
+
+/// Closes `window` for Command+W. On the region overlay that cancels the selection, as Escape
+/// does: removing only the window would leave the session waiting. The recording bar, border and
+/// countdown stay, because the recording they belong to goes on.
+pub(crate) fn close_window(window: gpui::AnyWindowHandle, cx: &mut App) {
+    if cx.has_global::<UiState>() {
+        let state = cx.global::<UiState>();
+        if state.overlay.holds(window) {
+            state.overlay.cancel(cx);
+            return;
+        }
+        if state.recording.holds(window) {
+            return;
+        }
+    }
+    let _ = window.update(cx, |_, window, _| window.remove_window());
+}
+
+/// What a macOS app is expected to have: an application menu with Settings and Quit, their
+/// Command shortcuts and Command+W.
+fn mac_app_menu(dispatch: Arc<dyn Fn(Action) + Send + Sync>, cx: &mut App) {
+    use gpui::{KeyBinding, Menu, MenuItem};
+    let (quit, settings) = (dispatch.clone(), dispatch);
+    cx.on_action(move |_: &QuitLaqta, _| quit(Action::ExitLaqta));
+    cx.on_action(move |_: &OpenSettings, _| settings(Action::OpenSettings));
+    cx.on_action(|_: &CloseWindow, cx| {
+        if let Some(window) = cx.active_window() {
+            close_window(window, cx);
+        }
+    });
+    cx.bind_keys([
+        KeyBinding::new("cmd-q", QuitLaqta, None),
+        KeyBinding::new("cmd-,", OpenSettings, None),
+        KeyBinding::new("cmd-w", CloseWindow, None),
+    ]);
+    cx.set_menus([Menu {
+        name: "Laqta".into(),
+        items: vec![
+            MenuItem::action("Settings…", OpenSettings),
+            MenuItem::separator(),
+            MenuItem::action("Close Window", CloseWindow),
+            MenuItem::action("Quit Laqta", QuitLaqta),
+        ],
+        disabled: false,
+    }]);
+}
+
 /// Runs GPUI on the current (main) thread until a `Quit` command arrives. Opens no window by itself.
 pub fn run(services: UiServices, rx: UiReceiver) {
     // Laqta lives in the tray: closing the last window must not quit it.
-    gpui_platform::application().with_assets(crate::assets::Assets).with_quit_mode(gpui::QuitMode::Explicit).run(move |cx: &mut App| {
+    let app = gpui_platform::application().with_assets(crate::assets::Assets).with_quit_mode(gpui::QuitMode::Explicit);
+    if cfg!(target_os = "macos") {
+        // A click on the Dock icon while Laqta runs opens the main window.
+        let reopen = services.dispatch.clone();
+        app.on_reopen(move |_| reopen(Action::OpenMainWindow));
+        // "Open With > Laqta" and files dropped on the Dock icon are uploaded.
+        let laqta = services.app.clone();
+        app.on_open_urls(move |urls| {
+            let paths = crate::presenters::open_urls::file_paths(&urls);
+            if !paths.is_empty() {
+                let _ = laqta.upload_files(paths, None);
+            }
+        });
+    }
+    app.run(move |cx: &mut App| {
         gpui_component::init(cx);
         crate::theme::apply(services.app.settings().theme, cx);
         let tasks = cx.new(|_| TaskList::default());
@@ -462,6 +536,10 @@ pub fn run(services: UiServices, rx: UiReceiver) {
             }
         })
         .detach();
+
+        if cfg!(target_os = "macos") {
+            mac_app_menu(services.dispatch.clone(), cx);
+        }
 
         // Task events feed the task list; this task sleeps until an event arrives.
         let mut events = services.app.events();

@@ -13,6 +13,8 @@ use laqta_domain::geometry::PhysRect;
 use laqta_domain::record::{Quality, RecordSpec, VideoCodec};
 use laqta_media::{FfmpegMedia, argv, find_ffmpeg};
 use laqta_ports::PortError;
+#[cfg(unix)]
+use laqta_ports::recording::{AudioInput, PcmFormat, PcmSource};
 use laqta_ports::recording::{FrameSource, Media, MediaInfo, RecordingHandle, RecordingInput, TranscodeSpec, VideoSource};
 
 /// Frames paced in real time, so a recording can be paused and killed while it runs. `left` ends
@@ -23,11 +25,13 @@ struct PacedFrames {
     fps: u32,
     left: Option<u32>,
     frame: u32,
+    /// When the next frame is due. Sleeping to a deadline keeps the pace when a sleep runs long.
+    due: Option<Instant>,
 }
 
 impl PacedFrames {
     fn new(fps: u32, left: Option<u32>) -> Self {
-        PacedFrames { size: (64, 48), fps, left, frame: 0 }
+        PacedFrames { size: (64, 48), fps, left, frame: 0, due: None }
     }
 }
 
@@ -47,7 +51,12 @@ impl FrameSource for PacedFrames {
             }
             self.left = Some(left - 1);
         }
-        thread::sleep(Duration::from_secs(1) / self.fps);
+        let gap = Duration::from_secs(1) / self.fps;
+        let now = Instant::now();
+        // A pause leaves the deadline far behind; the pace restarts from now.
+        let due = self.due.filter(|due| now < *due + gap * 4).unwrap_or(now) + gap;
+        thread::sleep(due.saturating_duration_since(now));
+        self.due = Some(due);
         self.frame = self.frame.wrapping_add(1);
         let (width, height) = self.size;
         let shade = (self.frame % 256) as u8;
@@ -169,8 +178,25 @@ fn media(dir: &Path) -> Option<FfmpegMedia> {
     }
 }
 
+/// True when the FFmpeg on PATH has `encoder`. Homebrew's build has no `libwebp_anim`.
+fn has_encoder(dir: &Path, encoder: &str) -> bool {
+    let Some(paths) = find_ffmpeg("", dir) else { return false };
+    let listed = Command::new(paths.ffmpeg).args(["-hide_banner", "-encoders"]).output().expect("list the encoders");
+    String::from_utf8_lossy(&listed.stdout).split_whitespace().any(|word| word == encoder)
+}
+
 fn probe(media: &FfmpegMedia, path: &Path) -> MediaInfo {
     block_on(media.probe(path)).expect("probe the output")
+}
+
+/// For a source that ends by itself after `expected` seconds of frames. The frame clock starts
+/// before FFmpeg reads its first frame, and frames that wait are repeated to keep the time, so
+/// the file is longer by FFmpeg's start-up time (about half a second on a macOS runner).
+fn assert_lasts(actual: f64, expected: f64, tolerance: f64) {
+    assert!(
+        actual >= expected - tolerance && actual <= expected + tolerance + 1.0,
+        "expected {expected} +/- {tolerance} plus start-up, got {actual}"
+    );
 }
 
 fn assert_near(actual: f64, expected: f64, tolerance: f64) {
@@ -190,7 +216,7 @@ fn records_mp4_and_probes_it() {
     let info = probe(&media, &output);
     assert_eq!((info.width, info.height), (64, 48));
     assert_eq!(info.video_codec, "h264");
-    assert_near(info.duration_secs, 1.0, 0.4);
+    assert_lasts(info.duration_secs, 1.0, 0.4);
 }
 
 #[test]
@@ -212,6 +238,151 @@ fn pause_and_resume_join_two_segments() {
     // Only the two running stretches have frames: about 2 s, not 2.5 s.
     assert_near(info.duration_secs, 2.0, 0.6);
     assert_eq!((info.width, info.height), (64, 48));
+}
+
+/// A 440 Hz tone at wall-clock speed from its first read, as the macOS loopback gives it.
+#[cfg(unix)]
+struct Tone {
+    started: Option<Instant>,
+    sent: u64,
+    stopped: bool,
+}
+
+#[cfg(unix)]
+impl PcmSource for Tone {
+    fn format(&self) -> PcmFormat {
+        PcmFormat { sample_rate: 48_000, channels: 2 }
+    }
+
+    fn read(&mut self, buf: &mut [i16]) -> Result<usize, PortError> {
+        if self.stopped {
+            return Ok(0);
+        }
+        // Wait only when nothing is due. A sleep before every read would cap the tone at one buffer
+        // per sleep, and a sleep that runs long (50 ms on a macOS runner) then falls behind the clock.
+        let started = *self.started.get_or_insert_with(Instant::now);
+        let due = |started: Instant| (started.elapsed().as_secs_f64() * 48_000.0) as u64;
+        if due(started) <= self.sent {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let frames = (due(started).saturating_sub(self.sent) as usize).min(buf.len() / 2);
+        for (i, frame) in buf[..frames * 2].chunks_mut(2).enumerate() {
+            let t = (self.sent + i as u64) as f64 / 48_000.0;
+            frame.fill(((t * 440.0 * std::f64::consts::TAU).sin() * 8000.0) as i16);
+        }
+        self.sent += frames as u64;
+        // Never 0 while running: 0 means the end of the sound.
+        if frames == 0 {
+            buf[..2].fill(0);
+            return Ok(2);
+        }
+        Ok(frames * 2)
+    }
+
+    fn stop(&mut self) {
+        self.stopped = true;
+    }
+}
+
+/// macOS hands over frames and system sound together; the sound goes through a named pipe.
+#[cfg(unix)]
+#[test]
+fn raw_frames_and_pcm_sound_are_recorded_together_across_a_pause() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let Some(media) = media(dir.path()) else { return };
+    record_sound_across_a_pause(&media, dir.path(), Duration::from_millis(1500));
+}
+
+/// FFmpeg takes about half a second to start on macOS. The recording must come out whole however
+/// long the start takes.
+#[cfg(unix)]
+#[test]
+fn sound_is_whole_when_ffmpeg_is_slow_to_start() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let Some(paths) = find_ffmpeg("", dir.path()) else { return };
+    let slow = dir.path().join("slow-ffmpeg");
+    std::fs::write(&slow, format!("#!/bin/sh\nsleep 0.6\nexec '{}' \"$@\"\n", paths.ffmpeg.display())).expect("write the wrapper");
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).expect("make it executable");
+    let media = FfmpegMedia::new(laqta_media::FfmpegPaths { ffmpeg: slow, ffprobe: paths.ffprobe }, dir.path().join("work"));
+    // Long stretches: a stop that comes while the frames from the wait are still being written
+    // cuts them, which is not what this test is about.
+    record_sound_across_a_pause(&media, dir.path(), Duration::from_secs(3));
+}
+
+/// Records two stretches of `stretch` with a pause between, and expects a file of both.
+#[cfg(unix)]
+fn record_sound_across_a_pause(media: &FfmpegMedia, dir: &Path, stretch: Duration) {
+    let output = dir.join("sound.mp4");
+    let input = RecordingInput {
+        video: VideoSource::Frames(Box::new(PacedFrames::new(30, None))),
+        audio: vec![AudioInput::Pcm(Box::new(Tone { started: None, sent: 0, stopped: false }))],
+    };
+    let mut recording = block_on(media.start(input, spec(VideoCodec::X264, 30), output.clone())).expect("start");
+    thread::sleep(stretch);
+    block_on(recording.pause()).expect("pause");
+    thread::sleep(Duration::from_millis(300));
+    block_on(recording.resume()).expect("resume");
+    thread::sleep(stretch);
+    assert!(recording.is_alive());
+    let started = Instant::now();
+    block_on(recording.stop()).expect("stop");
+    assert!(started.elapsed() < Duration::from_secs(4), "stop did not wait on the sound pipe");
+    let info = probe(media, &output);
+    assert!(info.audio_codec.is_some(), "the recording has a sound stream");
+    // Which stream is short says where the time went, so a failure names both.
+    let streams = Command::new(&media.paths().ffprobe)
+        .args(["-v", "error", "-count_packets", "-show_entries", "stream=codec_type,start_time,duration,nb_read_packets", "-of", "compact"])
+        .arg(&output)
+        .output()
+        .expect("run ffprobe");
+    let streams = String::from_utf8_lossy(&streams.stdout).replace('\n', "; ");
+    let expected = stretch.as_secs_f64() * 2.0;
+    assert!((info.duration_secs - expected).abs() <= expected * 0.3, "expected {expected} +/- 30%, got {}: {streams}", info.duration_secs);
+    assert!(!dir.join("work").read_dir().is_ok_and(|mut entries| entries.next().is_some()), "the session folder is gone");
+}
+
+/// Silence that records when it was stopped.
+#[cfg(unix)]
+struct Silence(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+#[cfg(unix)]
+impl PcmSource for Silence {
+    fn format(&self) -> PcmFormat {
+        PcmFormat { sample_rate: 48_000, channels: 2 }
+    }
+
+    fn read(&mut self, buf: &mut [i16]) -> Result<usize, PortError> {
+        thread::sleep(Duration::from_millis(10));
+        buf.fill(0);
+        Ok(buf.len())
+    }
+
+    fn stop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// A recorder dropped before FFmpeg opened the sound pipe: the sound thread is still waiting in
+/// `open`, and must be let go so the source is stopped. The "FFmpeg" here never opens the pipe.
+#[cfg(unix)]
+#[test]
+fn dropping_the_recorder_stops_a_sound_source_whose_pipe_was_never_opened() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("ffmpeg");
+    std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").expect("write the stand-in");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("make it executable");
+    let media = FfmpegMedia::new(laqta_media::FfmpegPaths { ffmpeg: script.clone(), ffprobe: script }, dir.path().join("work"));
+    let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let input = RecordingInput {
+        video: VideoSource::Frames(Box::new(PacedFrames::new(30, None))),
+        audio: vec![AudioInput::Pcm(Box::new(Silence(stopped.clone())))],
+    };
+    let recording = block_on(media.start(input, spec(VideoCodec::X264, 30), dir.path().join("never.mp4"))).expect("start");
+    thread::sleep(Duration::from_millis(300));
+    drop(recording);
+    assert!(stopped.load(std::sync::atomic::Ordering::SeqCst), "the sound source was stopped when the recorder was dropped");
 }
 
 #[test]
@@ -312,9 +483,9 @@ fn a_120_frame_gif_keeps_its_frames_and_leaves_no_temporary_files() {
     assert_eq!(info.video_codec, "gif");
     assert_eq!((info.width, info.height), (320, 200));
     // A frame that arrives late is written again for the period it missed, so a loaded machine can
-    // add a few frames. None may be lost.
+    // add frames (a shared macOS runner added 19). None may be lost.
     let frames = frame_count(&media, &output);
-    assert!((120..=126).contains(&frames), "expected 120 frames, got {frames}");
+    assert!((120..=150).contains(&frames), "expected 120 frames, got {frames}");
     let names: Vec<String> = std::fs::read_dir(dir.path())
         .expect("list the output folder")
         .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
@@ -348,6 +519,10 @@ fn webp_and_apng_are_converted_through_a_temporary_name() {
     let dir = tempfile::tempdir().expect("tempdir");
     let Some(media) = media(dir.path()) else { return };
     for (codec, name, expected) in [(VideoCodec::WebP, "clip.webp", "webp"), (VideoCodec::Apng, "clip.png", "apng")] {
+        if codec == VideoCodec::WebP && !has_encoder(dir.path(), "libwebp_anim") {
+            eprintln!("skipping WebP: this ffmpeg has no libwebp_anim");
+            continue;
+        }
         let output = dir.path().join(name);
         let recording = block_on(media.start(input(PacedFrames::new(15, Some(15))), spec(codec, 15), output.clone())).expect("start");
         thread::sleep(Duration::from_millis(1500));
@@ -368,7 +543,7 @@ fn transcode_trims_and_a_thumbnail_is_one_frame() {
         block_on(media.start(input(PacedFrames::new(30, Some(60))), spec(VideoCodec::X264, 30), source.clone())).expect("start");
     thread::sleep(Duration::from_millis(2500));
     block_on(recording.stop()).expect("stop");
-    assert_near(probe(&media, &source).duration_secs, 2.0, 0.5);
+    assert_lasts(probe(&media, &source).duration_secs, 2.0, 0.5);
 
     let trimmed = dir.path().join("trimmed.mp4");
     let trim = TranscodeSpec { start_secs: Some(0.5), duration_secs: Some(1.0), ..TranscodeSpec::default() };

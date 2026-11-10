@@ -21,6 +21,13 @@ pub(crate) struct RecordingWindows {
     countdown: Option<AnyWindowHandle>,
 }
 
+impl RecordingWindows {
+    /// True when `window` is the bar, the border or the countdown.
+    pub(crate) fn holds(&self, window: AnyWindowHandle) -> bool {
+        self.bar == Some(window) || self.countdown == Some(window) || self.border.contains(&window)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Bar {
     elapsed: u32,
@@ -43,12 +50,16 @@ struct Countdown {
     seconds: u32,
 }
 
-/// Physical desktop pixels → logical pixels on a display with this scale.
-fn logical(r: PhysRect, scale: f32) -> Bounds<gpui::Pixels> {
-    Bounds {
-        origin: point(px(r.x as f32 / scale), px(r.y as f32 / scale)),
-        size: size(px(r.width as f32 / scale), px(r.height as f32 / scale)),
-    }
+/// Physical desktop pixels → logical pixels on a display with this scale. The platform's own
+/// mapping wins where it has one (`UiServices::logical_rect`).
+fn logical(r: PhysRect, scale: f32, cx: &App) -> Bounds<gpui::Pixels> {
+    let mapped = cx.try_global::<UiState>().and_then(|state| state.services.logical_rect.as_ref()).and_then(|map| map(r));
+    logical_from(r, scale, mapped)
+}
+
+fn logical_from(r: PhysRect, scale: f32, mapped: Option<[f32; 4]>) -> Bounds<gpui::Pixels> {
+    let [x, y, width, height] = mapped.unwrap_or([r.x as f32 / scale, r.y as f32 / scale, r.width as f32 / scale, r.height as f32 / scale]);
+    Bounds { origin: point(px(x), px(y)), size: size(px(width), px(height)) }
 }
 
 /// Where a recording window goes.
@@ -249,7 +260,7 @@ fn open_bar(mut state: Bar, cx: &mut App) {
 /// part clear of the taskbar), else inside its bottom edge. `scale` turns the physical area into
 /// the logical pixels of its display.
 fn bar_bounds(area: PhysRect, scale: f32, bar: gpui::Size<gpui::Pixels>, cx: &App) -> Bounds<gpui::Pixels> {
-    let a = logical(area, scale);
+    let a = logical(area, scale, cx);
     let center = point(a.origin.x + a.size.width / 2.0, a.origin.y + a.size.height / 2.0);
     let display = cx.displays().into_iter().find(|d| d.bounds().contains(&center)).or_else(|| cx.primary_display());
     let screen = display.map(|d| d.visible_bounds()).unwrap_or(a);
@@ -288,7 +299,7 @@ fn place_border(bar: Bar, scale: f32, cx: &mut App) {
     for h in std::mem::take(&mut cx.global_mut::<UiState>().recording.border) {
         let _ = h.update(cx, |_, window, _| window.remove_window());
     }
-    let a = logical(bar.area, scale);
+    let a = logical(bar.area, scale, cx);
     // On Wayland each strip is placed on the display holding the area, relative to its origin.
     let center = point(a.origin.x + a.size.width / 2.0, a.origin.y + a.size.height / 2.0);
     let display = cx.displays().into_iter().find(|d| d.bounds().contains(&center));
@@ -416,5 +427,20 @@ impl Render for Bar {
             ))
             .child(widgets::pill("stop", "Stop", Pill::Dark, true, move |_, _, _| a2.recording_stop(), cx))
             .child(widgets::pill("abort", "Abort", Pill::Ghost, true, move |_, _, _| a3.recording_abort(), cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rect_is_divided_by_its_scale_unless_the_platform_maps_it() {
+        let rect = PhysRect { x: 3024, y: 100, width: 800, height: 600 };
+        let plain = logical_from(rect, 2.0, None);
+        assert_eq!((plain.origin.x, plain.origin.y, plain.size.width, plain.size.height), (px(1512.), px(50.), px(400.), px(300.)));
+        // macOS, a 1x display to the right of a Retina one: the origin is not the rect over its scale.
+        let mapped = logical_from(rect, 1.0, Some([1512., 100., 800., 600.]));
+        assert_eq!((mapped.origin.x, mapped.size.width), (px(1512.), px(800.)));
     }
 }

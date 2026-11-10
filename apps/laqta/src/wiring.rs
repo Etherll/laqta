@@ -115,9 +115,44 @@ fn platform(_data: &std::path::Path) -> Result<Platform, String> {
     })
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(target_os = "macos")]
+fn platform(_data: &std::path::Path) -> Result<Platform, String> {
+    let p = laqta_platform_macos::ports();
+    Ok(Platform {
+        screen: p.screen,
+        clipboard: p.clipboard,
+        shell: p.shell,
+        hover: p.hover,
+        hotkeys: p.hotkeys,
+        tray: p.tray,
+        secrets: p.secrets,
+        stream: p.stream,
+        window_ops: p.window_ops,
+        autostart: p.autostart,
+        integration: p.integration,
+        input: p.input,
+        os_ocr: Some(p.ocr),
+        highlighter: p.highlighter,
+        native_recorder: None,
+    })
+}
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 fn platform(_data: &std::path::Path) -> Result<Platform, String> {
     Err("this platform is not supported (ADR 001)".into())
+}
+
+/// First-run settings, with the hotkeys this OS can type.
+fn default_settings() -> Settings {
+    use laqta_domain::record::Os;
+    let os = if cfg!(windows) {
+        Os::Windows
+    } else if cfg!(target_os = "macos") {
+        Os::MacOs
+    } else {
+        Os::Linux
+    };
+    Settings::default_for_os(pictures_dir(), os)
 }
 
 fn pictures_dir() -> std::path::PathBuf {
@@ -145,8 +180,8 @@ fn data_dir(args: &crate::cli::Args) -> std::path::PathBuf {
     chosen
 }
 
-/// Hands a GPUI window's native handle to the Windows adapter. Other platforms need none of
-/// these calls and answer false.
+/// Hands a GPUI window's native handle to the Windows or macOS adapter. A platform answers false
+/// to a call it does not need.
 fn native_window(window: &gpui::Window, what: laqta_ui::NativeWindow) -> bool {
     #[cfg(windows)]
     {
@@ -160,12 +195,35 @@ fn native_window(window: &gpui::Window, what: laqta_ui::NativeWindow) -> bool {
                 NativeWindow::PlainPopup => laqta_platform_windows::plain_popup(hwnd),
                 NativeWindow::BringToFront => laqta_platform_windows::bring_to_front(hwnd),
                 NativeWindow::HideForCapture => laqta_platform_windows::hide_for_capture(hwnd),
+                NativeWindow::CoverScreen => return false,
             }
             return true;
         }
     }
+    #[cfg(target_os = "macos")]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if what == laqta_ui::NativeWindow::CoverScreen
+            && let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::AppKit(appkit) = handle.as_raw()
+        {
+            return laqta_platform_macos::cover_screen(appkit.ns_view);
+        }
+    }
     let _ = (window, what);
     false
+}
+
+/// The platform's mapping from physical to logical desktop pixels, where it has one (macOS).
+fn logical_rect() -> Option<laqta_ui::LogicalRectHook> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(Arc::new(laqta_platform_macos::logical_rect))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
 }
 
 /// True when `dir` exists or can be made, and a file can be created in it.
@@ -224,14 +282,14 @@ async fn run_request(
 
 fn load_settings(store: &SettingsStore) -> Settings {
     if !store.path().exists() {
-        return Settings::default_for(pictures_dir());
+        return default_settings();
     }
     match store.load::<Settings>(SETTINGS_VERSION, &[]) {
         Ok(mut s) => {
             // A file without `screenshots_dir` gets the serde default, a relative path that would put captures in
             // the folder Laqta was started from.
             if s.screenshots_dir == Settings::default().screenshots_dir {
-                s.screenshots_dir = Settings::default_for(pictures_dir()).screenshots_dir;
+                s.screenshots_dir = default_settings().screenshots_dir;
             } else if s.screenshots_dir.is_relative()
                 && let Some(home) = dirs::home_dir()
             {
@@ -241,7 +299,7 @@ fn load_settings(store: &SettingsStore) -> Settings {
         }
         Err(e) => {
             tracing::error!("settings could not be loaded ({e}); using defaults");
-            Settings::default_for(pictures_dir())
+            default_settings()
         }
     }
 }
@@ -694,6 +752,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             secrets: platform.secrets.clone(),
             prompt: Arc::new(ui.clone()),
             native_window: Arc::new(native_window),
+            logical_rect: logical_rect(),
             fonts: fonts.clone(),
             spawner: spawner.clone(),
             codecs: laqta_imaging::Codecs::builtin(),

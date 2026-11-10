@@ -2,11 +2,13 @@
 
 use laqta_domain::Action;
 use laqta_domain::hotkey::KeyChord;
+use laqta_domain::record::Os;
 
 /// The hotkey bound to `action`, as short text such as "Ctrl+PrtSc"; the first binding wins.
 /// `bindings` is `Settings::hotkey_bindings()`, which is empty while hotkeys are disabled.
-pub fn hotkey_label(bindings: &[(KeyChord, Action)], action: Action) -> Option<String> {
-    bindings.iter().find(|(_, a)| *a == action).map(|(chord, _)| chord.to_string().replace("PrintScreen", "PrtSc"))
+pub fn hotkey_label(bindings: &[(KeyChord, Action)], action: Action, os: Os) -> Option<String> {
+    let (chord, _) = bindings.iter().find(|(_, a)| *a == action)?;
+    Some(keycaps(*chord, os).join(if os == Os::MacOs { "" } else { "+" }))
 }
 
 /// What one key press does while a shortcut is being recorded.
@@ -70,9 +72,38 @@ pub fn record(key: &str, mods: Mods) -> Recorded {
     }
 }
 
-/// The keycaps a chord shows as, with PrintScreen shortened: ["Ctrl", "Shift", "PrtSc"].
-pub fn keycaps(chord: KeyChord) -> Vec<String> {
-    chord.to_string().split('+').map(|p| if p == "PrintScreen" { "PrtSc".to_owned() } else { p.to_owned() }).collect()
+/// The keycaps a chord shows as, with PrintScreen shortened: ["Ctrl", "Shift", "PrtSc"]. On
+/// macOS the modifiers are the symbols printed on a Mac keyboard: ["⌃", "⇧", "F13"].
+pub fn keycaps(chord: KeyChord, os: Os) -> Vec<String> {
+    chord
+        .to_string()
+        .split('+')
+        .map(|p| match (p, os) {
+            ("PrintScreen", Os::MacOs) => "F13".to_owned(),
+            ("PrintScreen", _) => "PrtSc".to_owned(),
+            (_, Os::MacOs) => mac_modifier(p).unwrap_or(p).to_owned(),
+            _ => p.to_owned(),
+        })
+        .collect()
+}
+
+fn mac_modifier(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Ctrl" => "⌃",
+        "Alt" => "⌥",
+        "Shift" => "⇧",
+        "Super" => "⌘",
+        _ => return None,
+    })
+}
+
+/// An in-window shortcut such as "Ctrl+Z" as `os` writes it. On macOS the Command key stands in
+/// for Ctrl, so it reads "⌘Z".
+pub fn shortcut_text(keys: &str, os: Os) -> String {
+    if os != Os::MacOs {
+        return keys.to_owned();
+    }
+    keys.split('+').map(|p| if p == "Ctrl" { "⌘" } else { mac_modifier(p).unwrap_or(p) }).collect()
 }
 
 /// How one shortcut row stands.
@@ -138,7 +169,18 @@ mod tests {
 
     #[test]
     fn keycaps_split_and_shorten() {
-        assert_eq!(keycaps(chord("Ctrl+Shift+PrintScreen")), ["Ctrl", "Shift", "PrtSc"]);
+        assert_eq!(keycaps(chord("Ctrl+Shift+PrintScreen"), Os::Linux), ["Ctrl", "Shift", "PrtSc"]);
+        assert_eq!(keycaps(chord("Ctrl+Shift+PrintScreen"), Os::Windows), ["Ctrl", "Shift", "PrtSc"]);
+        assert_eq!(keycaps(chord("Ctrl+Alt+Super+1"), Os::MacOs), ["⌃", "⌥", "⌘", "1"]);
+        assert_eq!(keycaps(chord("Shift+PrintScreen"), Os::MacOs), ["⇧", "F13"]);
+    }
+
+    #[test]
+    fn in_window_shortcuts_use_command_on_macos() {
+        assert_eq!(shortcut_text("Ctrl+Z", Os::Linux), "Ctrl+Z");
+        assert_eq!(shortcut_text("Ctrl+Z", Os::MacOs), "⌘Z");
+        assert_eq!(shortcut_text("Ctrl+Shift+S", Os::MacOs), "⌘⇧S");
+        assert_eq!(shortcut_text("R", Os::MacOs), "R");
     }
 
     #[test]
@@ -164,13 +206,13 @@ mod tests {
     fn finds_the_first_binding_for_an_action() {
         let bindings = Settings::default_for("/p".into()).hotkey_bindings();
         let (chord, action) = bindings[0];
-        let label = hotkey_label(&bindings, action).unwrap();
+        let label = hotkey_label(&bindings, action, Os::Linux).unwrap();
         assert_eq!(label, chord.to_string().replace("PrintScreen", "PrtSc"));
         assert!(!label.contains("PrintScreen"));
     }
 
     #[test]
     fn unbound_action_has_no_label() {
-        assert_eq!(hotkey_label(&[], Action::PrintScreen), None);
+        assert_eq!(hotkey_label(&[], Action::PrintScreen, Os::Linux), None);
     }
 }

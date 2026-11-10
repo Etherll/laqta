@@ -25,6 +25,19 @@ pub(crate) struct OverlayWindows {
 }
 
 impl OverlayWindows {
+    /// True when `window` is one of the overlay's windows.
+    pub(crate) fn holds(&self, window: AnyWindowHandle) -> bool {
+        self.windows.contains(&window)
+    }
+
+    /// Cancels the selection the way Escape does. The session then closes the windows.
+    pub(crate) fn cancel(&self, cx: &App) {
+        if let Some(model) = &self.model {
+            let on_input = model.read(cx).on_input.clone();
+            on_input(RegionInput::Key { key: RegionKey::Escape, mods: KeyMods::default() });
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn model(&self) -> Option<Entity<OverlayModel>> {
         self.model.clone()
@@ -197,6 +210,11 @@ fn overlay_kind() -> WindowKind {
     }
 }
 
+/// Whether the shortcut modifier is held: Ctrl, or Command on macOS.
+fn ctrl(m: &gpui::Modifiers) -> bool {
+    m.control || (cfg!(target_os = "macos") && m.platform)
+}
+
 #[cfg(not(target_os = "linux"))]
 fn overlay_kind() -> WindowKind {
     WindowKind::PopUp
@@ -329,7 +347,9 @@ impl Render for OverlayView {
         }
         // Once, when the overlay is on screen: Esc and the tool keys must reach it.
         if !std::mem::replace(&mut self.raised, true) {
-            (cx.global::<UiState>().services.native_window)(window, crate::runtime::NativeWindow::BringToFront);
+            let native = cx.global::<UiState>().services.native_window.clone();
+            native(window, crate::runtime::NativeWindow::BringToFront);
+            native(window, crate::runtime::NativeWindow::CoverScreen);
         }
         let s = window.scale_factor();
         let model = self.model.read(cx);
@@ -594,7 +614,7 @@ impl OverlayView {
         };
         let mods = crate::editor_window::mods(m);
         if editing {
-            if !m.control
+            if !ctrl(m)
                 && let Some(ch) = ev.keystroke.key_char.clone().filter(|c| !c.is_empty() && !c.chars().any(char::is_control))
             {
                 self.model.update(cx, |model, cx| model.editor_input(EditorInput::Text(ch), cx));
@@ -608,7 +628,7 @@ impl OverlayView {
         if shown
             && let Some(item) = crate::presenters::capture_toolbar::key_item(
                 key,
-                crate::presenters::capture_toolbar::Mods { ctrl: m.control, shift: m.shift, alt: m.alt },
+                crate::presenters::capture_toolbar::Mods { ctrl: ctrl(m), shift: m.shift, alt: m.alt },
             )
         {
             self.model.update(cx, |model, cx| model.pick(item, cx));
@@ -633,7 +653,7 @@ impl OverlayView {
             return;
         }
         if let Some(key) = region_key(key) {
-            self.send(RegionInput::Key { key, mods: KeyMods { shift: m.shift, ctrl: m.control, alt: m.alt } }, cx);
+            self.send(RegionInput::Key { key, mods: KeyMods { shift: m.shift, ctrl: ctrl(m), alt: m.alt } }, cx);
         }
     }
 }

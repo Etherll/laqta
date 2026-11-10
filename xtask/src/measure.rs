@@ -63,7 +63,19 @@ fn sample(pid: u32) -> Option<Sample> {
     Some(Sample { rss_kb, cpu_ms, switches })
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS has no `/proc`: `ps` gives the resident size in KB and the CPU time as `[H:]MM:SS.ss`.
+/// It does not report context switches, so those stay 0.
+#[cfg(target_os = "macos")]
+fn sample(pid: u32) -> Option<Sample> {
+    let out = Command::new("ps").args(["-o", "rss=,cputime=", "-p", &pid.to_string()]).output().ok()?;
+    let text = String::from_utf8(out.stdout).ok()?;
+    let mut fields = text.split_whitespace();
+    let rss_kb = fields.next()?.parse().ok()?;
+    let seconds = fields.next()?.split(':').try_fold(0.0, |total, part| part.parse::<f64>().ok().map(|n| total * 60.0 + n))?;
+    Some(Sample { rss_kb, cpu_ms: (seconds * 1000.0) as u64, switches: 0 })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn sample(_pid: u32) -> Option<Sample> {
     // Windows: read WorkingSetSize in Task Manager by hand.
     None

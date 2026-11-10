@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use crate::argv::{self, AudioInputDesc, Host, VideoInputDesc};
 use crate::locate::FfmpegPaths;
-use crate::process::{Feed, FfmpegRecorder, Plan, ensure_success, run_tool};
+use crate::process::{Feed, FfmpegRecorder, Plan, SIDE_PIPE, ensure_success, run_tool};
 use crate::run_blocking;
 
 /// FFmpeg as the `Media` adapter. `work_dir` holds each recording's segments until it stops.
@@ -44,8 +44,8 @@ impl FfmpegMedia {
         let session = self.work_dir.join(format!("rec-{}-{}", std::process::id(), NEXT_SESSION.fetch_add(1, Ordering::Relaxed)));
         let paths = self.paths.clone();
         let plan = Plan { video: prepared.video, audio: prepared.audio, spec, host };
-        let feed = prepared.feed;
-        run_blocking(move || FfmpegRecorder::start(paths, plan, session, output, feed))
+        let (feed, side) = (prepared.feed, prepared.side);
+        run_blocking(move || FfmpegRecorder::start(paths, plan, session, output, feed, side))
     }
 }
 
@@ -102,19 +102,23 @@ fn transcode_gif(ffmpeg: &Path, spec: &TranscodeSpec, input: &Path, output: &Pat
     result
 }
 
-/// The recording inputs as FFmpeg sees them, and the one stdin source they share, if any.
+/// The recording inputs as FFmpeg sees them, the one stdin source they share, if any, and the PCM
+/// source that goes through a pipe of its own because raw frames have stdin.
 struct Prepared {
     video: VideoInputDesc,
     audio: Vec<AudioInputDesc>,
     feed: Option<Feed>,
+    side: Option<Box<dyn laqta_ports::recording::PcmSource>>,
 }
 
-/// Maps the port's inputs to FFmpeg's. Only one input can use stdin. Raw frames come first, so PCM
-/// is dropped when both are present. GIF, WebP and APNG take no sound. A loopback device
+/// Maps the port's inputs to FFmpeg's. Only one input can use stdin. Raw frames come first; PCM
+/// beside them gets a named pipe on Unix (`SIDE_PIPE`, placed by the recorder) and is dropped on
+/// Windows, as is a second PCM source anywhere. GIF, WebP and APNG take no sound. A loopback device
 /// cannot be recorded through dshow, so on Windows it is dropped (system sound is `Pcm`).
 fn prepare(input: RecordingInput, spec: &RecordSpec, host: Host) -> Prepared {
     let animation = spec.codec.is_animation();
     let mut feed = None;
+    let mut side = None;
     let video = match input.video {
         VideoSource::Target(screen) => VideoInputDesc::Target(screen.screen().clone()),
         VideoSource::Frames(source) => {
@@ -142,8 +146,13 @@ fn prepare(input: RecordingInput, spec: &RecordSpec, host: Host) -> Prepared {
                     source.stop();
                     continue;
                 }
+                if matches!(feed, Some(Feed::Frames(_))) && side.is_none() && cfg!(unix) {
+                    audio.push(AudioInputDesc::Pcm { rate: format.sample_rate, channels: format.channels, pipe: SIDE_PIPE.into() });
+                    side = Some(source);
+                    continue;
+                }
                 if feed.is_some() {
-                    tracing::warn!("PCM audio is ignored because raw frames already use stdin");
+                    tracing::warn!("PCM audio is ignored because stdin is already in use");
                     source.stop();
                     continue;
                 }
@@ -152,7 +161,7 @@ fn prepare(input: RecordingInput, spec: &RecordSpec, host: Host) -> Prepared {
             }
         }
     }
-    Prepared { video, audio, feed }
+    Prepared { video, audio, feed, side }
 }
 
 #[derive(Deserialize)]
@@ -307,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn frames_feed_stdin_and_pcm_is_dropped_with_them() {
+    fn frames_feed_stdin_and_pcm_gets_a_pipe_of_its_own() {
         let stopped = Arc::new(AtomicBool::new(false));
         let input = RecordingInput {
             video: frames(),
@@ -315,10 +324,17 @@ mod tests {
         };
         let prepared = prepare(input, &spec(laqta_domain::record::VideoCodec::X264), Host::Linux);
         assert!(matches!(prepared.feed, Some(Feed::Frames(_))));
-        assert!(stopped.load(Ordering::SeqCst), "the dropped PCM source is stopped");
         assert!(matches!(prepared.video, VideoInputDesc::RawFrames { width: 64, height: 48, fps: 30 }));
-        assert_eq!(prepared.audio.len(), 1);
-        assert!(matches!(&prepared.audio[0], AudioInputDesc::Device { name, .. } if name == "Mic"));
+        if cfg!(unix) {
+            assert!(prepared.side.is_some());
+            assert!(!stopped.load(Ordering::SeqCst), "the PCM source is kept for its pipe");
+            assert_eq!(prepared.audio.len(), 2);
+            assert!(matches!(&prepared.audio[0], AudioInputDesc::Pcm { pipe, .. } if pipe == SIDE_PIPE));
+        } else {
+            assert!(stopped.load(Ordering::SeqCst), "the dropped PCM source is stopped");
+            assert_eq!(prepared.audio.len(), 1);
+        }
+        assert!(matches!(prepared.audio.last(), Some(AudioInputDesc::Device { name, .. }) if name == "Mic"));
     }
 
     #[test]

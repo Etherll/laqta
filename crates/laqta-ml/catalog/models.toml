@@ -234,3 +234,25 @@ sha256 = "0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd"
 size_bytes = 78127794
 archive = "zip"
 library = "onnxruntime-win-x64-1.23.2/lib/onnxruntime.dll"
+
+# The archive's entries start with "./".
+[[onnxruntime]]
+os = "macos"
+arch = "aarch64"
+version = "1.23.2"
+url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-arm64-1.23.2.tgz"
+sha256 = "b4d513ab2b26f088c66891dbbc1408166708773d7cc4163de7bdca0e9bbb7856"
+size_bytes = 9999931
+archive = "tgz"
+library = "./onnxruntime-osx-arm64-1.23.2/lib/libonnxruntime.1.23.2.dylib"
+
+# The archive's entries start with "./".
+[[onnxruntime]]
+os = "macos"
+arch = "x86_64"
+version = "1.23.2"
+url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-x86_64-1.23.2.tgz"
+sha256 = "d10359e16347b57d9959f7e80a225a5b4a66ed7d7e007274a15cae86836485a6"
+size_bytes = 11676322
+archive = "tgz"
+library = "./onnxruntime-osx-x86_64-1.23.2/lib/libonnxruntime.1.23.2.dylib"

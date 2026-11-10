@@ -25,18 +25,26 @@ const AUDIO_BITRATE: &str = "192k";
 pub enum Host {
     Windows,
     Linux,
+    MacOs,
 }
 
 impl Host {
     /// The host this build runs on.
     pub fn current() -> Host {
-        if cfg!(windows) { Host::Windows } else { Host::Linux }
+        if cfg!(windows) {
+            Host::Windows
+        } else if cfg!(target_os = "macos") {
+            Host::MacOs
+        } else {
+            Host::Linux
+        }
     }
 
     pub fn os(self) -> laqta_domain::record::Os {
         match self {
             Host::Windows => laqta_domain::record::Os::Windows,
             Host::Linux => laqta_domain::record::Os::Linux,
+            Host::MacOs => laqta_domain::record::Os::MacOs,
         }
     }
 }
@@ -115,6 +123,12 @@ pub fn record_args_on(
     }
     if stdin_fed && !audio.is_empty() {
         a.flag(&["-shortest"]);
+        // PCM on a pipe of its own arrives in real time beside the frames. `-shortest` holds
+        // output back (10 s by default) while the video encoder is behind, and FFmpeg then stops
+        // reading the sound, which is lost when the segment ends. A short hold keeps both moving.
+        if audio.iter().any(|input| matches!(input, AudioInputDesc::Pcm { pipe, .. } if pipe != "-")) {
+            a.flag(&["-shortest_buf_duration", "0.5"]);
+        }
     }
     for arg in split_args(&spec.custom_args) {
         a.push(arg);
@@ -443,6 +457,10 @@ fn audio_input(a: &mut Argv, host: Host, input: &AudioInputDesc) {
             Host::Linux => {
                 a.flag(&["-f", "pulse", "-i"]).push(id.as_str());
             }
+            // avfoundation names an input `video:audio`; an empty video part means audio only.
+            Host::MacOs => {
+                a.flag(&["-f", "avfoundation", "-i"]).push(format!(":{name}"));
+            }
         },
         AudioInputDesc::Pcm { rate, channels, pipe } => {
             a.flag(&["-f", "s16le"]).opt("-ar", rate).opt("-ac", channels).flag(&["-i"]).push(pipe.as_str());
@@ -469,6 +487,7 @@ fn camera_device(host: Host, cam: &laqta_domain::record::CameraOverlay) -> Optio
     match (host, cam.device.trim()) {
         (Host::Linux, "") => Some("/dev/video0".into()),
         (Host::Windows, "") => None,
+        (Host::MacOs, "") => Some("default".into()),
         (_, name) => Some(name.to_owned()),
     }
 }
@@ -483,6 +502,10 @@ fn camera_input(a: &mut Argv, host: Host, cam: &laqta_domain::record::CameraOver
         }
         Host::Windows => {
             a.flag(&["-f", "dshow", "-i"]).push(format!("video={device}"));
+        }
+        // avfoundation refuses a camera without a frame rate it supports; 30 is common to all.
+        Host::MacOs => {
+            a.flag(&["-f", "avfoundation", "-framerate", "30", "-i"]).push(format!("{device}:none"));
         }
     }
 }
@@ -832,6 +855,28 @@ mod tests {
         let args = record(Host::Linux, WindowsCapture::Ddagrab, &spec(VideoCodec::X264, Quality::Default), &x11_target(), &[]);
         assert!(seq(&args, &["-f", "x11grab", "-framerate", "30", "-video_size", "1920x1080", "-draw_mouse", "1", "-i", ":0+100,200"]));
         assert!(!args.iter().any(|arg| arg == "-vf"));
+    }
+
+    #[test]
+    fn macos_opens_a_microphone_through_avfoundation() {
+        let args = record(
+            Host::MacOs,
+            WindowsCapture::Ddagrab,
+            &spec(VideoCodec::X264, Quality::Default),
+            &raw(),
+            &[device("id", "MacBook Microphone")],
+        );
+        assert!(seq(&args, &["-f", "avfoundation", "-i", ":MacBook Microphone"]));
+    }
+
+    #[test]
+    fn frames_with_piped_pcm_keep_the_shortest_hold_short() {
+        let piped = AudioInputDesc::Pcm { rate: 48_000, channels: 2, pipe: "/s/sound.pcm".into() };
+        let args = record(Host::MacOs, WindowsCapture::Ddagrab, &spec(VideoCodec::X264, Quality::Default), &raw(), &[piped]);
+        assert!(seq(&args, &["-f", "s16le", "-ar", "48000", "-ac", "2", "-i", "/s/sound.pcm"]));
+        assert!(seq(&args, &["-shortest", "-shortest_buf_duration", "0.5"]));
+        let mic = record(Host::Linux, WindowsCapture::Ddagrab, &spec(VideoCodec::X264, Quality::Default), &raw(), &[device("m", "Mic")]);
+        assert!(!mic.iter().any(|arg| arg == "-shortest_buf_duration"), "other recordings are unchanged");
     }
 
     #[test]
