@@ -67,6 +67,14 @@ fn report_events(events: &[DebouncedEvent], known: &mut HashSet<PathBuf>, on_fil
             }
             continue;
         }
+        // The debouncer pairs a rename inside the folder into one event: the old path left, the new one arrived.
+        if let (EventKind::Modify(ModifyKind::Name(RenameMode::Both)), [from, to]) = (&event.kind, event.paths.as_slice()) {
+            forget(known, from);
+            if to.is_file() && known.insert(key(to)) {
+                on_file(to.clone());
+            }
+            continue;
+        }
         // macOS reports both ends of a rename as `Name(Any)`: the end that is gone left.
         if matches!(event.kind, EventKind::Modify(ModifyKind::Name(RenameMode::Any))) {
             for path in event.paths.iter().filter(|path| !path.exists()) {
@@ -218,5 +226,30 @@ mod tests {
         report_events(&[event(EventKind::Create(CreateKind::File), &shot)], &mut known, &on_file);
 
         assert_eq!(seen.lock().unwrap().as_slice(), [shot]);
+    }
+
+    /// The debouncer pairs a rename inside the folder into one `Both` event (old path, new path): the
+    /// new name arrives, and the old one can arrive again.
+    #[test]
+    fn a_paired_rename_reports_the_new_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let temp = dir.path().join("shot.png.part");
+        std::fs::write(&temp, b"1").unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let on_file: WatchCallback = Arc::new(move |path| sink.lock().unwrap().push(path));
+        let mut known = files_in(dir.path(), false);
+
+        let shot = dir.path().join("shot.png");
+        std::fs::rename(&temp, &shot).unwrap();
+        let both = DebouncedEvent::new(
+            Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both))).add_path(temp.clone()).add_path(shot.clone()),
+            std::time::Instant::now(),
+        );
+        report_events(&[both], &mut known, &on_file);
+        std::fs::write(&temp, b"2").unwrap();
+        report_events(&[event(EventKind::Create(CreateKind::File), &temp)], &mut known, &on_file);
+
+        assert_eq!(seen.lock().unwrap().as_slice(), [shot, temp]);
     }
 }

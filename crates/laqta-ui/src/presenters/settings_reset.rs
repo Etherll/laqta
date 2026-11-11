@@ -50,7 +50,8 @@ pub fn changed(scope: Scope, draft: &Settings, defaults: &Settings) -> usize {
                 .iter()
                 .filter_map(|w| default_workflow(w, defaults).map(|d| (w, d)))
                 .map(|(w, d)| usize::from(w.name != d.name) + differ(&w.patch, &d.patch))
-                .sum::<usize>();
+                .sum::<usize>()
+            + defaults.workflows.iter().filter(|d| !has_workflow(draft, d)).count();
     }
     if scope == Scope::Shortcuts {
         // A key is one setting, however many fields it serializes to.
@@ -122,8 +123,20 @@ pub fn reset(scope: Scope, draft: &mut Settings, defaults: &Settings) {
                     workflow.patch = default.patch.clone();
                 }
             }
+            // A removed built-in workflow comes back, where it was in the defaults.
+            for (index, default) in defaults.workflows.iter().enumerate() {
+                if !has_workflow(draft, default) {
+                    let at = index.min(draft.workflows.len());
+                    draft.workflows.insert(at, default.clone());
+                }
+            }
         }
     }
+}
+
+/// Whether `draft` still has the built-in workflow `default`.
+fn has_workflow(draft: &Settings, default: &Workflow) -> bool {
+    draft.workflows.iter().any(|w| w.id == default.id && w.action == default.action)
 }
 
 /// The built-in workflow `workflow` started as (same id and action), if it is one.
@@ -284,6 +297,17 @@ mod tests {
         s.workflows[0].name = "Mine".into();
         assert_eq!(changed(Scope::All, &s, &d), 1, "the Reset all button would do nothing");
         reset(Scope::All, &mut s, &d);
+        assert_eq!(changed(Scope::All, &s, &d), 0);
+    }
+
+    #[test]
+    fn reset_all_brings_back_a_removed_built_in_workflow() {
+        let d = defaults();
+        let mut s = d.clone();
+        let removed = s.workflows.remove(1);
+        assert_eq!(changed(Scope::All, &s, &d), 1, "the Reset all button would do nothing");
+        reset(Scope::All, &mut s, &d);
+        assert_eq!(s.workflows[1], removed, "back where it was");
         assert_eq!(changed(Scope::All, &s, &d), 0);
     }
 
