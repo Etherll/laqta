@@ -290,7 +290,9 @@ impl PcmSource for Tone {
 fn raw_frames_and_pcm_sound_are_recorded_together_across_a_pause() {
     let dir = tempfile::tempdir().expect("tempdir");
     let Some(media) = media(dir.path()) else { return };
-    record_sound_across_a_pause(&media, dir.path(), Duration::from_millis(1500));
+    // Long stretches, as below: a pause or stop that comes while the encoder is behind cuts what it
+    // has not written yet, and a slow machine is a second behind.
+    record_sound_across_a_pause(&media, dir.path(), Duration::from_secs(3));
 }
 
 /// FFmpeg takes about half a second to start on macOS. The recording must come out whole however

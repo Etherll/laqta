@@ -306,7 +306,18 @@ mod tests {
         let path = dir.join("Upload with Laqta");
         write_file(&path, &nautilus_script(Path::new("/bin/echo")), 0o755).expect("write script");
         let run = |args: &[&str], selection: &str| {
-            Command::new(&path).args(args).env("NAUTILUS_SCRIPT_SELECTED_FILE_PATHS", selection).output().expect("run script")
+            // A test thread that forks while the script is still open for writing holds that handle in
+            // its child until the child's exec, and running the script fails with ETXTBSY meanwhile.
+            let mut tries = 0;
+            loop {
+                match Command::new(&path).args(args).env("NAUTILUS_SCRIPT_SELECTED_FILE_PATHS", selection).output() {
+                    Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 50 => {
+                        tries += 1;
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                    other => break other.expect("run script"),
+                }
+            }
         };
         let from_selection = run(&[], "/a b/c.png\n/d*.png\n");
         assert_eq!(String::from_utf8_lossy(&from_selection.stdout), "/a b/c.png /d*.png\n");
