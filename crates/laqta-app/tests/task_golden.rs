@@ -1219,6 +1219,7 @@ fn pin_qr_ocr() {
             text: "hello".into(),
             confidence: 0.9,
             words: Vec::new(),
+            vertical: false,
         });
         let mut events = rig.app.events();
 

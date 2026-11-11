@@ -789,7 +789,13 @@ fn text_rig() -> TextRig {
 }
 
 fn text_line(text: &str) -> OcrLine {
-    OcrLine { rect: PhysRect { x: 0, y: 0, width: 2, height: 1 }, text: text.to_owned(), confidence: 0.9, words: Vec::new() }
+    OcrLine {
+        rect: PhysRect { x: 0, y: 0, width: 2, height: 1 },
+        text: text.to_owned(),
+        confidence: 0.9,
+        words: Vec::new(),
+        vertical: false,
+    }
 }
 
 fn ask(overlay: &FakeOverlay, command: TextCommand) {

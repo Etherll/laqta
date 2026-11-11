@@ -82,13 +82,13 @@ impl Layout {
             let index = layout.lines.len();
             let first = layout.tokens.len();
             let pieces = if line.words.is_empty() {
-                divide(Rect::of(line.rect), &line.text, LINE_TALL)
+                divide(Rect::of(line.rect), &line.text, line.vertical)
             } else {
                 let mut pieces = Vec::new();
                 // What of the line's text follows the words placed so far.
                 let mut rest = line.text.as_str();
                 for word in &line.words {
-                    let mut parts = divide(Rect::of(word.rect), &word.text, WORD_TALL);
+                    let mut parts = divide(Rect::of(word.rect), &word.text, line.vertical);
                     // A space separates the words where the line's text has one. A word the text
                     // does not hold is taken to be a word of its own.
                     let spaced = match rest.find(word.text.as_str()) {
@@ -221,22 +221,16 @@ struct Piece {
     spaced: bool,
 }
 
-/// A line this many times taller than wide runs down the page. PP-OCR turns a line on its side at
-/// 1.5 (`o1::REC_VERTICAL_RATIO` in laqta-ml) and gives it no word boxes, so a line is divided the
-/// same way. A word the engine placed sits in a line it read across, so it needs a taller box.
-const LINE_TALL: f32 = 1.5;
-const WORD_TALL: f32 = 2.0;
-
 /// Divides `rect` among the words of `text` by the usual width of each character. Text that runs
-/// right to left is measured from the right edge, and a box at least `tall` times taller than
-/// wide is divided down its height. A character of a script written without spaces is a piece of
-/// its own.
-fn divide(rect: Rect, text: &str, tall: f32) -> Vec<Piece> {
+/// right to left is measured from the right edge. Text the engine read `down` the page, or a tall,
+/// narrow box when it does not say, is divided down its height. A character of a script written
+/// without spaces is a piece of its own.
+fn divide(rect: Rect, text: &str, down: bool) -> Vec<Piece> {
     let total: f32 = text.chars().map(advance).sum();
     if total <= 0.0 {
         return Vec::new();
     }
-    let vertical = rect.h >= tall * rect.w && text.chars().filter(|c| !c.is_whitespace()).count() > 1;
+    let vertical = (down || rect.h > 2.0 * rect.w) && text.chars().filter(|c| !c.is_whitespace()).count() > 1;
     let rtl = reads_right_to_left(text);
     let span = |from: f32, to: f32| {
         let (from, to) = (from / total, to / total);
@@ -565,7 +559,7 @@ mod tests {
     }
 
     fn line(text: &str, at: PhysRect) -> OcrLine {
-        OcrLine { rect: at, text: text.to_owned(), confidence: 1.0, words: Vec::new() }
+        OcrLine { rect: at, text: text.to_owned(), confidence: 1.0, words: Vec::new(), vertical: false }
     }
 
     fn word(text: &str, at: PhysRect) -> OcrWord {
@@ -668,16 +662,15 @@ mod tests {
     }
 
     #[test]
-    fn a_line_the_recogniser_turned_is_divided_down_its_height() {
-        // PP-OCR reads a line on its side once it is 1.5 times taller than wide, and gives it no
-        // word boxes, so the layout must divide it the same way.
-        let layout = Layout::new(&OcrResult { lines: vec![line("縦書き", rect(0, 0, 20, 35))] });
+    fn a_line_the_engine_read_down_the_page_is_divided_down_it() {
+        // Short and only a little taller than wide: by its shape alone it would be divided across.
+        let down = OcrLine { vertical: true, ..line("縦書", rect(0, 0, 20, 35)) };
+        let layout = Layout::new(&OcrResult { lines: vec![down.clone()] });
         assert!(layout.tokens().iter().all(|t| t.rect.x == 0.0 && t.rect.w == 20.0));
-        // A word the engine placed in a horizontal line stays horizontal at that shape.
-        let mut placed = line("ill", rect(0, 0, 20, 35));
-        placed.words = vec![OcrWord { rect: PhysRect { x: 0, y: 0, width: 20, height: 35 }, text: "ill".into() }];
-        let layout = Layout::new(&OcrResult { lines: vec![placed] });
-        assert!(layout.tokens().iter().all(|t| t.rect.y == 0.0 && t.rect.h == 35.0));
+        // The same for its one word box, which an engine gives a line written without spaces.
+        let boxed = OcrLine { words: vec![word("縦書", rect(0, 0, 20, 35))], ..down };
+        let layout = Layout::new(&OcrResult { lines: vec![boxed] });
+        assert!(layout.tokens().iter().all(|t| t.rect.x == 0.0 && t.rect.w == 20.0));
     }
 
     #[test]

@@ -148,7 +148,7 @@ fn image() -> Bitmap {
 }
 
 fn line(text: &str) -> OcrLine {
-    OcrLine { rect: PhysRect { x: 0, y: 0, width: 8, height: 4 }, text: text.into(), confidence: 0.9, words: Vec::new() }
+    OcrLine { rect: PhysRect { x: 0, y: 0, width: 8, height: 4 }, text: text.into(), confidence: 0.9, words: Vec::new(), vertical: false }
 }
 
 fn assert_nothing_else_happened(h: &H) {

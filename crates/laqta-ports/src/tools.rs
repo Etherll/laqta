@@ -22,6 +22,9 @@ pub struct OcrLine {
     /// The line's words in reading order, with a box each, when the engine reports them. Empty when
     /// it places only the line: whoever needs word boxes then divides `rect` by the text.
     pub words: Vec<OcrWord>,
+    /// The line runs down the page, its words top to bottom, as the engine read it. False when the
+    /// engine does not say; whoever lays the line out may then judge by its shape.
+    pub vertical: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]

@@ -398,10 +398,23 @@ pub fn ctc_words(positions: &[(f32, &str)], visible: f32, rect: PhysRect) -> Vec
         .collect()
 }
 
-/// Whether `rec_crop` turns a region of this shape on its side before it is read. The characters
-/// of such a line run down the region, so `ctc_words` cannot place them along its width.
+/// Whether `rec_crop` turns a region of this shape on its side before it is read.
 pub fn rec_turns(rect: PhysRect) -> bool {
     rect.height as f32 >= REC_VERTICAL_RATIO * rect.width as f32
+}
+
+/// The words of the line `rect` with a box each, as `ctc_words` places them. A line `rec_crop`
+/// turned on its side was read left to right after a quarter turn counter-clockwise, which runs
+/// top to bottom down the line, so its words are placed down its height.
+pub fn line_words(positions: &[(f32, &str)], visible: f32, rect: PhysRect) -> Vec<(PhysRect, String)> {
+    if !rec_turns(rect) {
+        return ctc_words(positions, visible, rect);
+    }
+    let along = PhysRect { x: 0, y: 0, width: rect.height, height: rect.width };
+    ctc_words(positions, visible, along)
+        .into_iter()
+        .map(|(word, text)| (PhysRect { y: rect.y.saturating_add(word.x), height: word.width, ..rect }, text))
+        .collect()
 }
 
 /// Parses a dictionary file: one entry per line. `\r` before a newline is removed, and nothing else is
@@ -658,6 +671,19 @@ mod tests {
         // One character has no pitch to measure: it is the whole line.
         assert_eq!(ctc_words(&[(0.3, "x")], 1.0, line), vec![(line, "x".to_owned())]);
         assert!(ctc_words(&[(0.3, " ")], 1.0, line).is_empty());
+    }
+
+    #[test]
+    fn the_words_of_a_line_read_on_its_side_run_down_it() {
+        let line = PhysRect { x: 40, y: 100, width: 20, height: 200 };
+        let positions = [(0.05, "a"), (0.15, "b"), (0.25, " "), (0.35, "c"), (0.45, "d")];
+        assert_eq!(
+            line_words(&positions, 0.5, line),
+            vec![(PhysRect { y: 100, height: 80, ..line }, "ab".to_owned()), (PhysRect { y: 220, height: 80, ..line }, "cd".to_owned())]
+        );
+        // A line read across is placed along its width, as `ctc_words` does.
+        let across = PhysRect { x: 100, y: 10, width: 200, height: 20 };
+        assert_eq!(line_words(&positions, 0.5, across), ctc_words(&positions, 0.5, across));
     }
 
     #[test]

@@ -193,7 +193,7 @@ fn map_line(line: &windows::Media::Ocr::OcrLine, scale_x: f32, scale_y: f32) -> 
         return Ok(None);
     };
     let text = line.Text().map_err(failed("reading an OCR line"))?.to_string();
-    Ok(Some(OcrLine { rect: to_physical(bounds, scale_x, scale_y), text, confidence: 1.0, words }))
+    Ok(Some(OcrLine { rect: to_physical(bounds, scale_x, scale_y), text, confidence: 1.0, words, vertical: false }))
 }
 
 /// The engine for `language` (a BCP-47 tag), or for the user's profile languages when it is empty.

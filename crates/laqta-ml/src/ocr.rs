@@ -148,17 +148,13 @@ fn recognise(runtime: &Runtime, det: &str, rec: &str, bitmap: &Bitmap, gone: &dy
                 let best = o1::best_per_step(rows, classes);
                 let (text, confidence) = o1::ctc_greedy(&best, classes_table);
                 // The time steps run along the padded input, so each character's step tells where
-                // in the line it sits: that gives every word a box (ADR 031). A line read on its
-                // side has none.
+                // in the line it sits: that gives every word a box (ADR 031), down the line for one
+                // read on its side.
                 let (rect, scaled, _) = &crops[i];
-                let words = if o1::rec_turns(*rect) {
-                    Vec::new()
-                } else {
-                    o1::ctc_words(&o1::ctc_positions(&best, classes_table), *scaled as f32 / width as f32, *rect)
-                        .into_iter()
-                        .map(|(rect, text)| OcrWord { rect, text })
-                        .collect()
-                };
+                let words = o1::line_words(&o1::ctc_positions(&best, classes_table), *scaled as f32 / width as f32, *rect)
+                    .into_iter()
+                    .map(|(rect, text)| OcrWord { rect, text })
+                    .collect();
                 read[i] = Some((text, confidence, words));
             }
         }
@@ -169,7 +165,7 @@ fn recognise(runtime: &Runtime, det: &str, rec: &str, bitmap: &Bitmap, gone: &dy
         .zip(read)
         .filter_map(|((rect, _, _), read)| {
             let (text, confidence, words) = read?;
-            (!text.trim().is_empty()).then_some(OcrLine { rect: *rect, text, confidence, words })
+            (!text.trim().is_empty()).then_some(OcrLine { rect: *rect, text, confidence, words, vertical: o1::rec_turns(*rect) })
         })
         .collect();
     Ok(OcrResult { lines })

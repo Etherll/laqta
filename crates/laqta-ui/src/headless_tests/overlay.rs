@@ -249,12 +249,14 @@ fn text_read_in_place_is_picked_with_the_pointer_and_copied_through_the_session(
                 text: "Hello big world".into(),
                 confidence: 1.0,
                 words: vec![word("Hello", 20), word("big", 90), word("world", 160)],
+                vertical: false,
             },
             OcrLine {
                 rect: PhysRect { x: 20, y: 60, width: 120, height: 20 },
                 text: "second line".into(),
                 confidence: 1.0,
                 words: Vec::new(),
+                vertical: false,
             },
         ],
     });
@@ -471,6 +473,7 @@ fn enter_while_reading_leaves_once_the_text_is_read(cx: &mut TestAppContext) {
             text: "hello".into(),
             confidence: 1.0,
             words: Vec::new(),
+            vertical: false,
         }],
     };
     let not_copied =
