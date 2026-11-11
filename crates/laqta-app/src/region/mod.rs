@@ -184,10 +184,13 @@ async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptio
         let mut cropped: Option<PhysRect> = None;
         let mut annotated: Option<Bitmap> = None;
         // Text read in place: the selection's crop, whether its text is wanted, the recogniser while
-        // it runs, and what the overlay shows of it.
+        // it runs, whether its answer is still for that crop, and what the overlay shows of it. A
+        // recogniser cannot be stopped once started, so at most one read runs: a newer crop waits
+        // for it rather than queueing more work behind it.
         let mut crop: Option<Arc<Bitmap>> = None;
         let mut reads_text = text_only;
         let mut reading: Option<BoxFuture<'_, Result<OcrResult, PortError>>> = None;
+        let mut current = false;
         let mut text: Option<TextLayer> = None;
         let paint = |state: &RegionState, text: &Option<TextLayer>, selection_image: Option<Arc<Bitmap>>| {
             let pixel = pixel_at(&composed, bounds, state.cursor());
@@ -199,8 +202,14 @@ async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptio
                 Next::Input(None) => break,
                 Next::Read(read) => {
                     reading = None;
-                    text = Some(text_layer(ports, read));
-                    paint(&state, &text, None);
+                    if current {
+                        text = Some(text_layer(ports, read));
+                        paint(&state, &text, None);
+                    } else if let (Some(TextLayer::Reading), Some(image)) = (&text, &crop) {
+                        // The answer is for a crop that is gone; read the one that replaced it.
+                        reading = Some(ports.ocr.recognize((**image).clone(), String::new()));
+                        current = true;
+                    }
                     continue;
                 }
             };
@@ -224,7 +233,10 @@ async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptio
                     if text.is_none()
                         && let Some(image) = &crop
                     {
-                        reading = Some(ports.ocr.recognize((**image).clone(), String::new()));
+                        if reading.is_none() {
+                            reading = Some(ports.ocr.recognize((**image).clone(), String::new()));
+                            current = true;
+                        }
                         text = Some(TextLayer::Reading);
                         paint(&state, &text, None);
                     }
@@ -237,7 +249,7 @@ async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptio
                         return Err(AppError::Cancelled);
                     }
                     reads_text = false;
-                    reading = None;
+                    current = false;
                     if text.take().is_some() {
                         paint(&state, &text, None);
                     }
@@ -267,14 +279,17 @@ async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptio
                 // An annotated crop belongs to the selection it was drawn on, and so does its text.
                 annotated = None;
                 crop = None;
-                reading = None;
+                current = false;
                 text_gone = text.take().is_some();
                 if let Some(rect) = selected {
                     match crop_selected(ports.spawner.as_ref(), &composed, bounds, rect).await {
                         Ok(image) => {
                             let image = Arc::new(image);
                             if reads_text {
-                                reading = Some(ports.ocr.recognize((*image).clone(), String::new()));
+                                if reading.is_none() {
+                                    reading = Some(ports.ocr.recognize((*image).clone(), String::new()));
+                                    current = true;
+                                }
                                 text = Some(TextLayer::Reading);
                             }
                             crop = Some(image.clone());

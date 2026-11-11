@@ -965,10 +965,11 @@ fn an_answer_for_a_selection_that_is_gone_is_dropped() {
 
         drag(&rig.overlay, (0, 0), (2, 2));
         assert!(step(session.as_mut()).is_none());
-        assert_eq!(*slow.calls.lock().unwrap(), 2);
-        assert!(first.send(Ok(OcrResult { lines: vec![text_line("old")] })).is_err(), "the first read was given up");
+        assert_eq!(*slow.calls.lock().unwrap(), 1, "the new selection waits for the read already running");
+        first.send(Ok(OcrResult { lines: vec![text_line("old")] })).unwrap();
         assert!(step(session.as_mut()).is_none());
         assert_eq!(rig.overlay.last_view().unwrap().text, Some(TextLayer::Reading));
+        assert_eq!(*slow.calls.lock().unwrap(), 2, "the new selection is read once the old read is done");
 
         second.send(Ok(OcrResult { lines: vec![text_line("new")] })).unwrap();
         assert!(step(session.as_mut()).is_none());
@@ -1019,6 +1020,69 @@ fn a_failed_read_and_an_empty_one_are_shown_and_copy_nothing() {
         assert_eq!(shown_text(&rig.overlay), Some((String::new(), false)));
         assert!(rig.clipboard.texts.lock().unwrap().is_empty());
         assert!(rig.tools.ocr.lock().unwrap().is_empty());
+    });
+}
+
+#[test]
+fn changes_during_a_read_start_one_read_of_the_last_selection() {
+    in_pool(|| {
+        let mut rig = text_rig();
+        let slow = Arc::new(GatedOcr::default());
+        let (first, second) = (slow.gate(), slow.gate());
+        rig.ports.ocr = slow.clone();
+        let opts = selecting();
+        let mut session = pin!(select(&rig.ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+        drag(&rig.overlay, (5, 1), (6, 2));
+        ask(&rig.overlay, TextCommand::Read);
+        assert!(step(session.as_mut()).is_none());
+
+        // A held arrow key moves the selection many times while the first read runs.
+        for _ in 0..5 {
+            press(&rig.overlay, RegionKey::Left);
+            assert!(step(session.as_mut()).is_none());
+        }
+        assert_eq!(*slow.calls.lock().unwrap(), 1, "no read starts while one is running");
+
+        first.send(Ok(OcrResult { lines: vec![text_line("old")] })).unwrap();
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(*slow.calls.lock().unwrap(), 2);
+        assert_eq!(rig.overlay.last_view().unwrap().text, Some(TextLayer::Reading));
+        assert!(rig.clipboard.texts.lock().unwrap().is_empty(), "the old answer is not copied");
+
+        second.send(Ok(OcrResult { lines: vec![text_line("new")] })).unwrap();
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(shown_text(&rig.overlay), Some(("new".to_owned(), true)));
+        assert_eq!(*slow.calls.lock().unwrap(), 2);
+    });
+}
+
+#[test]
+fn closing_the_text_while_it_reads_and_reading_again_waits_for_that_read() {
+    in_pool(|| {
+        let mut rig = text_rig();
+        let slow = Arc::new(GatedOcr::default());
+        let (first, second) = (slow.gate(), slow.gate());
+        rig.ports.ocr = slow.clone();
+        let opts = selecting();
+        let mut session = pin!(select(&rig.ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+        drag(&rig.overlay, (5, 1), (6, 2));
+        ask(&rig.overlay, TextCommand::Read);
+        assert!(step(session.as_mut()).is_none());
+        ask(&rig.overlay, TextCommand::Close);
+        assert!(step(session.as_mut()).is_none());
+        assert!(rig.overlay.last_view().unwrap().text.is_none());
+        ask(&rig.overlay, TextCommand::Read);
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(*slow.calls.lock().unwrap(), 1);
+
+        first.send(Ok(OcrResult { lines: vec![text_line("old")] })).unwrap();
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(*slow.calls.lock().unwrap(), 2);
+        second.send(Ok(OcrResult { lines: vec![text_line("new")] })).unwrap();
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(shown_text(&rig.overlay), Some(("new".to_owned(), true)));
     });
 }
 
