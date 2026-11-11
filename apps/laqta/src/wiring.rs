@@ -159,6 +159,67 @@ fn pictures_dir() -> std::path::PathBuf {
     dirs::picture_dir().or_else(|| dirs::home_dir().map(|h| h.join("Pictures"))).unwrap_or_else(|| "Pictures".into())
 }
 
+/// Where an installed copy keeps its data. A portable or sandboxed copy keeps it elsewhere.
+fn default_data_dir() -> std::path::PathBuf {
+    dirs::data_local_dir().unwrap_or_else(|| ".".into()).join("Laqta")
+}
+
+/// Marks that the first run of this data folder has turned on starting at sign-in (or chose not to).
+const AUTOSTART_MARKER: &str = "autostart-default";
+/// The marker's contents while a failed attempt waits for the next start.
+const AUTOSTART_RETRY: &[u8] = b"retry";
+
+/// Laqta starts at sign-in by default: the first run of a new install turns it on, once. Later runs
+/// leave it as the user set it in Settings. Only an `eligible` copy (installed, release build) takes
+/// part, so a portable copy or a debug build sharing the default folder can't use up its turn. An
+/// existing profile is left alone. An attempt that fails is tried again at the next start, and so is
+/// one this copy can't make at all (a macOS binary outside an app bundle): the app installed later
+/// in the same folder then turns it on.
+fn autostart_first_run(
+    autostart: &dyn laqta_ports::Autostart,
+    data: &std::path::Path,
+    eligible: bool,
+    new_profile: bool,
+    exe: &std::path::Path,
+) {
+    if !eligible {
+        return;
+    }
+    let marker = data.join(AUTOSTART_MARKER);
+    let retry = match std::fs::read(&marker) {
+        Ok(contents) if contents == AUTOSTART_RETRY => true,
+        Ok(_) => return,
+        Err(_) => false,
+    };
+    let done = if !new_profile && !retry {
+        true
+    } else {
+        let turned_on = autostart.is_enabled().and_then(|on| {
+            if on {
+                return Ok(());
+            }
+            autostart.set_enabled(true, exe)?;
+            tracing::info!("Laqta will start at sign-in (turn it off in Settings)");
+            Ok(())
+        });
+        match turned_on {
+            Ok(()) => true,
+            Err(PortError::Unsupported(why)) => {
+                tracing::debug!("this copy can't start at sign-in: {why}");
+                false
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not turn on starting at sign-in; trying again at the next start");
+                false
+            }
+        }
+    };
+    let contents: &[u8] = if done { b"" } else { AUTOSTART_RETRY };
+    if let Err(error) = std::fs::create_dir_all(data).and_then(|()| std::fs::write(&marker, contents)) {
+        tracing::warn!(%error, "could not record the sign-in default");
+    }
+}
+
 /// `-sandbox`: a fresh temporary folder, removed on exit. `-portable`: `LaqtaData` next to the
 /// binary, as the `portable` marker file or a "portable" executable name does.
 fn data_dir(args: &crate::cli::Args) -> std::path::PathBuf {
@@ -167,7 +228,7 @@ fn data_dir(args: &crate::cli::Args) -> std::path::PathBuf {
     if args.sandbox {
         return std::env::temp_dir().join(format!("laqta-sandbox-{}", std::process::id()));
     }
-    let default = dirs::data_local_dir().unwrap_or_else(|| ".".into()).join("Laqta");
+    let default = default_data_dir();
     let chosen = match (&exe_dir, args.portable) {
         (Some(dir), true) => dir.join("LaqtaData"),
         _ => laqta_library::data_dir(exe.as_deref(), default.clone()),
@@ -178,6 +239,13 @@ fn data_dir(args: &crate::cli::Args) -> std::path::PathBuf {
         return default;
     }
     chosen
+}
+
+/// True for an installed copy: not `-sandbox`, `-portable` or a portable build. Decided from the
+/// copy itself, since a portable copy on read-only media keeps its data in the default folder too.
+fn installed_copy(args: &crate::cli::Args, exe: &std::path::Path) -> bool {
+    let default = default_data_dir();
+    !args.sandbox && !args.portable && laqta_library::data_dir(Some(exe), default.clone()) == default
 }
 
 /// Hands a GPUI window's native handle to the Windows or macOS adapter. A platform answers false
@@ -283,11 +351,25 @@ async fn run_request(
     }
 }
 
+/// Steps from each older settings version to the next, oldest first (index 0 takes 1 to 2).
+const SETTINGS_MIGRATIONS: [laqta_library::Migration; 1] = [settings_v1_to_v2];
+
+/// Version 2: a tray click opens the main window. Version 1 saved the old default, a fullscreen
+/// capture, and had no way to change it, so a saved `PrintScreen` moves to the new default.
+fn settings_v1_to_v2(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(click) = value.get_mut("tray_click")
+        && click == "PrintScreen"
+    {
+        *click = serde_json::Value::from("OpenMainWindow");
+    }
+    value
+}
+
 fn load_settings(store: &SettingsStore) -> Settings {
     if !store.path().exists() {
         return default_settings();
     }
-    match store.load::<Settings>(SETTINGS_VERSION, &[]) {
+    match store.load::<Settings>(SETTINGS_VERSION, &SETTINGS_MIGRATIONS) {
         Ok(mut s) => {
             // A file without `screenshots_dir` gets the serde default, a relative path that would put captures in
             // the folder Laqta was started from.
@@ -340,6 +422,29 @@ fn merge_system_keys(keys: Vec<(KeyChord, String)>) {
             None => report.system_keys.push((chord, key)),
         }
     }
+    drop(report);
+    hotkeys_changed();
+}
+
+/// The desktop turned down chords the last registration reported as registered: they show as failed,
+/// and the next sync registers them again. A rejection of an older registration, which a newer one
+/// replaced meanwhile, changes nothing. `sync_hotkeys` replaces a registration while holding
+/// `registered`, so checking under that lock leaves no gap for a newer one to start.
+fn reject_hotkeys(registered: &RegisteredBindings, rejection: &laqta_ports::Rejection) {
+    let mut current = registered.lock().unwrap_or_else(|e| e.into_inner());
+    let reports = hotkey_reports();
+    let mut report = reports.lock().unwrap_or_else(|e| e.into_inner());
+    let set = |chords: &[KeyChord]| chords.iter().copied().collect::<std::collections::HashSet<_>>();
+    if !rejection.is_current() || set(&report.registered) != set(&rejection.chords) {
+        return;
+    }
+    let why = rejection.reason.as_str();
+    // Not registered after all, so an unchanged save must not skip the next try.
+    current.take();
+    drop(current);
+    let chords = std::mem::take(&mut report.registered);
+    report.failed.extend(chords.into_iter().map(|chord| (chord, why.to_owned())));
+    report.system_keys.clear();
     drop(report);
     hotkeys_changed();
 }
@@ -425,6 +530,18 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         platform.secrets = Arc::new(stubs::SessionSecrets::new(platform.secrets.clone()));
     }
     let store = Arc::new(SettingsStore::new(data.clone()));
+    if let Ok(exe) = std::env::current_exe() {
+        let installed = installed_copy(&args, &exe);
+        if installed && let Err(error) = platform.autostart.migrate(&exe) {
+            tracing::warn!(%error, "could not update the start at sign-in entry");
+        }
+        // A debug build leaves the default to a release build.
+        let eligible = installed && !cfg!(debug_assertions);
+        // 0.1.0 had no marker. Its first run creates the history file, and turning history off
+        // writes the settings, so a profile with neither is new; one with either was used.
+        let new_profile = !store.path().exists() && !data.join("history.db").exists();
+        autostart_first_run(platform.autostart.as_ref(), &data, eligible, new_profile, &exe);
+    }
     let settings = load_settings(&store);
     let history = if settings.history.enabled && !args.sandbox {
         match History::open(&data.join("history.db")) {
@@ -520,6 +637,10 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let hotkeys = platform.hotkeys;
     hotkeys.on_assigned(Arc::new(merge_system_keys));
     let registered: RegisteredBindings = Arc::new(Mutex::new(None));
+    {
+        let registered = registered.clone();
+        hotkeys.on_rejected(Arc::new(move |rejection| reject_hotkeys(&registered, &rejection)));
+    }
 
     // Task events: the log and the history writer.
     let mut events = app.events();
@@ -948,6 +1069,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -970,6 +1092,178 @@ mod tests {
         fn grabs_keys(&self) -> bool {
             true
         }
+    }
+
+    #[derive(Default)]
+    struct SignIn {
+        on: std::sync::atomic::AtomicBool,
+        sets: AtomicUsize,
+        /// Attempts to turn it on that fail before one succeeds.
+        failures: AtomicUsize,
+        unsupported: std::sync::atomic::AtomicBool,
+    }
+
+    impl laqta_ports::Autostart for SignIn {
+        fn is_enabled(&self) -> Result<bool, PortError> {
+            Ok(self.on.load(Ordering::SeqCst))
+        }
+        fn set_enabled(&self, enabled: bool, _: &std::path::Path) -> Result<(), PortError> {
+            self.sets.fetch_add(1, Ordering::SeqCst);
+            if self.unsupported.load(Ordering::SeqCst) {
+                return Err(PortError::Unsupported("not an app bundle".into()));
+            }
+            if self.failures.load(Ordering::SeqCst) > 0 {
+                self.failures.fetch_sub(1, Ordering::SeqCst);
+                return Err(PortError::Failed("busy".into()));
+            }
+            self.on.store(enabled, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// The first run of a new install turns sign-in start on, once: turned off later, it stays off.
+    #[test]
+    fn a_new_install_starts_at_sign_in_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let sign_in = SignIn::default();
+        let exe = std::path::Path::new("/opt/laqta/laqta");
+
+        autostart_first_run(&sign_in, dir.path(), true, true, exe);
+        assert!(sign_in.on.load(Ordering::SeqCst));
+        assert!(dir.path().join(AUTOSTART_MARKER).exists());
+
+        sign_in.on.store(false, Ordering::SeqCst);
+        let sets = sign_in.sets.load(Ordering::SeqCst);
+        autostart_first_run(&sign_in, dir.path(), true, true, exe);
+        assert!(!sign_in.on.load(Ordering::SeqCst), "the user's choice stays");
+        assert_eq!(sign_in.sets.load(Ordering::SeqCst), sets);
+    }
+
+    fn rejection(chord: KeyChord, current: bool) -> laqta_ports::Rejection {
+        laqta_ports::Rejection::new(vec![chord], "cancelled".to_owned(), move || current)
+    }
+
+    /// A rejection of a registration that was replaced is stale even with the same chords (a remap
+    /// that kept them): it changes nothing.
+    #[test]
+    fn a_rejection_of_a_replaced_registration_with_the_same_chords_changes_nothing() {
+        let _report = REPORT.lock().unwrap_or_else(|e| e.into_inner());
+        let chord: KeyChord = "Ctrl+Shift+F6".parse().expect("a chord");
+        let registered: RegisteredBindings = Arc::new(Mutex::new(Some(vec![(chord, Action::ActiveWindow)])));
+        *hotkey_reports().lock().unwrap() = laqta_ui::HotkeyReport { registered: vec![chord], ..Default::default() };
+
+        reject_hotkeys(&registered, &rejection(chord, false));
+
+        assert!(registered.lock().unwrap().is_some(), "the newer registration stays cached");
+        assert_eq!(hotkey_reports().lock().unwrap().registered, vec![chord]);
+    }
+
+    /// A rejection that comes after a newer registration with other chords is stale: it changes nothing.
+    #[test]
+    fn a_stale_rejection_leaves_a_newer_registration_alone() {
+        let _report = REPORT.lock().unwrap_or_else(|e| e.into_inner());
+        let old: KeyChord = "Ctrl+Shift+F7".parse().expect("a chord");
+        let new: KeyChord = "Ctrl+Shift+F8".parse().expect("a chord");
+        let registered: RegisteredBindings = Arc::new(Mutex::new(Some(vec![(new, Action::PrintScreen)])));
+        *hotkey_reports().lock().unwrap() = laqta_ui::HotkeyReport { registered: vec![new], ..Default::default() };
+
+        reject_hotkeys(&registered, &rejection(old, true));
+
+        assert!(registered.lock().unwrap().is_some(), "the newer registration stays cached");
+        assert_eq!(hotkey_reports().lock().unwrap().registered, vec![new]);
+    }
+
+    /// Portable copies and existing profiles are left as they are, and so remembered.
+    #[test]
+    fn portable_copies_and_existing_profiles_keep_their_sign_in_setting() {
+        for (installed, new_profile) in [(false, true), (true, false)] {
+            let dir = tempfile::tempdir().unwrap();
+            let sign_in = SignIn::default();
+            autostart_first_run(&sign_in, dir.path(), installed, new_profile, std::path::Path::new("/x"));
+            assert_eq!(sign_in.sets.load(Ordering::SeqCst), 0, "installed={installed} new={new_profile}");
+            // A portable copy leaves the marker to the installed copy that may share its folder.
+            assert_eq!(dir.path().join(AUTOSTART_MARKER).exists(), installed, "installed={installed} new={new_profile}");
+        }
+    }
+
+    /// A failed attempt is tried again at the next start, by then with a settings file; once it
+    /// succeeds the user's later choice stands.
+    #[test]
+    fn a_failed_sign_in_default_is_tried_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let sign_in = SignIn { failures: AtomicUsize::new(1), ..Default::default() };
+        let exe = std::path::Path::new("/opt/laqta/laqta");
+
+        autostart_first_run(&sign_in, dir.path(), true, true, exe);
+        assert!(!sign_in.on.load(Ordering::SeqCst));
+        autostart_first_run(&sign_in, dir.path(), true, false, exe);
+        assert!(sign_in.on.load(Ordering::SeqCst), "the second start turns it on");
+
+        sign_in.on.store(false, Ordering::SeqCst);
+        autostart_first_run(&sign_in, dir.path(), true, false, exe);
+        assert!(!sign_in.on.load(Ordering::SeqCst), "the user's choice stays");
+        assert_eq!(sign_in.sets.load(Ordering::SeqCst), 2);
+    }
+
+    /// A copy that can't start at sign-in (a macOS binary outside the app) leaves the default to
+    /// the app installed later in the same folder, even once a profile exists.
+    #[test]
+    fn an_unsupported_copy_leaves_the_sign_in_default_to_the_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = std::path::Path::new("/opt/laqta/laqta");
+        let bare = SignIn { unsupported: true.into(), ..Default::default() };
+        autostart_first_run(&bare, dir.path(), true, true, exe);
+
+        let app = SignIn::default();
+        autostart_first_run(&app, dir.path(), true, false, exe);
+        assert!(app.on.load(Ordering::SeqCst));
+    }
+
+    /// A portable copy counts as portable even where its data falls back to the default folder.
+    #[test]
+    fn only_a_plain_copy_counts_as_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = crate::cli::Args::default();
+        assert!(installed_copy(&plain, &dir.path().join("laqta")));
+        assert!(!installed_copy(&plain, &dir.path().join("laqta-portable.exe")));
+        assert!(!installed_copy(&crate::cli::Args { portable: true, ..Default::default() }, &dir.path().join("laqta")));
+        assert!(!installed_copy(&crate::cli::Args { sandbox: true, ..Default::default() }, &dir.path().join("laqta")));
+        std::fs::write(dir.path().join("portable"), b"").unwrap();
+        assert!(!installed_copy(&plain, &dir.path().join("laqta")));
+    }
+
+    /// A version 1 profile saved the old tray default, a capture, and moves to opening the window.
+    /// Another saved action (set by hand in the file) stays.
+    #[test]
+    fn a_tray_click_in_an_old_profile_opens_the_main_window() {
+        for (saved, loaded) in [("PrintScreen", Action::OpenMainWindow), ("RectangleRegion", Action::RectangleRegion)] {
+            let dir = tempfile::tempdir().unwrap();
+            let file = format!(r#"{{"version": 1, "tray_click": "{saved}"}}"#);
+            std::fs::write(dir.path().join("settings.json"), file).unwrap();
+            let settings = load_settings(&SettingsStore::new(dir.path().to_path_buf()));
+            assert_eq!(settings.tray_click, loaded, "saved {saved}");
+            assert_eq!(settings.version, SETTINGS_VERSION);
+        }
+    }
+
+    /// The tests that set the shared hotkey report take turns.
+    static REPORT: Mutex<()> = Mutex::new(());
+
+    /// A bind the desktop turned down after `register` said yes: the chords show as failed, and the
+    /// cache is cleared so the next save registers them again.
+    #[test]
+    fn a_rejected_bind_shows_the_chords_as_failed() {
+        let _report = REPORT.lock().unwrap_or_else(|e| e.into_inner());
+        let chord: KeyChord = "Ctrl+Shift+F9".parse().expect("a chord");
+        let registered: RegisteredBindings = Arc::new(Mutex::new(Some(vec![(chord, Action::PrintScreen)])));
+        *hotkey_reports().lock().unwrap() = laqta_ui::HotkeyReport { registered: vec![chord], ..Default::default() };
+
+        reject_hotkeys(&registered, &rejection(chord, true));
+
+        assert!(registered.lock().unwrap().is_none(), "the next sync registers again");
+        let report = hotkey_reports().lock().unwrap().clone();
+        assert!(report.registered.is_empty());
+        assert_eq!(report.failed, vec![(chord, "cancelled".to_owned())]);
     }
 
     /// A partial registration is cached as `None`, yet its other chords are still grabbed: recording

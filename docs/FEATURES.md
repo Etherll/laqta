@@ -132,7 +132,7 @@ Hosts in the catalog are `.sxcu` files (ADR 004). Hosts written in Rust are mark
 | CLI (`task`, `workflow`, custom uploader, image effect, native-message input). Accepts the ShareX-style flags `-silent`, `-portable`, `-multi` and `-NoHotkeys` | Integration | done |
 | Single instance and argument forwarding | Skeleton | done |
 | Browser extension native messaging (Chrome, Firefox) | Integration | done |
-| Run at startup, shell context menu, Send To, file-type registration | Integration | done |
+| Run at startup (on by default for a new install), shell context menu, Send To, file-type registration | Integration | done |
 | About 30 languages | Integration | done |
 | Auto-update | Integration | done |
 | Steam build | — | dropped: no Steam build is planned |

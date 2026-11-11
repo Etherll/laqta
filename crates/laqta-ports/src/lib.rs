@@ -16,8 +16,8 @@ pub mod upload;
 pub mod fakes;
 
 pub use desktop::{
-    ActionCallback, AssignedCallback, ChordCallback, Clipboard, ClipboardContent, HotkeyCallback, HotkeyRegistrar, KeyRecording, Shell,
-    Tray, TrayItem, TrayMenu,
+    ActionCallback, AssignedCallback, ChordCallback, Clipboard, ClipboardContent, HotkeyCallback, HotkeyRegistrar, KeyRecording,
+    RejectedCallback, Rejection, Shell, Tray, TrayItem, TrayMenu,
 };
 pub use error::PortError;
 pub use history::HistoryEdit;

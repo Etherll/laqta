@@ -1,4 +1,5 @@
-use std::sync::{Mutex, mpsc};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -6,7 +7,7 @@ use ashpd::desktop::global_shortcuts::{BindShortcutsOptions, ConfigureShortcutsO
 use ashpd::desktop::{CreateSessionOptions, Session};
 use futures_lite::{StreamExt, future};
 use laqta_domain::{Action, Key, KeyChord, Modifiers};
-use laqta_ports::{AssignedCallback, HotkeyCallback, HotkeyRegistrar, PortError};
+use laqta_ports::{AssignedCallback, HotkeyCallback, HotkeyRegistrar, PortError, RejectedCallback, Rejection};
 
 /// GlobalShortcuts portal: one session at a time. Shortcut ids come from the action's name
 /// (`PrintScreen` → `print-screen`). A missing portal is `Unsupported`.
@@ -17,6 +18,23 @@ pub struct PortalShortcuts {
     control: Mutex<Option<mpsc::Sender<Control>>>,
     /// Set by `on_assigned`, before `register` starts the listener.
     assigned: Mutex<Option<AssignedCallback>>,
+    /// Set by `on_rejected`: told when the bind fails after `register` returned.
+    rejected: Mutex<Option<RejectedCallback>>,
+    /// Counts sessions; ending one moves it on, so a late failure of an old bind is not reported.
+    generation: Arc<AtomicU64>,
+}
+
+/// Which session a listener serves. It is current until that session is ended.
+#[derive(Clone)]
+struct SessionTag {
+    generation: Arc<AtomicU64>,
+    id: u64,
+}
+
+impl SessionTag {
+    fn is_current(&self) -> bool {
+        self.generation.load(Ordering::SeqCst) == self.id
+    }
 }
 
 /// Work for the listener's session, sent from the caller's thread.
@@ -29,7 +47,12 @@ enum Control {
 
 impl PortalShortcuts {
     fn take_control(&self) -> Option<mpsc::Sender<Control>> {
+        self.generation.fetch_add(1, Ordering::SeqCst);
         self.control.lock().ok().and_then(|mut control| control.take())
+    }
+
+    fn tag(&self) -> SessionTag {
+        SessionTag { generation: self.generation.clone(), id: self.generation.load(Ordering::SeqCst) }
     }
 }
 
@@ -46,9 +69,11 @@ impl HotkeyRegistrar for PortalShortcuts {
             }
             let (control_tx, control_rx) = mpsc::channel();
             let on_assigned = self.assigned.lock().ok().and_then(|assigned| assigned.clone());
+            let on_rejected = self.rejected.lock().ok().and_then(|rejected| rejected.clone());
+            let session = self.tag();
             let bindings = bindings.to_vec();
             let spawned = thread::Builder::new().name("laqta-shortcuts".into()).spawn(move || {
-                async_io::block_on(listen(bindings, on_fire, on_assigned, ready_tx, control_rx));
+                async_io::block_on(listen(bindings, on_fire, Callbacks { on_assigned, on_rejected, session }, ready_tx, control_rx));
             });
             if let Err(e) = spawned {
                 return all(Err(PortError::Failed(e.to_string())));
@@ -78,6 +103,12 @@ impl HotkeyRegistrar for PortalShortcuts {
         }
     }
 
+    fn on_rejected(&self, rejected: RejectedCallback) {
+        if let Ok(mut slot) = self.rejected.lock() {
+            *slot = Some(rejected);
+        }
+    }
+
     fn configure(&self) -> Result<(), PortError> {
         let control = self.control.lock().map_err(|_| PortError::Failed("hotkey state is poisoned".into()))?.clone();
         let Some(control) = control else {
@@ -95,12 +126,19 @@ impl HotkeyRegistrar for PortalShortcuts {
     }
 }
 
+/// What a session tells the app besides activations.
+struct Callbacks {
+    on_assigned: Option<AssignedCallback>,
+    on_rejected: Option<RejectedCallback>,
+    session: SessionTag,
+}
+
 /// One GlobalShortcuts session: binds the shortcuts and forwards activations until a stop, then
 /// closes the session. `ready` reports whether the portal exists and accepted the session.
 async fn listen(
     bindings: Vec<(KeyChord, Action)>,
     on_fire: HotkeyCallback,
-    on_assigned: Option<AssignedCallback>,
+    callbacks: Callbacks,
     ready: mpsc::Sender<Result<(), PortError>>,
     control: mpsc::Receiver<Control>,
 ) {
@@ -127,11 +165,7 @@ async fn listen(
         .map(|((c, a), id)| NewShortcut::new(id.as_str(), a.label()).preferred_trigger(trigger(*c).as_deref()))
         .collect();
     // Ending the control loop (a stop) cancels the serving future, so it also interrupts a pending bind dialog.
-    future::or(
-        serve(&portal, &session, &shortcuts, &bindings, &ids, &on_fire, on_assigned.as_ref()),
-        control_loop(&portal, &session, control),
-    )
-    .await;
+    future::or(serve(&portal, &session, &shortcuts, &bindings, &ids, &on_fire, &callbacks), control_loop(&portal, &session, control)).await;
     if let Err(e) = session.close().await {
         tracing::warn!("GlobalShortcuts close failed: {e}");
     }
@@ -146,8 +180,9 @@ async fn serve(
     bindings: &[(KeyChord, Action)],
     ids: &[String],
     on_fire: &HotkeyCallback,
-    on_assigned: Option<&AssignedCallback>,
+    callbacks: &Callbacks,
 ) {
+    let on_assigned = callbacks.on_assigned.as_ref();
     // Subscribe before binding, so an activation or a key change that lands right after the bind
     // isn't missed.
     let activated = portal.receive_activated().await;
@@ -162,7 +197,19 @@ async fn serve(
                 on_assigned(assigned(ids, bindings, pairs(response.shortcuts())));
             }
         }
-        Ok(Err(e)) | Err(e) => tracing::warn!("GlobalShortcuts bind failed: {e}"),
+        Ok(Err(e)) | Err(e) => {
+            // `register` already said yes (the bind can wait on a dialog): take it back.
+            tracing::warn!("GlobalShortcuts bind failed: {e}");
+            // A session already ended (a newer registration may be live) has nothing to take back.
+            if let Some(on_rejected) = &callbacks.on_rejected
+                && callbacks.session.is_current()
+            {
+                let chords = bindings.iter().map(|(chord, _)| *chord).collect();
+                let session = callbacks.session.clone();
+                on_rejected(Rejection::new(chords, format!("the desktop did not bind the shortcuts: {e}"), move || session.is_current()));
+            }
+            return;
+        }
     }
     let activations = async {
         let Ok(mut stream) = activated else {
@@ -386,6 +433,19 @@ mod tests {
 
     fn chord(text: &str) -> KeyChord {
         text.parse().expect("test chord parses")
+    }
+
+    /// Ending a session (before the next registration) makes its tag stale, so a bind of it that
+    /// fails late is not reported against the registration that replaced it.
+    #[test]
+    fn an_ended_session_no_longer_reports_a_failed_bind() {
+        let portal = PortalShortcuts::default();
+        let old = portal.tag();
+        assert!(old.is_current());
+        portal.unregister_all();
+        let new = portal.tag();
+        assert!(!old.is_current());
+        assert!(new.is_current());
     }
 
     #[test]

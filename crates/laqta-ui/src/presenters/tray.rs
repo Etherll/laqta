@@ -1,7 +1,7 @@
 use laqta_domain::{Action, Settings};
 use laqta_ports::{TrayItem, TrayMenu};
 
-/// The tray menu. Left click runs `settings.tray_click` (default: capture the screen).
+/// The tray menu. Left click runs `settings.tray_click` (default: open the main window).
 pub fn tray_menu(settings: &Settings) -> TrayMenu {
     let item = |label: &str, action| TrayItem { label: crate::i18n::action(action, label), action };
     TrayMenu {
@@ -33,7 +33,7 @@ mod tests {
     fn three_items_and_default() {
         let menu = tray_menu(&Settings::m0_default("/p".into()));
         assert_eq!(menu.tooltip, "Laqta");
-        assert_eq!(menu.default_action, Action::PrintScreen);
+        assert_eq!(menu.default_action, Action::OpenMainWindow);
         let got: Vec<_> = menu.items.iter().map(|i| (i.label.as_str(), i.action)).collect();
         assert_eq!(got.len(), 10);
         assert!(got.contains(&("Capture fullscreen", Action::PrintScreen)));

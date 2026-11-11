@@ -159,8 +159,8 @@ pub enum ToolWindow {
     Effects(Option<std::path::PathBuf>),
     /// The image editor on a file (`Action::ImageEditor` with no capture).
     Editor(Option<std::path::PathBuf>),
-    /// A windowed tool.
-    Tool(ToolKind),
+    /// A windowed tool, with the files a command line gave it (`-HashCheck file`); empty for none.
+    Tool(ToolKind, Vec<std::path::PathBuf>),
     /// The photo editor on a file, or empty.
     PhotoEditor(Option<std::path::PathBuf>),
 }

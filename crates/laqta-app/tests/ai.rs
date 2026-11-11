@@ -508,3 +508,14 @@ fn pin_routes_pin_a_given_file() {
     assert!(h.overlay.shown.lock().unwrap().is_none(), "no area is picked");
     assert_eq!(h.tools.pins.lock().unwrap().as_slice(), &[(6, 3), (6, 3)]);
 }
+
+/// `-Metadata shot.png` opens the metadata window on that file.
+#[test]
+fn a_windowed_tool_opens_on_a_given_file() {
+    let h = harness();
+    let (_dir, path) = png_file();
+
+    assert_eq!(dispatch_file(&h, Action::Metadata, &path).unwrap(), Dispatched::Done);
+
+    assert_eq!(h.tools.opened.lock().unwrap().as_slice(), &[ToolWindow::Tool(laqta_ports::ToolKind::Metadata, vec![path])]);
+}

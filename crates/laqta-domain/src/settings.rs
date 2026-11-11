@@ -6,7 +6,7 @@ use crate::action::Action;
 use crate::hotkey::{Key, KeyChord, Modifiers};
 use crate::workflow::{TaskSettings, TaskSettingsPatch, Workflow, WorkflowId};
 
-pub const SETTINGS_VERSION: u32 = 1;
+pub const SETTINGS_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -194,7 +194,7 @@ impl Settings {
             workflows: default_workflows(),
             disable_hotkeys: false,
             history: HistoryOptions::default(),
-            tray_click: Action::PrintScreen,
+            tray_click: Action::OpenMainWindow,
             theme: Theme::System,
             language: None,
             watch_folders: Vec::new(),
@@ -283,6 +283,11 @@ mod tests {
     use crate::image::ImageFormat;
     use crate::workflow::ImageSettings;
     use serde::Deserialize;
+
+    #[test]
+    fn a_tray_click_opens_the_main_window() {
+        assert_eq!(Settings::default().tray_click, Action::OpenMainWindow);
+    }
 
     fn settings() -> Settings {
         Settings::default_for(PathBuf::from("/pics"))
