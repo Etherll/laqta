@@ -91,7 +91,8 @@ impl App {
         given: Option<PathBuf>,
     ) -> Option<Result<Dispatched, AppError>> {
         if let Some(kind) = tool_kind(action) {
-            return Some(self.ports.tools.open(ToolWindow::Tool(kind)).map(|()| Dispatched::Done).map_err(AppError::from));
+            let window = ToolWindow::Tool(kind, given.into_iter().collect());
+            return Some(self.ports.tools.open(window).map(|()| Dispatched::Done).map_err(AppError::from));
         }
         let r = match action {
             Action::ScreenColorPicker => self.screen_color(ts).await,

@@ -242,7 +242,8 @@ const TEST_COLOURS: [(u32, &str); 8] = [
     (0x00ffff, "Cyan"),
 ];
 
-pub(crate) fn open(kind: ToolKind, cx: &mut App) {
+/// Opens `kind`'s window, on `files` when a command line named them (`-Metadata shot.png`).
+pub(crate) fn open(kind: ToolKind, files: Vec<PathBuf>, cx: &mut App) {
     let big = matches!(kind, ToolKind::ImageViewer | ToolKind::ImageComparer | ToolKind::MonitorTest | ToolKind::IndexFolder);
     let options = WindowOptions {
         window_bounds: Some(crate::chrome::centered(if big { 960. } else { 680. }, if big { 720. } else { 560. }, cx)),
@@ -254,7 +255,7 @@ pub(crate) fn open(kind: ToolKind, cx: &mut App) {
         ..Default::default()
     };
     if let Err(e) = cx.open_window(options, |window, cx| {
-        let view = cx.new(|cx| ToolsWindow::new(kind, window, cx));
+        let view = cx.new(|cx| ToolsWindow::new(kind, files, window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     }) {
         tracing::error!("tool window failed: {e:#}");
@@ -276,12 +277,13 @@ struct ToolsWindow {
 }
 
 impl ToolsWindow {
-    fn new(kind: ToolKind, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(kind: ToolKind, files: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let fields =
             spec(kind).fields.iter().map(|(_, default)| cx.new(|cx| InputState::new(window, cx).default_value(*default))).collect();
+        let given = !files.is_empty();
         let mut this = ToolsWindow {
             kind,
-            files: Vec::new(),
+            files,
             second: None,
             fields,
             choice: 0,
@@ -294,6 +296,12 @@ impl ToolsWindow {
         match kind {
             ToolKind::NetworkMonitor => this.start_network(cx),
             ToolKind::ClipboardViewer => this.run(cx),
+            // A given file is read at once by the tools that only read it; the others wait for their button.
+            ToolKind::ImageViewer | ToolKind::HashCheck | ToolKind::Metadata if given => this.run(cx),
+            ToolKind::QrCode if given => {
+                this.choice = 1;
+                this.run(cx);
+            }
             _ => {}
         }
         this
@@ -466,10 +474,17 @@ impl ToolsWindow {
             Err(e) => return self.finish(Err(e), cx),
         };
         if let Job::QrDecode = job {
-            // Decoding picks its file first.
+            // Decoding reads the file a command line gave, or picks one first.
+            let given = self.files.first().cloned();
             let task = cx.background_spawn(async move {
-                let Some(file) = rfd::AsyncFileDialog::new().pick_file().await else { return Ok(None) };
-                match app.run_tool(t::ToolJob::QrDecodeFile(file.path().to_path_buf())).await {
+                let file = match given {
+                    Some(file) => file,
+                    None => match rfd::AsyncFileDialog::new().pick_file().await {
+                        Some(file) => file.path().to_path_buf(),
+                        None => return Ok(None),
+                    },
+                };
+                match app.run_tool(t::ToolJob::QrDecodeFile(file)).await {
                     Ok(t::ToolOutput::Lines(codes)) => Ok(Some(codes)),
                     Ok(_) => Ok(Some(Vec::new())),
                     Err(e) => Err(e.to_string()),
@@ -852,5 +867,34 @@ impl Render for ToolsWindow {
         crate::chrome::rounded(widgets::page(cx), window)
             .child(crate::chrome::TitleBar::new().title(title(self.kind)).flat())
             .child(div().flex_1().overflow_y_scrollbar().child(body))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use gpui::TestAppContext;
+
+    use super::*;
+    use crate::headless_tests::{QueuedSpawner, install, services};
+
+    /// `-HashCheck file` opens the hash checker on the file and hashes it straight away.
+    #[gpui::test]
+    fn a_given_file_is_read_at_once(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let spawner = QueuedSpawner::default();
+        install(cx, services(spawner.clone(), dir.path()));
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, b"abc").unwrap();
+
+        let window = cx.add_window(|window, cx| ToolsWindow::new(ToolKind::HashCheck, vec![file.clone()], window, cx));
+        for _ in 0..4 {
+            cx.run_until_parked();
+            spawner.run_all();
+        }
+
+        let output = window.read_with(cx, |this, _| this.output.clone()).unwrap();
+        // SHA-256 of "abc".
+        assert!(output.contains("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"), "{output}");
     }
 }

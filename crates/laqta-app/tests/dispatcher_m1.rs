@@ -427,7 +427,7 @@ fn tool_actions_open_their_windows() {
         (Action::NetworkMonitor, laqta_ports::ToolKind::NetworkMonitor),
     ] {
         assert_eq!(run(&h, h.app.dispatch(action, None)).unwrap(), Dispatched::Done);
-        assert_eq!(h.tools.opened.lock().unwrap().last(), Some(&ToolWindow::Tool(kind)));
+        assert_eq!(h.tools.opened.lock().unwrap().last(), Some(&ToolWindow::Tool(kind, Vec::new())));
     }
 }
 
