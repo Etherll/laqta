@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
         # Only main saves: per-PR caches overflowed the 10 GB limit and evicted main's.
         with: { save-if: "${{ github.ref == 'refs/heads/main' }}" }
@@ -95,7 +95,7 @@ jobs:
           ./dist/laqta-linux-x86_64.AppImage --appimage-extract-and-run --version
       - name: Checksums
         run: cd dist && for f in *.tar.zst *.deb *.AppImage; do sha256sum "$f" > "$f.sha256"; done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: dist/*
@@ -108,7 +108,7 @@ jobs:
     env:
       VCPKGRS_TRIPLET: x64-windows-static-md
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
         # Only main saves: per-PR caches overflowed the 10 GB limit and evicted main's.
         with: { save-if: "${{ github.ref == 'refs/heads/main' }}" }
@@ -140,7 +140,7 @@ jobs:
             $hash = (Get-FileHash "dist/$f" -Algorithm SHA256).Hash.ToLower()
             "$hash  $f" | Out-File -Encoding ascii "dist/$f.sha256"
           }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: dist/*
@@ -160,7 +160,7 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
         # Only main saves: per-PR caches overflowed the 10 GB limit and evicted main's.
         with: { save-if: "${{ github.ref == 'refs/heads/main' }}" }
@@ -204,7 +204,7 @@ jobs:
           spctl --assess --type open --context context:primary-signature -v dist/laqta-macos-universal.dmg
       - name: Checksum
         run: cd dist && shasum -a 256 laqta-macos-universal.dmg > laqta-macos-universal.dmg.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: dist/*
@@ -217,13 +217,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         # Only the packages: the CI checks above also upload test reports and macOS screenshots.
         with: { path: dist, merge-multiple: true, pattern: "{linux,windows,macos}" }
       - name: SHA256SUMS
         # The in-app updater checks the Windows update package against this list.
         run: cd dist && sha256sum $(ls | grep -v '\.sha256$') > SHA256SUMS && cat SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           draft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
