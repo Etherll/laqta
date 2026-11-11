@@ -38,6 +38,8 @@ pub struct Selection {
     pub annotate: bool,
     /// What the user chose to do with the capture; `Default` leaves it to the after-capture steps.
     pub action: SelectionAction,
+    /// A text capture ended with the selection's text already on the overlay, read or failed.
+    pub text_shown: bool,
 }
 
 /// Picks an area for a tool that acts on it straight away (recording, scrolling capture, OCR,
@@ -57,11 +59,13 @@ pub(crate) async fn select(ports: &Ports, frames: Vec<Frame>, options: &RegionCa
 /// Text capture (ADR 031): the user selects an area, and its text is read and shown over it, to pick
 /// words from and copy. The selection stays adjustable, and each new one is read again. There is no
 /// capture toolbar and nothing is captured: the session ends when the user closes it (`Cancelled`)
-/// or presses Enter.
-pub(crate) async fn read_text(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptions) -> Result<Selection, AppError> {
+/// or presses Enter. An area confirmed before its text was shown (Enter right after the drag, or a
+/// click action) comes back to be read; one whose text was shown comes back as `None`.
+pub(crate) async fn read_text(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptions) -> Result<Option<Selection>, AppError> {
     // The text belongs to one settled selection, which a multi-region session never has.
     let options = RegionCaptureOptions { show_tools_after_select: true, show_mode_bar: false, multi_region: false, ..options.clone() };
-    session(ports, frames, &options, Kind::Text).await
+    let selection = session(ports, frames, &options, Kind::Text).await?;
+    Ok((!selection.text_shown).then_some(selection))
 }
 
 /// What a session is for.
@@ -272,8 +276,11 @@ async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptio
             if let Some(outcome) = state.outcome().cloned() {
                 ports.overlay.close();
                 let annotate = state.annotate_requested();
-                return outcome_selection(outcome, &composed, bounds, &monitors, state.cursor(), annotated)
-                    .map(|s| Selection { annotate, ..s });
+                return outcome_selection(outcome, &composed, bounds, &monitors, state.cursor(), annotated).map(|s| Selection {
+                    annotate,
+                    text_shown: matches!(text, Some(TextLayer::Read { .. } | TextLayer::Failed(_))),
+                    ..s
+                });
             }
             // Crop on a change of the selection only: moving the pointer over it is not one.
             let mut selection_image = None;
@@ -360,7 +367,7 @@ pub(crate) async fn crop_frames(
     let bounds = bounds_of(&frames)?;
     let composed = compose(ports.spawner.as_ref(), frames).await?;
     let image = crop_rects(&composed, bounds, &rects)?;
-    Ok(Selection { rects, target, image, annotate: false, action: SelectionAction::Default })
+    Ok(Selection { rects, target, image, annotate: false, action: SelectionAction::Default, text_shown: false })
 }
 
 /// The overlay's view of `state`. `pixel` is the RGB under the cursor, and `bounds` is the desktop
@@ -411,7 +418,7 @@ fn outcome_selection(
                 Some(image) => image,
                 None => crop_rects(composed, bounds, &rects)?,
             };
-            Ok(Selection { rects, target, image, annotate: false, action })
+            Ok(Selection { rects, target, image, annotate: false, action, text_shown: false })
         }
         RegionOutcome::Fullscreen => whole_rect(composed, bounds, bounds),
         RegionOutcome::ActiveMonitor => {
@@ -426,7 +433,7 @@ fn outcome_selection(
 fn whole_rect(composed: &Bitmap, bounds: PhysRect, rect: PhysRect) -> Result<Selection, AppError> {
     let rects = vec![rect];
     let image = crop_rects(composed, bounds, &rects)?;
-    Ok(Selection { rects, target: None, image, annotate: false, action: SelectionAction::Default })
+    Ok(Selection { rects, target: None, image, annotate: false, action: SelectionAction::Default, text_shown: false })
 }
 
 /// The rect of the monitor under `at`. A point in a gap of a non-rectangular layout falls back to the

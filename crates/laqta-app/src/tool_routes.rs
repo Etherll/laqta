@@ -181,14 +181,18 @@ impl App {
 
     /// Text capture. The text is read and shown on the overlay itself (ADR 031), which stays up until
     /// the user closes it. A recogniser that is not ready would ask about its models under the
-    /// overlay, so until it is the area is picked first and the text goes to the text window.
+    /// overlay, so until it is the area is picked first and the text goes to the text window. An
+    /// area confirmed before its text shows (Enter, or a click action) is read that way too.
     async fn ocr_region(&self, ts: &TaskSettings) -> Result<Dispatched, AppError> {
-        if self.ports.ocr.ready() {
+        let sel = if self.ports.ocr.ready() {
             let frames = self.frames(ts).await?;
-            region::read_text(&self.ports, frames, &ts.capture.region).await?;
-            return Ok(Dispatched::Done);
-        }
-        let sel = self.select_on_screen(ts).await?;
+            match region::read_text(&self.ports, frames, &ts.capture.region).await? {
+                Some(sel) => sel,
+                None => return Ok(Dispatched::Done),
+            }
+        } else {
+            self.select_on_screen(ts).await?
+        };
         let result = self.recognize_text(sel.image.clone()).await?;
         let text = result.text();
         if !text.is_empty() {

@@ -290,6 +290,32 @@ fn escape() -> RegionInput {
     RegionInput::Key { key: RegionKey::Escape, mods: KeyMods::default() }
 }
 
+/// Enter right after the drag, before the overlay shows the text, confirms the area: the route still
+/// reads it, copies the text and opens the text window, as a capture that picks the area first does.
+#[test]
+fn the_ocr_route_reads_an_area_confirmed_before_its_text_shows() {
+    let h = harness();
+    h.ocr.result.lock().unwrap().lines.extend([line("hello"), line("world")]);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    let ended = pool.install(|| {
+        block_on(async {
+            let mut fut = h.app.dispatch(Action::Ocr, None);
+            while !h.overlay.is_open() {
+                assert!(poll_once(&mut fut).await.is_none());
+            }
+            h.overlay.send(RegionInput::PointerDown { x: 0, y: 0, button: Button::Left });
+            h.overlay.send(RegionInput::PointerMove { x: 7, y: 3 });
+            h.overlay.send(RegionInput::PointerUp { x: 7, y: 3, button: Button::Left });
+            h.overlay.send(RegionInput::Key { key: RegionKey::Enter, mods: KeyMods::default() });
+            fut.await
+        })
+    });
+    assert!(matches!(ended, Ok(Dispatched::Done)), "{ended:?}");
+    assert!(!h.overlay.is_open());
+    assert_eq!(h.clipboard.texts.lock().unwrap().last().map(String::as_str), Some("hello\nworld"));
+    assert_eq!(h.tools.ocr.lock().unwrap().len(), 1, "the text window shows what was read");
+}
+
 #[test]
 fn the_ocr_route_reads_the_text_in_place_and_copies_it() {
     let h = harness();
