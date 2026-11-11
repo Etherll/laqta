@@ -286,6 +286,16 @@ fn text_read_in_place_is_picked_with_the_pointer_and_copied_through_the_session(
     assert!(sent.lock().unwrap()[before..].iter().all(|i| matches!(i, RegionInput::PointerMove { .. })));
     assert_eq!(notice(&mut vcx), Some(Notice::Picked(3)));
 
+    // A handle takes the pointer only while it shows: a selection locked by its marks hides them.
+    let corner = PhysRect { x: 96, y: 96, width: 8, height: 8 };
+    let handled = RegionView { handles: vec![(laqta_domain::region::Handle::NW, corner)], ..read.clone() };
+    vcx.update(|_, cx| crate::overlay::update(handled.clone(), cx));
+    assert_eq!(vcx.update(|_, cx| model.read(cx).text_point(101, 101)), None, "the shown handle resizes");
+    vcx.update(|_, cx| crate::overlay::update(RegionView { locked: true, ..handled }, cx));
+    assert_eq!(vcx.update(|_, cx| model.read(cx).text_point(101, 101)), Some((1.0, 1.0)), "under a hidden handle are words");
+    vcx.update(|_, cx| crate::overlay::update(read.clone(), cx));
+    assert_eq!(picked(&mut vcx).as_deref(), Some("big world\nsecond"));
+
     // The session paints the same result again (the pointer moved): the picked words stay.
     vcx.update(|_, cx| crate::overlay::update(RegionView { cursor: (140, 170), ..read.clone() }, cx));
     assert_eq!(picked(&mut vcx).as_deref(), Some("big world\nsecond"));

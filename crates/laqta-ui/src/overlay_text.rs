@@ -246,12 +246,14 @@ impl OverlayModel {
     }
 
     /// The desktop point (`x`, `y`) in the selection's pixels, when the text takes the pointer
-    /// there: inside the selection and off its handles, which still resize it.
+    /// there: inside the selection and off its handles, which still resize it. A locked selection
+    /// hides its handles and cannot be resized, so there the words reach its edges.
     pub(crate) fn text_point(&self, x: i32, y: i32) -> Option<(f32, f32)> {
         self.text.as_ref()?;
         let sel = self.view.selected?;
         let within = |r: laqta_domain::geometry::PhysRect| x >= r.x && x < r.right() && y >= r.y && y < r.bottom();
-        (within(sel) && !self.view.handles.iter().any(|(_, handle)| within(*handle))).then(|| ((x - sel.x) as f32, (y - sel.y) as f32))
+        (within(sel) && (self.view.locked || !self.view.handles.iter().any(|(_, handle)| within(*handle))))
+            .then(|| ((x - sel.x) as f32, (y - sel.y) as f32))
     }
 
     /// A left press on the text at `at` (`text_point`).
