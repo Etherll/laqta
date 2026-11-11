@@ -44,8 +44,10 @@ fn is_on(service: &SMAppService) -> bool {
 }
 
 fn turn_on(service: &SMAppService) -> Result<(), PortError> {
-    // Registering twice is an error, so an enabled service is left alone.
-    if is_on(service) {
+    // Registering twice is an error, so a registered service (one waiting for the user's approval
+    // too) is left alone.
+    // SAFETY: `status` has no preconditions.
+    if matches!(unsafe { service.status() }, SMAppServiceStatus::Enabled | SMAppServiceStatus::RequiresApproval) {
         return Ok(());
     }
     // SAFETY: `registerAndReturnError` has no preconditions; the error is returned, not written to a pointer.
@@ -74,11 +76,16 @@ impl Autostart for MacAutostart {
     fn set_enabled(&self, enabled: bool, _executable: &Path) -> Result<(), PortError> {
         require_bundle()?;
         if enabled {
-            turn_on(&agent())?;
+            let agent = agent();
+            turn_on(&agent)?;
+            // The old item opens the main window at login, but it is kept until the agent can run:
+            // one waiting for the user's approval in System Settings would not start Laqta.
+            if !is_on(&agent) {
+                return Ok(());
+            }
         } else {
             turn_off(&agent())?;
         }
-        // The old item opens the main window at login, so it goes either way.
         turn_off(&legacy_main_app())
     }
 

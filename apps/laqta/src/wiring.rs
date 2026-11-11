@@ -172,8 +172,9 @@ const AUTOSTART_RETRY: &[u8] = b"retry";
 /// Laqta starts at sign-in by default: the first run of a new install turns it on, once. Later runs
 /// leave it as the user set it in Settings. Only an `eligible` copy (installed, release build) takes
 /// part, so a portable copy or a debug build sharing the default folder can't use up its turn. An
-/// existing profile (one with settings) is left alone. An attempt that fails is tried again at the
-/// next start; one this copy can't make at all (a macOS binary outside an app bundle) is not.
+/// existing profile is left alone. An attempt that fails is tried again at the next start, and so is
+/// one this copy can't make at all (a macOS binary outside an app bundle): the app installed later
+/// in the same folder then turns it on.
 fn autostart_first_run(
     autostart: &dyn laqta_ports::Autostart,
     data: &std::path::Path,
@@ -204,8 +205,8 @@ fn autostart_first_run(
         match turned_on {
             Ok(()) => true,
             Err(PortError::Unsupported(why)) => {
-                tracing::info!("this copy can't start at sign-in: {why}");
-                true
+                tracing::debug!("this copy can't start at sign-in: {why}");
+                false
             }
             Err(error) => {
                 tracing::warn!(%error, "could not turn on starting at sign-in; trying again at the next start");
@@ -536,7 +537,10 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         }
         // A debug build leaves the default to a release build.
         let eligible = installed && !cfg!(debug_assertions);
-        autostart_first_run(platform.autostart.as_ref(), &data, eligible, !store.path().exists(), &exe);
+        // 0.1.0 had no marker. Its first run creates the history file, and turning history off
+        // writes the settings, so a profile with neither is new; one with either was used.
+        let new_profile = !store.path().exists() && !data.join("history.db").exists();
+        autostart_first_run(platform.autostart.as_ref(), &data, eligible, new_profile, &exe);
     }
     let settings = load_settings(&store);
     let history = if settings.history.enabled && !args.sandbox {
@@ -1201,16 +1205,18 @@ mod tests {
         assert_eq!(sign_in.sets.load(Ordering::SeqCst), 2);
     }
 
-    /// A copy that can't start at sign-in at all is not asked again at every start.
+    /// A copy that can't start at sign-in (a macOS binary outside the app) leaves the default to
+    /// the app installed later in the same folder, even once a profile exists.
     #[test]
-    fn an_unsupported_sign_in_default_is_not_tried_again() {
+    fn an_unsupported_copy_leaves_the_sign_in_default_to_the_app() {
         let dir = tempfile::tempdir().unwrap();
-        let sign_in = SignIn { unsupported: true.into(), ..Default::default() };
         let exe = std::path::Path::new("/opt/laqta/laqta");
+        let bare = SignIn { unsupported: true.into(), ..Default::default() };
+        autostart_first_run(&bare, dir.path(), true, true, exe);
 
-        autostart_first_run(&sign_in, dir.path(), true, true, exe);
-        autostart_first_run(&sign_in, dir.path(), true, false, exe);
-        assert_eq!(sign_in.sets.load(Ordering::SeqCst), 1);
+        let app = SignIn::default();
+        autostart_first_run(&app, dir.path(), true, false, exe);
+        assert!(app.on.load(Ordering::SeqCst));
     }
 
     /// A portable copy counts as portable even where its data falls back to the default folder.
