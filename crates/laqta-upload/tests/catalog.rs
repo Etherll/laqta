@@ -189,6 +189,24 @@ fn add_custom_with_the_same_name_replaces_the_entry() {
     assert_eq!(copies, 1);
 }
 
+/// A file that replaces one of the same name drops the kinds it no longer declares.
+#[test]
+fn add_custom_replacing_a_file_drops_the_kinds_it_no_longer_declares() {
+    let mut registry = registry();
+    let both = r#"{"Name": "Mine", "DestinationType": "UrlShortener, URLSharingService", "RequestURL": "https://s.example/api?u={input}", "URL": "{json:link}"}"#;
+    let id = registry.add_custom(both).unwrap();
+    assert!(registry.shortener(&id).is_some() && registry.sharer(&id).is_some());
+
+    registry.add_custom(&both.replace("UrlShortener, URLSharingService", "UrlShortener")).unwrap();
+    assert!(registry.shortener(&id).is_some());
+    assert!(registry.sharer(&id).is_none(), "the sharer is gone");
+    assert!(registry.custom_sharer_ids().is_empty());
+
+    // A file that registers nothing leaves the earlier one as it was.
+    assert!(registry.add_custom(r#"{"Name": "Mine", "RequestURL": "https://x"}"#).is_err());
+    assert!(registry.shortener(&id).is_some());
+}
+
 #[test]
 fn add_custom_accepts_a_shortener_file() {
     let mut registry = registry();

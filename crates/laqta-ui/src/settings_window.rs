@@ -1611,7 +1611,8 @@ impl SettingsWindow {
                         cx,
                     ));
                 }
-                controls = if row.installed {
+                // A custom model whose file is gone has nothing to download: it can only be removed.
+                controls = if row.installed || row.custom {
                     controls.child(widgets::pill(
                         SharedString::from(format!("rm-{id}")),
                         "Remove",

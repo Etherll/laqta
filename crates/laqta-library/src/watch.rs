@@ -102,9 +102,12 @@ fn is_arrival(kind: &EventKind) -> bool {
     )
 }
 
-/// A file left: removed, or renamed away.
+/// A file or folder left: removed, or renamed away.
 fn is_departure(kind: &EventKind) -> bool {
-    matches!(kind, EventKind::Remove(RemoveKind::File | RemoveKind::Any) | EventKind::Modify(ModifyKind::Name(RenameMode::From)))
+    matches!(
+        kind,
+        EventKind::Remove(RemoveKind::File | RemoveKind::Folder | RemoveKind::Any) | EventKind::Modify(ModifyKind::Name(RenameMode::From))
+    )
 }
 
 /// One spelling for a file's path: its folder resolved (macOS reports `/private/var` for `/var`), so
@@ -167,6 +170,28 @@ mod tests {
 
         std::fs::remove_file(&shot).unwrap();
         report_events(&[event(EventKind::Modify(ModifyKind::Name(RenameMode::Any)), &shot)], &mut known, &on_file);
+        std::fs::write(&shot, b"2").unwrap();
+        report_events(&[event(EventKind::Create(CreateKind::File), &shot)], &mut known, &on_file);
+
+        assert_eq!(seen.lock().unwrap().as_slice(), [shot]);
+    }
+
+    /// A subfolder removed takes its files with it: a folder of that name made again brings new files.
+    #[test]
+    fn the_files_of_a_removed_folder_can_arrive_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("day");
+        std::fs::create_dir(&sub).unwrap();
+        let shot = sub.join("shot.png");
+        std::fs::write(&shot, b"1").unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let on_file: WatchCallback = Arc::new(move |path| sink.lock().unwrap().push(path));
+        let mut known = files_in(dir.path(), true);
+
+        std::fs::remove_dir_all(&sub).unwrap();
+        report_events(&[event(EventKind::Remove(RemoveKind::Folder), &sub)], &mut known, &on_file);
+        std::fs::create_dir(&sub).unwrap();
         std::fs::write(&shot, b"2").unwrap();
         report_events(&[event(EventKind::Create(CreateKind::File), &shot)], &mut known, &on_file);
 

@@ -91,6 +91,19 @@ impl Registry {
         let file_host = kinds.iter().any(|kind| matches!(kind, DestinationType::Image | DestinationType::Text | DestinationType::File));
         let shortener = kinds.contains(&DestinationType::UrlShortener);
         let sharer = kinds.contains(&DestinationType::UrlSharing);
+        if !(file_host || shortener || sharer) {
+            return false;
+        }
+        // A file that replaces one of the same name drops the kinds it no longer declares.
+        if !file_host {
+            self.destinations.retain(|entry| entry.id() != id);
+        }
+        if !shortener {
+            self.shorteners.retain(|entry| entry.id() != id);
+        }
+        if !sharer {
+            self.sharers.retain(|entry| entry.id() != id);
+        }
         if file_host {
             let destination = SxcuDestination::new(id.clone(), uploader.clone(), Arc::clone(&self.prompt), Arc::clone(&self.rng));
             self.add_destination(Arc::new(destination));
@@ -102,7 +115,7 @@ impl Registry {
         if sharer {
             self.add_sharer(Arc::new(SxcuSharer::new(id, uploader, Arc::clone(&self.prompt), Arc::clone(&self.rng))));
         }
-        file_host || shortener || sharer
+        true
     }
 
     pub fn destination(&self, id: &str) -> Option<Arc<dyn Destination>> {
