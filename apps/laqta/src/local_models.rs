@@ -26,7 +26,7 @@ async fn prepare(
     let rt = crate::models::runtime(data, &opts).ok_or_else(|| PortError::Unsupported("no ONNX Runtime build for this platform".into()))?;
     let dir = crate::models::models_dir(data);
     let ort = laqta_ml::install::ort_for_host().ok_or_else(|| PortError::Unsupported("no ONNX Runtime build for this platform".into()))?;
-    let lib_ok = laqta_ml::install::library_path(&dir, ort).exists();
+    let lib_ok = laqta_ml::install::runtime_library(&dir, ort).exists();
     let entry = catalog().model(id);
     let model_ok = match entry {
         Some(e) => rt.is_installed(e),

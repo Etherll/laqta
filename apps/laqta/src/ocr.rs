@@ -98,7 +98,7 @@ impl LazyOcr {
         let dir = self.data.join("models");
         let ort =
             laqta_ml::install::ort_for_host().ok_or_else(|| PortError::Unsupported("no onnxruntime build for this platform".into()))?;
-        let lib = laqta_ml::install::library_path(&dir, ort);
+        let lib = laqta_ml::install::runtime_library(&dir, ort);
         let runtime = Arc::new(Runtime::new(lib.clone(), dir.clone(), crate::models::provider(options.provider)));
         let wanted: Vec<_> =
             [&det_id, &rec_id].into_iter().filter_map(|id| catalog().model(id)).filter(|e| !runtime.is_installed(e)).collect();

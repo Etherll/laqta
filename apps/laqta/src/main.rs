@@ -24,6 +24,7 @@ mod wiring;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    append_packaged_tools_to_path();
     #[cfg(windows)]
     laqta_platform_windows::attach_parent_console();
     // The Windows installer (Velopack) runs the app with `--veloapp-install`, `--veloapp-updated`,
@@ -108,5 +109,20 @@ fn main() -> ExitCode {
             eprintln!("laqta: {msg}");
             ExitCode::from(1)
         }
+    }
+}
+
+/// Appends the folders of helper programs (FFmpeg, `pactl`) that a distribution package named at
+/// build time in `LAQTA_TOOLS_PATH` to `PATH`, after the user's own folders, so a copy the user
+/// installed still wins. It is built in rather than set by a wrapper script because the desktop
+/// entries start `current_exe`, which under a wrapper is the unwrapped program.
+fn append_packaged_tools_to_path() {
+    let Some(tools) = option_env!("LAQTA_TOOLS_PATH").filter(|tools| !tools.is_empty()) else { return };
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let dirs = std::env::split_paths(&current).chain(std::env::split_paths(tools));
+    if let Ok(path) = std::env::join_paths(dirs) {
+        // SAFETY: called first thing in `main`, before any thread exists that could read the
+        // environment concurrently.
+        unsafe { std::env::set_var("PATH", path) };
     }
 }
