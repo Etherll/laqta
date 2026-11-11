@@ -139,9 +139,9 @@ pub fn record_args_on(
 }
 
 /// The command that converts a finished file: a transcode, a trim, a scale, or a single thumbnail
-/// frame. A codec of `None` means H.264.
+/// frame. With no codec named, the output's extension picks one (see `codec_for_extension`).
 pub fn transcode_args(spec: &TranscodeSpec, input: &Path, output: &Path) -> Vec<String> {
-    let codec = spec.codec.unwrap_or(VideoCodec::X264);
+    let codec = spec.codec.unwrap_or_else(|| codec_for_extension(output));
     let input = input.to_string_lossy().into_owned();
     let output = output.to_string_lossy().into_owned();
     let mut a = Argv::default();
@@ -179,6 +179,16 @@ pub fn transcode_args(spec: &TranscodeSpec, input: &Path, output: &Path) -> Vec<
     }
     a.push(output);
     a.finish()
+}
+
+/// The codec for a transcode that names none: a `.gif` or `.webm` output must stay in its container's
+/// codec, or FFmpeg's muxer refuses it. Any other file gets H.264.
+fn codec_for_extension(output: &Path) -> VideoCodec {
+    match output.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("gif") => VideoCodec::Gif,
+        Some(ext) if ext.eq_ignore_ascii_case("webm") => VideoCodec::Vp9,
+        _ => VideoCodec::X264,
+    }
 }
 
 /// A transcode to GIF is two runs, like a recording's: this one writes the clip's palette (same
@@ -597,11 +607,20 @@ fn encoder(a: &mut Argv, codec: VideoCodec, quality: Quality) {
         }
         VideoCodec::Amf => {
             a.flag(&["-c:v", "h264_amf"]);
-            crf_or_bitrate(a, quality, "-qp");
+            // AMF has no `-qp`: constant quality is the CQP rate control with a QP per frame type.
+            match quality {
+                Quality::Crf(value) => {
+                    a.flag(&["-rc", "cqp"]);
+                    a.opt("-qp_i", value);
+                    a.opt("-qp_p", value);
+                }
+                other => crf_or_bitrate(a, other, "-qp_i"),
+            }
         }
         VideoCodec::Qsv => {
+            // QSV reads the generic `-global_quality` (ICQ); it has no private quality option.
             a.flag(&["-c:v", "h264_qsv"]);
-            crf_or_bitrate(a, quality, "-qp");
+            crf_or_bitrate(a, quality, "-global_quality");
         }
         VideoCodec::Vaapi => {
             a.flag(&["-c:v", "h264_vaapi"]);
@@ -1004,9 +1023,9 @@ mod tests {
         let hevc = quality_of(VideoCodec::NvencHevc, Quality::Bitrate(8000));
         assert!(seq(&hevc, &["-c:v", "hevc_nvenc", "-preset", "p4", "-b:v", "8000k"]));
         let amf = quality_of(VideoCodec::Amf, Quality::Crf(22));
-        assert!(seq(&amf, &["-c:v", "h264_amf", "-qp", "22"]));
+        assert!(seq(&amf, &["-c:v", "h264_amf", "-rc", "cqp", "-qp_i", "22", "-qp_p", "22"]));
         let qsv = quality_of(VideoCodec::Qsv, Quality::Crf(24));
-        assert!(seq(&qsv, &["-c:v", "h264_qsv", "-qp", "24"]));
+        assert!(seq(&qsv, &["-c:v", "h264_qsv", "-global_quality", "24"]));
         assert!(!amf.iter().any(|arg| arg == "-pix_fmt"));
     }
 

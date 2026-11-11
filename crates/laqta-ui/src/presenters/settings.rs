@@ -83,12 +83,19 @@ pub const SHARERS: [(&str, &str); 10] = [
 ];
 
 /// Shorteners: the catalog's shortener entries plus Bitly when an account exists.
-pub fn shortener_choices(destinations: &[(String, String)], hosts: &[laqta_domain::hosts::HostAccount]) -> Vec<(String, String)> {
-    let _ = destinations;
+pub fn shortener_choices(custom: &[(String, String)], hosts: &[laqta_domain::hosts::HostAccount]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = SHORTENERS.iter().map(|(id, n)| (id.to_string(), n.to_string())).collect();
     if hosts.iter().any(|h| h.kind == laqta_domain::hosts::HostKind::Bitly) {
         out.insert(0, ("bitly".into(), "Bitly".into()));
     }
+    out.extend_from_slice(custom);
+    out
+}
+
+/// The bundled sharing services, then the user's own `.sxcu` ones.
+pub fn sharer_choices(custom: &[(String, String)]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = SHARERS.iter().map(|(id, n)| (id.to_string(), n.to_string())).collect();
+    out.extend_from_slice(custom);
     out
 }
 
@@ -131,6 +138,9 @@ fn section_label(name: &str) -> &'static str {
         "capture" => "Capture",
         "naming" => "File naming",
         "screenshots_dir" => "Screenshots folder",
+        "beautify" => "Background and padding",
+        "effects" => "Image effects",
+        "recording" => "Recording",
         _ => "Other",
     }
 }
@@ -140,6 +150,17 @@ pub fn overridden_labels(patch: &TaskSettingsPatch) -> Vec<&'static str> {
     patch.overridden_sections().into_iter().map(section_label).collect()
 }
 
+/// The overridden sections the Shortcuts page has no editor for (all but after-capture steps), as
+/// labels. ShareX imports set these; the page lists them so they can be seen and removed.
+pub fn hidden_override_labels(patch: &TaskSettingsPatch) -> Vec<&'static str> {
+    patch.overridden_sections().into_iter().filter(|s| *s != "after_capture").map(section_label).collect()
+}
+
+/// Drops every override but the after-capture steps, so the workflow uses the default settings.
+pub fn clear_hidden_overrides(patch: &mut TaskSettingsPatch) {
+    *patch = TaskSettingsPatch { after_capture: patch.after_capture, ..TaskSettingsPatch::default() };
+}
+
 /// A preview of a name pattern with fixed sample values.
 pub fn name_preview(pattern: &str, now: jiff::civil::DateTime, host: &HostInfo) -> String {
     let mut n = 7u64;
@@ -147,6 +168,7 @@ pub fn name_preview(pattern: &str, now: jiff::civil::DateTime, host: &HostInfo) 
         n = n.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         n >> 11
     };
+    let no_files = |_: &str| -> Vec<String> { Vec::new() };
     let mut ctx = NameContext {
         now,
         unix_seconds: 0,
@@ -158,7 +180,7 @@ pub fn name_preview(pattern: &str, now: jiff::civil::DateTime, host: &HostInfo) 
         user_name: &host.user_name,
         user_login: &host.user_login,
         computer_name: &host.computer_name,
-        random_file_lines: &[],
+        read_lines: &no_files,
         rng: &mut rng,
     };
     naming::file_name(pattern, &mut ctx)
@@ -193,6 +215,20 @@ mod tests {
         assert!(hotkey_conflicts(&s).is_empty());
         s.workflows[1].hotkey = s.workflows[0].hotkey;
         assert_eq!(hotkey_conflicts(&s), vec!["PrintScreen is used by 2 shortcuts".to_string()]);
+    }
+
+    #[test]
+    fn hidden_overrides_leave_after_capture_alone() {
+        let mut patch = TaskSettingsPatch {
+            after_capture: Some(AfterCaptureTasks::SAVE_IMAGE_TO_FILE),
+            image: Some(Default::default()),
+            effect_preset: Some("Shadow".into()),
+            ..Default::default()
+        };
+        assert_eq!(hidden_override_labels(&patch), vec!["Image effects", "Image"]);
+        clear_hidden_overrides(&mut patch);
+        assert!(hidden_override_labels(&patch).is_empty());
+        assert_eq!(patch.after_capture, Some(AfterCaptureTasks::SAVE_IMAGE_TO_FILE));
     }
 
     #[test]

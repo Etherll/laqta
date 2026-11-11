@@ -547,6 +547,19 @@ impl Render for HistoryWindow {
                             cx,
                         ));
                 }
+                if let Some(short) = r.short_url.clone() {
+                    actions = actions.child(widgets::pill(
+                        SharedString::from(format!("short-{id}")),
+                        "Copy short link",
+                        Pill::Default,
+                        true,
+                        cx.listener(move |this, _, _, cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(short.clone()));
+                            this.flash("Copied the short link", cx);
+                        }),
+                        cx,
+                    ));
+                }
                 let current = r.tags.clone();
                 hover_actions = hover_actions
                     .child(icon_button(

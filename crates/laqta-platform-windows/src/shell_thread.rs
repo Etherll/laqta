@@ -17,7 +17,7 @@ use std::mem::size_of;
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
-use laqta_domain::{Action, KeyChord, Modifiers};
+use laqta_domain::{Action, Key, KeyChord, Modifiers};
 use laqta_ports::{ActionCallback, HotkeyCallback, HotkeyRegistrar, PortError, Tray, TrayMenu};
 use windows::Win32::Foundation::{ERROR_HOTKEY_ALREADY_REGISTERED, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -33,7 +33,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HSTRING, w};
 
-use crate::keys;
+use crate::{keys, print_screen};
 
 const WM_LAQTA_COMMAND: u32 = WM_APP + 1;
 const WM_LAQTA_TRAY: u32 = WM_APP + 2;
@@ -71,6 +71,10 @@ thread_local! {
 pub(crate) struct WindowsHotkeys;
 
 impl HotkeyRegistrar for WindowsHotkeys {
+    fn grabs_keys(&self) -> bool {
+        true
+    }
+
     fn register(&self, bindings: &[(KeyChord, Action)], on_fire: HotkeyCallback) -> HotkeyResults {
         let bindings = bindings.to_vec();
         let chords: Vec<KeyChord> = bindings.iter().map(|(c, _)| *c).collect();
@@ -87,6 +91,10 @@ impl HotkeyRegistrar for WindowsHotkeys {
         {
             tracing::warn!("could not clear hotkeys: {e}");
         }
+    }
+
+    fn record_keys(&self, on_chord: laqta_ports::ChordCallback) -> Result<laqta_ports::KeyRecording, PortError> {
+        crate::key_hook::start(on_chord)
     }
 }
 
@@ -269,8 +277,11 @@ fn register_hotkeys(hwnd: HWND, bindings: &[(KeyChord, Action)], on_fire: Hotkey
     let mut results = Vec::with_capacity(bindings.len());
     for (index, (chord, _)) in bindings.iter().enumerate() {
         let id = index as i32 + 1;
-        let result = match keys::vk(chord.key) {
+        let result = match keys::hotkey_vk(*chord) {
             None => Err(PortError::Failed(format!("{chord} uses a key Windows cannot register"))),
+            Some(_) if chord.key == Key::PrintScreen && chord.is_bare() && print_screen::snipping_takes_print_screen() => {
+                Err(PortError::Failed("Windows uses Print Screen to open Snipping Tool".into()))
+            }
             // SAFETY: plain Win32 call on this thread's window.
             Some(vk) => unsafe { RegisterHotKey(Some(hwnd), id, modifiers(chord.modifiers) | MOD_NOREPEAT, vk) }
                 .map_err(|e| PortError::Failed(refusal_text(&chord.to_string(), win32_code(&e), &e.message()))),

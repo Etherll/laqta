@@ -121,11 +121,19 @@ fn tls_mode(object: &Object, protocol: &str) -> &'static str {
 }
 
 /// ShareX allows many FTP accounts; Laqta has one per kind, because its secret keys have no account
-/// index. The first FTP account and the first SFTP account are taken.
+/// index. The account ShareX selects for images, text or files is taken first. Then the first FTP account
+/// and the first SFTP account in the list are taken.
 fn read_ftp_accounts(root: &Object, out: &mut Uploaders, warnings: &mut Vec<String>) {
     let mut ftp_taken = false;
     let mut sftp_taken = false;
-    for item in json::list(root, "FTPAccountList") {
+    let accounts = json::list(root, "FTPAccountList");
+    let selected = ["FTPSelectedImage", "FTPSelectedText", "FTPSelectedFile"]
+        .iter()
+        .find_map(|key| json::number(root, key))
+        .filter(|index| *index >= 0.0 && (*index as usize) < accounts.len())
+        .map(|index| index as usize);
+    let order = selected.into_iter().chain((0..accounts.len()).filter(|index| Some(*index) != selected));
+    for item in order.map(|index| &accounts[index]) {
         let Some(object) = item.as_object() else {
             warnings.push("an FTP account is not an object; skipped".to_owned());
             continue;
@@ -176,7 +184,13 @@ fn read_s3(object: &Object, out: &mut Uploaders, warnings: &mut Vec<String>) {
     set(&mut account, "bucket", bucket);
     set(&mut account, "path_prefix", json::text(object, "ObjectPrefix"));
     set(&mut account, "access_key_id", access_key);
-    set(&mut account, "public_url_base", json::text(object, "CustomDomain"));
+    // ShareX uses the custom domain only while `UseCustomCNAME` is on. A file without the switch keeps the domain.
+    if json::flag(object, "UseCustomCNAME") == Some(false) {
+        // `HostAccount::new` fills every field with its default, so the stored domain is dropped, not left empty.
+        account.values.remove("public_url_base");
+    } else {
+        set(&mut account, "public_url_base", json::text(object, "CustomDomain"));
+    }
     if let Some(path_style) = json::flag(object, "UsePathStyle") {
         account.values.insert("use_path_style".to_owned(), path_style.to_string());
     }

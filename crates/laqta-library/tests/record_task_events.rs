@@ -48,7 +48,7 @@ fn saved_files_become_history_entries_until_the_channel_closes() {
         drop(sender);
     });
 
-    let future = record_task_events(Arc::clone(&history), receiver, clock);
+    let future = record_task_events(Arc::clone(&history), receiver, clock, || 0);
     assert_send(&future);
     block_on(future);
 
@@ -91,10 +91,61 @@ fn a_non_png_image_name_gets_no_dimensions() {
         sender.broadcast(TaskEvent::Saved { id: TaskId(1), path: jpg_path.clone() }).await.unwrap();
         drop(sender);
     });
-    block_on(record_task_events(Arc::clone(&history), receiver, clock));
+    block_on(record_task_events(Arc::clone(&history), receiver, clock, || 0));
 
     let items = history.query(&HistoryQuery::default()).unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].kind, HistoryKind::Image);
     assert_eq!((items[0].width, items[0].height), (None, None));
+}
+
+#[test]
+fn max_items_keeps_only_the_newest_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let history = Arc::new(History::open_in_memory().unwrap());
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(date(2026, 11, 7).at(9, 0, 0, 0)));
+    let (sender, receiver) = async_broadcast::broadcast::<TaskEvent>(8);
+    block_on(async {
+        for n in 1..=3 {
+            let path = dir.path().join(format!("shot-{n}.jpg"));
+            fs::write(&path, b"x").unwrap();
+            sender.broadcast(TaskEvent::Saved { id: TaskId(n), path }).await.unwrap();
+        }
+        drop(sender);
+    });
+    block_on(record_task_events(Arc::clone(&history), receiver, clock, || 2));
+
+    let names: Vec<String> = history.query(&HistoryQuery::default()).unwrap().into_iter().map(|i| i.file_name).collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(!names.contains(&"shot-1.jpg".to_owned()), "the oldest entry stayed: {names:?}");
+}
+
+/// A shortened link joins its upload's entry; a link shortened on its own gets an entry of its own.
+#[test]
+fn shortened_links_are_kept_with_their_upload() {
+    let dir = tempfile::tempdir().unwrap();
+    let png_path = dir.path().join("shot.png");
+    write_png(&png_path, 4, 4);
+    let history = Arc::new(History::open_in_memory().unwrap());
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(date(2026, 11, 7).at(14, 3, 22, 0)));
+    let (sender, receiver) = async_broadcast::broadcast::<TaskEvent>(16);
+
+    block_on(async {
+        let id = TaskId(1);
+        sender.broadcast(TaskEvent::Saved { id, path: png_path.clone() }).await.unwrap();
+        let uploaded = TaskEvent::Uploaded { id, url: "https://h.example/a.png".into(), thumbnail_url: None, deletion_url: None };
+        sender.broadcast(uploaded).await.unwrap();
+        sender.broadcast(TaskEvent::Shortened { id, url: "https://s.example/x".into() }).await.unwrap();
+        sender.broadcast(TaskEvent::Shortened { id: TaskId(2), url: "https://s.example/y".into() }).await.unwrap();
+        drop(sender);
+    });
+    block_on(record_task_events(Arc::clone(&history), receiver, clock, || 0));
+
+    let items = history.query(&HistoryQuery::default()).unwrap();
+    assert_eq!(items.len(), 2);
+    let alone = &items[0];
+    assert_eq!((alone.kind, alone.short_url.as_deref()), (HistoryKind::Url, Some("https://s.example/y")));
+    let upload = &items[1];
+    assert_eq!(upload.url.as_deref(), Some("https://h.example/a.png"));
+    assert_eq!(upload.short_url.as_deref(), Some("https://s.example/x"));
 }

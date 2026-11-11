@@ -49,7 +49,8 @@ pub(super) struct Sent {
 pub(super) async fn run(cx: Context, id: TaskId, source: UploadSource, settings: TaskSettings, stop: Arc<AtomicBool>) {
     cx.reporter.status(id, TaskStatus::Preparing);
     cx.reporter.status(id, TaskStatus::Working);
-    let mut job = Job { cx, id, settings, info: CaptureInfo::default(), stop, file: None };
+    let mut job = Job { cx, id, settings, info: CaptureInfo::default(), stop, file: None, upload_sound: Default::default() };
+    job.read_random_lines().await;
     // The outcome is already reported, so there is nothing to do with it here.
     let _ = job.run_upload(source).await;
 }
@@ -133,6 +134,7 @@ impl Job {
         flags: AfterUploadTasks,
     ) -> Result<Option<String>, Ended> {
         let result = self.upload(kind, request, size).await?;
+        self.upload_done();
         let Some(url) = result.url.clone() else { return Ok(None) };
         self.emit(TaskEvent::Uploaded {
             id: self.id,
@@ -223,11 +225,13 @@ impl Job {
         }
         if flags.contains(AfterUploadTasks::SHARE_URL) {
             self.checkpoint()?;
-            match self.share(&url) {
-                Ok(page) => match self.cx.ports.shell.open_url(&page) {
+            match self.share(&url).await {
+                Ok(Some(page)) => match self.cx.ports.shell.open_url(&page) {
                     Ok(()) => self.emit(TaskEvent::Shared { id, url: page }),
                     Err(error) => self.step_failed("share", error),
                 },
+                // The service shared it with its own request.
+                Ok(None) => self.emit(TaskEvent::Shared { id, url: url.clone() }),
                 Err(reason) => self.step_failed("share", reason),
             }
         }
@@ -279,13 +283,14 @@ impl Job {
         shortener.shorten(url).await.map_err(|error| error.to_string())
     }
 
-    /// The page to open for `url` with the configured sharing service.
-    fn share(&self, url: &str) -> Result<String, String> {
+    /// Shares `url` with the configured sharing service: the page to open, or `None` when the
+    /// service shared it itself.
+    async fn share(&self, url: &str) -> Result<Option<String>, String> {
         let id = &self.settings.upload.url_sharer;
         let Some(sharer) = self.cx.ports.uploaders.sharer(id) else {
             return Err(format!("no sharer {id}"));
         };
-        sharer.share_url(url).map_err(|error| error.to_string())
+        sharer.share_url(url).await.map_err(|error| error.to_string())
     }
 
     /// A file name for an upload that has no file on disk: the naming pattern with `ext`.

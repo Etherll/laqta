@@ -7,6 +7,7 @@ use laqta_domain::workflow::{
     FileExistsAction, GeneralSettings, ImageSettings, NamingSettings, TaskSettings, TaskSettingsPatch, UploadSettings,
 };
 
+use crate::application;
 use crate::jobs::{self, Destination};
 use crate::json::{self, Object};
 use crate::uploaders::Selections;
@@ -82,6 +83,17 @@ pub(crate) fn patch(
     if overrides("UseDefaultUploadSettings") {
         patch.naming =
             Some(json::sub(object, "UploadSettings").map_or_else(|| defaults.naming.clone(), |section| naming(&defaults.naming, section)));
+    }
+    if json::flag(object, "OverrideScreenshotsFolder") == Some(true)
+        && let Some(folder) = json::text(object, "ScreenshotsFolder")
+    {
+        patch.screenshots_dir = application::folder_of(folder, what, warnings);
+        if patch.screenshots_dir.is_some() {
+            warnings.push(format!("{what}: this task saves to the screenshots folder `{folder}`; check that it exists on this machine"));
+        }
+    }
+    if !json::list(object, "WatchFolderList").is_empty() {
+        warnings.push(format!("{what}: this hotkey's watch folders are not imported; set them in Laqta"));
     }
     patch
 }

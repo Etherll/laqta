@@ -3,6 +3,7 @@
 use laqta_domain::Bitmap;
 use laqta_domain::color::Rgba;
 
+use crate::fx::{self, Img};
 use crate::geom::{PointF, RectF, segment_distance};
 
 /// The 22 editor tools.
@@ -412,6 +413,48 @@ impl AnnotationKind {
             other => {
                 if let Some(r) = other.rect() {
                     other.set_rect(r.offset(dx, dy));
+                }
+            }
+        }
+    }
+
+    /// Turns the annotation with the base image, which is `w` by `h` before the turn. Pictures turn
+    /// with it, so each rect still matches its pixels.
+    pub fn rotate90(&mut self, w: f32, h: f32, clockwise: bool) {
+        let point = |p: PointF| if clockwise { PointF::new(h - p.y, p.x) } else { PointF::new(p.y, w - p.x) };
+        let rect = |r: RectF| {
+            if clockwise { RectF::new(h - r.y - r.h, r.x, r.h, r.w) } else { RectF::new(r.y, w - r.x - r.w, r.h, r.w) }
+        };
+        let turn = |p: &mut Picture| {
+            p.0 = fx::rotate90(&Img::from_bitmap(&p.0), clockwise).to_bitmap();
+        };
+        match self {
+            AnnotationKind::Line { start, end, curve } | AnnotationKind::Arrow { start, end, curve } => {
+                *start = point(*start);
+                *end = point(*end);
+                *curve = curve.map(point);
+            }
+            AnnotationKind::Freehand { points } => points.iter_mut().for_each(|p| *p = point(*p)),
+            AnnotationKind::Step { center, .. } => *center = point(*center),
+            AnnotationKind::Cursor { pos, bitmap } => {
+                *pos = point(*pos);
+                turn(bitmap);
+            }
+            AnnotationKind::SpeechBalloon { rect: r, tail, .. } => {
+                *r = rect(*r);
+                *tail = point(*tail);
+            }
+            AnnotationKind::Image { rect: r, bitmap } | AnnotationKind::Emoji { rect: r, bitmap } => {
+                *r = rect(*r);
+                turn(bitmap);
+            }
+            AnnotationKind::CloneStamp { src, dst } => {
+                *src = rect(*src);
+                *dst = point(*dst);
+            }
+            other => {
+                if let Some(r) = other.rect() {
+                    other.set_rect(rect(r));
                 }
             }
         }

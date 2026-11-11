@@ -134,6 +134,13 @@ pub enum Request {
     /// Download a URL and upload it again.
     UploadUrl(String),
     ShortenUrl(String),
+    /// Run an action on a file (`-ImageEditor shot.png` opens it in the editor).
+    ActionFile(Action, std::path::PathBuf),
+    /// Upload a file with a workflow's settings, without running the workflow (`-task <name> <file>`).
+    UploadWith {
+        workflow: String,
+        path: std::path::PathBuf,
+    },
 }
 
 /// Escapes a payload so it stays on one line: `\` → `\\`, line breaks → `\n` / `\r`.
@@ -144,6 +151,7 @@ fn escape(s: &str) -> String {
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
             c => out.push(c),
         }
     }
@@ -161,6 +169,7 @@ fn unescape(s: &str) -> String {
         match chars.next() {
             Some('n') => out.push('\n'),
             Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
             Some(other) => out.push(other),
             None => out.push('\\'),
         }
@@ -180,6 +189,9 @@ pub(crate) fn encode(request: &Request) -> String {
         Request::UploadText(t) => format!("text {}\n", escape(t)),
         Request::UploadUrl(u) => format!("url {}\n", escape(u)),
         Request::ShortenUrl(u) => format!("shorten {}\n", escape(u)),
+        Request::ActionFile(a, p) => format!("actionfile {} {}\n", action_name(*a), escape(&p.to_string_lossy())),
+        // A tab separates the two fields; `escape` writes a tab inside either as `\t`.
+        Request::UploadWith { workflow, path } => format!("uploadwith {}\t{}\n", escape(workflow), escape(&path.to_string_lossy())),
     }
 }
 
@@ -205,6 +217,14 @@ pub(crate) fn parse(line: &str) -> Result<Request, String> {
         "text" => Request::UploadText(payload),
         "url" => Request::UploadUrl(payload),
         "shorten" => Request::ShortenUrl(payload),
+        "actionfile" => {
+            let (name, path) = rest.split_once(' ').ok_or_else(|| "malformed request".to_owned())?;
+            Request::ActionFile(parse_action(name).ok_or_else(|| format!("unknown action {name}"))?, unescape(path).into())
+        }
+        "uploadwith" => {
+            let (workflow, path) = rest.split_once('\t').ok_or_else(|| "malformed request".to_owned())?;
+            Request::UploadWith { workflow: unescape(workflow), path: unescape(path).into() }
+        }
         _ => return Err("malformed request".to_owned()),
     })
 }
@@ -252,6 +272,8 @@ mod request_tests {
             Request::Upload("/tmp/a b\\c.png".into()),
             Request::Workflow("Region to Imgur".into()),
             Request::UploadText("line 1\nline 2\\".into()),
+            Request::ActionFile(Action::ImageEditor, "/tmp/a b.png".into()),
+            Request::UploadWith { workflow: "To\tFTP".into(), path: "/tmp/c\td.png".into() },
             Request::UploadUrl("https://x/y".into()),
             Request::ShortenUrl("https://x/z".into()),
         ] {

@@ -291,7 +291,7 @@ fn a_regex_response_file_reads_its_url_from_the_whole_match() {
         "Body": "MultipartFormData",
         "FileFormName": "file",
         "URL": r"{regex:https://up\.example/\w+|0}",
-        "DeletionURL": r"https://up.example/del/{regex:key=(\w+)}"
+        "DeletionURL": r"https://up.example/del/{regex:key=(\w+)|1}"
     })
     .to_string();
     let body = "Uploaded to https://up.example/k3j9x (key=zz9) thanks";

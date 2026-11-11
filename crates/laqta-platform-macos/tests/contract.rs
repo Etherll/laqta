@@ -40,7 +40,7 @@ fn screenshots_give_one_frame_per_display() {
     }
     let ports = laqta_platform_macos::ports();
     let started = Instant::now();
-    match block_on(ports.screen.capture(CaptureRequest { show_cursor: true })) {
+    match block_on(ports.screen.capture(CaptureRequest { show_cursor: true, ..CaptureRequest::default() })) {
         Ok(frames) => {
             eprintln!("capture: {} frame(s) in {:?}", frames.len(), started.elapsed());
             assert!(!frames.is_empty());

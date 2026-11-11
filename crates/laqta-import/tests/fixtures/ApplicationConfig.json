@@ -38,12 +38,12 @@
       "Effects": [
         {
           "$type": "ShareX.ImageEffectsLib.Brightness, ShareX.ImageEffectsLib",
-          "Value": 20,
+          "Value": 0.2,
           "Enabled": true
         },
         {
           "$type": "ShareX.ImageEffectsLib.Sepia, ShareX.ImageEffectsLib",
-          "Value": 40,
+          "Value": 1,
           "Enabled": false
         },
         {

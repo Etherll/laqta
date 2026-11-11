@@ -221,9 +221,9 @@ fn xml_on_a_body_that_is_not_xml_is_a_bad_response() {
 const REGEX_BODY: &str = "id=42; name=x";
 
 #[test]
-fn regex_takes_group_one_by_default() {
+fn regex_takes_the_whole_match_by_default() {
     let reply = response(200, "https://h/up", &[], REGEX_BODY);
-    assert_eq!(read_url(r"{regex:id=(\d+)}", &reply).unwrap().as_deref(), Some("42"));
+    assert_eq!(read_url(r"{regex:id=(\d+)}", &reply).unwrap().as_deref(), Some("id=42"));
 }
 
 #[test]

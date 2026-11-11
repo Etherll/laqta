@@ -55,6 +55,12 @@ impl Uploaders for SharedRegistry {
     fn destination_list(&self) -> Vec<(String, String)> {
         self.read(|r| r.destination_ids())
     }
+    fn custom_shortener_list(&self) -> Vec<(String, String)> {
+        self.read(|r| r.custom_shortener_ids())
+    }
+    fn custom_sharer_list(&self) -> Vec<(String, String)> {
+        self.read(|r| r.custom_sharer_ids())
+    }
     fn download(&self, url: &str) -> BoxFuture<'_, Result<Downloaded, UploadError>> {
         let url = url.to_string();
         Box::pin(async move {

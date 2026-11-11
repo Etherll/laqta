@@ -45,7 +45,9 @@ struct Staging {
     format: DXGI_FORMAT,
 }
 
-pub(crate) fn capture() -> Result<Vec<Frame>> {
+/// With `hdr_tonemap` false, an HDR output is duplicated in 8 bits, so Windows makes the SDR image
+/// instead of Laqta's tonemap.
+pub(crate) fn capture(hdr_tonemap: bool) -> Result<Vec<Frame>> {
     // SAFETY: COM calls on interfaces owned by this function; DXGI needs no apartment.
     unsafe {
         let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
@@ -71,7 +73,7 @@ pub(crate) fn capture() -> Result<Vec<Frame>> {
                     return Err(E_FAIL.into());
                 }
                 let monitor = monitor_from_handle(desc.Monitor).ok_or_else(|| Error::from(E_FAIL))?;
-                let hdr_white = is_scrgb(&output).then(|| sdr_white_scale(&monitor.name));
+                let hdr_white = (hdr_tonemap && is_scrgb(&output)).then(|| sdr_white_scale(&monitor.name));
                 let image = duplicate(&output.cast::<IDXGIOutput1>()?, &device, &context, hdr_white)?;
                 frames.push(Frame { monitor, image });
             }

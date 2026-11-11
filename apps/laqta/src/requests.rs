@@ -11,6 +11,8 @@ use laqta_ipc::Request;
 #[derive(Debug)]
 pub enum Route {
     Dispatch(Action, Option<WorkflowId>),
+    /// An action on a file (`-ImageEditor shot.png`).
+    DispatchFile(Action, PathBuf, Option<WorkflowId>),
     Upload(UploadSource, Option<WorkflowId>),
     ImportUploader(PathBuf),
     ImportEffect(PathBuf),
@@ -46,6 +48,18 @@ pub fn route(request: Request, settings: &Settings) -> Result<Route, String> {
         Request::UploadText(text) => Route::Upload(UploadSource::Text(text), None),
         Request::UploadUrl(url) => Route::Upload(UploadSource::Url(url), None),
         Request::ShortenUrl(url) => Route::Upload(UploadSource::ShortenUrl(url), None),
+        Request::ActionFile(action, path) => {
+            let workflow = settings.workflows.iter().find(|w| w.enabled && w.action == action).map(|w| w.id);
+            Route::DispatchFile(action, std::path::absolute(&path).unwrap_or(path), workflow)
+        }
+        Request::UploadWith { workflow, path } => {
+            let w = settings
+                .workflows
+                .iter()
+                .find(|w| w.name.eq_ignore_ascii_case(workflow.trim()))
+                .ok_or_else(|| format!("no workflow named `{workflow}`"))?;
+            Route::Upload(UploadSource::File(std::path::absolute(&path).unwrap_or(path)), Some(w.id))
+        }
     })
 }
 

@@ -81,3 +81,35 @@ fn drag_coalesces_renders_while_one_is_pending(cx: &mut TestAppContext) {
     let after_up = drain(&spawner, &mut vcx);
     assert!(after_up <= 2, "committing the shape renders once; ran {after_up}");
 }
+
+#[gpui::test]
+fn closing_an_unedited_editor_does_not_ask(cx: &mut TestAppContext) {
+    let (_spawner, mut vcx, _dir) = open(cx);
+    assert!(vcx.simulate_close(), "nothing to lose, so it closes");
+    assert!(!vcx.has_pending_prompt());
+}
+
+#[gpui::test]
+fn closing_after_an_edit_asks_first(cx: &mut TestAppContext) {
+    let (spawner, mut vcx, _dir) = open(cx);
+    // Draw a rectangle (the default tool).
+    vcx.simulate_mouse_down(at(0), MouseButton::Left, Modifiers::default());
+    vcx.simulate_mouse_move(at(80), Some(MouseButton::Left), Modifiers::default());
+    vcx.simulate_mouse_up(at(80), MouseButton::Left, Modifiers::default());
+    drain(&spawner, &mut vcx);
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+
+    assert!(!vcx.simulate_close(), "the edit holds the window open");
+    vcx.run_until_parked();
+    assert!(vcx.has_pending_prompt(), "it asks about the unsaved edit");
+    vcx.simulate_prompt_answer("Cancel");
+    vcx.run_until_parked();
+    let window = vcx.update(|window, _| window.window_handle());
+    assert!(vcx.windows().contains(&window), "Cancel keeps the editor open");
+
+    assert!(!vcx.simulate_close());
+    vcx.run_until_parked();
+    vcx.simulate_prompt_answer("Don't save");
+    vcx.run_until_parked();
+    assert!(!vcx.windows().contains(&window), "Don't save closes it");
+}

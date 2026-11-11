@@ -98,10 +98,12 @@ pub trait Shortener: Send + Sync {
     fn shorten(&self, url: &str) -> BoxFuture<'_, Result<String, UploadError>>;
 }
 
-/// Sharing services turn a URL into a page to open (Reddit, email, …).
+/// Sharing services share a URL: most give a page to open (Reddit, email, …); a custom `.sxcu`
+/// sharing service sends its own request instead.
 pub trait Sharer: Send + Sync {
     fn id(&self) -> &str;
-    fn share_url(&self, url: &str) -> Result<String, UploadError>;
+    /// The page to open for `url`, or `None` when the service shared it itself.
+    fn share_url(&self, url: &str) -> BoxFuture<'_, Result<Option<String>, UploadError>>;
 }
 
 /// Questions for the user (custom-uploader `{select}`, `{inputbox}`, the before-upload window).
@@ -173,6 +175,14 @@ pub trait Uploaders: Send + Sync {
     fn sharer(&self, id: &str) -> Option<std::sync::Arc<dyn Sharer>>;
     /// (id, display name) of every destination, for settings.
     fn destination_list(&self) -> Vec<(String, String)>;
+    /// (id, display name) of the user's own `.sxcu` shorteners, for settings.
+    fn custom_shortener_list(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    /// (id, display name) of the user's own `.sxcu` sharing services, for settings.
+    fn custom_sharer_list(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
     /// Downloads a URL: (bytes, file name, mime).
     fn download(&self, url: &str) -> BoxFuture<'_, Result<Downloaded, UploadError>>;
 }

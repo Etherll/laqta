@@ -6,7 +6,7 @@ use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
     Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, WindowOptions, div, prelude::FluentBuilder as _, px, size,
 };
-use gpui_component::input::{Input, InputState};
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::switch::Switch;
@@ -20,6 +20,7 @@ use laqta_domain::{Action, ImageFormat, Settings, WorkflowId};
 
 use crate::assets::IconName;
 use crate::presenters::settings::{self as present, TaskOption};
+use crate::presenters::settings_reset::{self, InputTexts, Scope};
 use crate::runtime::{UiState, activate};
 use crate::theme::{space, text};
 use crate::widgets::{self, Pill, Slot, Tone};
@@ -108,6 +109,10 @@ struct WorkflowInputs {
 
 struct SettingsWindow {
     draft: Settings,
+    /// First-run settings for this OS: what "Reset to default" goes back to.
+    defaults: Settings,
+    /// The text each field shows at its default.
+    default_texts: InputTexts,
     page: Page,
     message: Option<(bool, String)>,
     dir: Entity<InputState>,
@@ -154,6 +159,8 @@ struct SettingsWindow {
     rec_focus: FocusHandle,
     /// Why the last key press was refused while recording.
     rec_error: Option<&'static str>,
+    /// Windows: the hook that catches keys the window can't see, while a row records.
+    key_hook: Option<laqta_ports::KeyRecording>,
 }
 
 struct RecordingInputs {
@@ -171,37 +178,76 @@ struct RecordingInputs {
 
 fn text_input(value: impl Into<SharedString>, window: &mut Window, cx: &mut Context<SettingsWindow>) -> Entity<InputState> {
     let value = value.into();
-    cx.new(|cx| InputState::new(window, cx).default_value(value))
+    let input = cx.new(|cx| InputState::new(window, cx).default_value(value));
+    // Redraws on each edit, so a field's "Reset to default" button comes and goes as you type.
+    cx.subscribe(&input, |_, _, ev: &InputEvent, cx| {
+        if matches!(ev, InputEvent::Change) {
+            cx.notify();
+        }
+    })
+    .detach();
+    input
 }
 
 impl SettingsWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let draft = cx.global::<UiState>().services.app.settings();
+        let mut this = Self::build(draft, window, cx);
+        // A window closed mid-recording must not leave the global shortcuts off.
+        cx.on_release(|_, cx| (cx.global::<UiState>().services.hold_hotkeys)(false)).detach();
+        this.refresh_model_rows(cx);
+        this.refresh_integration(cx);
+        this
+    }
+
+    /// The window's state for `draft`, with every input showing the draft's values.
+    fn build(draft: Settings, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let defaults = (cx.global::<UiState>().services.default_settings)();
         let language = Self::language_select(draft.language.as_deref(), window, cx);
-        let d = &draft.defaults;
+        let x = InputTexts::of(&draft);
+        let mut input = |text: &String| text_input(text.clone(), window, cx);
+        let (dir, pattern, window_pattern, subfolder) = (input(&x.dir), input(&x.pattern), input(&x.window_pattern), input(&x.subfolder));
+        let (jpeg_quality, auto_jpeg, thumb_w, thumb_h) =
+            (input(&x.jpeg_quality), input(&x.auto_jpeg), input(&x.thumb_w), input(&x.thumb_h));
+        let (delay, toast_ms, custom_region, window_title) =
+            (input(&x.delay), input(&x.toast_ms), input(&x.custom_region), input(&x.window_title));
+        let (sound_capture, sound_task, sound_error) = (input(&x.sound_capture), input(&x.sound_task), input(&x.sound_error));
+        let (clipboard_format, retries) = (input(&x.clipboard_format), input(&x.retries));
+        let rec = RecordingInputs {
+            fps: input(&x.rec_fps),
+            gif_fps: input(&x.rec_gif_fps),
+            crf: input(&x.rec_crf),
+            countdown: input(&x.rec_countdown),
+            duration: input(&x.rec_duration),
+            microphone: input(&x.rec_microphone),
+            args: input(&x.rec_args),
+            ffmpeg: input(&x.rec_ffmpeg),
+            camera_device: input(&x.rec_camera_device),
+            camera_size: input(&x.rec_camera_size),
+        };
+        let (auto_interval, auto_count) = (input(&x.auto_interval), input(&x.auto_count));
+        let scroll = [0, 1, 2, 3, 4, 5].map(|i| input(&x.scroll[i]));
+        let analyzer = [0, 1, 2].map(|i| input(&x.cloud[i]));
+        let custom_name = text_input("My model", window, cx);
         let mut this = SettingsWindow {
-            dir: text_input(draft.screenshots_dir.display().to_string(), window, cx),
-            pattern: text_input(d.naming.pattern.clone(), window, cx),
-            window_pattern: text_input(d.naming.window_pattern.clone(), window, cx),
-            subfolder: text_input(d.naming.subfolder.clone(), window, cx),
-            jpeg_quality: text_input(d.image.jpeg_quality.to_string(), window, cx),
-            auto_jpeg: text_input(d.image.auto_jpeg_above_bytes.map(|b| (b / 1024).to_string()).unwrap_or_default(), window, cx),
-            thumb_w: text_input(d.image.thumbnail_width.to_string(), window, cx),
-            thumb_h: text_input(d.image.thumbnail_height.to_string(), window, cx),
-            delay: text_input(d.capture.delay_ms.to_string(), window, cx),
-            toast_ms: text_input(d.general.toast.duration_ms.to_string(), window, cx),
-            custom_region: text_input(
-                d.capture.custom_region.map(|r| format!("{}, {}, {}, {}", r.x, r.y, r.width, r.height)).unwrap_or_default(),
-                window,
-                cx,
-            ),
-            window_title: text_input(d.capture.custom_window_title.clone(), window, cx),
-            sound_capture: text_input(path_text(&d.general.custom_capture_sound), window, cx),
-            sound_task: text_input(path_text(&d.general.custom_task_sound), window, cx),
-            sound_error: text_input(path_text(&d.general.custom_error_sound), window, cx),
+            dir,
+            pattern,
+            window_pattern,
+            subfolder,
+            jpeg_quality,
+            auto_jpeg,
+            thumb_w,
+            thumb_h,
+            delay,
+            toast_ms,
+            custom_region,
+            window_title,
+            sound_capture,
+            sound_task,
+            sound_error,
             workflows: Vec::new(),
-            clipboard_format: text_input(d.upload.clipboard_format.clone(), window, cx),
-            retries: text_input(d.upload.retries.to_string(), window, cx),
+            clipboard_format,
+            retries,
             hosts: Vec::new(),
             update: None,
             focus: cx.focus_handle(),
@@ -209,52 +255,30 @@ impl SettingsWindow {
             recording: None,
             rec_focus: cx.focus_handle(),
             rec_error: None,
-            rec: RecordingInputs {
-                fps: text_input(d.recording.fps.to_string(), window, cx),
-                gif_fps: text_input(d.recording.gif_fps.to_string(), window, cx),
-                crf: text_input(
-                    match d.recording.quality {
-                        laqta_domain::record::Quality::Crf(c) => c.to_string(),
-                        _ => String::new(),
-                    },
-                    window,
-                    cx,
-                ),
-                countdown: text_input(d.recording.countdown_secs.to_string(), window, cx),
-                duration: text_input(d.recording.fixed_duration_secs.to_string(), window, cx),
-                microphone: text_input(d.recording.microphone.clone().unwrap_or_default(), window, cx),
-                args: text_input(d.recording.custom_args.clone(), window, cx),
-                ffmpeg: text_input(d.recording.ffmpeg_path.clone(), window, cx),
-                camera_device: text_input(d.recording.camera.device.clone(), window, cx),
-                camera_size: text_input(d.recording.camera.size_percent.to_string(), window, cx),
-            },
-            auto_interval: text_input((draft.auto_capture.interval_ms / 1000).to_string(), window, cx),
-            auto_count: text_input(draft.auto_capture.count.to_string(), window, cx),
-            scroll: {
-                let o = &d.capture.scrolling;
-                [o.start_delay_ms, o.scroll_delay_ms, o.max_frames, o.scroll_amount, o.ignore_top, o.ignore_bottom]
-                    .map(|v| text_input(v.to_string(), window, cx))
-            },
+            key_hook: None,
+            rec,
+            auto_interval,
+            auto_count,
+            scroll,
             watch: Vec::new(),
             // Filled by `refresh_model_rows`: building the rows parses the catalog and checks files.
             model_rows: Vec::new(),
             model_status: Default::default(),
             custom_family: 0,
-            custom_name: text_input("My model", window, cx),
+            custom_name,
             cloud: {
-                let a = &draft.cloud.analyzer;
-                let (url, model, prompt) = (a.base_url.clone(), a.model.clone(), a.prompt.clone());
                 let mut key = || cx.new(|cx| InputState::new(window, cx).placeholder("(stored in the system keyring; type to replace)"));
                 let (k1, k2) = (key(), key());
-                [text_input(url, window, cx), text_input(model, window, cx), text_input(prompt, window, cx), k1, k2]
+                let [url, model, prompt] = analyzer;
+                [url, model, prompt, k1, k2]
             },
+            default_texts: InputTexts::of(&defaults),
             draft,
+            defaults,
             page: Page::General,
             message: None,
             integration_status: None,
         };
-        this.refresh_model_rows(cx);
-        this.refresh_integration(cx);
         this.rebuild_workflow_inputs(window, cx);
         this.rebuild_host_inputs(window, cx);
         this.rebuild_watch_inputs(window, cx);
@@ -309,6 +333,12 @@ impl SettingsWindow {
 
     /// Copies text inputs into the draft. Returns the first validation error.
     fn collect(&mut self, cx: &App) -> Result<(), String> {
+        self.collect_with(cx, true)
+    }
+
+    /// Reads every input into the draft. With `store_secrets`, typed keys and passwords also go to
+    /// the keyring (they are never part of the draft).
+    fn collect_with(&mut self, cx: &App, store_secrets: bool) -> Result<(), String> {
         let num = |input: &Entity<InputState>, what: &str| -> Result<u32, String> {
             let v = Self::value(input, cx);
             if v.is_empty() {
@@ -380,7 +410,7 @@ impl SettingsWindow {
             let secrets = cx.global::<UiState>().services.secrets.clone();
             for (input, key) in [(&self.cloud[3], "cloud:analyzer"), (&self.cloud[4], "cloud:remove.bg")] {
                 let v = Self::value(input, cx);
-                if !v.is_empty() {
+                if store_secrets && !v.is_empty() {
                     secrets.set(key, &v).map_err(|e| format!("Couldn't store the key: {e}"))?;
                 }
             }
@@ -399,7 +429,7 @@ impl SettingsWindow {
             for (key, secret, input) in inputs {
                 let v = Self::value(input, cx);
                 if *secret {
-                    if !v.is_empty() {
+                    if store_secrets && !v.is_empty() {
                         secrets.set(&account.secret_key(key), &v).map_err(|e| format!("Couldn't store the {key}: {e}"))?;
                     }
                 } else {
@@ -441,9 +471,107 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// A switch row that writes one draft field.
+    /// Applies and saves the theme at once: a choice that waits for Save looks broken.
+    fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
+        self.draft.theme = theme;
+        crate::theme::apply(theme, cx);
+        let services = cx.global::<UiState>().services.clone();
+        let mut saved = services.app.settings();
+        saved.theme = theme;
+        if let Err(e) = (services.save_settings)(saved) {
+            self.message = Some((false, format!("Couldn't save the theme: {e}")));
+        }
+    }
+
+    /// Asks, then puts every setting in `scope` back to its default in the draft (Save keeps it).
+    fn confirm_reset(&mut self, scope: Scope, window: &mut Window, cx: &mut Context<Self>) {
+        // Typed values on other pages live in their inputs until Save; keep them through the reset.
+        // Typed keys reach the keyring only once the reset is confirmed.
+        if let Err(e) = self.collect_with(cx, false) {
+            self.message = Some((false, format!("Fix this before resetting: {e}")));
+            cx.notify();
+            return;
+        }
+        let n = settings_reset::changed(scope, &self.draft, &self.defaults);
+        if n == 0 {
+            return;
+        }
+        let message = if scope == Scope::All { "Reset all settings?" } else { "Reset this page?" };
+        let what = if n == 1 { "1 setting goes".to_owned() } else { format!("{n} settings go") };
+        let detail = format!(
+            "{what} back to the default. Accounts, custom uploaders, effect presets, watch folders, history and the shortcuts and models you added stay. Nothing is saved until you press Save."
+        );
+        let answer = window.prompt(gpui::PromptLevel::Warning, message, Some(&detail), &["Reset", "Cancel"], cx);
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            let _ = this.update_in(cx, |this, window, cx| {
+                // The inputs are rebuilt from the draft, so typed keys are stored now or lost.
+                if let Err(e) = this.collect(cx) {
+                    this.message = Some((false, format!("Fix this before resetting: {e}")));
+                    cx.notify();
+                    return;
+                }
+                this.reset(scope, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn reset(&mut self, scope: Scope, window: &mut Window, cx: &mut Context<Self>) {
+        let theme = self.draft.theme;
+        settings_reset::reset(scope, &mut self.draft, &self.defaults);
+        if self.draft.theme != theme {
+            self.set_theme(self.draft.theme, cx);
+        }
+        self.reload_inputs(window, cx);
+        self.message = Some((true, "Back to the defaults. Press Save to keep them.".into()));
+        cx.notify();
+    }
+
+    /// Rebuilds every input from the draft, keeping the page, messages and loaded state.
+    fn reload_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut fresh = Self::build(self.draft.clone(), window, cx);
+        fresh.page = self.page;
+        fresh.message = self.message.take();
+        fresh.model_rows = std::mem::take(&mut self.model_rows);
+        fresh.model_status = std::mem::take(&mut self.model_status);
+        fresh.custom_family = self.custom_family;
+        fresh.update = self.update.take();
+        fresh.integration_status = self.integration_status.take();
+        fresh.focus = self.focus.clone();
+        *self = fresh;
+        // A reset mid-recording ends the recording: let the global hotkeys run again.
+        self.sync_key_hook(window, cx);
+    }
+
+    /// The page's "Reset page" button, while something on it differs from the default.
+    fn page_reset(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let scope = page_scope(self.page)?;
+        let n = settings_reset::changed(scope, &self.draft, &self.defaults);
+        if n == 0 {
+            return None;
+        }
+        let label =
+            if self.page == Page::Workflows { format!("Restore default shortcuts ({n})") } else { format!("Reset page ({n} changed)") };
+        Some(
+            widgets::pill(
+                "page-reset",
+                label,
+                Pill::Default,
+                true,
+                cx.listener(move |this, _, window, cx| this.confirm_reset(scope, window, cx)),
+                cx,
+            )
+            .debug_selector(|| "page-reset".into())
+            .into_any_element(),
+        )
+    }
+
     /// A path setting: the text stays editable, so a pasted path works, and Browse opens the system
     /// picker through the `Prompt` port.
+    #[allow(clippy::too_many_arguments)]
     fn path_row(
         &self,
         id: impl Into<SharedString>,
@@ -451,10 +579,12 @@ impl SettingsWindow {
         description: Option<&'static str>,
         input: &Entity<InputState>,
         pick: PathPick,
+        default: Option<fn(&InputTexts) -> &String>,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        let target = input.clone();
         let id: SharedString = id.into();
+        let reset = default.and_then(|d| self.input_reset(&format!("{id}-reset"), input, d, cx));
+        let target = input.clone();
         let selector = id.to_string();
         let browse = widgets::pill(
             id,
@@ -485,7 +615,72 @@ impl SettingsWindow {
         .debug_selector(move || selector);
         let control =
             div().w_full().flex().items_center().gap(space::S2).child(div().flex_1().min_w_0().child(Input::new(input))).child(browse);
-        widgets::row_with(label, description, Slot::Field, control, cx)
+        widgets::row_full(label, description, Slot::Field, reset, control, cx)
+    }
+
+    /// A text or number setting with its "Reset to default" button, shown while the text differs
+    /// from what the field shows at its default.
+    #[allow(clippy::too_many_arguments)]
+    fn input_row(
+        &self,
+        id: &'static str,
+        label: impl Into<SharedString>,
+        description: Option<impl Into<SharedString>>,
+        slot: Slot,
+        input: &Entity<InputState>,
+        default: fn(&InputTexts) -> &String,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let reset = self.input_reset(id, input, default, cx);
+        widgets::row_full(label, description, slot, reset, Input::new(input), cx)
+    }
+
+    /// The "Reset to default" button of a choice, shown while the draft's value differs from the
+    /// default. `options` names each value for the tooltip.
+    fn value_reset<T: PartialEq + Copy + 'static>(
+        &self,
+        id: &'static str,
+        options: &[(T, &'static str)],
+        get: fn(&Settings) -> T,
+        set: fn(&mut Self, T, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) -> Option<widgets::Reset> {
+        let default = get(&self.defaults);
+        if get(&self.draft) == default {
+            return None;
+        }
+        let name = options.iter().find(|(v, _)| *v == default).map_or("", |(_, l)| *l);
+        Some(widgets::Reset::new(
+            id,
+            if name.is_empty() { "Reset to default".to_string() } else { format!("Reset to default ({name})") },
+            cx.listener(move |this, _, _, cx| {
+                set(this, default, cx);
+                cx.notify();
+            }),
+        ))
+    }
+
+    fn input_reset(
+        &self,
+        id: &str,
+        input: &Entity<InputState>,
+        default: fn(&InputTexts) -> &String,
+        cx: &mut Context<Self>,
+    ) -> Option<widgets::Reset> {
+        let text = default(&self.default_texts).clone();
+        if !settings_reset::text_changed(&input.read(cx).value(), &text) {
+            return None;
+        }
+        let tooltip = if text.is_empty() { "Reset to default (empty)".to_string() } else { format!("Reset to default ({text})") };
+        let input = input.clone();
+        Some(widgets::Reset::new(
+            SharedString::from(id.to_string()),
+            tooltip,
+            cx.listener(move |_, _, window, cx| {
+                input.update(cx, |i, cx| i.set_value(text.clone(), window, cx));
+                cx.notify();
+            }),
+        ))
     }
 
     fn sw(
@@ -493,16 +688,29 @@ impl SettingsWindow {
         id: &'static str,
         label: &'static str,
         description: Option<&str>,
-        on: bool,
-        set: impl Fn(&mut Self, bool) + 'static,
+        get: fn(&Settings) -> bool,
+        set: impl Fn(&mut Self, bool) + Clone + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let description = description.map(|d| SharedString::from(d.to_string()));
+        let (on, default) = (get(&self.draft), get(&self.defaults));
+        let reset = (on != default).then(|| {
+            let set = set.clone();
+            widgets::Reset::new(
+                SharedString::from(format!("{id}-reset")),
+                if default { "Reset to default (on)" } else { "Reset to default (off)" },
+                cx.listener(move |this, _, _, cx| {
+                    set(this, default);
+                    cx.notify();
+                }),
+            )
+        });
         widgets::switch_row(
             id,
             label,
             description,
             on,
+            reset,
             cx.listener(move |this, v: &bool, _, cx| {
                 set(this, *v);
                 cx.notify();
@@ -533,6 +741,8 @@ impl SettingsWindow {
         &self,
         id_prefix: &str,
         flags: AfterCaptureTasks,
+        // The flags a per-row reset goes back to; `None`: no reset buttons.
+        defaults: Option<AfterCaptureTasks>,
         on_toggle: impl Fn(&mut Self, AfterCaptureTasks, bool) + Clone + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
@@ -547,11 +757,24 @@ impl SettingsWindow {
             }
             let f = on_toggle.clone();
             let label = if available { label.to_string() } else { format!("{label} (coming soon)") };
+            let on = flags.contains(flag);
+            let reset = defaults.map(|d| d.contains(flag)).filter(|d| *d != on).map(|d| {
+                let f = on_toggle.clone();
+                widgets::Reset::new(
+                    SharedString::from(format!("{id_prefix}-{}-reset", flag.bits())),
+                    if d { "Reset to default (on)" } else { "Reset to default (off)" },
+                    cx.listener(move |this, _, _, cx| {
+                        f(this, flag, d);
+                        cx.notify();
+                    }),
+                )
+            });
             let row = widgets::switch_row(
                 SharedString::from(format!("{id_prefix}-{}", flag.bits())),
                 label,
                 None::<&str>,
-                flags.contains(flag),
+                on,
+                reset,
                 cx.listener(move |this, checked: &bool, _, cx| {
                     f(this, flag, *checked);
                     cx.notify();
@@ -567,45 +790,47 @@ impl SettingsWindow {
     }
     fn general(&self, cx: &mut Context<Self>) -> gpui::Div {
         let data_dir = cx.global::<UiState>().services.data_dir.display().to_string();
-        let theme = [("System", Theme::System), ("Light", Theme::Light), ("Dark", Theme::Dark)]
+        let themes = [(Theme::System, "System"), (Theme::Light, "Light"), (Theme::Dark, "Dark")];
+        let theme_reset = self.value_reset("theme-reset", &themes, |s| s.theme, |this, t, cx| this.set_theme(t, cx), cx);
+        let theme = themes
             .into_iter()
-            .map(|(label, t)| {
+            .map(|(t, label)| {
                 // The theme applies and is saved on the click: a choice that waits for Save looks broken.
                 widgets::Choice::new(
                     label,
                     self.draft.theme == t,
                     cx.listener(move |this, _, _, cx| {
-                        this.draft.theme = t;
-                        crate::theme::apply(t, cx);
-                        let services = cx.global::<UiState>().services.clone();
-                        let mut saved = services.app.settings();
-                        saved.theme = t;
-                        if let Err(e) = (services.save_settings)(saved) {
-                            this.message = Some((false, format!("Couldn't save the theme: {e}")));
-                        }
+                        this.set_theme(t, cx);
                         cx.notify();
                     }),
                 )
             })
             .collect();
-        let placement = [
-            ("Top left", ToastPlacement::TopLeft),
-            ("Top right", ToastPlacement::TopRight),
-            ("Bottom left", ToastPlacement::BottomLeft),
-            ("Bottom right", ToastPlacement::BottomRight),
-        ]
-        .into_iter()
-        .map(|(label, p)| {
-            let on = self.draft.defaults.general.toast.placement == p;
-            self.opt(label, on, move |this| this.draft.defaults.general.toast.placement = p, cx)
-        })
-        .collect();
-        let g = &self.draft.defaults.general;
+        let placements = [
+            (ToastPlacement::TopLeft, "Top left"),
+            (ToastPlacement::TopRight, "Top right"),
+            (ToastPlacement::BottomLeft, "Bottom left"),
+            (ToastPlacement::BottomRight, "Bottom right"),
+        ];
+        let placement_reset = self.value_reset(
+            "toast-pos-reset",
+            &placements,
+            |s| s.defaults.general.toast.placement,
+            |this, p, _| this.draft.defaults.general.toast.placement = p,
+            cx,
+        );
+        let placement = placements
+            .into_iter()
+            .map(|(p, label)| {
+                let on = self.draft.defaults.general.toast.placement == p;
+                self.opt(label, on, move |this| this.draft.defaults.general.toast.placement = p, cx)
+            })
+            .collect();
         let update_note = self.update.as_ref().map(|(m, _)| m.clone()).unwrap_or_else(|| "Laqta checks GitHub for a newer version.".into());
         page()
             .child(
                 widgets::section("Appearance", cx)
-                    .child(widgets::row_with("Theme", None::<&str>, Slot::Hug, widgets::choice("theme", theme, cx), cx))
+                    .child(widgets::row_full("Theme", None::<&str>, Slot::Hug, theme_reset, widgets::choice("theme", theme, cx), cx))
                     .child(widgets::row_with(
                         "Language",
                         Some(if cfg!(target_os = "macos") {
@@ -626,13 +851,14 @@ impl SettingsWindow {
                         Some("Where captures are saved."),
                         &self.dir,
                         PathPick::Folder,
+                        Some(|d| &d.dir),
                         cx,
                     ))
                     .child(self.sw(
                         "history",
                         "Keep history",
                         Some(&format!("A list of your captures and uploads, stored in {data_dir}.")),
-                        self.draft.history.enabled,
+                        |s| s.history.enabled,
                         |this, v| this.draft.history.enabled = v,
                         cx,
                     )),
@@ -643,12 +869,27 @@ impl SettingsWindow {
                         "show-toast",
                         "Show a notification after capture",
                         Some("A small preview in the corner of the screen."),
-                        g.show_toast,
+                        |s| s.defaults.general.show_toast,
                         |this, v| this.draft.defaults.general.show_toast = v,
                         cx,
                     ))
-                    .child(widgets::row_with("Show it for", Some("Milliseconds."), Slot::Number, Input::new(&self.toast_ms), cx))
-                    .child(widgets::row_with("Position", None::<&str>, Slot::Hug, widgets::choice("toast-pos", placement, cx), cx)),
+                    .child(self.input_row(
+                        "toast-ms-reset",
+                        "Show it for",
+                        Some("Milliseconds."),
+                        Slot::Number,
+                        &self.toast_ms,
+                        |d| &d.toast_ms,
+                        cx,
+                    ))
+                    .child(widgets::row_full(
+                        "Position",
+                        None::<&str>,
+                        Slot::Hug,
+                        placement_reset,
+                        widgets::choice("toast-pos", placement, cx),
+                        cx,
+                    )),
             )
             .child(
                 widgets::section("Sounds", cx)
@@ -656,7 +897,7 @@ impl SettingsWindow {
                         "snd-capture",
                         "Play a sound after capture",
                         None,
-                        g.play_sound_after_capture,
+                        |s| s.defaults.general.play_sound_after_capture,
                         |this, v| this.draft.defaults.general.play_sound_after_capture = v,
                         cx,
                     ))
@@ -664,7 +905,7 @@ impl SettingsWindow {
                         "snd-task",
                         "Play a sound when a task finishes or fails",
                         None,
-                        g.play_sound_after_task,
+                        |s| s.defaults.general.play_sound_after_task,
                         |this, v| this.draft.defaults.general.play_sound_after_task = v,
                         cx,
                     ))
@@ -674,6 +915,7 @@ impl SettingsWindow {
                         Some("A sound file. Leave empty for the built-in one."),
                         &self.sound_capture,
                         PathPick::File(SOUND_FILES),
+                        Some(|d| &d.sound_capture),
                         cx,
                     ))
                     .child(self.path_row(
@@ -682,6 +924,7 @@ impl SettingsWindow {
                         Some("Leave empty for the built-in one."),
                         &self.sound_task,
                         PathPick::File(SOUND_FILES),
+                        Some(|d| &d.sound_task),
                         cx,
                     ))
                     .child(self.path_row(
@@ -690,6 +933,7 @@ impl SettingsWindow {
                         Some("Leave empty for the built-in one."),
                         &self.sound_error,
                         PathPick::File(SOUND_FILES),
+                        Some(|d| &d.sound_error),
                         cx,
                     )),
             )
@@ -781,6 +1025,23 @@ impl SettingsWindow {
 
     fn recording(&self, cx: &mut Context<Self>) -> gpui::Div {
         use laqta_domain::record::VideoCodec;
+        let codec_opts: Vec<(VideoCodec, &'static str)> = VideoCodec::available(crate::host_os()).map(|c| (c, c.label())).collect();
+        let mut codec_reset = [
+            self.value_reset(
+                "video-codec-reset",
+                &codec_opts,
+                |s| s.defaults.recording.codec,
+                |this, c, _| this.draft.defaults.recording.codec = c,
+                cx,
+            ),
+            self.value_reset(
+                "gif-codec-reset",
+                &codec_opts,
+                |s| s.defaults.recording.gif_codec,
+                |this, c, _| this.draft.defaults.recording.gif_codec = c,
+                cx,
+            ),
+        ];
         let r = &self.draft.defaults.recording;
         let codecs = |gif: bool, this: &Self, cx: &mut Context<Self>| {
             let current = if gif { this.draft.defaults.recording.gif_codec } else { this.draft.defaults.recording.codec };
@@ -805,16 +1066,40 @@ impl SettingsWindow {
         };
         use laqta_domain::record::{CameraShape as S, Corner as C, RecorderBackend as B};
         let cam = &r.camera;
-        let shapes = [(S::Circle, "Circle"), (S::RoundedRectangle, "Rounded"), (S::Rectangle, "Rectangle")]
+        let shape_opts = [(S::Circle, "Circle"), (S::RoundedRectangle, "Rounded"), (S::Rectangle, "Rectangle")];
+        let corner_opts =
+            [(C::TopLeft, "Top left"), (C::TopRight, "Top right"), (C::BottomLeft, "Bottom left"), (C::BottomRight, "Bottom right")];
+        let backend_opts = [(B::Ffmpeg, "FFmpeg"), (B::Native, "Native (Windows)")];
+        let shape_reset = self.value_reset(
+            "cam-shape-reset",
+            &shape_opts,
+            |s| s.defaults.recording.camera.shape,
+            |this, v, _| this.draft.defaults.recording.camera.shape = v,
+            cx,
+        );
+        let corner_reset = self.value_reset(
+            "cam-corner-reset",
+            &corner_opts,
+            |s| s.defaults.recording.camera.corner,
+            |this, v, _| this.draft.defaults.recording.camera.corner = v,
+            cx,
+        );
+        let backend_reset = self.value_reset(
+            "backend-reset",
+            &backend_opts,
+            |s| s.defaults.recording.backend,
+            |this, v, _| this.draft.defaults.recording.backend = v,
+            cx,
+        );
+        let shapes = shape_opts
             .into_iter()
             .map(|(v, l)| self.opt(l, cam.shape == v, move |this| this.draft.defaults.recording.camera.shape = v, cx))
             .collect();
-        let corners =
-            [(C::TopLeft, "Top left"), (C::TopRight, "Top right"), (C::BottomLeft, "Bottom left"), (C::BottomRight, "Bottom right")]
-                .into_iter()
-                .map(|(v, l)| self.opt(l, cam.corner == v, move |this| this.draft.defaults.recording.camera.corner = v, cx))
-                .collect();
-        let backends = [(B::Ffmpeg, "FFmpeg"), (B::Native, "Native (Windows)")]
+        let corners = corner_opts
+            .into_iter()
+            .map(|(v, l)| self.opt(l, cam.corner == v, move |this| this.draft.defaults.recording.camera.corner = v, cx))
+            .collect();
+        let backends = backend_opts
             .into_iter()
             .map(|(v, l)| self.opt(l, r.backend == v, move |this| this.draft.defaults.recording.backend = v, cx))
             .collect();
@@ -824,29 +1109,54 @@ impl SettingsWindow {
         page()
             .child(
                 widgets::section("Video", cx)
-                    .child(widgets::row_with("Format", None::<&str>, Slot::Hug, codecs(false, self, cx), cx))
-                    .child(widgets::row_with("Frame rate", Some("Frames per second."), Slot::Number, Input::new(&self.rec.fps), cx))
-                    .child(widgets::row_with(
+                    .child(widgets::row_full("Format", None::<&str>, Slot::Hug, codec_reset[0].take(), codecs(false, self, cx), cx))
+                    .child(self.input_row(
+                        "rec-fps-reset",
+                        "Frame rate",
+                        Some("Frames per second."),
+                        Slot::Number,
+                        &self.rec.fps,
+                        |d| &d.rec_fps,
+                        cx,
+                    ))
+                    .child(self.input_row(
+                        "rec-crf-reset",
                         "Quality",
                         Some("CRF: lower means better quality and bigger files. Leave empty for the format's default."),
                         Slot::Number,
-                        Input::new(&self.rec.crf),
+                        &self.rec.crf,
+                        |d| &d.rec_crf,
                         cx,
                     )),
             )
             .child(
                 widgets::section("GIF and animated images", cx)
-                    .child(widgets::row_with("Format", None::<&str>, Slot::Hug, codecs(true, self, cx), cx))
-                    .child(widgets::row_with("Frame rate", Some("Frames per second."), Slot::Number, Input::new(&self.rec.gif_fps), cx)),
+                    .child(widgets::row_full("Format", None::<&str>, Slot::Hug, codec_reset[1].take(), codecs(true, self, cx), cx))
+                    .child(self.input_row(
+                        "rec-gif-fps-reset",
+                        "Frame rate",
+                        Some("Frames per second."),
+                        Slot::Number,
+                        &self.rec.gif_fps,
+                        |d| &d.rec_gif_fps,
+                        cx,
+                    )),
             )
             .child(
                 widgets::section("While recording", cx)
-                    .child(self.sw("rec-cursor", "Record the mouse cursor", None, r.show_cursor, rec(|r, c| r.show_cursor = c), cx))
+                    .child(self.sw(
+                        "rec-cursor",
+                        "Record the mouse cursor",
+                        None,
+                        |s| s.defaults.recording.show_cursor,
+                        rec(|r, c| r.show_cursor = c),
+                        cx,
+                    ))
                     .child(self.sw(
                         "rec-border",
                         "Show a border around the recorded area",
                         None,
-                        r.show_border,
+                        |s| s.defaults.recording.show_border,
                         rec(|r, c| r.show_border = c),
                         cx,
                     ))
@@ -854,7 +1164,7 @@ impl SettingsWindow {
                         "rec-highlight",
                         "Highlight the mouse",
                         Some("X11 and Windows."),
-                        r.highlight_mouse,
+                        |s| s.defaults.recording.highlight_mouse,
                         rec(|r, c| r.highlight_mouse = c),
                         cx,
                     ))
@@ -862,29 +1172,35 @@ impl SettingsWindow {
                         "rec-system-audio",
                         "Record system audio",
                         None,
-                        r.record_system_audio,
+                        |s| s.defaults.recording.record_system_audio,
                         rec(|r, c| r.record_system_audio = c),
                         cx,
                     ))
-                    .child(widgets::row_with(
+                    .child(self.input_row(
+                        "rec-microphone-reset",
                         "Microphone",
                         Some("Device name. Leave empty to record no microphone."),
                         Slot::Field,
-                        Input::new(&self.rec.microphone),
+                        &self.rec.microphone,
+                        |d| &d.rec_microphone,
                         cx,
                     ))
-                    .child(widgets::row_with(
+                    .child(self.input_row(
+                        "rec-countdown-reset",
                         "Countdown",
                         Some("Seconds before recording starts."),
                         Slot::Number,
-                        Input::new(&self.rec.countdown),
+                        &self.rec.countdown,
+                        |d| &d.rec_countdown,
                         cx,
                     ))
-                    .child(widgets::row_with(
+                    .child(self.input_row(
+                        "rec-duration-reset",
                         "Stop after",
                         Some("Seconds. 0 records until you stop it."),
                         Slot::Number,
-                        Input::new(&self.rec.duration),
+                        &self.rec.duration,
+                        |d| &d.rec_duration,
                         cx,
                     )),
             )
@@ -894,11 +1210,12 @@ impl SettingsWindow {
                         "rec-camera",
                         "Show the camera over the recording",
                         None,
-                        cam.enabled,
+                        |s| s.defaults.recording.camera.enabled,
                         rec(|r, c| r.camera.enabled = c),
                         cx,
                     ))
-                    .child(widgets::row_with(
+                    .child(self.input_row(
+                        "rec-camera-device-reset",
                         "Camera",
                         Some(if cfg!(windows) {
                             "The camera's name, as Windows lists it. Leave empty for the first camera."
@@ -906,35 +1223,55 @@ impl SettingsWindow {
                             "Device name. Leave empty for the first camera."
                         }),
                         Slot::Field,
-                        Input::new(&self.rec.camera_device),
+                        &self.rec.camera_device,
+                        |d| &d.rec_camera_device,
                         cx,
                     ))
-                    .child(widgets::row_with("Shape", None::<&str>, Slot::Hug, widgets::choice("cam-shape", shapes, cx), cx))
-                    .child(widgets::row_with("Corner", None::<&str>, Slot::Hug, widgets::choice("cam-corner", corners, cx), cx))
-                    .child(widgets::row_with(
+                    .child(widgets::row_full("Shape", None::<&str>, Slot::Hug, shape_reset, widgets::choice("cam-shape", shapes, cx), cx))
+                    .child(widgets::row_full(
+                        "Corner",
+                        None::<&str>,
+                        Slot::Hug,
+                        corner_reset,
+                        widgets::choice("cam-corner", corners, cx),
+                        cx,
+                    ))
+                    .child(self.input_row(
+                        "rec-camera-size-reset",
                         "Size",
                         Some("Percent of the recording's width."),
                         Slot::Number,
-                        Input::new(&self.rec.camera_size),
+                        &self.rec.camera_size,
+                        |d| &d.rec_camera_size,
                         cx,
                     )),
             )
             .child(
                 widgets::section("Advanced", cx)
-                    .child(widgets::row_with(
+                    .child(widgets::row_full(
                         "Recorder",
                         Some("Native uses Windows' own recorder; FFmpeg works everywhere."),
                         Slot::Hug,
+                        backend_reset,
                         widgets::choice("backend", backends, cx),
                         cx,
                     ))
-                    .child(widgets::row_with("Extra FFmpeg arguments", None::<&str>, Slot::Field, Input::new(&self.rec.args), cx))
+                    .child(self.input_row(
+                        "rec-args-reset",
+                        "Extra FFmpeg arguments",
+                        None::<&str>,
+                        Slot::Field,
+                        &self.rec.args,
+                        |d| &d.rec_args,
+                        cx,
+                    ))
                     .child(self.path_row(
                         "ffmpeg-browse",
                         "FFmpeg location",
                         Some("Leave empty to find it, or download it on first use."),
                         &self.rec.ffmpeg,
                         PathPick::File(if cfg!(windows) { &["exe"] } else { &[] }),
+                        Some(|d| &d.rec_ffmpeg),
                         cx,
                     )),
             )
@@ -943,28 +1280,44 @@ impl SettingsWindow {
     fn automation(&self, cx: &mut Context<Self>) -> gpui::Div {
         use laqta_domain::capture::ScrollMethod;
         let running = cx.global::<UiState>().services.app.auto_capture_running();
-        let actions = [
+        let action_opts = [
             (Action::PrintScreen, "Entire screen"),
             (Action::ActiveMonitor, "Active monitor"),
             (Action::ActiveWindow, "Active window"),
             (Action::CustomRegion, "Custom area"),
             (Action::LastRegion, "Last area"),
-        ]
-        .into_iter()
-        .map(|(a, l)| self.opt(l, self.draft.auto_capture.action == a, move |this| this.draft.auto_capture.action = a, cx))
-        .collect();
-        let methods = [
+        ];
+        let action_reset = self.value_reset(
+            "auto-action-reset",
+            &action_opts,
+            |s| s.auto_capture.action,
+            |this, a, _| this.draft.auto_capture.action = a,
+            cx,
+        );
+        let actions = action_opts
+            .into_iter()
+            .map(|(a, l)| self.opt(l, self.draft.auto_capture.action == a, move |this| this.draft.auto_capture.action = a, cx))
+            .collect();
+        let method_opts = [
             (ScrollMethod::MouseWheel, "Mouse wheel"),
             (ScrollMethod::DownArrow, "Down arrow"),
             (ScrollMethod::PageDown, "Page Down"),
             (ScrollMethod::ScrollMessage, "Scroll command (Windows only)"),
-        ]
-        .into_iter()
-        .map(|(m, l)| {
-            let on = self.draft.defaults.capture.scrolling.method == m;
-            self.opt(l, on, move |this| this.draft.defaults.capture.scrolling.method = m, cx)
-        })
-        .collect();
+        ];
+        let method_reset = self.value_reset(
+            "scroll-method-reset",
+            &method_opts,
+            |s| s.defaults.capture.scrolling.method,
+            |this, m, _| this.draft.defaults.capture.scrolling.method = m,
+            cx,
+        );
+        let methods = method_opts
+            .into_iter()
+            .map(|(m, l)| {
+                let on = self.draft.defaults.capture.scrolling.method == m;
+                self.opt(l, on, move |this| this.draft.defaults.capture.scrolling.method = m, cx)
+            })
+            .collect();
         let toggle = widgets::pill(
             "auto-toggle",
             if running { "Stop" } else { "Start" },
@@ -984,7 +1337,7 @@ impl SettingsWindow {
         for (i, (folder, (dir, filter))) in self.draft.watch_folders.iter().zip(&self.watch).enumerate() {
             watch = watch.child(
                 entity_card(cx)
-                    .child(self.path_row(format!("wf-browse-{i}"), "Folder", None, dir, PathPick::Folder, cx))
+                    .child(self.path_row(format!("wf-browse-{i}"), "Folder", None, dir, PathPick::Folder, None, cx))
                     .child(widgets::row_with("Files", Some("Patterns such as *.png;*.jpg."), Slot::Field, Input::new(filter), cx))
                     .child(self.sw_dyn(
                         format!("wf-on-{i}"),
@@ -1047,13 +1400,30 @@ impl SettingsWindow {
         page()
             .child(
                 widgets::section("Timed capture", cx)
-                    .child(widgets::row_with("Capture", None::<&str>, Slot::Hug, widgets::choice("auto-action", actions, cx), cx))
-                    .child(widgets::row_with("Every", Some("Seconds between captures."), Slot::Number, Input::new(&self.auto_interval), cx))
-                    .child(widgets::row_with(
+                    .child(widgets::row_full(
+                        "Capture",
+                        None::<&str>,
+                        Slot::Hug,
+                        action_reset,
+                        widgets::choice("auto-action", actions, cx),
+                        cx,
+                    ))
+                    .child(self.input_row(
+                        "auto-interval-reset",
+                        "Every",
+                        Some("Seconds between captures."),
+                        Slot::Number,
+                        &self.auto_interval,
+                        |d| &d.auto_interval,
+                        cx,
+                    ))
+                    .child(self.input_row(
+                        "auto-count-reset",
                         "Stop after",
                         Some("Number of captures. 0 keeps going until you stop it."),
                         Slot::Number,
-                        Input::new(&self.auto_count),
+                        &self.auto_count,
+                        |d| &d.auto_count,
                         cx,
                     ))
                     .child(widgets::action_row(
@@ -1078,35 +1448,66 @@ impl SettingsWindow {
                         )
                         .pb(space::S2),
                     )
-                    .child(widgets::row_with("Scroll with", None::<&str>, Slot::Hug, widgets::choice("scroll-method", methods, cx), cx))
-                    .child(widgets::row_with(
+                    .child(widgets::row_full(
+                        "Scroll with",
+                        None::<&str>,
+                        Slot::Hug,
+                        method_reset,
+                        widgets::choice("scroll-method", methods, cx),
+                        cx,
+                    ))
+                    .child(self.input_row(
+                        "scroll-0-reset",
                         "Wait before the first frame",
                         Some("Milliseconds."),
                         Slot::Number,
-                        Input::new(&self.scroll[0]),
+                        &self.scroll[0],
+                        |d| &d.scroll[0],
                         cx,
                     ))
-                    .child(widgets::row_with(
+                    .child(self.input_row(
+                        "scroll-1-reset",
                         "Wait after each scroll",
                         Some("Milliseconds."),
                         Slot::Number,
-                        Input::new(&self.scroll[1]),
+                        &self.scroll[1],
+                        |d| &d.scroll[1],
                         cx,
                     ))
-                    .child(widgets::row_with("Stop after", Some("Number of scrolls."), Slot::Number, Input::new(&self.scroll[2]), cx))
-                    .child(widgets::row_with("Steps per scroll", None::<&str>, Slot::Number, Input::new(&self.scroll[3]), cx))
-                    .child(widgets::row_with(
+                    .child(self.input_row(
+                        "scroll-2-reset",
+                        "Stop after",
+                        Some("Number of scrolls."),
+                        Slot::Number,
+                        &self.scroll[2],
+                        |d| &d.scroll[2],
+                        cx,
+                    ))
+                    .child(self.input_row(
+                        "scroll-3-reset",
+                        "Steps per scroll",
+                        None::<&str>,
+                        Slot::Number,
+                        &self.scroll[3],
+                        |d| &d.scroll[3],
+                        cx,
+                    ))
+                    .child(self.input_row(
+                        "scroll-4-reset",
                         "Ignore a fixed header",
                         Some("Pixels at the top that don't scroll, like a sticky menu bar."),
                         Slot::Number,
-                        Input::new(&self.scroll[4]),
+                        &self.scroll[4],
+                        |d| &d.scroll[4],
                         cx,
                     ))
-                    .child(widgets::row_with(
+                    .child(self.input_row(
+                        "scroll-5-reset",
                         "Ignore a fixed footer",
                         Some("Pixels at the bottom that don't scroll."),
                         Slot::Number,
-                        Input::new(&self.scroll[5]),
+                        &self.scroll[5],
+                        |d| &d.scroll[5],
                         cx,
                     )),
             )
@@ -1132,6 +1533,7 @@ impl SettingsWindow {
             label,
             None::<&str>,
             on,
+            None,
             cx.listener(move |this, v: &bool, _, cx| {
                 set(this, *v);
                 cx.notify();
@@ -1258,7 +1660,10 @@ impl SettingsWindow {
                 self.opt(format!("{family} ({task})"), self.custom_family == i, move |this| this.custom_family = i, cx)
             })
             .collect();
-        let bg = [(BackgroundProvider::Local, "On this computer"), (BackgroundProvider::RemoveBg, "remove.bg")]
+        let bg_opts = [(BackgroundProvider::Local, "On this computer"), (BackgroundProvider::RemoveBg, "remove.bg")];
+        let bg_reset =
+            self.value_reset("bg-provider-reset", &bg_opts, |s| s.cloud.background, |this, b, _| this.draft.cloud.background = b, cx);
+        let bg = bg_opts
             .into_iter()
             .map(|(b, l)| self.opt(l, self.draft.cloud.background == b, move |this| this.draft.cloud.background = b, cx))
             .collect();
@@ -1276,7 +1681,7 @@ impl SettingsWindow {
         )
         .child(
             widgets::section("Background removal service", cx)
-                .child(widgets::row_with("Remove backgrounds", None::<&str>, Slot::Hug, widgets::choice("bg-provider", bg, cx), cx))
+                .child(widgets::row_full("Remove backgrounds", None::<&str>, Slot::Hug, bg_reset, widgets::choice("bg-provider", bg, cx), cx))
                 .child(widgets::row_with("remove.bg API key", Some("Only needed for remove.bg."), Slot::Field, Input::new(&self.cloud[4]), cx)),
         )
         .child(
@@ -1288,9 +1693,9 @@ impl SettingsWindow {
                     )
                     .pb(space::S2),
                 )
-                .child(widgets::row_with("Service address", Some("The base URL, such as http://localhost:11434/v1."), Slot::Field, Input::new(&self.cloud[0]), cx))
-                .child(widgets::row_with("Model", None::<&str>, Slot::Field, Input::new(&self.cloud[1]), cx))
-                .child(widgets::row_with("Prompt", None::<&str>, Slot::Field, Input::new(&self.cloud[2]), cx))
+                .child(self.input_row("cloud-0-reset", "Service address", Some("The base URL, such as http://localhost:11434/v1."), Slot::Field, &self.cloud[0], |d| &d.cloud[0], cx))
+                .child(self.input_row("cloud-1-reset", "Model", None::<&str>, Slot::Field, &self.cloud[1], |d| &d.cloud[1], cx))
+                .child(self.input_row("cloud-2-reset", "Prompt", None::<&str>, Slot::Field, &self.cloud[2], |d| &d.cloud[2], cx))
                 .child(widgets::row_with("API key", Some("Leave empty for local servers."), Slot::Field, Input::new(&self.cloud[3]), cx)),
         )
     }
@@ -1391,6 +1796,7 @@ impl SettingsWindow {
                     "Laqta starts in the tray. Applies now."
                 }),
                 on,
+                None,
                 cx.listener(|this, c: &bool, _, cx| {
                     let services = cx.global::<UiState>().services.clone();
                     let r = std::env::current_exe()
@@ -1470,6 +1876,7 @@ impl SettingsWindow {
         )
     }
     fn data(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let changed = settings_reset::changed(Scope::All, &self.draft, &self.defaults);
         let two = |a: AnyElement, b: AnyElement| div().flex().gap(space::S2).child(a).child(b);
         page()
             .child(
@@ -1505,6 +1912,17 @@ impl SettingsWindow {
                         cx,
                     )),
             )
+            .child(widgets::section("Reset", cx).child(widgets::action_row(
+                "Reset all settings",
+                Some(if changed == 0 {
+                    "Every setting is at its default.".to_owned()
+                } else {
+                    format!("Puts {changed} changed settings back to their defaults. Accounts, custom uploaders, effect presets, watch folders, history and the shortcuts and models you added stay.")
+                }),
+                widgets::pill("reset-all", "Reset all…", Pill::Default, false, cx.listener(|this, _, window, cx| this.confirm_reset(Scope::All, window, cx)), cx)
+                    .when(changed == 0, |p| p.opacity(0.5)),
+                cx,
+            )))
     }
     fn import_sharex_config(&mut self, folder: bool, cx: &mut Context<Self>) {
         let services = cx.global::<UiState>().services.clone();
@@ -1572,8 +1990,8 @@ impl SettingsWindow {
                 DestKind::Sharer => u.url_sharer.clone(),
             };
             let choices: Vec<(String, String)> = match kind {
-                DestKind::Shortener => present::shortener_choices(&destinations, &self.draft.hosts),
-                DestKind::Sharer => present::SHARERS.iter().map(|(id, n)| (id.to_string(), n.to_string())).collect(),
+                DestKind::Shortener => present::shortener_choices(&services.uploaders.custom_shortener_list(), &self.draft.hosts),
+                DestKind::Sharer => present::sharer_choices(&services.uploaders.custom_sharer_list()),
                 _ => destinations.clone(),
             };
             let opts = choices
@@ -1616,19 +2034,23 @@ impl SettingsWindow {
             ));
         }
         after = after
-            .child(widgets::row_with(
+            .child(self.input_row(
+                "clipboard-format-reset",
                 "Copied text",
                 Some("What “Copy the link” puts on the clipboard. $url is the link; $shorturl and $deletionurl also work."),
                 Slot::Field,
-                Input::new(&self.clipboard_format),
+                &self.clipboard_format,
+                |d| &d.clipboard_format,
                 cx,
             ))
             .child(widgets::row_with("Format", None::<&str>, Slot::Hug, self.clipboard_presets(cx), cx))
-            .child(widgets::row_with(
+            .child(self.input_row(
+                "retries-reset",
                 "Retries",
                 Some("How many times to retry after a network error."),
                 Slot::Number,
-                Input::new(&self.retries),
+                &self.retries,
+                |d| &d.retries,
                 cx,
             ));
         let mut accounts = widgets::section("Accounts", cx);
@@ -1685,7 +2107,7 @@ impl SettingsWindow {
                 "upload-after-capture",
                 "Upload after capture",
                 Some("Sends each capture to the image destination below."),
-                self.draft.defaults.after_capture.contains(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST),
+                |s| s.defaults.after_capture.contains(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST),
                 |this, v| this.draft.defaults.after_capture.set(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST, v),
                 cx,
             )))
@@ -1836,42 +2258,80 @@ impl SettingsWindow {
                 )
             })
             .collect();
-        let exists = [
+        let exists_opts = [
             (FileExistsAction::AppendNumber, "Add a number"),
             (FileExistsAction::Overwrite, "Overwrite"),
             (FileExistsAction::Skip, "Skip"),
-        ]
-        .into_iter()
-        .map(|(a, l)| self.opt(l, self.draft.defaults.image.file_exists == a, move |this| this.draft.defaults.image.file_exists = a, cx))
-        .collect();
+        ];
+        let exists_reset = self.value_reset(
+            "exists-reset",
+            &exists_opts,
+            |s| s.defaults.image.file_exists,
+            |this, a, _| this.draft.defaults.image.file_exists = a,
+            cx,
+        );
+        let format_opts = ImageFormat::ALL.map(|f| (f, present::format_label(f)));
+        let format_reset = self.value_reset(
+            "format-reset",
+            &format_opts,
+            |s| s.defaults.image.format,
+            |this, f, _| this.draft.defaults.image.format = f,
+            cx,
+        );
+        let exists = exists_opts
+            .into_iter()
+            .map(|(a, l)| {
+                self.opt(l, self.draft.defaults.image.file_exists == a, move |this| this.draft.defaults.image.file_exists = a, cx)
+            })
+            .collect();
         page()
             .child(
                 widgets::section("Format", cx)
-                    .child(widgets::row_with("Save as", None::<&str>, Slot::Field, widgets::dropdown("format", formats, cx), cx))
-                    .child(widgets::row_with(
+                    .child(widgets::row_full(
+                        "Save as",
+                        None::<&str>,
+                        Slot::Field,
+                        format_reset,
+                        widgets::dropdown("format", formats, cx),
+                        cx,
+                    ))
+                    .child(self.input_row(
+                        "jpeg-quality-reset",
                         "JPEG quality",
                         Some("1 to 100. Higher looks better and makes bigger files."),
                         Slot::Number,
-                        Input::new(&self.jpeg_quality),
+                        &self.jpeg_quality,
+                        |d| &d.jpeg_quality,
                         cx,
                     ))
-                    .child(widgets::row_with(
+                    .child(self.input_row(
+                        "auto-jpeg-reset",
                         "Switch to JPEG above",
                         Some("Kilobytes. A PNG bigger than this is saved as JPEG instead. Leave empty to never switch."),
                         Slot::Number,
-                        Input::new(&self.auto_jpeg),
+                        &self.auto_jpeg,
+                        |d| &d.auto_jpeg,
                         cx,
                     ))
-                    .child(widgets::row_with("If the file exists", None::<&str>, Slot::Hug, widgets::choice("exists", exists, cx), cx)),
+                    .child(widgets::row_full(
+                        "If the file exists",
+                        None::<&str>,
+                        Slot::Hug,
+                        exists_reset,
+                        widgets::choice("exists", exists, cx),
+                        cx,
+                    )),
             )
             .child(
                 widgets::section("Thumbnails", cx)
-                    .child(widgets::row_with("Width", Some("Pixels."), Slot::Number, Input::new(&self.thumb_w), cx))
-                    .child(widgets::row_with(
+                    .child(self.input_row("thumb-w-reset", "Width", Some("Pixels."), Slot::Number, &self.thumb_w, |d| &d.thumb_w, cx))
+                    .child(self.input_row(
+                        "thumb-h-reset",
                         "Height",
                         Some("Pixels. 0 keeps the aspect ratio."),
                         Slot::Number,
-                        Input::new(&self.thumb_h),
+                        &self.thumb_h,
+                        |d| &d.thumb_h,
                         cx,
                     )),
             )
@@ -1881,27 +2341,28 @@ impl SettingsWindow {
         let (now, host) = (services.clock.now(), services.host.clone());
         let preview = |input: &Entity<InputState>, cx: &App| present::name_preview(&Self::value(input, cx), now, &host);
         let (p1, p2, p3) = (preview(&self.pattern, cx), preview(&self.window_pattern, cx), preview(&self.subfolder, cx));
+        let muted = cx.theme().muted_foreground;
         let token = |group: &'static str, items: &'static str| {
             div()
                 .flex()
                 .gap(space::S3)
                 .py(px(6.))
                 .child(div().w(px(140.)).flex_none().text_size(text::LABEL).font_weight(FontWeight::MEDIUM).child(group))
-                .child(div().flex_1().min_w_0().text_size(text::LABEL).text_color(cx.theme().muted_foreground).child(items))
+                .child(div().flex_1().min_w_0().text_size(text::LABEL).text_color(muted).child(items))
         };
         page()
             .child(
                 widgets::section("Names", cx)
-                    .child(widgets::row_with("File name", Some(format!("Preview: {p1}")), Slot::Field, Input::new(&self.pattern), cx))
-                    .child(widgets::row_with("File name for window captures", Some(format!("Preview: {p2}")), Slot::Field, Input::new(&self.window_pattern), cx))
-                    .child(widgets::row_with("Subfolder", Some(format!("Preview: {p3}")), Slot::Field, Input::new(&self.subfolder), cx)),
+                    .child(self.input_row("pattern-reset", "File name", Some(format!("Preview: {p1}")), Slot::Field, &self.pattern, |d| &d.pattern, cx))
+                    .child(self.input_row("window-pattern-reset", "File name for window captures", Some(format!("Preview: {p2}")), Slot::Field, &self.window_pattern, |d| &d.window_pattern, cx))
+                    .child(self.input_row("subfolder-reset", "Subfolder", Some(format!("Preview: {p3}")), Slot::Field, &self.subfolder, |d| &d.subfolder, cx)),
             )
             .child(
                 widgets::section("Tokens you can use", cx)
                     .child(token("Date and time", "%y year · %mo month · %d day · %h hour · %mi minute · %s second · %ms millisecond · %unix Unix time · also %yy %mon %mon2 %pm %w %w2 %wy"))
                     .child(token("Window", "%t window title · %pn process name"))
-                    .child(token("Counter", "%i · also %ia %iAa %ib %ix"))
-                    .child(token("Random", "%rn number · %ra letters and digits · %guid · %radjective · %ranimal · %remoji · also %rna %rx %rf"))
+                    .child(token("Counter", "%i · also %ia %iA %iAa %iaA %ix %iX %ib{base,digits} %iB{base,digits}"))
+                    .child(token("Random", "%rn number · %ra letters and digits · %guid · %radjective · %ranimal · %remoji · also %rna %rx %rX %GUID %rf{file} (a random line of a text file)"))
                     .child(token("Image and system", "%width · %height · %un user name · %cn computer name · also %uln %n"))
                     .child(widgets::muted("Add {n} to repeat a random token or pad a counter, for example %rn{4}.", cx).pt(space::S2)),
             )
@@ -1912,18 +2373,18 @@ impl SettingsWindow {
         page()
             .child(
                 widgets::section("Capture", cx)
-                    .child(widgets::row_with(
+                    .child(self.input_row("delay-reset", 
                         "Delay",
                         Some("Milliseconds to wait before capturing."),
                         Slot::Number,
-                        Input::new(&self.delay),
+                        &self.delay, |d| &d.delay,
                         cx,
                     ))
                     .child(self.sw(
                         "cursor",
                         "Show the mouse cursor",
                         None,
-                        c.show_cursor,
+                        |s| s.defaults.capture.show_cursor,
                         |this, v| this.draft.defaults.capture.show_cursor = v,
                         cx,
                     ))
@@ -1931,7 +2392,7 @@ impl SettingsWindow {
                         "transparent",
                         "Keep window transparency",
                         Some("Keeps rounded corners and shadows when capturing a window."),
-                        c.transparent_window,
+                        |s| s.defaults.capture.transparent_window,
                         |this, v| this.draft.defaults.capture.transparent_window = v,
                         cx,
                     )),
@@ -1942,7 +2403,7 @@ impl SettingsWindow {
                         "tools-after-select",
                         "Show tools after selecting",
                         Some("Keep the selection open with drawing tools and Copy, Save, Pin and Copy text. Off: capture as soon as you release the mouse. Space hides the tools."),
-                        r.show_tools_after_select,
+                        |s| s.defaults.capture.region.show_tools_after_select,
                         |this, v| this.draft.defaults.capture.region.show_tools_after_select = v,
                         cx,
                     ))
@@ -1950,7 +2411,7 @@ impl SettingsWindow {
                         "mode-bar",
                         "Show the mode bar",
                         Some("The bar at the top of the screen: screenshot or video, full screen, monitor, edit after capture, colour picker and text capture."),
-                        r.show_mode_bar,
+                        |s| s.defaults.capture.region.show_mode_bar,
                         |this, v| this.draft.defaults.capture.region.show_mode_bar = v,
                         cx,
                     ))
@@ -1958,7 +2419,7 @@ impl SettingsWindow {
                         "multi",
                         "Allow several regions",
                         Some("Select more than one area in one capture."),
-                        r.multi_region,
+                        |s| s.defaults.capture.region.multi_region,
                         |this, v| this.draft.defaults.capture.region.multi_region = v,
                         cx,
                     ))
@@ -1966,7 +2427,7 @@ impl SettingsWindow {
                         "snap",
                         "Snap to windows",
                         None,
-                        r.snap_to_windows,
+                        |s| s.defaults.capture.region.snap_to_windows,
                         |this, v| this.draft.defaults.capture.region.snap_to_windows = v,
                         cx,
                     ))
@@ -1974,7 +2435,7 @@ impl SettingsWindow {
                         "regions",
                         "Detect regions inside windows",
                         Some("Hover a sidebar, panel or text box to select just that part. Scroll to grow to the enclosing one."),
-                        r.detect_regions,
+                        |s| s.defaults.capture.region.detect_regions,
                         |this, v| this.draft.defaults.capture.region.detect_regions = v,
                         cx,
                     ))
@@ -1982,7 +2443,7 @@ impl SettingsWindow {
                         "magnifier",
                         "Show the magnifier",
                         None,
-                        r.show_magnifier,
+                        |s| s.defaults.capture.region.show_magnifier,
                         |this, v| this.draft.defaults.capture.region.show_magnifier = v,
                         cx,
                     ))
@@ -1990,7 +2451,7 @@ impl SettingsWindow {
                         "crosshair",
                         "Show crosshair lines",
                         None,
-                        r.show_crosshair,
+                        |s| s.defaults.capture.region.show_crosshair,
                         |this, v| this.draft.defaults.capture.region.show_crosshair = v,
                         cx,
                     ))
@@ -1998,7 +2459,7 @@ impl SettingsWindow {
                         "info",
                         "Show position and colour",
                         None,
-                        r.show_info,
+                        |s| s.defaults.capture.region.show_info,
                         |this, v| this.draft.defaults.capture.region.show_info = v,
                         cx,
                     ))
@@ -2027,18 +2488,18 @@ impl SettingsWindow {
             )
             .child(
                 widgets::section("Fixed areas", cx)
-                    .child(widgets::row_with(
+                    .child(self.input_row("custom-region-reset", 
                         "Custom area",
                         Some("x, y, width, height in pixels, used by “Capture custom region”."),
                         Slot::Field,
-                        Input::new(&self.custom_region),
+                        &self.custom_region, |d| &d.custom_region,
                         cx,
                     ))
-                    .child(widgets::row_with(
+                    .child(self.input_row("window-title-reset", 
                         "Window title",
                         Some("Used by “Capture window by title”."),
                         Slot::Field,
-                        Input::new(&self.window_title),
+                        &self.window_title, |d| &d.window_title,
                         cx,
                     )),
             )
@@ -2074,6 +2535,45 @@ impl SettingsWindow {
     }
 
     /// One key press while row `recording` listens.
+    /// Starts the special-key hook while a row records, and stops it when recording ends.
+    fn sync_key_hook(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        (cx.global::<UiState>().services.hold_hotkeys)(self.recording.is_some());
+        if self.recording.is_none() {
+            self.key_hook = None;
+            return;
+        }
+        if self.key_hook.is_some() {
+            return;
+        }
+        let Some(record_keys) = cx.global::<UiState>().services.record_keys.clone() else { return };
+        let (tx, mut rx) = futures_channel::mpsc::unbounded::<KeyChord>();
+        self.key_hook = record_keys(std::sync::Arc::new(move |chord| {
+            let _ = tx.unbounded_send(chord);
+        }));
+        if self.key_hook.is_none() {
+            return;
+        }
+        cx.spawn_in(window, async move |this, cx| {
+            use futures_lite::StreamExt as _;
+            while let Some(chord) = rx.next().await {
+                if this.update_in(cx, |this, window, cx| this.recorded_chord(chord, window, cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// A chord the special-key hook caught for the recording row.
+    fn recorded_chord(&mut self, chord: KeyChord, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(i) = self.recording else { return };
+        self.set_hotkey(i, Some(chord), window, cx);
+        self.recording = None;
+        self.rec_error = None;
+        self.sync_key_hook(window, cx);
+        cx.notify();
+    }
+
     fn record_key(&mut self, ev: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         use crate::presenters::hotkeys::{Mods, Recorded, record};
         let Some(i) = self.recording else { return };
@@ -2095,8 +2595,16 @@ impl SettingsWindow {
                 self.rec_error = None;
             }
             Recorded::Waiting => {}
-            Recorded::Unusable => self.rec_error = Some("That key can't be a global shortcut. Try a letter, a number, F1–F12 or PrtSc."),
+            Recorded::Unusable if self.key_hook.is_some() => {
+                // The special-key hook reports keys the window can't name (Windows).
+            }
+            Recorded::Unusable => {
+                self.rec_error = Some(
+                    "That key can't be a global shortcut. Try a letter, a number, F1–F12 or PrtSc. Apps never see the Fn key: Fn and a key arrive as some other key, and this one isn't supported.",
+                )
+            }
         }
+        self.sync_key_hook(window, cx);
         cx.stop_propagation();
         cx.notify();
     }
@@ -2113,9 +2621,11 @@ impl SettingsWindow {
         let t = cx.theme().clone();
         let x = crate::theme::extra(cx);
         let recording = self.recording == Some(i);
-        let bad = matches!(status, RowStatus::Conflict(_) | RowStatus::Failed(_));
+        let bad = matches!(status, RowStatus::Conflict(_) | RowStatus::Failed(_) | RowStatus::NoKey);
+        let chip_id = format!("wf-key-{i}");
         let mut chip = div()
-            .id(SharedString::from(format!("wf-key-{i}")))
+            .id(SharedString::from(chip_id.clone()))
+            .debug_selector(move || chip_id)
             .h(px(32.))
             .min_w(px(150.))
             .px(space::S2)
@@ -2163,6 +2673,7 @@ impl SettingsWindow {
             this.recording = Some(i);
             this.rec_error = None;
             window.focus(&this.rec_focus, cx);
+            this.sync_key_hook(window, cx);
             cx.notify();
         }))
         .into_any_element()
@@ -2174,6 +2685,12 @@ impl SettingsWindow {
         let x = crate::theme::extra(cx);
         let report = (cx.global::<UiState>().services.hotkey_report)();
         let off = self.draft.disable_hotkeys;
+        let rows: Vec<(String, Option<KeyChord>, bool)> =
+            self.draft.workflows.iter().map(|w| (w.name.clone(), w.hotkey, w.enabled)).collect();
+        let statuses = row_status(&rows, &report.registered, &report.failed, &report.system_keys);
+        // The desktop told which keys it uses (KDE): it keeps the keys saved in its own settings.
+        let desktop_keys = !report.system_keys.is_empty();
+        let configure = cx.global::<UiState>().services.configure_shortcuts.clone().filter(|_| desktop_keys);
 
         // Whether shortcuts can work here at all, in one line, with the switch beside it.
         let (tone, headline, detail): (Tone, String, String) = if off {
@@ -2191,11 +2708,13 @@ impl SettingsWindow {
         } else if report.pending {
             (Tone::Busy, "Registering shortcuts…".into(), "The desktop may ask you to confirm them the first time.".into())
         } else {
-            let n = report.registered.len();
+            let n = statuses.iter().filter(|s| matches!(s, RowStatus::Active | RowStatus::DesktopKey(_))).count();
             (
                 Tone::Success,
                 format!("{n} shortcut{} active", if n == 1 { "" } else { "s" }),
-                if cfg!(target_os = "linux") {
+                if desktop_keys {
+                    "They work in every app. Your desktop keeps the keys saved in its own shortcut settings, so change keys there; Laqta shows the key it uses.".into()
+                } else if cfg!(target_os = "linux") {
                     "They work in every app. Changes apply when you save; KDE may ask you to confirm new ones.".into()
                 } else {
                     "They work in every app. Changes apply when you save.".into()
@@ -2218,15 +2737,26 @@ impl SettingsWindow {
                         .child(widgets::badge(headline, tone, cx))
                         .child(widgets::muted(detail, cx)),
                 )
+                .when_some(configure, |d, configure| {
+                    d.child(widgets::pill(
+                        "open-desktop-shortcuts",
+                        "Open shortcut settings",
+                        Pill::Default,
+                        true,
+                        // The portal round trip can take seconds: keep it off the UI thread.
+                        move |_, _, cx| {
+                            let configure = configure.clone();
+                            cx.background_spawn(async move { configure() }).detach();
+                        },
+                        cx,
+                    ))
+                })
                 .child(Switch::new("hotkeys-on").checked(!off).on_click(cx.listener(|this, v: &bool, _, cx| {
                     this.draft.disable_hotkeys = !*v;
                     cx.notify();
                 }))),
         );
 
-        let rows: Vec<(String, Option<KeyChord>, bool)> =
-            self.draft.workflows.iter().map(|w| (w.name.clone(), w.hotkey, w.enabled)).collect();
-        let statuses = row_status(&rows, &report.registered, &report.failed);
         let mut list = div().flex().flex_col().rounded(crate::theme::radius::CARD).border_1().border_color(x.ring).overflow_hidden();
         if self.draft.workflows.is_empty() {
             list = list.child(widgets::empty_state(
@@ -2243,8 +2773,45 @@ impl SettingsWindow {
                 RowStatus::Pending => (Some(t.muted_foreground), Some("Not active yet: save to apply.".into())),
                 RowStatus::Conflict(why) => (Some(t.danger), Some(why.clone())),
                 RowStatus::Failed(why) => (Some(t.danger), Some(format!("The system refused it: {why}"))),
+                RowStatus::DesktopKey(key) => {
+                    (Some(t.warning), Some(format!("Your desktop uses {key} for this. Change it in the desktop's shortcut settings.")))
+                }
+                RowStatus::NoKey => (
+                    Some(t.danger),
+                    Some("Your desktop gave this shortcut no key, so it won't work. Set one in the desktop's shortcut settings.".into()),
+                ),
                 RowStatus::Disabled | RowStatus::Unset => (None, None),
             };
+            // Windows gives bare Print Screen to Snipping Tool: offer to switch that off.
+            let free = cx.global::<UiState>().services.free_print_screen.clone();
+            let snipping_fix = free
+                .filter(|_| {
+                    matches!(st, RowStatus::Failed(_))
+                        && w.hotkey.is_some_and(|c| c.key == laqta_domain::hotkey::Key::PrintScreen && c.is_bare())
+                })
+                .map(|free| {
+                    widgets::pill(
+                        SharedString::from(format!("wf-prtsc-{i}")),
+                        "Let Laqta use Print Screen",
+                        Pill::Default,
+                        true,
+                        cx.listener(move |this, _, _, cx| {
+                            let services = cx.global::<UiState>().services.clone();
+                            this.message = Some(match free() {
+                                // Saving the stored settings registers the shortcuts again.
+                                Ok(()) => match (services.save_settings)(services.app.settings()) {
+                                    Ok(()) => {
+                                        (true, "Print Screen now goes to Laqta. Windows' own setting comes back if you uninstall.".into())
+                                    }
+                                    Err(e) => (false, format!("Couldn't register the shortcuts again: {e}")),
+                                },
+                                Err(e) => (false, format!("Couldn't change the Windows setting: {e}")),
+                            });
+                            cx.notify();
+                        }),
+                        cx,
+                    )
+                });
             let recording_here = self.recording == Some(i);
             let note = if recording_here {
                 Some(self.rec_error.unwrap_or("Press the keys, Esc to keep the old shortcut, Backspace to remove it.").to_owned())
@@ -2252,6 +2819,25 @@ impl SettingsWindow {
                 note
             };
             let overriding = w.patch.after_capture.is_some();
+            let hidden = present::hidden_override_labels(&w.patch);
+            let reset = settings_reset::default_workflow(w, &self.defaults)
+                .filter(|_| settings_reset::shortcut_changed(w, &self.defaults))
+                .map(|d| {
+                    let (hotkey, enabled) = (d.hotkey, d.enabled);
+                    let key =
+                        hotkey.map_or_else(|| "none".to_owned(), |c| crate::presenters::hotkeys::keycaps(c, crate::host_os()).join("+"));
+                    widgets::Reset::new(
+                        SharedString::from(format!("wf-reset-{i}")),
+                        format!("Reset to default ({key})"),
+                        cx.listener(move |this, _, window, cx| {
+                            this.set_hotkey(i, hotkey, window, cx);
+                            if let Some(w) = this.draft.workflows.get_mut(i) {
+                                w.enabled = enabled;
+                            }
+                            cx.notify();
+                        }),
+                    )
+                });
             let row = div()
                 .flex()
                 .flex_col()
@@ -2284,13 +2870,16 @@ impl SettingsWindow {
                                         if overriding {
                                             parts.push("Own after-capture steps".to_owned());
                                         }
+                                        if !hidden.is_empty() {
+                                            parts.push(format!("Own settings: {}", hidden.join(", ")));
+                                        }
                                         (!parts.is_empty()).then(|| parts.join(" · "))
                                     },
                                     |d, sub| d.child(div().pl(px(8.)).text_size(text::SMALL).text_color(t.muted_foreground).child(sub)),
                                 ),
                         )
                         .when_some(dot, |d, c| d.child(div().size(px(8.)).flex_none().rounded(crate::theme::radius::PILL).bg(c)))
-                        .child(self.shortcut_chip(i, w.hotkey, &st, cx))
+                        .child(widgets::with_reset(reset, self.shortcut_chip(i, w.hotkey, &st, cx), cx))
                         .child(Switch::new(SharedString::from(format!("wf-en-{i}"))).checked(w.enabled).on_click(cx.listener(
                             move |this, v: &bool, _, cx| {
                                 if let Some(w) = this.draft.workflows.get_mut(i) {
@@ -2303,42 +2892,56 @@ impl SettingsWindow {
                             SharedString::from(format!("wf-more-{i}")),
                             "",
                             IconName::Ellipsis,
-                            vec![
+                            std::iter::once(widgets::Choice::new(
+                                if overriding { "Use the default after-capture steps" } else { "Give it its own after-capture steps" },
+                                false,
+                                cx.listener(move |this, _, _, cx| {
+                                    let defaults = this.draft.defaults.after_capture;
+                                    if let Some(w) = this.draft.workflows.get_mut(i) {
+                                        w.patch.after_capture = if w.patch.after_capture.is_some() { None } else { Some(defaults) };
+                                    }
+                                    cx.notify();
+                                }),
+                            ))
+                            .chain((!hidden.is_empty()).then(|| {
                                 widgets::Choice::new(
-                                    if overriding { "Use the default after-capture steps" } else { "Give it its own after-capture steps" },
+                                    format!("Use the default settings for {}", hidden.join(", ")),
                                     false,
                                     cx.listener(move |this, _, _, cx| {
-                                        let defaults = this.draft.defaults.after_capture;
                                         if let Some(w) = this.draft.workflows.get_mut(i) {
-                                            w.patch.after_capture = if w.patch.after_capture.is_some() { None } else { Some(defaults) };
+                                            present::clear_hidden_overrides(&mut w.patch);
                                         }
                                         cx.notify();
                                     }),
-                                ),
-                                widgets::Choice::new(
-                                    "Remove shortcut",
-                                    false,
-                                    cx.listener(move |this, _, window, cx| {
-                                        if this.collect(cx).is_ok() && i < this.draft.workflows.len() {
-                                            this.draft.workflows.remove(i);
-                                            this.recording = None;
-                                            this.rebuild_workflow_inputs(window, cx);
-                                        }
-                                        cx.notify();
-                                    }),
-                                ),
-                            ],
+                                )
+                            }))
+                            .chain(std::iter::once(widgets::Choice::new(
+                                "Remove shortcut",
+                                false,
+                                cx.listener(move |this, _, window, cx| {
+                                    if this.collect(cx).is_ok() && i < this.draft.workflows.len() {
+                                        this.draft.workflows.remove(i);
+                                        this.recording = None;
+                                        this.sync_key_hook(window, cx);
+                                        this.rebuild_workflow_inputs(window, cx);
+                                    }
+                                    cx.notify();
+                                }),
+                            )))
+                            .collect(),
                         )),
                 )
                 .when_some(note, |d, n| {
-                    let danger =
-                        matches!(st, RowStatus::Conflict(_) | RowStatus::Failed(_)) || (recording_here && self.rec_error.is_some());
+                    let danger = matches!(st, RowStatus::Conflict(_) | RowStatus::Failed(_) | RowStatus::NoKey)
+                        || (recording_here && self.rec_error.is_some());
                     d.child(div().pl(px(48.)).child(widgets::notice(n, !danger, cx)))
-                });
+                })
+                .when_some(snipping_fix, |d, button| d.child(div().pl(px(48.)).child(button)));
             let row = match w.patch.after_capture {
                 Some(flags) => row.child(div().pl(px(48.)).child(self.after_capture_list(
                     &format!("wf-{i}"),
                     flags,
+                    None,
                     move |this, flag, on| {
                         if let Some(Some(f)) = this.draft.workflows.get_mut(i).map(|w| w.patch.after_capture.as_mut()) {
                             f.set(flag, on);
@@ -2390,6 +2993,7 @@ impl SettingsWindow {
                         this.recording = Some(this.draft.workflows.len() - 1);
                         this.rec_error = None;
                         window.focus(&this.rec_focus, cx);
+                        this.sync_key_hook(window, cx);
                     }
                     cx.notify();
                 }),
@@ -2410,8 +3014,11 @@ impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut nav = div().w(px(232.)).flex_none().flex().flex_col().gap(px(2.)).p(space::S3).pt(space::S1);
         for (page, label, glyph) in PAGES {
-            let listener = cx.listener(move |this, _, _, cx| {
+            let listener = cx.listener(move |this, _, window, cx| {
                 this.page = page;
+                // Leaving the page ends a recording, so the global shortcuts work again.
+                this.recording = None;
+                this.sync_key_hook(window, cx);
                 cx.notify();
             });
             nav = nav.child(widgets::nav_row(SharedString::from(format!("nav-{label}")), glyph, label, self.page == page, listener, cx));
@@ -2421,7 +3028,13 @@ impl Render for SettingsWindow {
             Page::General => self.general(cx),
             Page::AfterCapture => {
                 let flags = self.draft.defaults.after_capture;
-                self.after_capture_list("ac", flags, |this, f, on| this.draft.defaults.after_capture.set(f, on), cx)
+                self.after_capture_list(
+                    "ac",
+                    flags,
+                    Some(self.defaults.defaults.after_capture),
+                    |this, f, on| this.draft.defaults.after_capture.set(f, on),
+                    cx,
+                )
             }
             Page::Image => self.image(cx),
             Page::Naming => self.naming(cx),
@@ -2467,7 +3080,14 @@ impl Render for SettingsWindow {
                         .pb(space::S10)
                         .flex()
                         .flex_col()
-                        .child(widgets::settings_header(title, description, cx))
+                        .child(
+                            div()
+                                .flex()
+                                .items_start()
+                                .gap(space::S4)
+                                .child(widgets::settings_header(title, description, cx).flex_1().min_w_0())
+                                .children(self.page_reset(cx)),
+                        )
                         .child(content),
                 ),
             )
@@ -2496,6 +3116,23 @@ fn entity_card(cx: &App) -> gpui::Div {
     div().flex().flex_col().gap(px(2.)).px(space::S5).py(space::S4).rounded(crate::theme::radius::CARD).border_1().border_color(x.ring)
 }
 
+/// The settings a page's "Reset page" covers; `None` for pages without one.
+fn page_scope(page: Page) -> Option<Scope> {
+    Some(match page {
+        Page::General => Scope::General,
+        Page::AfterCapture => Scope::AfterCapture,
+        Page::Image => Scope::Image,
+        Page::Naming => Scope::Naming,
+        Page::Capture => Scope::Capture,
+        Page::Workflows => Scope::Shortcuts,
+        Page::Uploads => Scope::Uploads,
+        Page::Recording => Scope::Recording,
+        Page::Automation => Scope::Automation,
+        Page::Models => Scope::Models,
+        Page::Integration | Page::Data => return None,
+    })
+}
+
 /// Each page's title and the one line that says what it is for.
 fn page_header(page: Page) -> (&'static str, &'static str) {
     match page {
@@ -2512,10 +3149,6 @@ fn page_header(page: Page) -> (&'static str, &'static str) {
         Page::Integration => ("Integration", "Start-up, the file manager menu and the browser extension."),
         Page::Data => ("Backup and import", "Back up your settings or bring them over from ShareX."),
     }
-}
-
-fn path_text(p: &Option<std::path::PathBuf>) -> String {
-    p.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
 }
 
 /// "x, y, width, height" → a rect; empty → None.

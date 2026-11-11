@@ -29,6 +29,9 @@ pub struct HistoryItem {
     pub url: Option<String>,
     pub thumbnail_url: Option<String>,
     pub deletion_url: Option<String>,
+    /// The shortened link, when the upload was also shortened.
+    #[serde(default)]
+    pub short_url: Option<String>,
     pub host: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -48,6 +51,9 @@ pub struct NewHistoryItem {
     pub url: Option<String>,
     pub thumbnail_url: Option<String>,
     pub deletion_url: Option<String>,
+    /// The shortened link, when the upload was also shortened.
+    #[serde(default)]
+    pub short_url: Option<String>,
     pub host: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,

@@ -209,11 +209,8 @@ fn add_custom_rejects_files_it_cannot_register() {
         "no DestinationType"
     );
     assert!(
-        matches!(
-            registry.add_custom(r#"{"Name": "X", "RequestURL": "https://x", "DestinationType": "UrlSharingService"}"#),
-            Err(SxcuError::Unsupported(_))
-        ),
-        "a sharing type has no registry map"
+        registry.add_custom(r#"{"Name": "X", "RequestURL": "https://x", "DestinationType": "UrlSharingService"}"#).is_ok(),
+        "a sharing type registers as a sharer"
     );
     assert_eq!(registry.destination_ids().len(), 24, "nothing was added");
 }

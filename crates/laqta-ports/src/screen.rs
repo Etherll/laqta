@@ -4,9 +4,18 @@ use laqta_domain::{Bitmap, Frame};
 use crate::{BoxFuture, PortError};
 
 /// Options a capture honours where the platform can.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureRequest {
     pub show_cursor: bool,
+    /// HDR screens: Laqta tonemaps the HDR desktop to SDR itself (true), or takes the SDR copy the
+    /// OS makes (false). Only the Windows adapter reads it.
+    pub hdr_tonemap: bool,
+}
+
+impl Default for CaptureRequest {
+    fn default() -> Self {
+        CaptureRequest { show_cursor: false, hdr_tonemap: true }
+    }
 }
 
 pub trait ScreenSource: Send + Sync {

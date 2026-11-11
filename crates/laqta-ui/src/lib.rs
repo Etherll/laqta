@@ -13,6 +13,7 @@ pub(crate) const APP_ID: &str = "io.github.etherll.Laqta";
 mod actions_toolbar;
 mod assets;
 mod chrome;
+mod close_guard;
 mod color_window;
 mod editor_window;
 mod effects_window;

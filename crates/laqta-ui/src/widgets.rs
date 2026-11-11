@@ -62,6 +62,19 @@ pub(crate) fn row_with(
     control: impl IntoElement,
     cx: &App,
 ) -> Div {
+    row_full(label, description, slot, None, control, cx)
+}
+
+/// A settings row whose "Reset to default" button sits just left of the control's slot, so the
+/// control keeps its width (only pass `reset` while the value differs from its default).
+pub(crate) fn row_full(
+    label: impl Into<SharedString>,
+    description: Option<impl Into<SharedString>>,
+    slot: Slot,
+    reset: Option<Reset>,
+    control: impl IntoElement,
+    cx: &App,
+) -> Div {
     let t = cx.theme();
     let mut text_col = div()
         .flex_1()
@@ -86,20 +99,74 @@ pub(crate) fn row_with(
         .min_h(px(52.))
         .py(px(8.))
         .child(text_col)
+        .children(reset.map(|r| reset_button(r, cx)))
         .child(slot_el.flex_none().flex().justify_end().child(control))
 }
 
-/// A row whose control is a switch, toggled from the whole row.
+/// A row whose control is a switch, toggled from the whole row. `reset` shows the "Reset to
+/// default" button beside the switch (only pass it while the value differs from its default).
 pub(crate) fn switch_row(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     description: Option<impl Into<SharedString>>,
     checked: bool,
+    reset: Option<Reset>,
     on_change: impl Fn(&bool, &mut Window, &mut App) + 'static,
     cx: &App,
 ) -> Div {
     let id: ElementId = id.into();
-    row_with(label, description, Slot::Hug, gpui_component::switch::Switch::new(id).checked(checked).on_click(on_change), cx)
+    let switch = gpui_component::switch::Switch::new(id).checked(checked).on_click(on_change);
+    row_full(label, description, Slot::Hug, reset, switch, cx)
+}
+
+type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
+/// The small ↺ button that puts one setting back to its default.
+pub(crate) struct Reset {
+    id: SharedString,
+    tooltip: SharedString,
+    on_click: ClickHandler,
+}
+
+impl Reset {
+    /// `tooltip` names the default: "Reset to default (on)".
+    pub(crate) fn new(
+        id: impl Into<SharedString>,
+        tooltip: impl Into<SharedString>,
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        Reset { id: id.into(), tooltip: tooltip.into(), on_click: Box::new(on_click) }
+    }
+}
+
+/// `control` with the reset button before it, when there is one.
+pub(crate) fn with_reset(reset: Option<Reset>, control: impl IntoElement, cx: &App) -> Div {
+    div().flex().items_center().gap(space::S2).children(reset.map(|r| reset_button(r, cx))).child(control)
+}
+
+/// The ↺ button itself.
+fn reset_button(Reset { id, tooltip, on_click }: Reset, cx: &App) -> gpui::Stateful<Div> {
+    let t = cx.theme();
+    let (fg, hover_bg, hover_fg) = (t.muted_foreground, t.secondary, t.foreground);
+    let selector = id.to_string();
+    div()
+        .id(ElementId::Name(id))
+        .debug_selector(move || selector)
+        .size(px(26.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(radius::SM)
+        .text_color(fg)
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover_bg).text_color(hover_fg))
+        .on_click(move |ev, window, cx| {
+            cx.stop_propagation();
+            on_click(ev, window, cx);
+        })
+        .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx))
+        .child(Icon::new(IconName::RotateCcw).size(px(14.)))
 }
 
 /// A row whose control is a button.
@@ -235,8 +302,11 @@ pub(crate) fn nav_row(
     let t = cx.theme();
     let wash = theme::extra(cx).wash;
     let (fg, ic) = if active { (t.foreground, t.foreground) } else { (t.foreground.opacity(0.86), t.muted_foreground) };
+    let id: ElementId = id.into();
+    let selector = id.to_string();
     let mut row = div()
         .id(id)
+        .debug_selector(move || selector)
         .h(theme::NAV_ROW_H)
         .px(space::S3)
         .flex()

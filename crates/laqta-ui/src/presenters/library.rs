@@ -82,6 +82,8 @@ pub struct LibraryCard {
     pub glyph: CardGlyph,
     pub path: Option<PathBuf>,
     pub url: Option<String>,
+    /// The shortened link, when the upload was shortened.
+    pub short_url: Option<String>,
     pub thumbnail: Option<PathBuf>,
     pub is_image: bool,
 }
@@ -103,6 +105,7 @@ pub fn card(item: &HistoryItem, now: DateTime) -> LibraryCard {
         },
         path: row.path,
         url: row.url,
+        short_url: row.short_url,
         thumbnail: row.thumbnail,
         is_image: item.kind == HistoryKind::Image,
     }
@@ -183,6 +186,7 @@ mod tests {
             url: None,
             thumbnail_url: None,
             deletion_url: None,
+            short_url: None,
             host: None,
             width: Some(10),
             height: Some(5),
@@ -195,5 +199,9 @@ mod tests {
         let c = card(&item, date(2026, 11, 8).at(12, 0, 0, 0));
         assert_eq!(c.meta, "10×5 · 2.0 KB");
         assert_eq!(c.when, "Today 00:00");
+        assert_eq!(c.short_url, None);
+        let shortened = HistoryItem { url: Some("https://h/a.png".into()), short_url: Some("https://s/x".into()), ..item };
+        let c = card(&shortened, date(2026, 11, 8).at(12, 0, 0, 0));
+        assert_eq!((c.url.as_deref(), c.short_url.as_deref()), (Some("https://h/a.png"), Some("https://s/x")));
     }
 }

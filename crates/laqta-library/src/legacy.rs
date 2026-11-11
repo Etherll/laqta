@@ -23,7 +23,7 @@ pub struct ImportReport {
 ///
 /// An unreadable entry counts as failed and the rest still import. A text that is neither a JSON
 /// array nor a run of objects is an error, and nothing is stored. Each entry keeps the wall-clock
-/// part of its `DateTime` and drops the offset. `URL` is the link, and `ShortenedURL` is ignored.
+/// part of its `DateTime` and drops the offset. `URL` is the link and `ShortenedURL` its short form.
 /// An entry whose `Type` is missing or unknown takes its kind from its file extension.
 pub fn import_sharex_history(history: &History, json: &str) -> Result<ImportReport, LibraryError> {
     let entries = parse_entries(json)?;
@@ -65,6 +65,8 @@ struct LegacyEntry {
     thumbnail_url: Option<String>,
     #[serde(rename = "DeletionURL")]
     deletion_url: Option<String>,
+    #[serde(rename = "ShortenedURL")]
+    shortened_url: Option<String>,
     tags: Option<Value>,
 }
 
@@ -99,6 +101,7 @@ fn parse_entry(value: Value) -> Option<NewHistoryItem> {
         url: non_empty(entry.url),
         thumbnail_url: non_empty(entry.thumbnail_url),
         deletion_url: non_empty(entry.deletion_url),
+        short_url: non_empty(entry.shortened_url),
         host: non_empty(entry.host),
         width: None,
         height: None,

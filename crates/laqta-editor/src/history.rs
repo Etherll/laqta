@@ -14,17 +14,35 @@ pub(crate) struct Snapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum Entry {
-    Add { index: usize, annotation: Annotation },
-    Remove { index: usize, annotation: Annotation },
-    Modify { before: Annotation, after: Annotation },
-    Reorder { before: Vec<u64>, after: Vec<u64> },
-    Destructive { before: Box<Snapshot>, after: Box<Snapshot> },
+    Add {
+        index: usize,
+        annotation: Annotation,
+    },
+    Remove {
+        index: usize,
+        annotation: Annotation,
+    },
+    Modify {
+        before: Annotation,
+        after: Annotation,
+    },
+    Reorder {
+        before: Vec<u64>,
+        after: Vec<u64>,
+    },
+    Destructive {
+        before: Box<Snapshot>,
+        after: Box<Snapshot>,
+    },
+    /// Several entries made by one command, undone in reverse and redone in order.
+    Batch(Vec<Entry>),
 }
 
 impl Entry {
     fn bytes(&self) -> usize {
         match self {
             Entry::Destructive { before, after } => before.base.px.len() + after.base.px.len(),
+            Entry::Batch(entries) => entries.iter().map(Entry::bytes).sum(),
             _ => 0,
         }
     }

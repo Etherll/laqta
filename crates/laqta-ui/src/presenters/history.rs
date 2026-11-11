@@ -16,6 +16,8 @@ pub struct HistoryRow {
     pub kind: &'static str,
     pub path: Option<PathBuf>,
     pub url: Option<String>,
+    /// The shortened link, when the upload was shortened.
+    pub short_url: Option<String>,
     pub thumbnail: Option<PathBuf>,
     pub tags: Vec<String>,
 }
@@ -54,6 +56,7 @@ pub fn row(item: &HistoryItem) -> HistoryRow {
         kind: kind_label(&item.kind),
         path: item.path.clone(),
         url: item.url.clone(),
+        short_url: item.short_url.clone(),
         thumbnail: item.thumbnail_path.clone().or_else(|| if item.kind == HistoryKind::Image { item.path.clone() } else { None }),
         tags: item.tags.clone(),
     }

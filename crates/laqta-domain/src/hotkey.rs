@@ -62,6 +62,10 @@ keys! {
     Minus => "Minus", Equal => "Equal", Comma => "Comma", Period => "Period", Slash => "Slash",
     Backslash => "Backslash", Semicolon => "Semicolon", Quote => "Quote",
     BracketLeft => "BracketLeft", BracketRight => "BracketRight", Backquote => "Backquote",
+    VolumeUp => "VolumeUp", VolumeDown => "VolumeDown", VolumeMute => "VolumeMute",
+    MediaPlayPause => "MediaPlayPause", MediaNext => "MediaNext", MediaPrev => "MediaPrev",
+    MediaStop => "MediaStop", LaunchMail => "LaunchMail", LaunchApp1 => "LaunchApp1",
+    LaunchApp2 => "LaunchApp2", Calculator => "Calculator",
 }
 
 /// Modifier names in the order `Display` prints them.
@@ -102,6 +106,14 @@ const KEY_ALIASES: &[(&str, Key)] = &[
     ("num7", Key::Numpad7),
     ("num8", Key::Numpad8),
     ("num9", Key::Numpad9),
+    ("volup", Key::VolumeUp),
+    ("voldown", Key::VolumeDown),
+    ("mute", Key::VolumeMute),
+    ("playpause", Key::MediaPlayPause),
+    ("nexttrack", Key::MediaNext),
+    ("prevtrack", Key::MediaPrev),
+    ("mail", Key::LaunchMail),
+    ("calc", Key::Calculator),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -284,6 +296,35 @@ mod tests {
         assert_eq!("Ctrl+A+A".parse::<KeyChord>(), Err(HotkeyParseError::DuplicateKey));
         assert_eq!("Ctrl+Foo".parse::<KeyChord>(), Err(HotkeyParseError::UnknownKey("Foo".into())));
         assert_eq!("+A".parse::<KeyChord>(), Err(HotkeyParseError::UnknownKey(String::new())));
+    }
+
+    #[test]
+    fn media_and_launch_keys_round_trip_by_name_and_alias() {
+        let cases = [
+            ("VolumeUp", Key::VolumeUp),
+            ("volup", Key::VolumeUp),
+            ("VolumeDown", Key::VolumeDown),
+            ("VolumeMute", Key::VolumeMute),
+            ("mute", Key::VolumeMute),
+            ("MediaPlayPause", Key::MediaPlayPause),
+            ("playpause", Key::MediaPlayPause),
+            ("MediaNext", Key::MediaNext),
+            ("nexttrack", Key::MediaNext),
+            ("MediaPrev", Key::MediaPrev),
+            ("prevtrack", Key::MediaPrev),
+            ("MediaStop", Key::MediaStop),
+            ("LaunchMail", Key::LaunchMail),
+            ("mail", Key::LaunchMail),
+            ("LaunchApp1", Key::LaunchApp1),
+            ("LaunchApp2", Key::LaunchApp2),
+            ("Calculator", Key::Calculator),
+            ("calc", Key::Calculator),
+        ];
+        for (text, key) in cases {
+            assert_eq!(text.parse::<KeyChord>(), Ok(KeyChord::new(Modifiers::empty(), key)), "{text}");
+        }
+        assert_eq!(Key::MediaPlayPause.name(), "MediaPlayPause");
+        assert_eq!(KeyChord::new(Modifiers::CTRL, Key::MediaPlayPause).to_string(), "Ctrl+MediaPlayPause");
     }
 
     #[test]

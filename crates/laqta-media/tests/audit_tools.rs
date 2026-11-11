@@ -3,7 +3,7 @@
 //!
 //! The tools window's trimmer (`VideoTrimmer` and `GifTrimmer` share it) writes `<name>-trimmed.<same
 //! extension>` (`with_suffix(&p, "-trimmed", None)` in laqta-ui `tools_window.rs`) and calls
-//! `trim_video`, whose spec has `codec: None`, which `transcode_args` turns into H.264 + AAC.
+//! `trim_video`, whose spec has `codec: None`, which `transcode_args` takes from the output extension.
 
 use std::path::Path;
 use std::process::Command;
@@ -34,7 +34,6 @@ fn trim(input: &Path, output: &Path) -> (bool, String) {
 
 /// The animated GIF trimmer re-encodes a GIF to H.264 into a `.gif` file, which FFmpeg's GIF muxer refuses.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_gif_trimmer_cannot_trim_a_gif() {
     if !ffmpeg_ok() {
         eprintln!("skipped: no ffmpeg");
@@ -49,7 +48,6 @@ fn audit_bug_gif_trimmer_cannot_trim_a_gif() {
 
 /// The video trimmer forces H.264 + AAC, which the WebM muxer refuses, so a `.webm` cannot be trimmed.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_video_trimmer_cannot_trim_a_webm() {
     if !ffmpeg_ok() {
         eprintln!("skipped: no ffmpeg");

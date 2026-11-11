@@ -45,7 +45,8 @@ pub(super) async fn capture(
 ) {
     cx.reporter.status(id, TaskStatus::Preparing);
     cx.reporter.status(id, TaskStatus::Working);
-    let mut job = Job { cx, id, settings, info, stop, file: None };
+    let mut job = Job { cx, id, settings, info, stop, file: None, upload_sound: Default::default() };
+    job.read_random_lines().await;
     // The outcome is already reported, so there is nothing to do with it here. A panic is not: it ends the job as a
     // failure that the caller reports (ADR 020), but the file still goes first.
     if let Err(payload) = AssertUnwindSafe(job.run(input)).catch_unwind().await {
@@ -53,6 +54,16 @@ pub(super) async fn capture(
         std::panic::resume_unwind(payload);
     }
 }
+
+impl Job {
+    /// Reads the files the job's name patterns draw `%rf{path}` lines from, once, before any name is made.
+    pub(super) async fn read_random_lines(&mut self) {
+        self.info.random_lines = super::save::random_lines(&self.cx, &self.settings).await;
+    }
+}
+
+/// How long a temporary print file stays for the print handler to read it.
+const PRINT_FILE_LIFETIME: std::time::Duration = std::time::Duration::from_secs(300);
 
 pub(super) struct Job {
     pub(super) cx: Context,
@@ -62,6 +73,9 @@ pub(super) struct Job {
     pub(super) stop: Arc<AtomicBool>,
     /// The file this job wrote and later steps use. `DELETE_FILE` removes it when the job ends, whatever the outcome.
     pub(super) file: Option<PathBuf>,
+    /// An upload already played the task-completed sound (`play_sound_after_upload`), so the end of
+    /// the job doesn't play it again.
+    pub(super) upload_sound: std::sync::atomic::AtomicBool,
 }
 
 impl Job {
@@ -101,6 +115,8 @@ impl Job {
         // made only for the steps that need one.
         let for_upload = if flags.contains(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST) { encoded.clone() } else { None };
         let for_dialog = if flags.contains(AfterCaptureTasks::SAVE_IMAGE_TO_FILE_WITH_DIALOG) { encoded.clone() } else { None };
+        // Printing needs a file; without a saved one it prints a temporary copy, as ShareX prints the image.
+        let for_print = if flags.contains(AfterCaptureTasks::SEND_IMAGE_TO_PRINTER) { encoded.clone() } else { None };
 
         let mut saved_file = match encoded {
             Some(encoded) if flags.contains(AfterCaptureTasks::SAVE_IMAGE_TO_FILE) => self.save_image(size, encoded).await?,
@@ -133,17 +149,16 @@ impl Job {
         if flags.contains(AfterCaptureTasks::SAVE_THUMBNAIL_IMAGE_TO_FILE) {
             thumbnail_path = self.save_thumbnail(saved, thumbnail).await?;
         }
+        // The file, its path or its folder goes on the clipboard, never more than one: file wins over path, path over folder.
         if flags.contains(AfterCaptureTasks::COPY_FILE_TO_CLIPBOARD) {
             self.copy_file(saved).await?;
-        }
-        if flags.contains(AfterCaptureTasks::COPY_FILE_PATH_TO_CLIPBOARD) {
+        } else if flags.contains(AfterCaptureTasks::COPY_FILE_PATH_TO_CLIPBOARD) {
             self.copy_path(saved).await?;
-        }
-        if flags.contains(AfterCaptureTasks::COPY_FOLDER_PATH_TO_CLIPBOARD) {
+        } else if flags.contains(AfterCaptureTasks::COPY_FOLDER_PATH_TO_CLIPBOARD) {
             self.copy_folder(saved).await?;
         }
         if flags.contains(AfterCaptureTasks::SEND_IMAGE_TO_PRINTER) {
-            self.print(saved)?;
+            self.print(saved, for_print).await?;
         }
         if flags.contains(AfterCaptureTasks::SHOW_IN_EXPLORER) {
             self.reveal(saved)?;
@@ -197,28 +212,29 @@ impl Job {
         }
     }
 
-    /// The steps that work on the composed image, in order: the after-capture window, then annotation,
-    /// effects and the beautifier. Each reads the flags when it is reached, so the window's answer counts.
+    /// The steps that work on the composed image, in order: the after-capture window, then the beautifier,
+    /// effects and annotation, so what the user draws in the editor is the final image. Each reads the flags
+    /// when it is reached, so the window's answer counts.
     async fn edit(&mut self, mut image: Bitmap) -> Step<Bitmap> {
         if self.settings.after_capture.contains(AfterCaptureTasks::SHOW_AFTER_CAPTURE_WINDOW) {
             self.after_capture_window(&image).await?;
         }
-        // Background removal comes first, so annotation, effects and the beautifier see the cut-out.
+        // Background removal comes first, so the beautifier, effects and annotation see the cut-out.
         if self.settings.after_capture.contains(AfterCaptureTasks::REMOVE_BACKGROUND) {
             self.checkpoint()?;
             image = self.remove_background(image).await;
         }
-        if self.settings.after_capture.contains(AfterCaptureTasks::ANNOTATE_IMAGE) {
+        if self.settings.after_capture.contains(AfterCaptureTasks::BEAUTIFY_IMAGE) {
             self.checkpoint()?;
-            image = self.annotate(image).await;
+            image = self.beautify(image).await;
         }
         if self.settings.after_capture.contains(AfterCaptureTasks::ADD_IMAGE_EFFECTS) {
             self.checkpoint()?;
             image = self.effects(image).await;
         }
-        if self.settings.after_capture.contains(AfterCaptureTasks::BEAUTIFY_IMAGE) {
+        if self.settings.after_capture.contains(AfterCaptureTasks::ANNOTATE_IMAGE) {
             self.checkpoint()?;
-            image = self.beautify(image).await;
+            image = self.annotate(image).await;
         }
         Ok(image)
     }
@@ -433,19 +449,21 @@ impl Job {
     }
 
     /// A file a recording session already saved, so nothing is written here. Its save is reported as
-    /// `Saved`. Then the steps that work on a saved file, as for a saved image: copy the file, copy its path, reveal
-    /// it. Then the upload (when the upload flag is set), the after-upload steps and the toast.
+    /// `Saved`. Then the steps that work on a saved file, as for a saved image: copy the file (or its path, or its
+    /// folder), reveal it. Then the upload (when the upload flag is set), the after-upload steps and the toast.
     pub(super) async fn saved_file(&mut self, path: PathBuf) -> Step {
         self.checkpoint()?;
         self.cx.counter.fetch_add(1, Ordering::SeqCst);
         let saved = SavedFile { path };
         self.emit(TaskEvent::Saved { id: self.id, path: saved.path.clone() });
         let flags = self.settings.after_capture;
+        // One clipboard copy, as for an image: the file wins over its path, the path over its folder.
         if flags.contains(AfterCaptureTasks::COPY_FILE_TO_CLIPBOARD) {
             self.copy_file(Some(&saved)).await?;
-        }
-        if flags.contains(AfterCaptureTasks::COPY_FILE_PATH_TO_CLIPBOARD) {
+        } else if flags.contains(AfterCaptureTasks::COPY_FILE_PATH_TO_CLIPBOARD) {
             self.copy_path(Some(&saved)).await?;
+        } else if flags.contains(AfterCaptureTasks::COPY_FOLDER_PATH_TO_CLIPBOARD) {
+            self.copy_folder(Some(&saved)).await?;
         }
         if flags.contains(AfterCaptureTasks::SHOW_IN_EXPLORER) {
             self.reveal(Some(&saved))?;
@@ -602,17 +620,38 @@ impl Job {
         Ok(())
     }
 
-    /// `SEND_IMAGE_TO_PRINTER`: the saved file goes to the default printer.
-    fn print(&self, saved: Option<&SavedFile>) -> Step {
-        let Some(saved) = saved else {
-            self.step_failed("print", "the image was not saved to a file");
+    /// `SEND_IMAGE_TO_PRINTER`: the saved file goes to the default printer. With no saved file, the
+    /// image is written to a temporary file that is printed and removed `PRINT_FILE_LIFETIME` later.
+    async fn print(&self, saved: Option<&SavedFile>, encoded: Option<Encoded>) -> Step {
+        self.checkpoint()?;
+        if let Some(saved) = saved {
+            match self.cx.ports.shell.print(&saved.path) {
+                Ok(()) => self.emit(TaskEvent::Printed { id: self.id, path: saved.path.clone() }),
+                Err(error) => self.step_failed("print", error),
+            }
+            return Ok(());
+        }
+        let Some(encoded) = encoded else {
+            self.step_failed("print", "the image could not be encoded for printing");
             return Ok(());
         };
-        self.checkpoint()?;
-        match self.cx.ports.shell.print(&saved.path) {
-            Ok(()) => self.emit(TaskEvent::Printed { id: self.id, path: saved.path.clone() }),
+        let spawner = self.cx.ports.spawner.as_ref();
+        let temp = std::env::temp_dir().join(format!("laqta-print-{}.{}", self.id.0, encoded.format.extension()));
+        if let Err(error) = files::save_atomic(spawner, temp.clone(), encoded.bytes).await {
+            self.step_failed("print", error);
+            return Ok(());
+        }
+        match self.cx.ports.shell.print(&temp) {
+            Ok(()) => self.emit(TaskEvent::Printed { id: self.id, path: temp.clone() }),
             Err(error) => self.step_failed("print", error),
         }
+        // Windows' print verb returns before the print handler opens the file, so the file stays a
+        // while. The next run's job with this id overwrites it if the app quits first.
+        let ports = Arc::clone(&self.cx.ports);
+        self.cx.ports.spawner.spawn(Box::pin(async move {
+            ports.clock.sleep(PRINT_FILE_LIFETIME).await;
+            let _ = files::remove(ports.spawner.as_ref(), temp).await;
+        }));
         Ok(())
     }
 
@@ -760,10 +799,20 @@ impl Job {
     /// The task-completed sound, then `Completed`. Only a job that ran to its last step gets here.
     pub(super) fn complete(&self) {
         let general = &self.settings.general;
-        if general.play_sound_after_task {
+        if general.play_sound_after_task && !self.upload_sound.load(std::sync::atomic::Ordering::Relaxed) {
             let _ = self.cx.ports.notifier.sound(laqta_ports::Sound::TaskCompleted, general.custom_task_sound.as_deref());
         }
         self.cx.reporter.status(self.id, TaskStatus::Completed);
+    }
+
+    /// The task-completed sound after a successful upload, when `play_sound_after_upload` is set
+    /// (ShareX's after-upload sound). Not played on failure.
+    pub(super) fn upload_done(&self) {
+        let general = &self.settings.general;
+        if general.play_sound_after_upload {
+            let _ = self.cx.ports.notifier.sound(laqta_ports::Sound::TaskCompleted, general.custom_task_sound.as_deref());
+            self.upload_sound.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     pub(super) fn step_failed(&self, step: &'static str, error: impl Display) {
@@ -822,6 +871,7 @@ fn needs_file(flags: AfterCaptureTasks) -> bool {
             | AfterCaptureTasks::COPY_FILE_PATH_TO_CLIPBOARD
             | AfterCaptureTasks::SHOW_IN_EXPLORER
             | AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST
+            | AfterCaptureTasks::SEND_IMAGE_TO_PRINTER
             | AfterCaptureTasks::DELETE_FILE,
     )
 }

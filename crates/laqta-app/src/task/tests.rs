@@ -167,12 +167,46 @@ fn window_pattern() {
         let spawner = Arc::new(InlineSpawner::default());
         let settings = settings_in(tmp.path());
         let (task, mut events) = task_on(spawner.clone(), settings.clone());
-        let info = CaptureInfo { window_title: "Editor".to_owned(), process_name: "gedit".to_owned() };
+        let info = CaptureInfo { window_title: "Editor".to_owned(), process_name: "gedit".to_owned(), ..Default::default() };
         task.submit(job(&settings, CaptureImage::Frames(two_frames()), info));
         drive(&spawner);
 
         assert_eq!(render(&mut events, tmp.path(), false), include_str!("../../tests/golden/window_pattern.trace"));
         assert!(tmp.path().join("2026-11/gedit_2026-11-07_14-03-22.png").is_file());
+    });
+}
+
+/// `%rf{path}` takes a line of that file, read when the job starts.
+#[test]
+fn random_file_line_names_the_capture() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let names = tmp.path().join("names.txt");
+        std::fs::write(&names, "only-line\n").unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let mut settings = settings_in(tmp.path());
+        settings.defaults.naming.pattern = format!("%rf{{{}}}", names.display());
+        let (task, _events) = task_on(spawner.clone(), settings.clone());
+        task.submit(job(&settings, CaptureImage::Frames(two_frames()), CaptureInfo::default()));
+        drive(&spawner);
+
+        assert!(tmp.path().join("2026-11/only-line.png").is_file(), "the file is named after the line");
+    });
+}
+
+#[test]
+fn random_file_line_names_the_recording() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let names = tmp.path().join("names.txt");
+        std::fs::write(&names, "clip-line\n").unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let mut settings = settings_in(tmp.path());
+        settings.defaults.naming.pattern = format!("%rf{{{}}}", names.display());
+        let (task, _events) = task_on(spawner, settings.clone());
+        let output = block_on(task.recording_output(&settings.task_settings(None), tmp.path(), (4, 4), "mp4")).unwrap();
+
+        assert_eq!(output.file_name().unwrap(), "clip-line.mp4", "the recording is named after the line");
     });
 }
 

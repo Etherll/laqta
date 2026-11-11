@@ -164,6 +164,14 @@ pub(crate) fn services(spawner: QueuedSpawner, dir: &Path) -> UiServices {
     let settings = Settings::default_for(dir.to_path_buf());
     UiServices {
         hotkey_report: Arc::new(crate::runtime::HotkeyReport::default),
+        default_settings: {
+            let dir = dir.to_path_buf();
+            Arc::new(move || Settings::default_for(dir.clone()))
+        },
+        configure_shortcuts: None,
+        free_print_screen: None,
+        record_keys: None,
+        hold_hotkeys: Arc::new(|_| {}),
         app: App::new(ports, settings),
         history: None,
         shell,

@@ -27,7 +27,7 @@ pub struct ModelOcr {
 }
 
 impl ModelOcr {
-    /// `det` and `rec` are catalog ids. `rec` is the default recogniser for the empty language.
+    /// `det` is a catalog id. `rec` is a catalog id or an installed custom recogniser, and is the default for the empty language.
     pub fn new(runtime: Arc<Runtime>, det: impl Into<String>, rec: impl Into<String>) -> Self {
         ModelOcr { runtime, det: det.into(), rec: rec.into() }
     }
@@ -38,7 +38,7 @@ impl ModelOcr {
     fn prepare(&self, language: &str) -> Result<(String, String), MlError> {
         let det = self.installed(&self.det)?;
         let rec = if language.is_empty() {
-            self.installed(&self.rec)?
+            self.default_recogniser()?
         } else {
             let wanted = language.to_ascii_lowercase();
             catalog()
@@ -54,6 +54,27 @@ impl ModelOcr {
         let entry = catalog().model(id).ok_or_else(|| MlError::UnknownModel(id.to_owned()))?;
         if self.runtime.is_installed(entry) { Ok(id.to_owned()) } else { Err(MlError::NotInstalled(id.to_owned())) }
     }
+
+    /// The default recogniser. A custom one (`custom-<family>-<name>`, added in Settings → Models) is not in
+    /// the catalog. `validate_custom` checked its family when it was added, so it is accepted once its model
+    /// and dictionary are installed.
+    fn default_recogniser(&self) -> Result<String, MlError> {
+        let id = self.rec.as_str();
+        if catalog().model(id).is_some() || !is_custom_id(id) {
+            return self.installed(id);
+        }
+        if self.runtime.model_path(id).is_file() && self.runtime.dict_path(id).is_file() {
+            Ok(id.to_owned())
+        } else {
+            Err(MlError::NotInstalled(id.to_owned()))
+        }
+    }
+}
+
+/// Custom ids are `custom-` and then letters, digits and dashes (the app slugs the name when it adds the
+/// model), so the id names a file in the models folder and nothing else.
+fn is_custom_id(id: &str) -> bool {
+    id.starts_with("custom-") && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 impl Ocr for ModelOcr {

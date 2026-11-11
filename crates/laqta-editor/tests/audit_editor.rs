@@ -28,7 +28,6 @@ fn steps(e: &laqta_editor::Editor) -> Vec<i32> {
 /// ShareX SmartEraserAnnotation: "the color sampled when drawing started". Laqta samples the
 /// top-left of the normalised rect, which is the start point only for a down-right drag.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_smart_eraser_samples_drag_start() {
     in_pool(|| {
         let base = base();
@@ -43,7 +42,6 @@ fn audit_bug_smart_eraser_samples_drag_start() {
 
 /// ShareX EditorCore.RemoveAnnotation → HandleStepRenumbering: higher steps shift down by one.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_step_renumbers_after_delete() {
     in_pool(|| {
         let mut e = editor();
@@ -62,7 +60,6 @@ fn audit_bug_step_renumbers_after_delete() {
 /// ShareX MainViewModel.RecalculateNumberCounter runs on every history change: the next step is
 /// max(existing)+1. After undoing the only step, the next one is 1 again.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_step_counter_after_undo() {
     in_pool(|| {
         let mut e = editor();
@@ -77,7 +74,6 @@ fn audit_bug_step_counter_after_undo() {
 /// ShareX keeps annotations editable through rotate/flip/resize/canvas/auto-crop/effects
 /// (ApplyImageOperation with transformAnnotations). Laqta flattens them into the base.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_rotate_keeps_annotations_editable() {
     in_pool(|| {
         let mut e = editor();
@@ -90,7 +86,6 @@ fn audit_bug_rotate_keeps_annotations_editable() {
 
 /// ShareX discards a text box that is left empty (EditorInputController OnCreationLostFocus).
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_empty_text_box_is_kept() {
     in_pool(|| {
         let mut e = editor();

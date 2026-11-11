@@ -3,6 +3,7 @@
 
 mod migrate;
 mod model;
+mod names;
 mod syntax;
 mod xml;
 
@@ -10,6 +11,7 @@ use laqta_http::{Body, Method, Part, Request, Response};
 use laqta_ports::{Prompt, Rng, UploadError, UploadResult};
 
 pub use model::{BodyType, CustomUploader, DestinationType, RequestMethod};
+pub use names::set_host_info;
 use syntax::{Ctx, Escape};
 
 /// What one upload sends: the file (or text) and its type.
@@ -66,15 +68,16 @@ impl From<SxcuError> for UploadError {
 /// and `Data` are evaluated in that order. The response-only functions are errors here.
 pub async fn build_request(u: &CustomUploader, input: &Input<'_>, env: &Env<'_>) -> Result<Request, SxcuError> {
     let ctx = Ctx { input, env, response: None };
-    let url = syntax::render(&ctx, &u.request_url, Escape::Plain).await?;
+    let url = syntax::render(&ctx, &u.request_url, Escape::Url).await?;
     let mut request = Request::new(method(u.request_method), url);
-    request.query = rendered(&ctx, &u.parameters).await?;
-    let mut headers = rendered(&ctx, &u.headers).await?;
+    request.query = rendered(&ctx, &names::expand_values(&u.parameters, env.rng)).await?;
+    let mut headers = rendered(&ctx, &names::expand_values(&u.headers, env.rng)).await?;
+    let arguments = names::expand_values(&u.arguments, env.rng);
     request.body = match u.body {
         BodyType::None => Body::Empty,
         BodyType::MultipartFormData => {
             let mut parts: Vec<Part> =
-                rendered(&ctx, &u.arguments).await?.into_iter().map(|(name, value)| Part::Text { name, value }).collect();
+                rendered(&ctx, &arguments).await?.into_iter().map(|(name, value)| Part::Text { name, value }).collect();
             if let Some(name) = &u.file_form_name {
                 parts.push(Part::File {
                     name: name.clone(),
@@ -85,7 +88,7 @@ pub async fn build_request(u: &CustomUploader, input: &Input<'_>, env: &Env<'_>)
             }
             Body::Multipart(parts)
         }
-        BodyType::FormUrlEncoded => Body::Form(rendered(&ctx, &u.arguments).await?),
+        BodyType::FormUrlEncoded => Body::Form(rendered(&ctx, &arguments).await?),
         BodyType::Json => text_body(&ctx, u, &mut headers, "application/json", Escape::Json).await?,
         BodyType::Xml => text_body(&ctx, u, &mut headers, "application/xml", Escape::Xml).await?,
         BodyType::Binary => {
@@ -182,9 +185,10 @@ fn template(source: Option<&str>) -> Option<&str> {
     source.filter(|source| !source.trim().is_empty())
 }
 
-/// Evaluates a result template. Blank output is `None`.
+/// Evaluates a result URL template, URL-encoding `{input}` and `{filename}` as ShareX does.
+/// Blank output is `None`.
 async fn evaluated(ctx: &Ctx<'_>, template: &str) -> Result<Option<String>, SxcuError> {
-    let value = syntax::render(ctx, template, Escape::Plain).await?;
+    let value = syntax::render(ctx, template, Escape::Url).await?;
     Ok(non_empty(value.trim()))
 }
 

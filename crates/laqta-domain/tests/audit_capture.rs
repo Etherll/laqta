@@ -1,5 +1,5 @@
-//! Capture-area gaps: name-pattern tokens and per-hotkey workflows. Each `audit_bug_*` test
-//! describes behaviour Laqta does not have yet, and fails until it does.
+//! Capture-area audit checks: name-pattern tokens and per-hotkey workflows. An ignored `audit_bug_*`
+//! test describes behaviour Laqta does not have yet.
 #![allow(clippy::unwrap_used)]
 
 use laqta_domain::naming::{NameContext, expand};
@@ -12,6 +12,7 @@ fn run(pattern: &str) -> String {
         n += 1;
         n
     };
+    let no_files = |_: &str| -> Vec<String> { Vec::new() };
     let mut ctx = NameContext {
         now: jiff::civil::date(2026, 11, 7).at(14, 3, 22, 0),
         unix_seconds: 0,
@@ -23,57 +24,49 @@ fn run(pattern: &str) -> String {
         user_name: "ada",
         user_login: "ada",
         computer_name: "pc",
-        random_file_lines: &[],
+        read_lines: &no_files,
         rng: &mut rng,
     };
     expand(pattern, &mut ctx)
 }
 
-/// `%mon2` and `%w2` expand to the full English month and day names ("November", "Saturday").
-/// Laqta writes three-letter abbreviations.
+/// `%mon2` and `%w2` expand to the full English month and day names ("November", "Saturday"), as
+/// ShareX's do.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_mon2_w2_are_full_english_names() {
     assert_eq!(run("%mon2"), "November");
     assert_eq!(run("%w2"), "Saturday");
 }
 
-/// Laqta does not yet have the upper-case token variants `%iX` (hex upper), `%iA` (base 36 upper),
-/// `%iaA` (base 62 inverse), `%iB{b,n}`, `%rX` (random hex upper) and `%GUID`. Until it does, `%iX`
-/// expands as `%i` followed by a literal `X`.
+/// The upper-case token variants match ShareX: `%iX` is hex in upper case, `%iA` is base 36 in upper
+/// case, and `%GUID` is a GUID in upper case.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_uppercase_token_variants() {
     assert_eq!(run("%iX"), "FF");
     assert_eq!(run("%iA"), "73");
     assert!(run("%GUID").chars().all(|c| !c.is_ascii_lowercase()), "%GUID is upper case in ShareX");
 }
 
-/// `%rf{path}` should read a random line from the file named in braces. Laqta's `%rf` takes no
-/// argument, leaves `{path}` in the name, and production passes no lines (`task/save.rs`
-/// `random_file_lines: &[]`).
+/// `%rf{path}` takes a file path and draws a random line from it. The domain reads no files, so
+/// `run` supplies a reader with no lines: the token is consumed, braces and all, and leaves nothing.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_rf_takes_a_file_argument() {
     let out = run("a%rf{C:/names.txt}b");
-    assert!(!out.contains('{'), "the {{path}} argument stayed literal: {out:?}");
+    assert_eq!(out, "ab");
 }
 
-/// `%ib{base,digits}` should take a base up to 62 and a pad width. Laqta caps the base at 36 and
-/// has no pad argument.
+/// `%ib{base,digits}` takes a base from 2 to 62 and an optional zero-pad width, as ShareX's does.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_ib_base_62_and_padding() {
     assert_eq!(run("%ib{62}"), "47", "255 in base 62");
     assert_eq!(run("%ib{16,4}"), "00ff");
 }
 
 /// Every hotkey is a workflow with its own task settings, and two hotkeys may share one
-/// action (e.g. Ctrl+PrintScreen region→save, Ctrl+Shift+R region→upload). Laqta registers
-/// `(KeyChord, Action)` pairs and `apps/laqta/src/wiring.rs` looks the workflow up by action
-/// ("first enabled workflow bound to its action"), so the second workflow's settings never apply.
+/// action (e.g. Ctrl+PrintScreen region→save, Ctrl+Shift+R region→upload). The fired chord picks
+/// its own workflow (`workflow_for_hotkey`, as `apps/laqta/src/wiring.rs` dispatches it), not
+/// the first workflow bound to the same action.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_hotkey_binding_drops_the_workflow() {
     let mut settings = Settings::default_for("/p".into());
     let mut upload = Workflow {
@@ -86,10 +79,9 @@ fn audit_bug_hotkey_binding_drops_the_workflow() {
     };
     upload.patch.after_capture = Some(AfterCaptureTasks::UPLOAD_IMAGE_TO_HOST);
     settings.workflows.push(upload);
-    let bindings = settings.hotkey_bindings();
     let chord = KeyChord { modifiers: Modifiers::CTRL | Modifiers::SHIFT, key: Key::R };
-    let (_, action) = bindings.iter().find(|(c, _)| *c == chord).copied().unwrap();
-    // What the hotkey callback does with the fired action (wiring.rs, `dispatch` closure).
-    let picked = settings.workflows.iter().find(|w| w.enabled && w.action == action).map(|w| w.id);
+    assert!(settings.hotkey_bindings().iter().any(|(c, _)| *c == chord), "the chord is registered");
+    // What the hotkey callback does with the fired chord (wiring.rs, `hotkey_dispatch`).
+    let picked = settings.workflow_for_hotkey(chord).map(|w| w.id);
     assert_eq!(picked, Some(WorkflowId(9)), "the Ctrl+Shift+R hotkey ran workflow {picked:?}'s settings");
 }

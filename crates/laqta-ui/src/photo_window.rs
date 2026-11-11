@@ -168,6 +168,10 @@ struct PhotoWindow {
     adjustment: usize,
     message: Option<String>,
     busy: bool,
+    /// The document revision the file on disk holds.
+    saved_revision: u64,
+    /// The window closes once the save it asked for lands (the unsaved-edits prompt's Save).
+    close_after_save: bool,
 }
 
 use gpui::Entity;
@@ -201,7 +205,10 @@ impl PhotoWindow {
             adjustment: 0,
             message: None,
             busy: false,
+            saved_revision: 0,
+            close_after_save: false,
         };
+        crate::close_guard::install(Self::close_guard, window, cx);
         if this.interaction.initial() {
             this.start_render(cx);
         }
@@ -490,7 +497,21 @@ impl PhotoWindow {
         self.exec(Command::AddLayer { name: name.into(), kind }, cx);
     }
 
-    fn save(&mut self, ask: bool, cx: &mut Context<Self>) {
+    fn close_guard() -> crate::close_guard::Guard<Self> {
+        crate::close_guard::Guard {
+            // Edits still queued or running count as unsaved too.
+            dirty: |this| this.interaction.view().revision != this.saved_revision || !this.queue.is_empty() || !this.interaction.idle(),
+            message: |_| "Save changes to this image?",
+            detail: |_| "Your edits are lost if you don't save them.",
+            keep: |_| "Save",
+            on_keep: |this, window, cx| {
+                this.close_after_save = true;
+                this.save(false, window.window_handle(), cx);
+            },
+        }
+    }
+
+    fn save(&mut self, ask: bool, handle: gpui::AnyWindowHandle, cx: &mut Context<Self>) {
         let services = cx.global::<UiState>().services.clone();
         let format = services.app.settings().defaults.image.format;
         let opts = laqta_imaging::EncodeOptions { format, jpeg_quality: 90 };
@@ -498,12 +519,18 @@ impl PhotoWindow {
         let (flat, flattened) = futures_channel::oneshot::channel();
         self.edit(
             move |editor| {
-                let _ = flat.send(editor.flatten());
+                let _ = flat.send((editor.flatten(), editor.revision()));
                 Ok(())
             },
             cx,
         );
-        let flattened: laqta_ports::BoxFuture<'static, Option<Bitmap>> = Box::pin(async move { flattened.await.ok() });
+        // The revision the file will hold, read in the same queue turn as the flatten.
+        let (rev_tx, saved) = futures_channel::oneshot::channel();
+        let flattened: laqta_ports::BoxFuture<'static, Option<Bitmap>> = Box::pin(async move {
+            let (bitmap, revision) = flattened.await.ok()?;
+            let _ = rev_tx.send(revision);
+            Some(bitmap)
+        });
         let encoded = crate::presenters::output::encode(self.compute.clone(), services.codecs.clone(), flattened, opts);
         let dir = services.app.settings().screenshots_dir.clone();
         let current = self.path.clone();
@@ -526,14 +553,23 @@ impl PhotoWindow {
         });
         cx.spawn(async move |this, cx| {
             let r = task.await;
+            let revision = saved.await.ok();
             let _ = this.update(cx, |this, cx| {
+                let close = this.close_after_save && matches!(r, Ok(Some(_)));
+                this.close_after_save = false;
                 match r {
                     Ok(Some(p)) => {
+                        if let Some(revision) = revision {
+                            this.saved_revision = revision;
+                        }
                         this.message = Some(format!("Saved {}", p.display()));
                         this.path = Some(p);
                     }
                     Ok(None) => {}
                     Err(e) => this.message = Some(format!("Save failed: {e}")),
+                }
+                if close {
+                    crate::close_guard::close(handle, cx);
                 }
                 cx.notify();
             });
@@ -847,9 +883,16 @@ impl Render for PhotoWindow {
             .child(widgets::muted("Text", cx))
             .child(div().w(px(120.)).child(Input::new(&self.text).small()))
             .child(div().flex_1().truncate().child(widgets::muted(self.message.clone().unwrap_or_else(|| format!("{w} × {h}")), cx)))
-            .child(Button::new("save").label("Save").small().on_click(cx.listener(|this, _, _, cx| this.save(false, cx))))
-            .child(Button::new("saveas").label("Save as…").small().on_click(cx.listener(|this, _, _, cx| this.save(true, cx))))
-            .child(Button::new("close").label("Close").small().on_click(|_, w, _| w.remove_window()));
+            .child(
+                Button::new("save").label("Save").small().on_click(cx.listener(|this, _, w, cx| this.save(false, w.window_handle(), cx))),
+            )
+            .child(
+                Button::new("saveas")
+                    .label("Save as…")
+                    .small()
+                    .on_click(cx.listener(|this, _, w, cx| this.save(true, w.window_handle(), cx))),
+            )
+            .child(Button::new("close").label("Close").small().on_click(|_, w, cx| crate::close_guard::request_close(w, cx)));
         let mut canvas = div().flex_1().relative().overflow_hidden().bg(cx.theme().secondary);
         if let Some(p) = &self.picture {
             canvas = canvas

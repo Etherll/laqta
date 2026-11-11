@@ -46,6 +46,8 @@ pub enum CaptureImage {
 pub struct CaptureInfo {
     pub window_title: String,
     pub process_name: String,
+    /// The lines of each file a `%rf{path}` token names, read when the job starts.
+    pub(crate) random_lines: std::collections::HashMap<String, Vec<String>>,
 }
 
 /// What an Upload job sends.

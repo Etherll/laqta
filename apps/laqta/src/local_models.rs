@@ -2,14 +2,15 @@
 //! downloaded with ONNX Runtime on first use after the user agrees, then run through `laqta-ml`.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
 
 use laqta_domain::Bitmap;
+use laqta_domain::settings::ModelProvider;
 use laqta_ml::{ModelBackground, ModelInpainter, Task, catalog};
 use laqta_ports::{BackgroundRemover, BoxFuture, Inpainter, Notifier, PortError, Prompt};
 
-use crate::models::SharedModelOptions;
+use crate::models::{ModelReleaser, ModelSlot, SharedModelOptions};
 
 /// Downloads ONNX Runtime and `id` when missing (after asking), and returns a runtime for it. The
 /// downloads report their progress through `notifier`.
@@ -60,14 +61,25 @@ pub struct LocalBackground {
     pub options: SharedModelOptions,
     pub prompt: Arc<dyn Prompt>,
     notifier: Arc<dyn Notifier>,
-    ready: Mutex<Option<(String, Arc<ModelBackground>)>>,
+    /// The engine and the (model, provider) it was built for.
+    ready: ModelSlot<(String, ModelProvider), ModelBackground>,
 }
 
 impl LocalBackground {
     /// `ui` asks before a download and shows its progress as toasts.
-    pub fn new<U: Prompt + Notifier + 'static>(data: PathBuf, options: SharedModelOptions, ui: Arc<U>) -> Self {
-        LocalBackground { data, options, prompt: ui.clone(), notifier: ui, ready: Mutex::new(None) }
+    pub fn new<U: Prompt + Notifier + 'static>(
+        data: PathBuf,
+        options: SharedModelOptions,
+        ui: Arc<U>,
+        releaser: Arc<ModelReleaser>,
+    ) -> Self {
+        LocalBackground { data, options, prompt: ui.clone(), notifier: ui, ready: ModelSlot::new(releaser) }
     }
+}
+
+/// The provider chosen in the settings now.
+fn provider(options: &SharedModelOptions) -> ModelProvider {
+    options.read().map(|o| o.provider).unwrap_or_default()
 }
 
 impl BackgroundRemover for LocalBackground {
@@ -78,26 +90,26 @@ impl BackgroundRemover for LocalBackground {
                 Some(id) => id,
                 None => default_id(Task::Background)?,
             };
-            let cached = self.ready.lock().ok().and_then(|g| g.clone()).filter(|(k, _)| *k == id);
-            let engine = match cached {
-                Some((_, e)) => e,
+            let key = (id.clone(), provider(&self.options));
+            let engine = match self.ready.get(&key) {
+                Some(e) => e,
                 None => {
                     let rt = prepare(&self.data, &self.options, &self.prompt, &self.notifier, &id, "Background removal").await?;
                     // A custom model (not in the catalog) runs with the default model's numbers.
                     let e = if catalog().model(&id).is_some() {
-                        Arc::new(ModelBackground::new(rt, id.clone()))
+                        Arc::new(ModelBackground::new(rt.clone(), id.clone()))
                     } else {
                         let params = ModelBackground::default_params()
                             .ok_or_else(|| PortError::Unsupported("no background model in the catalog".into()))?;
-                        Arc::new(ModelBackground::custom(rt, id.clone(), params))
+                        Arc::new(ModelBackground::custom(rt.clone(), id.clone(), params))
                     };
-                    if let Ok(mut g) = self.ready.lock() {
-                        *g = Some((id, e.clone()));
-                    }
+                    self.ready.store(key, e.clone(), rt);
                     e
                 }
             };
-            engine.remove(image).await
+            let result = engine.remove(image).await;
+            self.ready.ran();
+            result
         })
     }
 }
@@ -107,32 +119,38 @@ pub struct LocalInpainter {
     pub options: SharedModelOptions,
     pub prompt: Arc<dyn Prompt>,
     notifier: Arc<dyn Notifier>,
-    ready: Mutex<Option<Arc<ModelInpainter>>>,
+    /// The engine and the (model, provider) it was built for.
+    ready: ModelSlot<(String, ModelProvider), ModelInpainter>,
 }
 
 impl LocalInpainter {
     /// `ui` asks before a download and shows its progress as toasts.
-    pub fn new<U: Prompt + Notifier + 'static>(data: PathBuf, options: SharedModelOptions, ui: Arc<U>) -> Self {
-        LocalInpainter { data, options, prompt: ui.clone(), notifier: ui, ready: Mutex::new(None) }
+    pub fn new<U: Prompt + Notifier + 'static>(
+        data: PathBuf,
+        options: SharedModelOptions,
+        ui: Arc<U>,
+        releaser: Arc<ModelReleaser>,
+    ) -> Self {
+        LocalInpainter { data, options, prompt: ui.clone(), notifier: ui, ready: ModelSlot::new(releaser) }
     }
 }
 
 impl Inpainter for LocalInpainter {
     fn inpaint(&self, image: Bitmap, mask: Vec<u8>) -> BoxFuture<'_, Result<Bitmap, PortError>> {
         Box::pin(async move {
-            let engine = match self.ready.lock().ok().and_then(|g| g.clone()) {
+            let key = (default_id(Task::Inpaint)?, provider(&self.options));
+            let engine = match self.ready.get(&key) {
                 Some(e) => e,
                 None => {
-                    let id = default_id(Task::Inpaint)?;
-                    let rt = prepare(&self.data, &self.options, &self.prompt, &self.notifier, &id, "Inpainting").await?;
-                    let e = Arc::new(ModelInpainter::new(rt, id));
-                    if let Ok(mut g) = self.ready.lock() {
-                        *g = Some(e.clone());
-                    }
+                    let rt = prepare(&self.data, &self.options, &self.prompt, &self.notifier, &key.0, "Inpainting").await?;
+                    let e = Arc::new(ModelInpainter::new(rt.clone(), key.0.clone()));
+                    self.ready.store(key, e.clone(), rt);
                     e
                 }
             };
-            engine.inpaint(image, mask).await
+            let result = engine.inpaint(image, mask).await;
+            self.ready.ran();
+            result
         })
     }
 }

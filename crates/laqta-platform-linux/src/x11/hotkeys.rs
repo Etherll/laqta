@@ -179,6 +179,17 @@ pub(crate) fn keysym(key: Key) -> Option<u32> {
             Key::BracketLeft => Some(0x5b),
             Key::BracketRight => Some(0x5d),
             Key::Backquote => Some(0x60),
+            Key::VolumeUp => Some(0x1008ff13),
+            Key::VolumeDown => Some(0x1008ff11),
+            Key::VolumeMute => Some(0x1008ff12),
+            Key::MediaPlayPause => Some(0x1008ff14),
+            Key::MediaNext => Some(0x1008ff17),
+            Key::MediaPrev => Some(0x1008ff16),
+            Key::MediaStop => Some(0x1008ff15),
+            Key::LaunchMail => Some(0x1008ff19),
+            Key::LaunchApp1 => Some(0x1008ff40),
+            Key::LaunchApp2 => Some(0x1008ff41),
+            Key::Calculator => Some(0x1008ff1d),
             _ => None,
         })
 }
@@ -227,6 +238,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl HotkeyRegistrar for X11Hotkeys {
+    fn grabs_keys(&self) -> bool {
+        true
+    }
+
     fn register(&self, bindings: &[(KeyChord, Action)], on_fire: HotkeyCallback) -> Vec<(KeyChord, Result<(), PortError>)> {
         let all_err = |e: PortError| bindings.iter().map(|(c, _)| (*c, Err(e.clone()))).collect::<Vec<_>>();
         let mut guard = lock(&self.session);

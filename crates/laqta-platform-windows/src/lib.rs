@@ -5,7 +5,7 @@
 //! backdrops. Hotkeys and the tray share one dedicated shell thread that owns a hidden window.
 //! Per-event sounds play through `PlaySound`. Everything here is Windows-only; on other targets the
 //! crate is empty. The pure helpers (key codes, window rules, frame patches, HDR math, backdrop
-//! alpha, the shutter sound) also build under `test`, so their tests run on Linux.
+//! alpha, the shutter sound, the Print Screen rule) also build under `test`, so their tests run on Linux.
 
 #[cfg(any(windows, test))]
 mod autostart;
@@ -32,6 +32,8 @@ mod input;
 #[cfg(any(windows, test))]
 mod integration;
 #[cfg(any(windows, test))]
+mod key_hook;
+#[cfg(any(windows, test))]
 mod keys;
 #[cfg(windows)]
 mod loopback;
@@ -39,6 +41,8 @@ mod loopback;
 mod ocr;
 #[cfg(any(windows, test))]
 mod patch;
+#[cfg(any(windows, test))]
+mod print_screen;
 #[cfg(any(windows, test))]
 mod secrets;
 #[cfg(windows)]
@@ -62,6 +66,8 @@ mod window_rules;
 
 #[cfg(windows)]
 pub use imp::*;
+#[cfg(windows)]
+pub use print_screen::{print_screen_for_snipping, restore_print_screen_for_snipping, set_print_screen_for_snipping};
 #[cfg(windows)]
 pub use sound::play_sound;
 
@@ -228,12 +234,12 @@ mod imp {
 
     impl ScreenSource for WindowsScreen {
         fn capture_all(&self) -> BoxFuture<'_, Result<Vec<Frame>, PortError>> {
-            Box::pin(blocking::unblock(capture_frames))
+            Box::pin(blocking::unblock(|| capture_frames(true)))
         }
 
         fn capture(&self, request: CaptureRequest) -> BoxFuture<'_, Result<Vec<Frame>, PortError>> {
             Box::pin(blocking::unblock(move || {
-                let mut frames = capture_frames()?;
+                let mut frames = capture_frames(request.hdr_tonemap)?;
                 if request.show_cursor {
                     cursor::draw_onto(&mut frames);
                 }
@@ -247,9 +253,10 @@ mod imp {
         }
     }
 
-    /// One frame per monitor: DXGI duplication, or GDI when duplication fails.
-    fn capture_frames() -> Result<Vec<Frame>, PortError> {
-        match capture_dxgi::capture() {
+    /// One frame per monitor: DXGI duplication, or GDI when duplication fails. `hdr_tonemap`: see
+    /// `CaptureRequest`.
+    fn capture_frames(hdr_tonemap: bool) -> Result<Vec<Frame>, PortError> {
+        match capture_dxgi::capture(hdr_tonemap) {
             Ok(frames) => Ok(frames),
             Err(e) => {
                 tracing::info!("DXGI duplication failed ({e}); falling back to GDI");

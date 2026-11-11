@@ -73,9 +73,8 @@ fn seen(f: &Fake) -> Vec<Request> {
 
 /// ShareX: `-ImageEditor "file"` opens that file in the editor (CLIManager gives the next non-dash
 /// argument to the command as its parameter; `CheckCLIHotkey` → `ExecuteJob(job, filePath)`). Its
-/// own "Edit with ShareX" shell verb relies on it. Laqta forwards the action and uploads the file.
+/// own "Edit with ShareX" shell verb relies on it. Laqta forwards it as one action-with-file request.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_hotkey_flag_file_parameter_is_uploaded() {
     let f = fake("editor");
     let img = f.dir.join("x.png");
@@ -88,10 +87,9 @@ fn audit_bug_hotkey_flag_file_parameter_is_uploaded() {
     );
 }
 
-/// A relative path from a terminal is forwarded unchanged and resolved against the *primary's*
-/// working directory.
+/// A relative path from a terminal is made absolute before it is forwarded, so the primary's
+/// working directory does not matter.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_relative_path_forwarded_unresolved() {
     let f = fake("relative");
     let sub = f.dir.join("sub");
@@ -102,10 +100,9 @@ fn audit_bug_relative_path_forwarded_unresolved() {
     assert_eq!(got, vec![Request::Upload(sub.join("shot.png"))], "relative path not made absolute before forwarding");
 }
 
-/// `-CustomUploader x.sxcu` / `-ImageEffect y.sxie` while Laqta runs: `main` forwards only
-/// `args.requests`, so the imports are dropped and the process prints "already running".
+/// `-CustomUploader x.sxcu` / `-ImageEffect y.sxie` while Laqta runs are forwarded to it as
+/// imports.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_import_flags_dropped_by_secondary() {
     let f = fake("imports");
     let sxcu = f.dir.join("x.sxcu");
@@ -115,9 +112,8 @@ fn audit_bug_import_flags_dropped_by_secondary() {
     assert!(!got.is_empty(), "the -CustomUploader import never reached the running instance");
 }
 
-/// ShareX uploads a bare URL argument with `DownloadAndUploadFile`. Laqta turns it into a file path.
+/// ShareX uploads a bare URL argument with `DownloadAndUploadFile`; so does Laqta.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_bare_url_is_treated_as_a_path() {
     let f = fake("url");
     let url = "https://example.invalid/a.png";
@@ -126,14 +122,14 @@ fn audit_bug_bare_url_is_treated_as_a_path() {
     assert_eq!(got, vec![Request::UploadUrl(url.into())], "a URL argument became {got:?}");
 }
 
-/// ShareX's short aliases (`-s`, `-m`, `-p`) and two
-/// `HotkeyType` names (`BackgroundRemover`, `AnimatedGifTrimmer`) are rejected with exit code 2.
+/// ShareX's short aliases (`-s`, `-m`) and two `HotkeyType` names (`BackgroundRemover`,
+/// `AnimatedGifTrimmer`) are accepted.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_sharex_switches_rejected() {
     let f = fake("aliases");
     let mut rejected = Vec::new();
-    for flag in ["-s", "-m", "-p", "-BackgroundRemover", "-AnimatedGifTrimmer"] {
+    // ShareX has no `-p` switch (Program.cs reads only -silent/-s, -multi/-m and -NoHotkeys).
+    for flag in ["-s", "-m", "-BackgroundRemover", "-AnimatedGifTrimmer"] {
         if run(&f, &f.dir, &[flag]) == Some(2) {
             rejected.push(flag);
         }
@@ -150,9 +146,8 @@ fn hotkey_flag_is_forwarded() {
 }
 
 /// ShareX's `-task <name>` selects the task settings that the file arguments upload with
-/// (`FindCLITask`); it does not run the task. Laqta runs the workflow and uploads with defaults.
+/// (`FindCLITask`); it does not run the task. Laqta does the same.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_task_runs_the_workflow_instead_of_selecting_settings() {
     let f = fake("task");
     let img = f.dir.join("y.png");

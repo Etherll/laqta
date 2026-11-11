@@ -49,39 +49,34 @@ fn exchange(name: &str, json: &str) -> (Vec<Request>, String) {
 }
 
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_nmh_upload_text_action_4() {
     let (got, reply) = exchange("text", r#"{"Action":4,"URL":"","Text":"hello"}"#);
     assert_eq!(got, vec![Request::UploadText("hello".into())], "reply: {reply}");
 }
 
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_nmh_shorten_url_action_5() {
     let (got, reply) = exchange("shorten", r#"{"Action":5,"URL":"https://example.invalid/","Text":""}"#);
     assert_eq!(got, vec![Request::ShortenUrl("https://example.invalid/".into())], "reply: {reply}");
 }
 
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_nmh_upload_audio_action_3_is_shortened() {
     let (got, reply) = exchange("audio", r#"{"Action":3,"URL":"https://example.invalid/a.mp3","Text":""}"#);
     assert_eq!(got, vec![Request::UploadUrl("https://example.invalid/a.mp3".into())], "reply: {reply}");
 }
 
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_nmh_upload_video_action_2() {
     let (got, reply) = exchange("video", r#"{"Action":2,"URL":"https://example.invalid/v.mp4","Text":""}"#);
     assert_eq!(got, vec![Request::UploadUrl("https://example.invalid/v.mp4".into())], "reply: {reply}");
 }
 
-/// Selected text longer than the old 4096-byte IPC line limit must still reach Laqta. Uses Laqta's own
-/// number for text (2) so only the size is under test.
+/// Selected text longer than the old 4096-byte IPC line limit must still reach Laqta.
 #[test]
 fn audit_bug_nmh_long_text_exceeds_ipc_line_limit() {
     let text = "a".repeat(5000);
-    let (got, reply) = exchange("long", &format!(r#"{{"Action":2,"URL":"","Text":"{text}"}}"#));
+    let (got, reply) = exchange("long", &format!(r#"{{"Action":4,"URL":"","Text":"{text}"}}"#));
     assert_eq!(got.len(), 1, "a 5000-byte text upload did not reach Laqta; reply: {reply}");
 }
 

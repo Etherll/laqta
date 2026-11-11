@@ -68,12 +68,12 @@ fn report_events(events: &[DebouncedEvent], on_file: &WatchCallback) {
     }
 }
 
-/// A file was created, written, or renamed into the folder.
+/// A file was created or renamed into the folder. A data write to a file that was already there is
+/// not an arrival. Writes to a file created in the same settle window are merged into its create event.
 fn is_arrival(kind: &EventKind) -> bool {
     matches!(
         kind,
-        EventKind::Create(CreateKind::File | CreateKind::Any)
-            | EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Any | ModifyKind::Name(RenameMode::To))
+        EventKind::Create(CreateKind::File | CreateKind::Any) | EventKind::Modify(ModifyKind::Any | ModifyKind::Name(RenameMode::To))
     )
 }
 

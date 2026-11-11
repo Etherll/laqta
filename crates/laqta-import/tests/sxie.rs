@@ -155,7 +155,7 @@ fn unknown_effect_classes_are_skipped_with_a_warning() {
     let config = r#"{
         "Name": "Mixed",
         "Effects": [
-            { "$type": "ShareX.ImageEffectsLib.Brightness, ShareX.ImageEffectsLib", "Value": 20, "Enabled": true },
+            { "$type": "ShareX.ImageEffectsLib.Brightness, ShareX.ImageEffectsLib", "Value": 0.2, "Enabled": true },
             { "$type": "ShareX.ImageEffectsLib.Frobnicate, ShareX.ImageEffectsLib", "Value": 1, "Enabled": true }
         ]
     }"#;
@@ -174,12 +174,12 @@ fn values_written_as_text_and_missing_flags_are_read() {
     let config = r#"{
         "Name": "Text numbers",
         "Effects": [
-            { "$type": "ShareX.ImageEffectsLib.Brightness, ShareX.ImageEffectsLib", "Value": "20" },
+            { "$type": "ShareX.ImageEffectsLib.Brightness, ShareX.ImageEffectsLib", "Value": "0.25" },
             { "$type": "ShareX.ImageEffectsLib.Pixelate, ShareX.ImageEffectsLib", "Size": 6, "Enabled": "false" }
         ]
     }"#;
     let preset = parse_sxie(&package(&[("Config.json", config)])).unwrap();
-    assert_eq!(preset.effects[0], EffectItem { effect: Effect::Adjust(Adjust::Brightness { value: 20.0 }), enabled: true });
+    assert_eq!(preset.effects[0], EffectItem { effect: Effect::Adjust(Adjust::Brightness { value: 25.0 }), enabled: true });
     assert_eq!(preset.effects[1], EffectItem { effect: Effect::Filter(Filter::Pixelate { size: 6 }), enabled: false });
 }
 
@@ -224,7 +224,7 @@ fn written_packages_hold_a_config_json_with_sharex_type_names() {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
     let mut text = String::new();
     std::io::Read::read_to_string(&mut archive.by_name("Config.json").unwrap(), &mut text).unwrap();
-    assert!(text.contains("ShareX.ImageEffectsLib.Sepia, ShareX.ImageEffectsLib"), "{text}");
+    assert!(text.contains(r#""$type":"Sepia""#) || text.contains(r#""$type": "Sepia""#), "{text}");
 }
 
 /// A zip archive holding the given entries.

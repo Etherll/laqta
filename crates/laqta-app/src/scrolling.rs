@@ -31,12 +31,12 @@ impl App {
         let sel = region::pick(&self.ports, frames, &ts.capture.region).await?;
         let rect = sel.rects.iter().copied().reduce(PhysRect::union).ok_or_else(|| AppError::Io("no region selected".to_owned()))?;
         let scrolling = ts.capture.scrolling.clone();
-        let show_cursor = ts.capture.show_cursor;
+        let request = CaptureRequest { show_cursor: ts.capture.show_cursor, hdr_tonemap: ts.capture.hdr_tonemap };
         // The wheel and keys go to the window under the middle of the region.
         let (x, y) = (rect.x.saturating_add_unsigned(rect.width / 2), rect.y.saturating_add_unsigned(rect.height / 2));
 
         self.pause(scrolling.start_delay_ms).await;
-        let first = self.capture_rect(rect, show_cursor).await?;
+        let first = self.capture_rect(rect, request).await?;
         let options =
             StitchOptions { ignore_top: scrolling.ignore_top, ignore_bottom: scrolling.ignore_bottom, ..StitchOptions::default() };
         let mut stitcher = self.on_compute(move || Stitcher::new(&first, options)).await?;
@@ -58,7 +58,7 @@ impl App {
                 }
             }
             self.pause(scrolling.scroll_delay_ms).await;
-            let frame = self.capture_rect(rect, show_cursor).await?;
+            let frame = self.capture_rect(rect, request).await?;
             let (next, step) = self.push_frame(stitcher, frame).await?;
             stitcher = next;
             taken += 1;
@@ -81,8 +81,11 @@ impl App {
 
         let image = self.on_compute(move || stitcher.result()).await?;
         // Same job as `App::submit` for a region capture, so the after-capture tasks run.
-        let info =
-            sel.target.as_ref().map(|t| CaptureInfo { window_title: t.title.clone(), process_name: t.process.clone() }).unwrap_or_default();
+        let info = sel
+            .target
+            .as_ref()
+            .map(|t| CaptureInfo { window_title: t.title.clone(), process_name: t.process.clone(), ..Default::default() })
+            .unwrap_or_default();
         Ok(Dispatched::Task(self.task.submit(TaskJob::Capture { image: CaptureImage::Image(image), settings: ts, info })))
     }
 
@@ -94,8 +97,8 @@ impl App {
     }
 
     /// One fresh capture cropped to `rect`, as a region capture crops its frames.
-    async fn capture_rect(&self, rect: PhysRect, show_cursor: bool) -> Result<Bitmap, AppError> {
-        let frames = self.ports.screen.capture(CaptureRequest { show_cursor }).await.map_err(AppError::from)?;
+    async fn capture_rect(&self, rect: PhysRect, request: CaptureRequest) -> Result<Bitmap, AppError> {
+        let frames = self.ports.screen.capture(request).await.map_err(AppError::from)?;
         Ok(region::crop_frames(&self.ports, frames, vec![rect], None).await?.image)
     }
 

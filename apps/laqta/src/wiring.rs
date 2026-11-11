@@ -254,6 +254,9 @@ async fn run_request(
     use crate::requests::Route;
     match crate::requests::route(request, &app.settings())? {
         Route::Dispatch(action, workflow) => dispatched(app.dispatch(action, workflow).await),
+        Route::DispatchFile(action, path, workflow) => {
+            dispatched(app.dispatch_with(action, laqta_app::ActionInput::Files(vec![path]), workflow).await)
+        }
         // Uploads enter through `dispatch` too (ADR 015), as the action with its input.
         Route::Upload(source, workflow) => {
             use laqta_app::ActionInput;
@@ -312,16 +315,49 @@ type RegisteredBindings = Arc<Mutex<Option<Vec<(KeyChord, Action)>>>>;
 type HotkeyReports = Arc<Mutex<laqta_ui::HotkeyReport>>;
 
 static HOTKEY_REPORT: std::sync::OnceLock<HotkeyReports> = std::sync::OnceLock::new();
+/// Set while the settings window records a shortcut: a fired hotkey is ignored then.
+static HOTKEYS_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The UI to tell when the report changes, so the settings window shows the new status at once.
+static HOTKEY_WATCHER: std::sync::OnceLock<UiHandle> = std::sync::OnceLock::new();
+
+fn hotkeys_changed() {
+    if let Some(ui) = HOTKEY_WATCHER.get() {
+        ui.hotkeys_changed();
+    }
+}
 
 fn hotkey_reports() -> HotkeyReports {
     HOTKEY_REPORT.get_or_init(|| Arc::new(Mutex::new(laqta_ui::HotkeyReport { pending: true, ..Default::default() }))).clone()
 }
 
+/// Stores the keys the desktop assigned: each chord in `keys` replaces its old key, and the other chords keep theirs.
+fn merge_system_keys(keys: Vec<(KeyChord, String)>) {
+    let reports = hotkey_reports();
+    let mut report = reports.lock().unwrap_or_else(|e| e.into_inner());
+    for (chord, key) in keys {
+        match report.system_keys.iter_mut().find(|(known, _)| *known == chord) {
+            Some(entry) => entry.1 = key,
+            None => report.system_keys.push((chord, key)),
+        }
+    }
+    drop(report);
+    hotkeys_changed();
+}
+
 /// Makes the platform's hotkeys match the app's current bindings unless they already do. Returns whether the platform
 /// refused every chord as unsupported; false when the bindings were already registered. The settings are read under the lock,
-/// so the last run to take it leaves the latest bindings registered.
+/// so the last run to take it leaves the latest bindings registered. While a shortcut is being recorded, a platform that grabs
+/// its keys has them released instead, so the settings window sees a bound chord; the next run after the recording ends
+/// registers them again.
 fn sync_hotkeys(app: &App, hotkeys: &dyn HotkeyRegistrar, registered: &RegisteredBindings, on_fire: HotkeyCallback) -> bool {
     let mut current = registered.lock().unwrap_or_else(|e| e.into_inner());
+    if HOTKEYS_HELD.load(std::sync::atomic::Ordering::SeqCst) && hotkeys.grabs_keys() {
+        if current.take().is_some() {
+            hotkeys.unregister_all();
+            tracing::info!("hotkeys released while a shortcut is being recorded");
+        }
+        return false;
+    }
     let bindings = app.settings().hotkey_bindings();
     if current.as_ref() == Some(&bindings) {
         return false;
@@ -350,7 +386,15 @@ fn sync_hotkeys(app: &App, hotkeys: &dyn HotkeyRegistrar, registered: &Registere
             }
         }
     }
-    *hotkey_reports().lock().unwrap_or_else(|e| e.into_inner()) = report;
+    // The desktop's keys arrive through `on_assigned`, not this registration, so the new report keeps them.
+    // Only chords still bound keep theirs.
+    let reports = hotkey_reports();
+    let mut shared = reports.lock().unwrap_or_else(|e| e.into_inner());
+    report.system_keys = std::mem::take(&mut shared.system_keys);
+    report.system_keys.retain(|(chord, _)| report.registered.contains(chord));
+    *shared = report;
+    drop(shared);
+    hotkeys_changed();
     *current = if retry { None } else { Some(bindings) };
     unsupported
 }
@@ -364,6 +408,8 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     startup.extend(args.requests.iter().cloned());
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let spawner = AppSpawner::start(clock.clone()).map_err(|e| format!("cannot start the app worker: {e}"))?;
+    // Releases the AI models' sessions after 60 s without use (ARCHITECTURE §1.4).
+    let releaser = crate::models::ModelReleaser::new(clock.clone(), spawner.clone());
     let data = data_dir(&args);
     let mut platform = platform(&data)?;
     if args.sandbox {
@@ -387,6 +433,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     };
 
     let (ui, ui_rx) = UiHandle::channel();
+    let _ = HOTKEY_WATCHER.set(ui.clone());
     let rng = stubs::system_rng();
     let uploaders = crate::uploads::registry(&data, Arc::new(ui.clone()), rng.clone());
     let host_deps = crate::uploads::host_deps(platform.secrets.clone(), platform.shell.clone());
@@ -421,13 +468,24 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             backend: recorder_backend.clone(),
         }),
         stream: platform.stream.clone(),
-        ocr: Arc::new(crate::ocr::LazyOcr::new(data.clone(), Arc::new(ui.clone()), model_options.clone(), platform.os_ocr.clone())),
+        ocr: Arc::new(crate::ocr::LazyOcr::new(
+            data.clone(),
+            Arc::new(ui.clone()),
+            model_options.clone(),
+            platform.os_ocr.clone(),
+            releaser.clone(),
+        )),
         window_ops: platform.window_ops.clone(),
         input: platform.input.clone(),
         highlighter: platform.highlighter.clone(),
         background: Arc::new(crate::cloud::Background::new(
             cloud_options.clone(),
-            Arc::new(crate::local_models::LocalBackground::new(data.clone(), model_options.clone(), Arc::new(ui.clone()))),
+            Arc::new(crate::local_models::LocalBackground::new(
+                data.clone(),
+                model_options.clone(),
+                Arc::new(ui.clone()),
+                releaser.clone(),
+            )),
             platform.secrets.clone(),
             spawner.clone(),
             laqta_imaging::Codecs::builtin(),
@@ -437,7 +495,12 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             secrets: platform.secrets.clone(),
             spawner: spawner.clone(),
         }),
-        inpainter: Arc::new(crate::local_models::LocalInpainter::new(data.clone(), model_options.clone(), Arc::new(ui.clone()))),
+        inpainter: Arc::new(crate::local_models::LocalInpainter::new(
+            data.clone(),
+            model_options.clone(),
+            Arc::new(ui.clone()),
+            releaser.clone(),
+        )),
         watcher: Arc::new(laqta_library::NotifyWatcher::default()),
         uploaders: uploaders.clone(),
         hover: platform.hover,
@@ -449,6 +512,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let app = App::new(ports, settings);
     let (quit_tx, quit_rx) = mpsc::channel::<()>();
     let hotkeys = platform.hotkeys;
+    hotkeys.on_assigned(Arc::new(merge_system_keys));
     let registered: RegisteredBindings = Arc::new(Mutex::new(None));
 
     // Task events: the log and the history writer.
@@ -465,7 +529,10 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     if let Some(h) = &history {
         h.release_when_idle(clock.clone(), spawner.clone());
         app.attach_history(h.clone());
-        spawner.spawn(Box::pin(laqta_library::record_task_events(h.clone(), app.events(), clock.clone())));
+        let settings = app.clone();
+        spawner.spawn(Box::pin(laqta_library::record_task_events(h.clone(), app.events(), clock.clone(), move || {
+            settings.settings().history.max_items
+        })));
     }
     // One font set for the windows and for the text of drawing effects (ADR 024).
     let fonts = crate::fonts::fonts();
@@ -541,9 +608,15 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let hotkey_dispatch: HotkeyCallback = {
         let app = app.clone();
         let run_action = run_action.clone();
-        Arc::new(move |chord: KeyChord| match app.settings().workflow_for_hotkey(chord) {
-            Some(workflow) => run_action(workflow.action, Some(workflow.id)),
-            None => tracing::debug!(%chord, "no enabled workflow is bound to this hotkey"),
+        Arc::new(move |chord: KeyChord| {
+            if HOTKEYS_HELD.load(std::sync::atomic::Ordering::SeqCst) {
+                tracing::debug!(%chord, "hotkey ignored while a shortcut is being recorded");
+                return;
+            }
+            match app.settings().workflow_for_hotkey(chord) {
+                Some(workflow) => run_action(workflow.action, Some(workflow.id)),
+                None => tracing::debug!(%chord, "no enabled workflow is bound to this hotkey"),
+            }
         })
     };
     if let Ok(mut s) = hotkey_slot.lock() {
@@ -740,6 +813,54 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         let quit_ui = quit_tx.clone();
         let services = UiServices {
             hotkey_report: Arc::new(|| hotkey_reports().lock().unwrap_or_else(|e| e.into_inner()).clone()),
+            default_settings: Arc::new(default_settings),
+            configure_shortcuts: cfg!(target_os = "linux").then(|| {
+                let hotkeys = hotkeys.clone();
+                Arc::new(move || {
+                    if let Err(e) = hotkeys.configure() {
+                        tracing::warn!("cannot open the desktop's shortcut settings: {e}");
+                    }
+                }) as Arc<dyn Fn() + Send + Sync>
+            }),
+            free_print_screen: {
+                #[cfg(windows)]
+                let free: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>> =
+                    Some(Arc::new(|| laqta_platform_windows::set_print_screen_for_snipping(false).map_err(|e| e.to_string())));
+                #[cfg(not(windows))]
+                let free: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>> = None;
+                free
+            },
+            hold_hotkeys: {
+                let (app, hotkeys, registered, hotkey_dispatch, spawner) =
+                    (app.clone(), hotkeys.clone(), registered.clone(), hotkey_dispatch.clone(), spawner.clone());
+                Arc::new(move |held| {
+                    if HOTKEYS_HELD.swap(held, std::sync::atomic::Ordering::SeqCst) == held || !use_hotkeys || !hotkeys.grabs_keys() {
+                        return;
+                    }
+                    // Releases the grabs for the recording, or registers them again after it. Each run reads the
+                    // flag under the lock, so the last one leaves the right state.
+                    let (app, hotkeys, registered, hotkey_dispatch) =
+                        (app.clone(), hotkeys.clone(), registered.clone(), hotkey_dispatch.clone());
+                    let blocking = spawner.clone();
+                    spawner.spawn(Box::pin(async move {
+                        blocking
+                            .run_blocking(Box::new(move || {
+                                sync_hotkeys(&app, hotkeys.as_ref(), &registered, hotkey_dispatch);
+                            }))
+                            .await;
+                    }));
+                })
+            },
+            record_keys: cfg!(windows).then(|| {
+                let hotkeys = hotkeys.clone();
+                Arc::new(move |on_chord: laqta_ports::ChordCallback| match hotkeys.record_keys(on_chord) {
+                    Ok(recording) => Some(recording),
+                    Err(e) => {
+                        tracing::warn!("cannot record special keys: {e}");
+                        None
+                    }
+                }) as Arc<dyn Fn(laqta_ports::ChordCallback) -> Option<laqta_ports::KeyRecording> + Send + Sync>
+            }),
             app: app.clone(),
             history: history.clone(),
             shell: platform.shell.clone(),

@@ -43,6 +43,9 @@ fn main() -> ExitCode {
             if let Err(e) = laqta_platform_windows::remove_native_messaging() {
                 eprintln!("laqta: {e}");
             }
+            if let Err(e) = laqta_platform_windows::restore_print_screen_for_snipping() {
+                eprintln!("laqta: {e}");
+            }
         }
         let _ = hook;
         return ExitCode::SUCCESS;
@@ -67,13 +70,18 @@ fn main() -> ExitCode {
         None => None,
         Some(Ok(laqta_ipc::Claim::Primary(server))) => Some(server),
         Some(Ok(laqta_ipc::Claim::Secondary(mut client))) => {
-            let mut forward: Vec<laqta_ipc::Request> = args
-                .import_uploaders
-                .iter()
-                .chain(&args.import_effects)
-                .map(|p| laqta_ipc::Request::Upload(std::path::absolute(p).unwrap_or_else(|_| p.clone())))
-                .collect();
-            forward.extend(args.requests.iter().cloned());
+            // The running instance resolves paths against its own working directory, so make them absolute here.
+            let absolute = |p: &std::path::PathBuf| std::path::absolute(p).unwrap_or_else(|_| p.clone());
+            let mut forward: Vec<laqta_ipc::Request> =
+                args.import_uploaders.iter().chain(&args.import_effects).map(|p| laqta_ipc::Request::Upload(absolute(p))).collect();
+            forward.extend(args.requests.iter().map(|r| match r {
+                laqta_ipc::Request::Upload(p) => laqta_ipc::Request::Upload(absolute(p)),
+                laqta_ipc::Request::ActionFile(a, p) => laqta_ipc::Request::ActionFile(*a, absolute(p)),
+                laqta_ipc::Request::UploadWith { workflow, path } => {
+                    laqta_ipc::Request::UploadWith { workflow: workflow.clone(), path: absolute(path) }
+                }
+                other => other.clone(),
+            }));
             if forward.is_empty() {
                 println!("Laqta is already running");
                 return ExitCode::SUCCESS;

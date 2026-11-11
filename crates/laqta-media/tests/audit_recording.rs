@@ -195,9 +195,9 @@ fn webp_and_apng_recordings_finish_through_the_real_pipeline() {
 
 /// The quality flag each hardware encoder gets must be one of that encoder's options. FFmpeg
 /// ignores an unknown codec option with only a warning (hidden by `-loglevel error`), so the
-/// quality setting would silently do nothing.
+/// quality setting would silently do nothing. QSV has no private quality option; it reads the
+/// generic `-global_quality`. An encoder this FFmpeg build lacks is skipped.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_hardware_quality_flag_is_an_option_of_its_encoder() {
     let mut wrong = Vec::new();
     for (codec, encoder) in [
@@ -213,7 +213,12 @@ fn audit_bug_hardware_quality_flag_is_an_option_of_its_encoder() {
         let flag = args.windows(2).find(|w| w[1] == "23").map(|w| w[0].clone()).expect("a quality flag");
         let help = run("ffmpeg", &["-hide_banner".into(), "-h".into(), format!("encoder={encoder}")]);
         let help = String::from_utf8_lossy(&help.stdout).into_owned();
-        if !help.lines().any(|line| line.trim_start().starts_with(&format!("{flag} "))) {
+        if !help.contains(&format!("Encoder {encoder} ")) {
+            eprintln!("skipped: this ffmpeg has no {encoder}");
+            continue;
+        }
+        let generic = encoder.ends_with("_qsv") && flag == "-global_quality";
+        if !generic && !help.lines().any(|line| line.trim_start().starts_with(&format!("{flag} "))) {
             wrong.push(format!("{encoder} gets {flag} 23, which it does not have"));
         }
     }

@@ -15,7 +15,10 @@ pub mod upload;
 #[cfg(feature = "fakes")]
 pub mod fakes;
 
-pub use desktop::{ActionCallback, Clipboard, ClipboardContent, HotkeyCallback, HotkeyRegistrar, Shell, Tray, TrayItem, TrayMenu};
+pub use desktop::{
+    ActionCallback, AssignedCallback, ChordCallback, Clipboard, ClipboardContent, HotkeyCallback, HotkeyRegistrar, KeyRecording, Shell,
+    Tray, TrayItem, TrayMenu,
+};
 pub use error::PortError;
 pub use history::HistoryEdit;
 pub use notify::{HostInfo, Notifier, Rng, Sound, Toast};

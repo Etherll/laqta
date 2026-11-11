@@ -160,8 +160,10 @@ impl Runtime {
                 last_used: Instant::now(),
             },
         };
-        loaded.last_used = Instant::now();
         let result = run(&mut loaded.session);
+        // Idle time counts from the end of the run, so a run longer than the release delay doesn't
+        // leave its session already due.
+        loaded.last_used = Instant::now();
         sessions.insert(task, loaded);
         result
     }

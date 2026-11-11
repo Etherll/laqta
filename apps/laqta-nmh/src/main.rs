@@ -12,7 +12,9 @@ use laqta_ipc::{Claim, Request};
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 struct Message {
-    /// 1 = upload an image URL, 2 = upload text, 3 = shorten a URL, 4 = upload a URL (download and reupload).
+    /// ShareX's `NativeMessagingAction`: 1 = upload an image, 2 = a video, 3 = an audio file (all by
+    /// URL), 4 = upload text, 5 = shorten a URL. Any other value (0 = None) uploads the URL, or the
+    /// text when there is no URL.
     action: u32,
     #[serde(rename = "URL")]
     url: String,
@@ -40,12 +42,17 @@ fn write_message(out: &mut impl Write, value: &serde_json::Value) -> io::Result<
     out.flush()
 }
 
+/// What ShareX does with the message (`TaskHelpers.HandleNativeMessagingInput`).
 fn to_request(m: &Message) -> Result<Request, String> {
+    let (url, text) = (!m.url.is_empty(), !m.text.is_empty());
     match m.action {
-        1 | 4 if !m.url.is_empty() => Ok(Request::UploadUrl(m.url.clone())),
-        2 if !m.text.is_empty() => Ok(Request::UploadText(m.text.clone())),
-        3 if !m.url.is_empty() => Ok(Request::ShortenUrl(m.url.clone())),
-        _ => Err(format!("unsupported message (action {})", m.action)),
+        1..=3 if url => Ok(Request::UploadUrl(m.url.clone())),
+        4 if text => Ok(Request::UploadText(m.text.clone())),
+        5 if url => Ok(Request::ShortenUrl(m.url.clone())),
+        1..=5 => Err(format!("action {} needs {}", m.action, if m.action == 4 { "text" } else { "a URL" })),
+        _ if url => Ok(Request::UploadUrl(m.url.clone())),
+        _ if text => Ok(Request::UploadText(m.text.clone())),
+        _ => Err("the message has no URL and no text".into()),
     }
 }
 
@@ -94,7 +101,7 @@ mod tests {
     #[test]
     fn framing_round_trip() {
         let mut buf = Vec::new();
-        write_message(&mut buf, &serde_json::json!({"Action": 2, "Text": "hi"})).unwrap();
+        write_message(&mut buf, &serde_json::json!({"Action": 4, "Text": "hi"})).unwrap();
         let raw = read_message(&mut buf.as_slice()).unwrap();
         let m: Message = serde_json::from_slice(&raw).unwrap();
         assert_eq!(to_request(&m).unwrap(), Request::UploadText("hi".into()));
@@ -104,9 +111,10 @@ mod tests {
     fn maps_actions() {
         let m = |a: u32, url: &str| Message { action: a, url: url.into(), text: String::new() };
         assert_eq!(to_request(&m(1, "https://a/b.png")).unwrap(), Request::UploadUrl("https://a/b.png".into()));
-        assert_eq!(to_request(&m(3, "https://a")).unwrap(), Request::ShortenUrl("https://a".into()));
-        assert!(to_request(&m(9, "x")).is_err());
+        assert_eq!(to_request(&m(5, "https://a")).unwrap(), Request::ShortenUrl("https://a".into()));
+        assert_eq!(to_request(&m(9, "https://a")).unwrap(), Request::UploadUrl("https://a".into()), "unknown actions upload the URL");
         assert!(to_request(&m(2, "")).is_err());
+        assert!(to_request(&m(4, "https://a")).is_err(), "text upload with no text");
     }
 
     #[test]

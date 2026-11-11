@@ -1,5 +1,4 @@
-//! Known `.sxcu` compatibility defects. Each `audit_bug_*` test fails until the defect it names
-//! is fixed.
+//! `.sxcu` compatibility with ShareX. Each `audit_bug_*` test pins a defect that was found and fixed.
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -75,7 +74,6 @@ fn data_backslash_runs_before_a_marker() {
 
 /// In `.sxcu` syntax, `{prompt:…}` is an alias of `{inputbox:…}`.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_prompt_alias_of_inputbox() {
     let file = json!({ "RequestURL": "https://h/up", "Headers": { "X-Key": "{prompt:API key}" } }).to_string();
     let prompt = FakePrompt::default();
@@ -87,7 +85,6 @@ fn audit_bug_prompt_alias_of_inputbox() {
 /// In `.sxcu` syntax, `{regex:…}` with no group argument returns the whole match, even when the
 /// pattern has groups.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_regex_without_group_is_whole_match() {
     let file = json!({ "RequestURL": "https://h/up", "URL": "{regex:https://(x)[.]io/[a-z]+}" }).to_string();
     let result = read(&file, "see https://x.io/abc ok").unwrap();
@@ -96,7 +93,6 @@ fn audit_bug_regex_without_group_is_whole_match() {
 
 /// In `.sxcu` syntax, `{regex:…}` takes three parameters: `input|pattern|group`.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_regex_three_argument_form() {
     let file = json!({ "RequestURL": "https://h/up", "URL": "{regex:abc123|[0-9]+|0}" }).to_string();
     let result = read(&file, "zzz").unwrap();
@@ -105,7 +101,6 @@ fn audit_bug_regex_three_argument_form() {
 
 /// In `.sxcu` syntax, `{xml:…}` takes two parameters: `input|xpath`.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_xml_two_argument_form() {
     let file = json!({ "RequestURL": "https://h/up", "URL": "{xml:<a><b>v</b></a>|/a/b}" }).to_string();
     let result = read(&file, "<other/>").expect("{xml:input|xpath} is valid in ShareX");
@@ -115,7 +110,6 @@ fn audit_bug_xml_two_argument_form() {
 /// In `.sxcu` syntax, `{outputbox:…}` with one parameter shows that parameter as the text; the
 /// title defaults to "Output".
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_outputbox_single_argument_is_the_text() {
     let file = json!({ "RequestURL": "https://h/up", "Headers": { "X": "{outputbox:Your code is 42}" } }).to_string();
     let prompt = FakePrompt::default();
@@ -128,7 +122,6 @@ fn audit_bug_outputbox_single_argument_is_the_text() {
 /// In `.sxcu` syntax, `{input}` in the request URL is percent-encoded, so it cannot add query
 /// parameters of its own.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_input_in_request_url_is_not_url_encoded() {
     let file = json!({ "RequestURL": "https://h/s?url={input}" }).to_string();
     let request = build(&file, Some("https://a.b/?x=1&y=2")).unwrap();
@@ -138,7 +131,6 @@ fn audit_bug_input_in_request_url_is_not_url_encoded() {
 /// In `.sxcu` files, arguments, parameters and headers expand name-pattern tokens such as `%y`
 /// (year) before the request is built.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_name_pattern_tokens_not_expanded_in_arguments() {
     let file = json!({ "RequestURL": "https://h/up", "Body": "FormURLEncoded", "Arguments": { "year": "%y" } }).to_string();
     let request = build(&file, None).unwrap();
@@ -149,7 +141,6 @@ fn audit_bug_name_pattern_tokens_not_expanded_in_arguments() {
 /// ShareX omits `Name` from a `.sxcu` file when it equals the request URL's host name, and the
 /// host name then serves as the display name. Such files are common; Laqta refuses them.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_nameless_sxcu_is_rejected() {
     let mut registry = Registry::new(Arc::new(FakePrompt::default()), Arc::new(CountingRng::default()));
     let file = json!({
@@ -167,10 +158,40 @@ fn audit_bug_nameless_sxcu_is_rejected() {
 /// A `.sxcu` with `DestinationType: URLSharingService` is a valid ShareX uploader. Laqta refuses
 /// it.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_url_sharing_sxcu_rejected() {
     let mut registry = Registry::new(Arc::new(FakePrompt::default()), Arc::new(CountingRng::default()));
     let file =
         json!({ "Name": "MySharer", "DestinationType": "URLSharingService", "RequestURL": "https://s.example/?u={input}" }).to_string();
     registry.add_custom(&file).expect("URL sharing .sxcu files are a ShareX destination type");
+}
+
+/// An imported shortener or sharing service is listed for settings under its own name.
+#[test]
+fn custom_shorteners_and_sharers_are_listed() {
+    let mut registry = Registry::new(Arc::new(FakePrompt::default()), Arc::new(CountingRng::default()));
+    let sharer = json!({ "Name": "MySharer", "DestinationType": "URLSharingService", "RequestURL": "https://s.example/?u={input}" });
+    let short =
+        json!({ "Name": "MyShort", "DestinationType": "URLShortener", "RequestURL": "https://t.example/?u={input}", "URL": "{response}" });
+    registry.add_custom(&sharer.to_string()).unwrap();
+    registry.add_custom(&short.to_string()).unwrap();
+    assert_eq!(registry.custom_sharer_ids(), vec![("custom:MySharer".to_string(), "MySharer".to_string())]);
+    assert_eq!(registry.custom_shortener_ids(), vec![("custom:MyShort".to_string(), "MyShort".to_string())]);
+    assert!(registry.sharer("custom:MySharer").is_some());
+}
+
+/// ShareX percent-encodes `{filename}` as well as `{input}` in the request URL and in the result
+/// URL templates, so a file name with a space or `&` stays one path segment.
+#[test]
+fn filename_is_url_encoded_in_the_request_and_result_urls() {
+    let file = json!({ "RequestURL": "https://h/up/{filename}?x=1", "URL": "https://h/v/{filename}" }).to_string();
+    let uploader = CustomUploader::parse(&file).unwrap();
+    let prompt = FakePrompt::default();
+    let rng = CountingRng::default();
+    let env = Env { prompt: &prompt, rng: &rng };
+    let named = Input { file_name: "my shot&1.png", data: b"PNG", mime: "image/png", text: None };
+    let request = block_on(build_request(&uploader, &named, &env)).unwrap();
+    assert_eq!(request.url, "https://h/up/my%20shot%261.png?x=1");
+    let response = Response { status: 200, url: "https://h/up".into(), headers: Vec::new(), body: Vec::new() };
+    let result = block_on(parse_response(&uploader, &response, &named, &env)).unwrap();
+    assert_eq!(result.url.as_deref(), Some("https://h/v/my%20shot%261.png"));
 }
