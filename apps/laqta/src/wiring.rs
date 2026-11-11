@@ -166,29 +166,55 @@ fn default_data_dir() -> std::path::PathBuf {
 
 /// Marks that the first run of this data folder has turned on starting at sign-in (or chose not to).
 const AUTOSTART_MARKER: &str = "autostart-default";
+/// The marker's contents while a failed attempt waits for the next start.
+const AUTOSTART_RETRY: &[u8] = b"retry";
 
 /// Laqta starts at sign-in by default: the first run of a new install turns it on, once. Later runs
-/// leave it as the user set it in Settings. A portable or sandboxed copy, an existing profile (one
-/// with settings) and a debug build are left alone. Only an installed release copy writes the
-/// marker: a portable copy or a debug build sharing the default folder must not use up its turn.
+/// leave it as the user set it in Settings. Only an `eligible` copy (installed, release build) takes
+/// part, so a portable copy or a debug build sharing the default folder can't use up its turn. An
+/// existing profile (one with settings) is left alone. An attempt that fails is tried again at the
+/// next start; one this copy can't make at all (a macOS binary outside an app bundle) is not.
 fn autostart_first_run(
     autostart: &dyn laqta_ports::Autostart,
     data: &std::path::Path,
-    installed: bool,
+    eligible: bool,
     new_profile: bool,
     exe: &std::path::Path,
 ) {
-    let marker = data.join(AUTOSTART_MARKER);
-    if !installed || cfg!(debug_assertions) || marker.exists() {
+    if !eligible {
         return;
     }
-    if new_profile && !autostart.is_enabled().unwrap_or(true) {
-        match autostart.set_enabled(true, exe) {
-            Ok(()) => tracing::info!("Laqta will start at sign-in (turn it off in Settings)"),
-            Err(error) => tracing::warn!(%error, "could not turn on starting at sign-in"),
+    let marker = data.join(AUTOSTART_MARKER);
+    let retry = match std::fs::read(&marker) {
+        Ok(contents) if contents == AUTOSTART_RETRY => true,
+        Ok(_) => return,
+        Err(_) => false,
+    };
+    let done = if !new_profile && !retry {
+        true
+    } else {
+        let turned_on = autostart.is_enabled().and_then(|on| {
+            if on {
+                return Ok(());
+            }
+            autostart.set_enabled(true, exe)?;
+            tracing::info!("Laqta will start at sign-in (turn it off in Settings)");
+            Ok(())
+        });
+        match turned_on {
+            Ok(()) => true,
+            Err(PortError::Unsupported(why)) => {
+                tracing::info!("this copy can't start at sign-in: {why}");
+                true
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not turn on starting at sign-in; trying again at the next start");
+                false
+            }
         }
-    }
-    if let Err(error) = std::fs::create_dir_all(data).and_then(|()| std::fs::write(&marker, b"")) {
+    };
+    let contents: &[u8] = if done { b"" } else { AUTOSTART_RETRY };
+    if let Err(error) = std::fs::create_dir_all(data).and_then(|()| std::fs::write(&marker, contents)) {
         tracing::warn!(%error, "could not record the sign-in default");
     }
 }
@@ -508,7 +534,9 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         if installed && let Err(error) = platform.autostart.migrate(&exe) {
             tracing::warn!(%error, "could not update the start at sign-in entry");
         }
-        autostart_first_run(platform.autostart.as_ref(), &data, installed, !store.path().exists(), &exe);
+        // A debug build leaves the default to a release build.
+        let eligible = installed && !cfg!(debug_assertions);
+        autostart_first_run(platform.autostart.as_ref(), &data, eligible, !store.path().exists(), &exe);
     }
     let settings = load_settings(&store);
     let history = if settings.history.enabled && !args.sandbox {
@@ -1066,6 +1094,9 @@ mod tests {
     struct SignIn {
         on: std::sync::atomic::AtomicBool,
         sets: AtomicUsize,
+        /// Attempts to turn it on that fail before one succeeds.
+        failures: AtomicUsize,
+        unsupported: std::sync::atomic::AtomicBool,
     }
 
     impl laqta_ports::Autostart for SignIn {
@@ -1073,14 +1104,20 @@ mod tests {
             Ok(self.on.load(Ordering::SeqCst))
         }
         fn set_enabled(&self, enabled: bool, _: &std::path::Path) -> Result<(), PortError> {
-            self.on.store(enabled, Ordering::SeqCst);
             self.sets.fetch_add(1, Ordering::SeqCst);
+            if self.unsupported.load(Ordering::SeqCst) {
+                return Err(PortError::Unsupported("not an app bundle".into()));
+            }
+            if self.failures.load(Ordering::SeqCst) > 0 {
+                self.failures.fetch_sub(1, Ordering::SeqCst);
+                return Err(PortError::Failed("busy".into()));
+            }
+            self.on.store(enabled, Ordering::SeqCst);
             Ok(())
         }
     }
 
     /// The first run of a new install turns sign-in start on, once: turned off later, it stays off.
-    /// (Debug builds never turn it on, so this checks the release path only there.)
     #[test]
     fn a_new_install_starts_at_sign_in_once() {
         let dir = tempfile::tempdir().unwrap();
@@ -1088,9 +1125,8 @@ mod tests {
         let exe = std::path::Path::new("/opt/laqta/laqta");
 
         autostart_first_run(&sign_in, dir.path(), true, true, exe);
-        // A debug build leaves both the setting and the marker to the release build.
-        assert_eq!(sign_in.on.load(Ordering::SeqCst), !cfg!(debug_assertions));
-        assert_eq!(dir.path().join(AUTOSTART_MARKER).exists(), !cfg!(debug_assertions));
+        assert!(sign_in.on.load(Ordering::SeqCst));
+        assert!(dir.path().join(AUTOSTART_MARKER).exists());
 
         sign_in.on.store(false, Ordering::SeqCst);
         let sets = sign_in.sets.load(Ordering::SeqCst);
@@ -1142,9 +1178,39 @@ mod tests {
             autostart_first_run(&sign_in, dir.path(), installed, new_profile, std::path::Path::new("/x"));
             assert_eq!(sign_in.sets.load(Ordering::SeqCst), 0, "installed={installed} new={new_profile}");
             // A portable copy leaves the marker to the installed copy that may share its folder.
-            let recorded = installed && !cfg!(debug_assertions);
-            assert_eq!(dir.path().join(AUTOSTART_MARKER).exists(), recorded, "installed={installed} new={new_profile}");
+            assert_eq!(dir.path().join(AUTOSTART_MARKER).exists(), installed, "installed={installed} new={new_profile}");
         }
+    }
+
+    /// A failed attempt is tried again at the next start, by then with a settings file; once it
+    /// succeeds the user's later choice stands.
+    #[test]
+    fn a_failed_sign_in_default_is_tried_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let sign_in = SignIn { failures: AtomicUsize::new(1), ..Default::default() };
+        let exe = std::path::Path::new("/opt/laqta/laqta");
+
+        autostart_first_run(&sign_in, dir.path(), true, true, exe);
+        assert!(!sign_in.on.load(Ordering::SeqCst));
+        autostart_first_run(&sign_in, dir.path(), true, false, exe);
+        assert!(sign_in.on.load(Ordering::SeqCst), "the second start turns it on");
+
+        sign_in.on.store(false, Ordering::SeqCst);
+        autostart_first_run(&sign_in, dir.path(), true, false, exe);
+        assert!(!sign_in.on.load(Ordering::SeqCst), "the user's choice stays");
+        assert_eq!(sign_in.sets.load(Ordering::SeqCst), 2);
+    }
+
+    /// A copy that can't start at sign-in at all is not asked again at every start.
+    #[test]
+    fn an_unsupported_sign_in_default_is_not_tried_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let sign_in = SignIn { unsupported: true.into(), ..Default::default() };
+        let exe = std::path::Path::new("/opt/laqta/laqta");
+
+        autostart_first_run(&sign_in, dir.path(), true, true, exe);
+        autostart_first_run(&sign_in, dir.path(), true, false, exe);
+        assert_eq!(sign_in.sets.load(Ordering::SeqCst), 1);
     }
 
     /// A portable copy counts as portable even where its data falls back to the default folder.
