@@ -1,4 +1,5 @@
-use std::sync::{Mutex, mpsc};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -19,6 +20,20 @@ pub struct PortalShortcuts {
     assigned: Mutex<Option<AssignedCallback>>,
     /// Set by `on_rejected`: told when the bind fails after `register` returned.
     rejected: Mutex<Option<RejectedCallback>>,
+    /// Counts sessions; ending one moves it on, so a late failure of an old bind is not reported.
+    generation: Arc<AtomicU64>,
+}
+
+/// Which session a listener serves. It is current until that session is ended.
+struct SessionTag {
+    generation: Arc<AtomicU64>,
+    id: u64,
+}
+
+impl SessionTag {
+    fn is_current(&self) -> bool {
+        self.generation.load(Ordering::SeqCst) == self.id
+    }
 }
 
 /// Work for the listener's session, sent from the caller's thread.
@@ -31,7 +46,12 @@ enum Control {
 
 impl PortalShortcuts {
     fn take_control(&self) -> Option<mpsc::Sender<Control>> {
+        self.generation.fetch_add(1, Ordering::SeqCst);
         self.control.lock().ok().and_then(|mut control| control.take())
+    }
+
+    fn tag(&self) -> SessionTag {
+        SessionTag { generation: self.generation.clone(), id: self.generation.load(Ordering::SeqCst) }
     }
 }
 
@@ -49,9 +69,10 @@ impl HotkeyRegistrar for PortalShortcuts {
             let (control_tx, control_rx) = mpsc::channel();
             let on_assigned = self.assigned.lock().ok().and_then(|assigned| assigned.clone());
             let on_rejected = self.rejected.lock().ok().and_then(|rejected| rejected.clone());
+            let session = self.tag();
             let bindings = bindings.to_vec();
             let spawned = thread::Builder::new().name("laqta-shortcuts".into()).spawn(move || {
-                async_io::block_on(listen(bindings, on_fire, Callbacks { on_assigned, on_rejected }, ready_tx, control_rx));
+                async_io::block_on(listen(bindings, on_fire, Callbacks { on_assigned, on_rejected, session }, ready_tx, control_rx));
             });
             if let Err(e) = spawned {
                 return all(Err(PortError::Failed(e.to_string())));
@@ -108,6 +129,7 @@ impl HotkeyRegistrar for PortalShortcuts {
 struct Callbacks {
     on_assigned: Option<AssignedCallback>,
     on_rejected: Option<RejectedCallback>,
+    session: SessionTag,
 }
 
 /// One GlobalShortcuts session: binds the shortcuts and forwards activations until a stop, then
@@ -177,7 +199,10 @@ async fn serve(
         Ok(Err(e)) | Err(e) => {
             // `register` already said yes (the bind can wait on a dialog): take it back.
             tracing::warn!("GlobalShortcuts bind failed: {e}");
-            if let Some(on_rejected) = &callbacks.on_rejected {
+            // A session already ended (a newer registration may be live) has nothing to take back.
+            if let Some(on_rejected) = &callbacks.on_rejected
+                && callbacks.session.is_current()
+            {
                 let chords = bindings.iter().map(|(chord, _)| *chord).collect();
                 on_rejected(chords, format!("the desktop did not bind the shortcuts: {e}"));
             }
@@ -406,6 +431,19 @@ mod tests {
 
     fn chord(text: &str) -> KeyChord {
         text.parse().expect("test chord parses")
+    }
+
+    /// Ending a session (before the next registration) makes its tag stale, so a bind of it that
+    /// fails late is not reported against the registration that replaced it.
+    #[test]
+    fn an_ended_session_no_longer_reports_a_failed_bind() {
+        let portal = PortalShortcuts::default();
+        let old = portal.tag();
+        assert!(old.is_current());
+        portal.unregister_all();
+        let new = portal.tag();
+        assert!(!old.is_current());
+        assert!(new.is_current());
     }
 
     #[test]

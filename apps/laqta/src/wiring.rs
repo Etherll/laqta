@@ -213,6 +213,13 @@ fn data_dir(args: &crate::cli::Args) -> std::path::PathBuf {
     chosen
 }
 
+/// True for an installed copy: not `-sandbox`, `-portable` or a portable build. Decided from the
+/// copy itself, since a portable copy on read-only media keeps its data in the default folder too.
+fn installed_copy(args: &crate::cli::Args, exe: &std::path::Path) -> bool {
+    let default = default_data_dir();
+    !args.sandbox && !args.portable && laqta_library::data_dir(Some(exe), default.clone()) == default
+}
+
 /// Hands a GPUI window's native handle to the Windows or macOS adapter. A platform answers false
 /// to a call it does not need.
 fn native_window(window: &gpui::Window, what: laqta_ui::NativeWindow) -> bool {
@@ -494,7 +501,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     }
     let store = Arc::new(SettingsStore::new(data.clone()));
     if let Ok(exe) = std::env::current_exe() {
-        let installed = data == default_data_dir();
+        let installed = installed_copy(&args, &exe);
         if installed && let Err(error) = platform.autostart.migrate(&exe) {
             tracing::warn!(%error, "could not update the start at sign-in entry");
         }
@@ -1113,6 +1120,19 @@ mod tests {
             assert_eq!(sign_in.sets.load(Ordering::SeqCst), 0, "installed={installed} new={new_profile}");
             assert!(dir.path().join(AUTOSTART_MARKER).exists());
         }
+    }
+
+    /// A portable copy counts as portable even where its data falls back to the default folder.
+    #[test]
+    fn only_a_plain_copy_counts_as_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = crate::cli::Args::default();
+        assert!(installed_copy(&plain, &dir.path().join("laqta")));
+        assert!(!installed_copy(&plain, &dir.path().join("laqta-portable.exe")));
+        assert!(!installed_copy(&crate::cli::Args { portable: true, ..Default::default() }, &dir.path().join("laqta")));
+        assert!(!installed_copy(&crate::cli::Args { sandbox: true, ..Default::default() }, &dir.path().join("laqta")));
+        std::fs::write(dir.path().join("portable"), b"").unwrap();
+        assert!(!installed_copy(&plain, &dir.path().join("laqta")));
     }
 
     /// A version 1 profile saved the old tray default, a capture, and moves to opening the window.
