@@ -344,6 +344,15 @@ fn merge_system_keys(keys: Vec<(KeyChord, String)>) {
     hotkeys_changed();
 }
 
+/// Drops every hotkey while a shortcut is being recorded. A partial registration is cached as `None`
+/// (so the next save retries it) while its other chords stay grabbed, so the release does not go by
+/// the cache.
+fn release_for_recording(current: &mut Option<Vec<(KeyChord, Action)>>, hotkeys: &dyn HotkeyRegistrar) {
+    current.take();
+    hotkeys.unregister_all();
+    tracing::info!("hotkeys released while a shortcut is being recorded");
+}
+
 /// Makes the platform's hotkeys match the app's current bindings unless they already do. Returns whether the platform
 /// refused every chord as unsupported; false when the bindings were already registered. The settings are read under the lock,
 /// so the last run to take it leaves the latest bindings registered. While a shortcut is being recorded, a platform that grabs
@@ -352,10 +361,7 @@ fn merge_system_keys(keys: Vec<(KeyChord, String)>) {
 fn sync_hotkeys(app: &App, hotkeys: &dyn HotkeyRegistrar, registered: &RegisteredBindings, on_fire: HotkeyCallback) -> bool {
     let mut current = registered.lock().unwrap_or_else(|e| e.into_inner());
     if HOTKEYS_HELD.load(std::sync::atomic::Ordering::SeqCst) && hotkeys.grabs_keys() {
-        if current.take().is_some() {
-            hotkeys.unregister_all();
-            tracing::info!("hotkeys released while a shortcut is being recorded");
-        }
+        release_for_recording(&mut current, hotkeys);
         return false;
     }
     let bindings = app.settings().hotkey_bindings();
@@ -939,4 +945,41 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     #[cfg(windows)]
     laqta_platform_windows::shutdown(); // removes the tray icon, so Explorer leaves no ghost
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use laqta_ports::{HotkeyCallback, HotkeyRegistrar, PortError};
+
+    use super::*;
+
+    #[derive(Default)]
+    struct Grabbing {
+        released: AtomicUsize,
+    }
+
+    impl HotkeyRegistrar for Grabbing {
+        fn register(&self, _: &[(KeyChord, Action)], _: HotkeyCallback) -> Vec<(KeyChord, Result<(), PortError>)> {
+            Vec::new()
+        }
+        fn unregister_all(&self) {
+            self.released.fetch_add(1, Ordering::SeqCst);
+        }
+        fn grabs_keys(&self) -> bool {
+            true
+        }
+    }
+
+    /// A partial registration is cached as `None`, yet its other chords are still grabbed: recording
+    /// releases them all the same.
+    #[test]
+    fn recording_releases_a_partial_registration() {
+        let hotkeys = Grabbing::default();
+        let mut current = None;
+        release_for_recording(&mut current, &hotkeys);
+        assert_eq!(hotkeys.released.load(Ordering::SeqCst), 1);
+        assert!(current.is_none());
+    }
 }
