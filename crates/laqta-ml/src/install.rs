@@ -28,6 +28,16 @@ pub fn library_path(dir: &Path, entry: &OrtArchive) -> PathBuf {
     dir.join(name)
 }
 
+/// The library the runtime loads: the one a distribution package names at build time
+/// (`LAQTA_ONNXRUNTIME`), so a packaged Laqta uses the distribution's own build instead of
+/// downloading one, else the downloaded copy in `dir`.
+pub fn runtime_library(dir: &Path, entry: &OrtArchive) -> PathBuf {
+    match option_env!("LAQTA_ONNXRUNTIME") {
+        Some(packaged) if !packaged.is_empty() => PathBuf::from(packaged),
+        _ => library_path(dir, entry),
+    }
+}
+
 /// The partial file the library is written to before it is renamed into place: `<target>.part`.
 fn part_path(target: &Path) -> PathBuf {
     let mut name = target.as_os_str().to_owned();

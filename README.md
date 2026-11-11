@@ -68,6 +68,31 @@ Every file has a `.sha256` next to it on the [Releases](../../releases) page.
   Screen Recording and Accessibility permissions. Recording uses FFmpeg from Homebrew
   (`brew install ffmpeg`). The macOS build passes CI but hasn't been tested on a real Mac yet,
   so please [report](../../issues) anything that doesn't work.
+- **NixOS / Nix:** try it with `nix run github:Etherll/laqta`, or install it from the flake
+  (below). The Nix package brings its own FFmpeg and ONNX Runtime from Nixpkgs instead of
+  downloading them on first use. Text recognition and the local models need ONNX Runtime (about 240 MiB); leave it out
+  with `laqta.override { withOnnxruntime = false; }`.
+
+  ```nix
+  # flake.nix of your system: add the input, then the package
+  inputs.laqta.url = "github:Etherll/laqta";
+  # NixOS:        environment.systemPackages = [ inputs.laqta.packages.${pkgs.stdenv.hostPlatform.system}.default ];
+  # Home Manager: home.packages = [ inputs.laqta.packages.${pkgs.stdenv.hostPlatform.system}.default ];
+
+  # NixOS: download the build from the binary cache instead of compiling it (about 35 minutes)
+  nix.settings = {
+    substituters = [ "https://laqta.cachix.org" ];
+    trusted-public-keys = [ "laqta.cachix.org-1:ZTaWCeegQ7a7vo/SbzIcA/CCGIVl+Syry34569o9Rz4=" ];
+  };
+  ```
+
+  The cache holds builds made with the flake's own Nixpkgs. Adding
+  `inputs.laqta.inputs.nixpkgs.follows = "nixpkgs";` builds Laqta with your Nixpkgs instead, which
+  avoids a second copy of the libraries it shares with your system but compiles it on your machine.
+
+  On Wayland, screen capture and global shortcuts go through the desktop portal, so keep
+  `xdg.portal.enable = true` with your desktop's portal (GNOME and KDE set this up themselves;
+  on Hyprland or Sway add `xdg-desktop-portal-hyprland` or `xdg-desktop-portal-wlr`).
 
 Laqta lives in the tray (the menu bar on macOS). Press <kbd>Ctrl</kbd>+<kbd>PrtSc</kbd> to
 capture a region, <kbd>PrtSc</kbd> for the whole screen, or set your own shortcuts in
@@ -181,6 +206,9 @@ sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-
 cargo build --release -p laqta
 ./target/release/laqta
 ```
+
+On NixOS, `nix build` builds the package into `./result`, and `nix develop` opens a shell with
+the toolchain and libraries for `cargo build` and `cargo run`.
 
 #### Windows
 With the MSVC build tools and [vcpkg](https://vcpkg.io):

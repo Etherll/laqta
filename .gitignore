@@ -12,3 +12,7 @@ docs/plan/
 docs/research/
 docs/review/
 docs/proposals/
+
+# nix build output
+/result
+/result-*

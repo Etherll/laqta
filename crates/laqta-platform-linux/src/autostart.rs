@@ -2,6 +2,7 @@
 //! so tests use a temp dir; `default()` uses `$XDG_CONFIG_HOME/autostart`.
 
 use std::env;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
@@ -50,16 +51,29 @@ pub(crate) fn xdg_dir(var: &str, fallback: &str) -> PathBuf {
 }
 
 /// The path a desktop entry should start. Inside an AppImage, `executable` lives in a mount that
-/// changes on every run, so the entry starts the AppImage file (`$APPIMAGE`) instead.
+/// changes on every run, so the entry starts the AppImage file (`$APPIMAGE`) instead. Otherwise it
+/// is the `PATH` entry that leads to `executable`, when one does.
 pub(crate) fn launcher(executable: &Path) -> PathBuf {
-    launcher_from(executable, env::var_os("APPIMAGE"), env::var_os("APPDIR"))
+    launcher_from(executable, env::var_os("APPIMAGE"), env::var_os("APPDIR"), env::var_os("PATH"))
 }
 
-fn launcher_from(executable: &Path, appimage: Option<std::ffi::OsString>, appdir: Option<std::ffi::OsString>) -> PathBuf {
+fn launcher_from(executable: &Path, appimage: Option<OsString>, appdir: Option<OsString>, path_var: Option<OsString>) -> PathBuf {
     match (appimage.map(PathBuf::from), appdir.map(PathBuf::from)) {
         (Some(image), Some(dir)) if image.is_absolute() && executable.starts_with(&dir) => image,
-        _ => executable.to_path_buf(),
+        _ => path_link(executable, &path_var.unwrap_or_default()).unwrap_or_else(|| executable.to_path_buf()),
     }
+}
+
+/// The first absolute `PATH` entry whose file of the same name is `executable` itself, possibly
+/// through symlinks. A package manager's link there (`/usr/bin/laqta`, a package profile's
+/// `bin/laqta`) keeps working across updates, while the file it points to may move and be removed.
+fn path_link(executable: &Path, path_var: &OsStr) -> Option<PathBuf> {
+    let name = executable.file_name()?;
+    let target = fs::canonicalize(executable).ok()?;
+    env::split_paths(path_var)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(name))
+        .find(|link| fs::canonicalize(link).is_ok_and(|resolved| resolved == target))
 }
 
 /// The `Exec` value that runs `executable` followed by `args`. The path is quoted with the reserved
@@ -189,9 +203,30 @@ mod tests {
         let exe = Path::new("/tmp/.mount_LaqtaX1/usr/bin/laqta");
         let image = || Some("/home/me/Apps/Laqta.AppImage".into());
         let dir = || Some("/tmp/.mount_LaqtaX1".into());
-        assert_eq!(launcher_from(exe, image(), dir()), Path::new("/home/me/Apps/Laqta.AppImage"));
+        assert_eq!(launcher_from(exe, image(), dir(), None), Path::new("/home/me/Apps/Laqta.AppImage"));
         // Outside an AppImage, or with a stray variable, the executable itself is started.
-        assert_eq!(launcher_from(exe, None, None), exe);
-        assert_eq!(launcher_from(Path::new("/usr/bin/laqta"), image(), dir()), Path::new("/usr/bin/laqta"));
+        assert_eq!(launcher_from(exe, None, None, None), exe);
+        assert_eq!(launcher_from(Path::new("/usr/bin/laqta"), image(), dir(), None), Path::new("/usr/bin/laqta"));
+    }
+
+    #[test]
+    fn a_path_link_to_the_executable_is_started_instead_of_its_target() {
+        // A package manager that installs the program elsewhere and links it into a `PATH` folder.
+        let root = scratch("autostart-path-link");
+        let exe = root.join("store").join("laqta-0.1.0").join("bin").join("laqta");
+        let profile = root.join("profile").join("bin");
+        let other = root.join("other").join("bin");
+        fs::create_dir_all(exe.parent().expect("parent")).expect("store dir");
+        fs::create_dir_all(&profile).expect("profile dir");
+        fs::create_dir_all(&other).expect("other dir");
+        fs::write(&exe, b"").expect("executable");
+        std::os::unix::fs::symlink(&exe, profile.join("laqta")).expect("profile link");
+        // An unrelated program of the same name earlier on `PATH` is passed over.
+        fs::write(other.join("laqta"), b"").expect("other program");
+        let path_var = std::env::join_paths([other.as_path(), Path::new("relative/bin"), profile.as_path()]).expect("PATH");
+        assert_eq!(launcher_from(&exe, None, None, Some(path_var)), profile.join("laqta"));
+        // Not on `PATH` (run from a build folder): the executable itself.
+        assert_eq!(launcher_from(&exe, None, None, Some(other.into_os_string())), exe);
+        let _ = fs::remove_dir_all(&root);
     }
 }
