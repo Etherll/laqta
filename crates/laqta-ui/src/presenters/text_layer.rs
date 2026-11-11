@@ -85,11 +85,22 @@ impl Layout {
                 divide(Rect::of(line.rect), &line.text, LINE_TALL)
             } else {
                 let mut pieces = Vec::new();
+                // What of the line's text follows the words placed so far.
+                let mut rest = line.text.as_str();
                 for word in &line.words {
                     let mut parts = divide(Rect::of(word.rect), &word.text, WORD_TALL);
-                    // The engine split the line here, so a space separates the words.
+                    // A space separates the words where the line's text has one. A word the text
+                    // does not hold is taken to be a word of its own.
+                    let spaced = match rest.find(word.text.as_str()) {
+                        Some(at) => {
+                            let gap = &rest[..at];
+                            rest = &rest[at + word.text.len()..];
+                            gap.chars().any(char::is_whitespace)
+                        }
+                        None => true,
+                    };
                     if let Some(first) = parts.first_mut() {
-                        first.spaced = !pieces.is_empty();
+                        first.spaced = spaced && !pieces.is_empty();
                     }
                     pieces.extend(parts);
                 }
@@ -638,6 +649,22 @@ mod tests {
         assert_eq!(tokens.len(), 3);
         assert!(tokens.iter().all(|t| t.rect.x == 0.0 && t.rect.w == 20.0));
         assert!(tokens[0].rect.bottom() <= tokens[1].rect.y + 0.01 && (tokens[2].rect.bottom() - 90.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn boxed_words_are_spaced_as_the_line_text_is() {
+        // An engine that boxes the parts of a line written without spaces.
+        let layout = Layout::new(&OcrResult {
+            lines: vec![OcrLine {
+                words: vec![word("日本", rect(0, 0, 40, 20)), word("語", rect(40, 0, 20, 20)), word("ok", rect(70, 0, 20, 20))],
+                ..line("日本語 ok", rect(0, 0, 90, 20))
+            }],
+        });
+        let texts: Vec<&str> = layout.tokens().iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(texts, ["日", "本", "語", "ok"]);
+        // A part of the line: no space where the line has none, one where it has one.
+        assert_eq!(layout.text(&(1..=2)), "本語");
+        assert_eq!(layout.text(&(2..=3)), "語 ok");
     }
 
     #[test]
