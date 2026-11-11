@@ -65,8 +65,10 @@ impl Ocr for ModelOcr {
         let (sender, receiver) = oneshot::channel();
         let runtime = self.runtime.clone();
         let spawned = std::thread::Builder::new().name("laqta-ocr".into()).spawn(move || {
-            let result = recognise(&runtime, &det, &rec, &image);
             // The receiver is gone only if the caller stopped waiting, so the result is not needed.
+            // A run cannot be stopped midway, but one nobody waits for ends before the next model
+            // run instead of keeping the next read waiting on the session.
+            let result = recognise(&runtime, &det, &rec, &image, &|| sender.is_canceled());
             let _ = sender.send(result);
         });
         if let Err(error) = spawned {
@@ -92,15 +94,19 @@ impl Ocr for ModelOcr {
     }
 }
 
-/// Runs detection, then recognition on each region, on the calling thread.
-fn recognise(runtime: &Runtime, det: &str, rec: &str, bitmap: &Bitmap) -> Result<OcrResult, MlError> {
+/// Runs detection, then recognition on each region, on the calling thread. It gives up with
+/// `Cancelled` before any model run once `gone` says nobody wants the answer.
+fn recognise(runtime: &Runtime, det: &str, rec: &str, bitmap: &Bitmap, gone: &dyn Fn() -> bool) -> Result<OcrResult, MlError> {
+    if gone() {
+        return Err(MlError::Cancelled);
+    }
     if bitmap.width() == 0 || bitmap.height() == 0 {
         return Ok(OcrResult::default());
     }
     let image = BgrImage::from_bitmap(bitmap);
     // Each detector has its own DB thresholds; a model without any uses PP-OCRv5's.
     let params = catalog().model(det).and_then(|entry| entry.db).unwrap_or_default();
-    let regions = detect(runtime, det, &params, &image)?;
+    let regions = detect(runtime, det, &params, &image, gone)?;
     if regions.is_empty() {
         return Ok(OcrResult::default());
     }
@@ -117,6 +123,9 @@ fn recognise(runtime: &Runtime, det: &str, rec: &str, bitmap: &Bitmap) -> Result
     let mut table: Option<Vec<String>> = None;
     runtime.with_session(Task::OcrRec, rec, |session| {
         for batch in by_width.chunks(o1::REC_BATCH) {
+            if gone() {
+                return Err(MlError::Cancelled);
+            }
             let widest = batch.iter().map(|&i| crops[i].1).max().unwrap_or(0);
             let width = o1::rec_input_width(widest);
             let mut data = Vec::with_capacity(batch.len() * 3 * o1::REC_HEIGHT as usize * width as usize);
@@ -167,11 +176,19 @@ fn recognise(runtime: &Runtime, det: &str, rec: &str, bitmap: &Bitmap) -> Result
 }
 
 /// Text regions in source pixels, from the detector.
-fn detect(runtime: &Runtime, det: &str, params: &o1::DbParams, image: &BgrImage) -> Result<Vec<PhysRect>, MlError> {
+fn detect(
+    runtime: &Runtime,
+    det: &str,
+    params: &o1::DbParams,
+    image: &BgrImage,
+    gone: &dyn Fn() -> bool,
+) -> Result<Vec<PhysRect>, MlError> {
     let (width, height, data) = o1::det_input(image);
     let input =
         Array4::from_shape_vec((1, 3, height as usize, width as usize), data).map_err(|error| MlError::Inference(error.to_string()))?;
-    let (shape, map) = runtime.with_session(Task::OcrDet, det, |session| run(session, &input))?;
+    // The check is inside the session, so a read that waited for it behind another one can still give up.
+    let (shape, map) =
+        runtime.with_session(Task::OcrDet, det, |session| if gone() { Err(MlError::Cancelled) } else { run(session, &input) })?;
     let (map_height, map_width) = map_dims(&shape, map.len())?;
     let boxes = o1::db_boxes(&map, map_width, map_height, params);
     Ok(boxes.into_iter().map(|boxed| o1::to_source_rect(boxed, map_width, map_height, image.width(), image.height())).collect())
@@ -219,6 +236,14 @@ mod tests {
         let runtime = Arc::new(Runtime::new("/nonexistent-lib.so", "/nonexistent-models", crate::ExecutionProvider::Cpu));
         let ocr = ModelOcr::new(runtime, "ppocr-v5-mobile-det", "ppocr-v5-mobile-rec-multi");
         assert!(ocr.languages().is_empty());
+    }
+
+    #[test]
+    fn a_read_nobody_waits_for_stops_before_running_a_model() {
+        let runtime = Runtime::new("/nonexistent-lib.so", "/nonexistent-models", crate::ExecutionProvider::Cpu);
+        let bitmap = Bitmap::new(2, 2, laqta_domain::PixelFormat::Bgra8, vec![0; 16].into()).expect("valid bitmap");
+        let gone = || true;
+        assert!(matches!(recognise(&runtime, "ppocr-v5-mobile-det", "ppocr-v5-mobile-rec-multi", &bitmap, &gone), Err(MlError::Cancelled)));
     }
 
     #[test]
