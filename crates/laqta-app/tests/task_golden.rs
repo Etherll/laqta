@@ -580,6 +580,26 @@ fn at_second(second: i8) -> jiff::civil::DateTime {
 }
 
 #[test]
+fn upload_sound_plays_once_per_successful_upload() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let mut settings = upload_settings(tmp.path());
+        settings.defaults.general.play_sound_after_upload = true;
+        settings.defaults.general.play_sound_after_task = true;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), settings);
+        destination(&rig, "imgur", vec![Ok(uploaded("https://img.example/1"))]);
+        let mut events = rig.app.events();
+
+        dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        // The upload's sound stands in for the task-completed one: one sound, not two.
+        let sounds = rig.notifier.sounds.lock().unwrap();
+        assert_eq!(sounds.iter().filter(|s| matches!(s, laqta_ports::Sound::TaskCompleted)).count(), 1, "{sounds:?}");
+    });
+}
+
+#[test]
 fn upload_ok() {
     in_compute_pool(|| {
         let tmp = TempDir::new().unwrap();

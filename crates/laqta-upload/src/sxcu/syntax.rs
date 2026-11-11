@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 use base64::Engine as _;
 use laqta_http::Response;
 use laqta_ports::{BoxFuture, PortError};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde_json::Value;
 
 use super::xml;
@@ -121,21 +122,30 @@ fn normalize(name: &str) -> String {
     name.trim().to_ascii_lowercase()
 }
 
-/// How a function's result is embedded. Only top-level calls in a `Data` body are escaped, so
-/// the text stays valid JSON or XML; nested arguments are never escaped.
+/// How a function's result is embedded. Only top-level calls are escaped, and nested arguments
+/// never are: a `Data` body stays valid JSON or XML, and a request URL keeps its query intact.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Escape {
     Plain,
     Json,
     Xml,
+    /// A URL: the request URL and the result URLs. As in ShareX, only `{input}` and `{filename}`
+    /// are percent-encoded, so the uploaded text or file name cannot add query parameters or
+    /// path segments.
+    Url,
 }
 
+/// Every byte except the unreserved characters of RFC 3986.
+const INPUT_IN_URL: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.').remove(b'~');
+
 impl Escape {
-    fn apply(self, value: String) -> String {
+    fn apply(self, name: &str, value: String) -> String {
         match self {
             Escape::Plain => value,
             Escape::Json => json_escape(&value),
             Escape::Xml => xml_escape(&value),
+            Escape::Url if name == "input" || name == "filename" => utf8_percent_encode(&value, INPUT_IN_URL).to_string(),
+            Escape::Url => value,
         }
     }
 }
@@ -156,12 +166,13 @@ pub(super) async fn render(ctx: &Ctx<'_>, src: &str, escape: Escape) -> Result<S
 
 /// The functions a `Data` body may call. Any other `{...}` stays literal, so JSON or XML written
 /// with plain braces is sent as it is. Keep this in step with `call`.
-const DATA_FUNCTIONS: [&str; 13] = [
+const DATA_FUNCTIONS: [&str; 14] = [
     "input",
     "filename",
     "random",
     "select",
     "inputbox",
+    "prompt",
     "outputbox",
     "base64",
     "response",
@@ -267,7 +278,7 @@ fn eval<'a>(nodes: &'a [Node], ctx: &'a Ctx<'a>, escape: Escape) -> BoxFuture<'a
                         values.push(eval(arg, ctx, Escape::Plain).await?);
                     }
                     let value = call(name, &values, ctx).await?;
-                    out.push_str(&escape.apply(value));
+                    out.push_str(&escape.apply(name, value));
                 }
             }
         }
@@ -299,12 +310,15 @@ async fn call(name: &str, args: &[String], ctx: &Ctx<'_>) -> Result<String, Sxcu
             let choice = ctx.env.prompt.choose("Select", args).await.map_err(port_error)?;
             args.get(choice).cloned().ok_or_else(|| SxcuError::Syntax(format!("`{{select}}` answered option {choice} of {}", args.len())))
         }
-        "inputbox" => {
+        "inputbox" | "prompt" => {
             let (title, default) = title_and_rest(args);
             ctx.env.prompt.ask_text(&title, &default).await.map_err(port_error)
         }
         "outputbox" => {
-            let (title, text) = title_and_rest(args);
+            let (title, text) = match args {
+                [text] => ("Output".to_string(), text.clone()),
+                _ => title_and_rest(args),
+            };
             ctx.env.prompt.show_text(&title, &text).await.map_err(port_error)?;
             Ok(String::new())
         }
@@ -342,12 +356,11 @@ fn respond(name: &str, args: &[String], response: &Response) -> Result<String, S
             Ok(response.header(header).unwrap_or_default().to_string())
         }
         "json" => json(args, response),
-        "xml" => {
-            let [path] = args else {
-                return Err(SxcuError::Syntax("`{xml}` takes one XPath".into()));
-            };
-            xml::select(&response.text(), path)
-        }
+        "xml" => match args {
+            [path] => xml::select(&response.text(), path),
+            [document, path @ ..] => xml::select(document, &path.join("|")),
+            [] => Err(SxcuError::Syntax("`{xml}` needs an XPath".into())),
+        },
         _ => regex(args, &response.text()),
     }
 }
@@ -387,22 +400,24 @@ fn normalize_path(path: &str) -> String {
     }
 }
 
-/// `{regex:pattern|group}`. The last argument is the group: an index, 0 for the whole match, or a
-/// name. Without one, group 1 is used, or the whole match when the pattern has no groups. Earlier
-/// arguments rejoin into the pattern, so an unescaped `|` still works.
-fn regex(args: &[String], text: &str) -> Result<String, SxcuError> {
-    let (pattern, group) = match args {
+/// `{regex:pattern}`, `{regex:pattern|group}` or `{regex:input|pattern|group}`. The text searched is
+/// the response, or the `input` of the three-argument form. The group is an index, 0 for the whole
+/// match, or a name. Without one, the whole match is used, as in ShareX. In the three-argument form the arguments between the input and the group rejoin into the
+/// pattern.
+fn regex(args: &[String], response: &str) -> Result<String, SxcuError> {
+    let (subject, pattern, group) = match args {
         [] => return Err(SxcuError::Syntax("`{regex}` needs a pattern".into())),
-        [pattern] => (pattern.clone(), None),
-        [.., group] => (args[..args.len() - 1].join("|"), Some(group.trim().to_string())),
+        [pattern] => (response, pattern.clone(), None),
+        [pattern, group] => (response, pattern.clone(), Some(group.trim().to_string())),
+        [input, pattern @ .., group] => (input.as_str(), pattern.join("|"), Some(group.trim().to_string())),
     };
     let re = fancy_regex::Regex::new(&pattern).map_err(|e| SxcuError::Syntax(format!("regex `{pattern}`: {e}")))?;
-    let captures = re.captures(text).map_err(|e| SxcuError::Syntax(format!("regex `{pattern}`: {e}")))?;
+    let captures = re.captures(subject).map_err(|e| SxcuError::Syntax(format!("regex `{pattern}`: {e}")))?;
     let Some(captures) = captures else {
         return Ok(String::new());
     };
     let found = match group.as_deref() {
-        None => captures.get(if captures.len() > 1 { 1 } else { 0 }),
+        None => captures.get(0),
         Some(group) => match group.parse::<usize>() {
             Ok(index) => {
                 if index >= captures.len() {

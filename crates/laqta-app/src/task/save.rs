@@ -90,9 +90,27 @@ pub(super) async fn recording_output(
     size: (u32, u32),
     ext: &str,
 ) -> Result<PathBuf, AppError> {
+    let info = CaptureInfo { random_lines: random_lines(cx, settings).await, ..CaptureInfo::default() };
     let _slot = Arc::clone(&cx.saves).acquire().await;
-    let candidates = image_candidates(cx, settings, &CaptureInfo::default(), dir, size, ext);
+    let candidates = image_candidates(cx, settings, &info, dir, size, ext);
     files::first_free(cx.ports.spawner.as_ref(), candidates).await.map_err(io_error)
+}
+
+/// The lines of each file the name patterns draw `%rf{path}` from, read once before any name is made.
+pub(super) async fn random_lines(cx: &Context, settings: &TaskSettings) -> std::collections::HashMap<String, Vec<String>> {
+    let naming = &settings.naming;
+    let mut paths = Vec::new();
+    for pattern in [&naming.pattern, &naming.window_pattern, &naming.subfolder] {
+        for path in naming::random_line_files(pattern) {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    if paths.is_empty() {
+        return std::collections::HashMap::new();
+    }
+    files::line_files(cx.ports.spawner.as_ref(), paths).await
 }
 
 /// The candidate paths for the image, in order. The name and subfolder patterns are expanded here, reading
@@ -123,6 +141,8 @@ fn with_name_context<T>(cx: &Context, info: &CaptureInfo, size: Option<(u32, u32
     let now = ports.clock.now();
     let unix_seconds = now.to_zoned(TimeZone::UTC).map_or(0, |zoned| zoned.timestamp().as_second());
     let mut rng = || ports.rng.next_u64();
+    // The `%rf{path}` files were read when the job started (`files.rs`, ADR 024).
+    let read_lines = |path: &str| -> Vec<String> { info.random_lines.get(path).cloned().unwrap_or_default() };
     let mut ctx = NameContext {
         now,
         unix_seconds,
@@ -134,7 +154,7 @@ fn with_name_context<T>(cx: &Context, info: &CaptureInfo, size: Option<(u32, u32
         user_name: &ports.host.user_name,
         user_login: &ports.host.user_login,
         computer_name: &ports.host.computer_name,
-        random_file_lines: &[],
+        read_lines: &read_lines,
         rng: &mut rng,
     };
     work(&mut ctx)

@@ -33,9 +33,9 @@ pub struct Plan {
     pub mask: Vec<f32>,
 }
 
-/// The crop for a mask: the box of its set pixels, padded by `PAD` on each side and then widened to
-/// at least `MODEL_SIZE`, or the image side where the image is smaller. The crop stays inside the image.
-/// Returns `None` if no pixel is set.
+/// The crop for a mask: the box of its set pixels, padded by `PAD` on each side, then each side widened
+/// to at least `MODEL_SIZE` and to the other side's length, so the crop is square where the image has
+/// room (never past the image side). The crop stays inside the image. Returns `None` if no pixel is set.
 pub fn crop_for(mask: &[u8], width: usize, height: usize) -> Option<Crop> {
     let mut found: Option<[usize; 4]> = None;
     for (index, &value) in mask.iter().enumerate() {
@@ -49,15 +49,36 @@ pub fn crop_for(mask: &[u8], width: usize, height: usize) -> Option<Crop> {
         });
     }
     let [x0, y0, x1, y1] = found?;
-    let (x0, x1) = widen(x0.saturating_sub(PAD), (x1 + 1 + PAD).min(width), width);
-    let (y0, y1) = widen(y0.saturating_sub(PAD), (y1 + 1 + PAD).min(height), height);
+    let (x0, x1) = (x0.saturating_sub(PAD), (x1 + 1 + PAD).min(width));
+    let (y0, y1) = (y0.saturating_sub(PAD), (y1 + 1 + PAD).min(height));
+    let side = MODEL_SIZE.max(x1 - x0).max(y1 - y0);
+    let (x0, x1) = widen(x0, x1, side, width);
+    let (y0, y1) = widen(y0, y1, side, height);
     Some(Crop { x: x0, y: y0, width: x1 - x0, height: y1 - y0 })
 }
 
-/// Widens `start..end` to at least `min(MODEL_SIZE, limit)` long. The extra room is split evenly, and
-/// the result is moved back inside `0..limit` when it would stick out.
-fn widen(start: usize, end: usize, limit: usize) -> (usize, usize) {
-    let want = MODEL_SIZE.min(limit);
+/// Where a crop sits in the model's square input: scaled by one factor on both axes, centred, with the
+/// rest of the square filled from the crop's edge pixels. A square crop fills the whole input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame {
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
+/// The frame of `crop` in the model input, so a wide or tall crop is not stretched to the square.
+pub fn frame_for(crop: Crop) -> Frame {
+    let side = crop.width.max(crop.height).max(1) as f32;
+    let fit = |len: usize| ((len as f32 * MODEL_SIZE as f32 / side).round() as usize).clamp(1, MODEL_SIZE);
+    let (width, height) = (fit(crop.width), fit(crop.height));
+    Frame { x: (MODEL_SIZE - width) / 2, y: (MODEL_SIZE - height) / 2, width, height }
+}
+
+/// Widens `start..end` to at least `min(want, limit)` long. The extra room is split evenly, and the
+/// result is moved back inside `0..limit` when it would stick out.
+fn widen(start: usize, end: usize, want: usize, limit: usize) -> (usize, usize) {
+    let want = want.min(limit);
     let len = end - start;
     if len >= want {
         return (start, end);
@@ -78,12 +99,16 @@ pub fn plan(image: &RgbaImage, mask: &[u8]) -> Result<Option<Plan>, String> {
         return Ok(None);
     };
     let size = MODEL_SIZE;
+    let frame = frame_for(crop);
+    // A model pixel's position in the crop. Outside the frame it clamps to the crop's edge.
+    let to_crop = |d: usize, start: usize, inner: usize, len: usize| source_coord(d.saturating_sub(start).min(inner - 1), len, inner);
+    let inside = |dx: usize, dy: usize| (frame.x..frame.x + frame.width).contains(&dx) && (frame.y..frame.y + frame.height).contains(&dy);
     let mut image_input = vec![0.0; 3 * size * size];
     for channel in 0..3 {
         for dy in 0..size {
-            let sy = source_coord(dy, crop.height, size);
+            let sy = to_crop(dy, frame.y, frame.height, crop.height);
             for dx in 0..size {
-                let sx = source_coord(dx, crop.width, size);
+                let sx = to_crop(dx, frame.x, frame.width, crop.width);
                 let value = bilinear(crop.width, crop.height, sx, sy, |x, y| f32::from(image.channel(crop.x + x, crop.y + y, channel)));
                 image_input[(channel * size + dy) * size + dx] = value / 255.0;
             }
@@ -91,9 +116,12 @@ pub fn plan(image: &RgbaImage, mask: &[u8]) -> Result<Option<Plan>, String> {
     }
     let mut mask_input = vec![0.0; size * size];
     for dy in 0..size {
-        let sy = source_coord(dy, crop.height, size);
+        let sy = to_crop(dy, frame.y, frame.height, crop.height);
         for dx in 0..size {
-            let sx = source_coord(dx, crop.width, size);
+            if !inside(dx, dy) {
+                continue;
+            }
+            let sx = to_crop(dx, frame.x, frame.width, crop.width);
             let value =
                 bilinear(crop.width, crop.height, sx, sy, |x, y| if mask[(crop.y + y) * width + crop.x + x] != 0 { 1.0 } else { 0.0 });
             // The model was trained on hard masks, so the resampled mask is thresholded again.
@@ -171,14 +199,15 @@ pub fn paste(image: &mut RgbaImage, crop: Crop, weights: &[f32], shape: &[usize]
         return Err(format!("the weights do not match the {}x{} crop", crop.width, crop.height));
     }
     let scale = output_scale(output);
+    let frame = frame_for(crop);
     for y in 0..crop.height {
-        let sy = source_coord(y, size, crop.height);
+        let sy = frame.y as f32 + source_coord(y, frame.height, crop.height);
         for x in 0..crop.width {
             let weight = weights[y * crop.width + x];
             if weight <= 0.0 {
                 continue;
             }
-            let sx = source_coord(x, size, crop.width);
+            let sx = frame.x as f32 + source_coord(x, frame.width, crop.width);
             let (px, py) = (crop.x + x, crop.y + y);
             for channel in 0..3 {
                 let plane = &output[channel * size * size..(channel + 1) * size * size];
@@ -243,6 +272,20 @@ mod tests {
         let crop = crop_for(&mask, 2000, 300).expect("the mask is not empty");
         assert_eq!((crop.x, crop.width), (68, 1065));
         assert_eq!((crop.y, crop.height), (0, 300));
+    }
+
+    #[test]
+    fn a_wide_crop_is_letterboxed_not_stretched() {
+        let crop = Crop { x: 0, y: 0, width: 1024, height: 256 };
+        assert_eq!(frame_for(crop), Frame { x: 0, y: 192, width: 512, height: 128 });
+        assert_eq!(frame_for(Crop { x: 0, y: 0, width: 512, height: 512 }), Frame { x: 0, y: 0, width: 512, height: 512 });
+    }
+
+    #[test]
+    fn a_short_box_grows_toward_square_where_the_image_has_room() {
+        let mask = mask_with(2000, 2000, &[(100, 1000), (1100, 1000)]);
+        let crop = crop_for(&mask, 2000, 2000).expect("the mask is not empty");
+        assert_eq!((crop.width, crop.height), (1065, 1065));
     }
 
     #[test]

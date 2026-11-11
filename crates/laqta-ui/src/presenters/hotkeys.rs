@@ -57,6 +57,17 @@ pub fn record(key: &str, mods: Mods) -> Recorded {
         "]" => "BracketRight",
         "`" => "Backquote",
         "sys_req" | "printscreen" => "PrintScreen",
+        "xf86audioraisevolume" => "VolumeUp",
+        "xf86audiolowervolume" => "VolumeDown",
+        "xf86audiomute" => "VolumeMute",
+        "xf86audioplay" => "MediaPlayPause",
+        "xf86audionext" => "MediaNext",
+        "xf86audioprev" => "MediaPrev",
+        "xf86audiostop" => "MediaStop",
+        "xf86mail" => "LaunchMail",
+        "xf86launch0" => "LaunchApp1",
+        "xf86launch1" => "LaunchApp2",
+        "xf86calculator" => "Calculator",
         other => other,
     };
     let mut text = String::new();
@@ -121,11 +132,93 @@ pub enum RowStatus {
     Conflict(String),
     /// The system turned it down.
     Failed(String),
+    /// Registered, but the desktop uses another key for it (KDE keeps the key saved in its own
+    /// settings): the desktop's key, as it writes it.
+    DesktopKey(String),
+    /// Registered, but the desktop gave it no key, so it can't fire.
+    NoKey,
 }
 
-/// The status of each row, from the draft (`(name, chord, enabled)` per row) and the last
-/// registration report's accepted and failed chords.
-pub fn row_status(rows: &[(String, Option<KeyChord>, bool)], registered: &[KeyChord], failed: &[(KeyChord, String)]) -> Vec<RowStatus> {
+/// Whether the desktop's key text (KDE: "Ctrl+'", "Print", "Meta+Shift+S") names `chord`.
+/// Spelling differs between desktops, so names are compared loosely, in any order.
+pub fn same_key(chord: KeyChord, desktop: &str) -> bool {
+    /// One spelling per key: Laqta's names (`Minus`, `Numpad1`, `VolumeUp`) and the desktop's
+    /// (Qt/KDE: `-`, `Num+1`, `Volume Up`) meet here.
+    fn norm(part: &str) -> String {
+        let p = part.trim().to_ascii_lowercase();
+        let same = match p.as_str() {
+            "control" | "ctrl" => "ctrl",
+            "meta" | "super" | "win" | "logo" => "super",
+            "printscreen" | "prtsc" | "print" | "sysreq" => "print",
+            "quote" | "apostrophe" | "'" => "'",
+            "return" | "enter" => "enter",
+            "esc" | "escape" => "escape",
+            "pgup" | "pageup" | "page up" => "pageup",
+            "pgdown" | "pagedown" | "page down" => "pagedown",
+            "minus" | "-" => "-",
+            "equal" | "=" => "=",
+            "comma" | "," => ",",
+            "period" | "." => ".",
+            "slash" | "/" => "/",
+            "backslash" | "\\" => "\\",
+            "semicolon" | ";" => ";",
+            "bracketleft" | "[" => "[",
+            "bracketright" | "]" => "]",
+            "backquote" | "grave" | "`" => "`",
+            "delete" | "del" => "delete",
+            "insert" | "ins" => "insert",
+            "scrolllock" | "scroll lock" => "scrolllock",
+            "volumeup" | "volume up" => "volumeup",
+            "volumedown" | "volume down" => "volumedown",
+            "volumemute" | "volume mute" | "mute" => "volumemute",
+            "mediaplaypause" | "media play" | "toggle media play/pause" | "play" => "mediaplaypause",
+            "medianext" | "media next" => "medianext",
+            "mediaprev" | "media previous" => "mediaprev",
+            "mediastop" | "media stop" => "mediastop",
+            "launchmail" | "launch mail" | "mail" => "launchmail",
+            "calculator" | "calc" => "calculator",
+            "numpadadd" => "numpad+",
+            "numpadsubtract" => "numpad-",
+            "numpadmultiply" => "numpad*",
+            "numpaddivide" => "numpad/",
+            "numpaddecimal" => "numpad.",
+            _ => return p,
+        };
+        same.into()
+    }
+    fn parts(text: &str) -> Vec<String> {
+        let mut pieces: Vec<String> = text.split('+').filter(|p| !p.trim().is_empty()).map(norm).collect();
+        // "Ctrl++" is Ctrl and Plus: an empty piece after a '+' is the '+' key itself.
+        if text.ends_with("++") {
+            pieces.push("+".into());
+        }
+        // Qt writes a keypad key as "Num+<key>": one key, Laqta's `Numpad<key>`.
+        let mut out = Vec::with_capacity(pieces.len());
+        let mut pieces = pieces.into_iter().peekable();
+        while let Some(piece) = pieces.next() {
+            match pieces.peek() {
+                Some(next) if piece == "num" => {
+                    out.push(format!("numpad{next}"));
+                    pieces.next();
+                }
+                _ => out.push(piece),
+            }
+        }
+        out.sort();
+        out
+    }
+    parts(&chord.to_string()) == parts(desktop)
+}
+
+/// The status of each row, from the draft (`(name, chord, enabled)` per row), the last
+/// registration report's accepted and failed chords, and the keys the desktop says it uses
+/// (`system_keys`, KDE only; "" means none).
+pub fn row_status(
+    rows: &[(String, Option<KeyChord>, bool)],
+    registered: &[KeyChord],
+    failed: &[(KeyChord, String)],
+    system_keys: &[(KeyChord, String)],
+) -> Vec<RowStatus> {
     rows.iter()
         .enumerate()
         .map(|(i, (_, chord, enabled))| {
@@ -140,7 +233,14 @@ pub fn row_status(rows: &[(String, Option<KeyChord>, bool)], registered: &[KeyCh
             if let Some((_, why)) = failed.iter().find(|(c, _)| c == chord) {
                 return RowStatus::Failed(why.clone());
             }
-            if registered.contains(chord) { RowStatus::Active } else { RowStatus::Pending }
+            if !registered.contains(chord) {
+                return RowStatus::Pending;
+            }
+            match system_keys.iter().find(|(c, _)| c == chord) {
+                Some((_, key)) if key.trim().is_empty() => RowStatus::NoKey,
+                Some((_, key)) if !same_key(*chord, key) => RowStatus::DesktopKey(key.clone()),
+                _ => RowStatus::Active,
+            }
         })
         .collect()
 }
@@ -152,6 +252,26 @@ mod tests {
 
     fn chord(s: &str) -> KeyChord {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn media_keys_record_from_gpui_names() {
+        assert_eq!(record("xf86audioplay", Mods::default()), Recorded::Chord(chord("MediaPlayPause")));
+        let cases = [
+            ("xf86audioraisevolume", "VolumeUp"),
+            ("xf86audiolowervolume", "VolumeDown"),
+            ("xf86audiomute", "VolumeMute"),
+            ("xf86audionext", "MediaNext"),
+            ("xf86audioprev", "MediaPrev"),
+            ("xf86audiostop", "MediaStop"),
+            ("xf86mail", "LaunchMail"),
+            ("xf86launch0", "LaunchApp1"),
+            ("xf86launch1", "LaunchApp2"),
+            ("xf86calculator", "Calculator"),
+        ];
+        for (gpui, name) in cases {
+            assert_eq!(record(gpui, Mods::default()), Recorded::Chord(chord(name)), "{gpui}");
+        }
     }
 
     #[test]
@@ -193,12 +313,50 @@ mod tests {
             ("None".to_owned(), None, true),
             ("Taken".to_owned(), Some(chord("F8")), true),
         ];
-        let status = row_status(&rows, &[chord("PrintScreen")], &[(chord("F8"), "in use".into())]);
+        let status = row_status(&rows, &[chord("PrintScreen")], &[(chord("F8"), "in use".into())], &[]);
         assert_eq!(status[0], RowStatus::Conflict("Also used by “Window”".into()));
         assert_eq!(status[2], RowStatus::Active);
         assert_eq!(status[3], RowStatus::Disabled);
         assert_eq!(status[4], RowStatus::Unset);
         assert_eq!(status[5], RowStatus::Failed("in use".into()));
+    }
+
+    #[test]
+    fn the_desktops_own_key_wins_over_the_one_asked_for() {
+        let rows = vec![
+            ("Region".to_owned(), Some(chord("Ctrl+W")), true),
+            ("Screen".to_owned(), Some(chord("PrintScreen")), true),
+            ("Text".to_owned(), Some(chord("Ctrl+Quote")), true),
+            ("Window".to_owned(), Some(chord("Alt+PrintScreen")), true),
+        ];
+        let registered = rows.iter().filter_map(|r| r.1).collect::<Vec<_>>();
+        let system = vec![
+            (chord("Ctrl+W"), "Alt+B".to_owned()),
+            (chord("PrintScreen"), "Print".to_owned()),
+            (chord("Ctrl+Quote"), "Ctrl+'".to_owned()),
+            (chord("Alt+PrintScreen"), String::new()),
+        ];
+        let status = row_status(&rows, &registered, &[], &system);
+        assert_eq!(status[0], RowStatus::DesktopKey("Alt+B".into()));
+        assert_eq!(status[1], RowStatus::Active, "KDE writes PrintScreen as Print");
+        assert_eq!(status[2], RowStatus::Active);
+        assert_eq!(status[3], RowStatus::NoKey);
+    }
+
+    #[test]
+    fn desktop_key_names_compare_loosely() {
+        assert!(same_key(chord("Ctrl+Shift+PrintScreen"), "Shift+Ctrl+Print"));
+        assert!(same_key(chord("Super+S"), "Meta+S"));
+        assert!(!same_key(chord("Ctrl+W"), "Ctrl+Q"));
+        // Qt/KDE spell symbols, the keypad and media keys their own way.
+        assert!(same_key(chord("Ctrl+Minus"), "Ctrl+-"));
+        assert!(same_key(chord("Ctrl+Shift+Comma"), "Shift+Ctrl+,"));
+        assert!(same_key(chord("Ctrl+Delete"), "Ctrl+Del"));
+        assert!(same_key(chord("VolumeUp"), "Volume Up"));
+        assert!(same_key(chord("MediaPlayPause"), "Media Play"));
+        assert!(same_key(chord("Ctrl+Numpad1"), "Ctrl+Num+1"));
+        assert!(same_key(chord("Ctrl+NumpadAdd"), "Ctrl+Num++"));
+        assert!(!same_key(chord("Ctrl+1"), "Ctrl+Num+1"), "the keypad 1 is not the top-row 1");
     }
     use laqta_domain::settings::Settings;
 

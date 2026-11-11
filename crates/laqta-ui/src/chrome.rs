@@ -222,7 +222,7 @@ fn control(kind: Control, cx: &App) -> impl IntoElement {
                 match kind {
                     Control::Minimize => window.minimize_window(),
                     Control::Maximize | Control::Restore => window.zoom_window(),
-                    Control::Close => window.remove_window(),
+                    Control::Close => crate::close_guard::request_close(window, cx),
                 }
             })
         })

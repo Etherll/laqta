@@ -183,11 +183,9 @@ fn audit_fixture_is_well_formed() {
     assert_eq!(types, SHAREX_CLASSES.to_vec());
 }
 
-/// A ShareX-written package with every class: all 51 should load. Six class names are skipped
-/// (DrawBackground, DrawBackgroundImage, DrawBorder, DrawCheckerboard, DrawParticles,
-/// MatrixConvolution) because the reader matches invented names.
+/// A ShareX-written package with every class: all 51 load. The reader once matched invented names for
+/// DrawBackground, DrawBackgroundImage, DrawBorder, DrawCheckerboard, DrawParticles and MatrixConvolution.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_sharex_classes_are_skipped_on_import() {
     let (preset, warnings) = read(&sharex_defaults_config());
     assert!(warnings.is_empty(), "skipped: {warnings:#?}");
@@ -195,9 +193,8 @@ fn audit_bug_sharex_classes_are_skipped_on_import() {
 }
 
 /// `ImageEffectPreset.GetDefaultPreset()` adds `Canvas { Margin = new ImageMargins(0, 0, 0, 30) }`.
-/// ShareX writes the margin as one `"0, 0, 0, 30"` string; the reader looks for Left/Top/Right/Bottom.
+/// ShareX writes the margin as one `"0, 0, 0, 30"` string, in the order left, top, right, bottom.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_canvas_margin_is_lost() {
     let effect =
         one(r#"{ "$type": "Canvas", "Margin": "0, 0, 0, 30", "MarginMode": "AbsoluteSize", "Color": "Transparent", "Enabled": true }"#);
@@ -205,18 +202,33 @@ fn audit_bug_canvas_margin_is_lost() {
 }
 
 /// Alpha.Value is a multiplier (`[DefaultValue(1f)]`, "Example 0.5 will decrease alpha of pixel 50%"),
-/// and the addend is `Addition`. The reader divides Value by 100 and reads `Add`.
+/// and the addend is `Addition`.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_alpha_scale_and_name() {
     let effect = one(r#"{ "$type": "Alpha", "Value": 0.5, "Addition": 0.25, "Enabled": true }"#);
     assert_eq!(effect, Effect::Adjust(Adjust::Alpha { alpha: 0.5, add: 0.25 }));
 }
 
-/// ColorConverter writes non-opaque colours alpha first ("125, 0, 0, 0" is DrawTextEx.ShadowColor's
-/// default) and known colours by name. The reader takes the fourth number as alpha and rejects names.
+/// ShareX's `Contrast` is a plain multiply (`SkiaColorMatrixManager.Contrast`): R, G and B times `Value`,
+/// alpha and the constant row unchanged. Laqta's own `Adjust::Contrast` pivots on mid grey, so the import
+/// keeps ShareX's look as the equivalent `MatrixColor`.
 #[test]
-#[ignore = "known issue, not fixed yet"]
+fn sharex_contrast_imports_as_the_plain_multiply_matrix() {
+    let effect = one(r#"{ "$type": "Contrast", "Value": 1.5, "Enabled": true }"#);
+    #[rustfmt::skip]
+    let matrix = [
+        1.5, 0.0, 0.0, 0.0,
+        0.0, 1.5, 0.0, 0.0,
+        0.0, 0.0, 1.5, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+        0.0, 0.0, 0.0, 0.0,
+    ];
+    assert_eq!(effect, Effect::Adjust(Adjust::MatrixColor { matrix }));
+}
+
+/// ColorConverter writes non-opaque colours alpha first ("125, 0, 0, 0" is DrawTextEx.ShadowColor's
+/// default) and known colours by name.
+#[test]
 fn audit_bug_colour_strings_misread() {
     let argb = one(r#"{ "$type": "Colorize", "Color": "128, 10, 20, 30", "Value": 0.5, "Enabled": true }"#);
     let named = one(r#"{ "$type": "Colorize", "Color": "Lime", "Value": 0.5, "Enabled": true }"#);
@@ -237,7 +249,6 @@ fn audit_bug_colour_strings_misread() {
 /// Real ShareX property names carrying non-default values. Each pair is (ShareX JSON, the Debug text
 /// the value must appear as in the parsed effect). Every mismatch is listed.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_sharex_property_names_are_not_read() {
     let cases: &[(&str, &str)] = &[
         (r#"{ "$type": "Flip", "Horizontally": true, "Vertically": true }"#, "horizontal: true, vertical: true"),
@@ -281,9 +292,9 @@ fn audit_bug_sharex_property_names_are_not_read() {
 }
 
 /// What `write_sxie` emits must load in ShareX: Json.NET splits `$type` at the first comma, and the
-/// binder resolves only a bare class name equal to one of the 51 classes.
+/// binder resolves only a bare class name equal to one of the 51 classes. `effects::write` returns the
+/// bare names, and `sxie.rs` (`preset_to_value`) writes them as they are.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_exported_type_names_do_not_resolve_in_sharex() {
     let mut effects = Vec::new();
     effects.extend(Adjust::defaults().into_iter().map(Effect::Adjust));

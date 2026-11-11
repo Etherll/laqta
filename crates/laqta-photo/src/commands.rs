@@ -295,7 +295,18 @@ impl PhotoEditor {
         if lower.locked {
             return Err(PhotoError::Locked(lower.id));
         }
-        // The pair composites onto a transparent canvas, then the result becomes one raster layer.
+        // An adjustment has no pixels to merge into: it applies to every layer beneath it, so merging
+        // the upper layer into it would drop that effect. Only a layer that draws nothing can go.
+        if let LayerKind::Adjustment(_) = lower.kind {
+            let draws_nothing = !upper.visible
+                || matches!(&upper.kind, LayerKind::Raster(b) if Surface::from_bitmap(b).px.as_chunks::<4>().0.iter().all(|p| p[3] == 0));
+            if !draws_nothing {
+                return Err(PhotoError::Invalid("an adjustment layer has no pixels to merge into"));
+            }
+            return Ok((vec![Change::Remove { path, layer: Box::new(upper) }], None));
+        }
+        // The pair composites onto a transparent canvas, then the result becomes one raster layer. It
+        // keeps the lower layer's blend mode, so an empty layer above leaves the picture unchanged.
         let mut canvas = Surface::new(self.doc.width, self.doc.height);
         render_list(&mut canvas, &[lower.clone(), upper.clone()], (0, 0), &self.fonts);
         let merged = Layer {
@@ -304,7 +315,7 @@ impl PhotoEditor {
             kind: LayerKind::Raster(canvas.into_bitmap()),
             visible: lower.visible,
             opacity: 1.0,
-            blend: BlendMode::Normal,
+            blend: lower.blend,
             mask: None,
             styles: Vec::new(),
             locked: false,

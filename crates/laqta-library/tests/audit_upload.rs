@@ -1,5 +1,5 @@
-//! Uploads should reach history with their URL, thumbnail URL, deletion URL, shortened URL and host.
-//! The task-event subscriber records only `Saved` events.
+//! Uploads reach history with their URL, thumbnail URL, deletion URL and host, not only `Saved`
+//! events. (The short URL has no history column yet.)
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -12,7 +12,6 @@ use laqta_ports::fakes::ManualClock;
 use laqta_ports::{Clock, TaskEvent, TaskId};
 
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_uploads_never_reach_history() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("shot.png");
@@ -29,6 +28,7 @@ fn audit_bug_uploads_never_reach_history() {
                 url: "https://i.example/abc.png".into(),
                 thumbnail_url: Some("https://i.example/abcm.png".into()),
                 deletion_url: Some("https://i.example/delete/xyz".into()),
+                path: Some(path.clone()),
             })
             .await
             .unwrap();
@@ -39,12 +39,13 @@ fn audit_bug_uploads_never_reach_history() {
                 url: "https://paste.example/q".into(),
                 thumbnail_url: None,
                 deletion_url: None,
+                path: None,
             })
             .await
             .unwrap();
         drop(sender);
     });
-    block_on(record_task_events(Arc::clone(&history), receiver, clock));
+    block_on(record_task_events(Arc::clone(&history), receiver, clock, || 0));
     let items = history.query(&HistoryQuery::default()).unwrap();
     assert!(
         items.iter().any(|item| item.url.as_deref() == Some("https://i.example/abc.png")),

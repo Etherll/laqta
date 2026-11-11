@@ -135,6 +135,9 @@ fn import_files(files: Files, base: Settings) -> Result<ImportResult, ImportErro
         if !found.presets.is_empty() {
             settings.effect_presets = found.presets.clone();
         }
+        if !found.watch_folders.is_empty() {
+            settings.watch_folders = found.watch_folders;
+        }
         presets = found.presets;
     }
 

@@ -261,7 +261,6 @@ pub struct Editor {
     editing: Option<(u64, Box<Annotation>)>,
     pending: Option<(Tool, RectF)>,
     next_id: u64,
-    step_next: i32,
     history: History,
     clipboard: Option<Annotation>,
     modified: bool,
@@ -292,7 +291,6 @@ impl Editor {
             editing: None,
             pending: None,
             next_id: 1,
-            step_next: 1,
             history: History::new(),
             clipboard: None,
             modified: false,
@@ -318,6 +316,11 @@ impl Editor {
 
     pub fn is_modified(&self) -> bool {
         self.modified
+    }
+
+    /// Marks the image as saved: `is_modified` is false until the next edit.
+    pub fn mark_saved(&mut self) {
+        self.modified = false;
     }
 
     /// Changes the undo snapshot cap (bytes); drops old entries if needed.
@@ -547,7 +550,7 @@ impl Editor {
                     });
                 }
             }
-            Command::Rotate90 { clockwise } => self.destructive(|img| fx::rotate90(img, clockwise)),
+            Command::Rotate90 { clockwise } => self.rotate(clockwise),
             Command::Flip { horizontal } => self.destructive(|img| fx::flip(img, horizontal)),
             Command::AutoCrop => self.destructive(|img| img.crop(fx::auto_crop_rect(img))),
             Command::ApplyEffect(preset) => {
@@ -581,9 +584,22 @@ impl Editor {
             }
             Command::ReplaceImage(bitmap) => {
                 self.finish_editing();
-                self.commit_base(Img::from_bitmap(&bitmap));
+                self.commit_base(Img::from_bitmap(&bitmap), Vec::new());
             }
         }
+    }
+
+    /// The number for a new step: one past the highest step still on the canvas, so undo and
+    /// deletes never leave the counter ahead of the steps that exist.
+    fn next_step_number(&self) -> i32 {
+        self.annotations
+            .iter()
+            .filter_map(|a| match a.kind {
+                AnnotationKind::Step { number, .. } => Some(number),
+                _ => None,
+            })
+            .max()
+            .map_or(1, |n| n + self.style.step_increment)
     }
 
     fn add(&mut self, kind: AnnotationKind) -> u64 {
@@ -624,11 +640,36 @@ impl Editor {
         if self.editing.as_ref().is_some_and(|(e, _)| *e == id) {
             self.editing = None;
         }
-        if let Some(index) = self.index_of(id) {
-            let annotation = self.annotations.remove(index);
-            self.history.push(Entry::Remove { index, annotation });
-            self.modified = true;
-        }
+        let Some(index) = self.index_of(id) else { return };
+        let annotation = self.annotations.remove(index);
+        let renumbered = self.renumber_after(&annotation);
+        let remove = Entry::Remove { index, annotation };
+        let entry = if renumbered.is_empty() { remove } else { Entry::Batch(std::iter::once(remove).chain(renumbered).collect()) };
+        self.history.push(entry);
+        self.modified = true;
+    }
+
+    /// Shifts the steps numbered above a removed step down by the removed step's increment, as
+    /// ShareX does, and returns the edits so they can be undone with the removal.
+    fn renumber_after(&mut self, removed: &Annotation) -> Vec<Entry> {
+        let AnnotationKind::Step { number: gone, .. } = removed.kind else { return Vec::new() };
+        let shift = removed.style.step_increment;
+        let ids: Vec<u64> = self
+            .annotations
+            .iter()
+            .filter(|a| matches!(a.kind, AnnotationKind::Step { number, .. } if number > gone))
+            .map(|a| a.id)
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| {
+                let i = self.index_of(id)?;
+                let before = self.annotations[i].clone();
+                if let AnnotationKind::Step { number, .. } = &mut self.annotations[i].kind {
+                    *number -= shift;
+                }
+                Some(Entry::Modify { before, after: self.annotations[i].clone() })
+            })
+            .collect()
     }
 
     fn duplicate_selected(&mut self, offset: f32) {
@@ -645,23 +686,35 @@ impl Editor {
     fn destructive(&mut self, op: impl FnOnce(&Img) -> Img) {
         self.finish_editing();
         let flat = Img::from_bitmap(&self.export());
-        self.commit_base(op(&flat));
+        self.commit_base(op(&flat), Vec::new());
     }
 
-    /// Makes `result` the base, drops the annotations and records one undo step holding the old
-    /// base and annotations. An empty image changes nothing.
-    fn commit_base(&mut self, result: Img) {
+    /// Turns the base and the annotations with it, so the annotations stay editable.
+    fn rotate(&mut self, clockwise: bool) {
+        self.finish_editing();
+        let (w, h) = (self.base.w as f32, self.base.h as f32);
+        let mut annotations = self.annotations.clone();
+        for a in &mut annotations {
+            a.kind.rotate90(w, h, clockwise);
+        }
+        let turned = fx::rotate90(&self.base, clockwise);
+        self.commit_base(turned, annotations);
+    }
+
+    /// Makes `result` the base and `annotations` the annotations, and records one undo step holding
+    /// the old and the new base and annotations. An empty image changes nothing.
+    fn commit_base(&mut self, result: Img, annotations: Vec<Annotation>) {
         if result.w == 0 || result.h == 0 {
             return;
         }
         let before = Snapshot { base: Img::clone(&self.base), annotations: self.annotations.clone() };
         self.base = Arc::new(result);
-        self.annotations.clear();
+        self.annotations = annotations;
         self.selected = None;
         self.pending = None;
         self.generation += 1;
         self.reset_cache();
-        let after = Snapshot { base: Img::clone(&self.base), annotations: Vec::new() };
+        let after = Snapshot { base: Img::clone(&self.base), annotations: self.annotations.clone() };
         self.history.push(Entry::Destructive { before: Box::new(before), after: Box::new(after) });
         self.modified = true;
     }
@@ -674,9 +727,30 @@ impl Editor {
     }
 
     fn undo(&mut self) {
-        self.finish_editing();
+        // Discarding an empty text box already undid its creation.
+        if self.finish_editing() {
+            return;
+        }
         let Some(e) = self.history.undo.pop() else { return };
-        match &e {
+        self.undo_entry(&e);
+        self.history.redo.push(e);
+        self.selected = self.selected.filter(|id| self.find(*id).is_some());
+        self.modified = true;
+        self.cleanup_cache();
+    }
+
+    fn redo(&mut self) {
+        let Some(e) = self.history.redo.pop() else { return };
+        self.redo_entry(&e);
+        self.history.undo.push(e);
+        self.selected = self.selected.filter(|id| self.find(*id).is_some());
+        self.modified = true;
+        self.cleanup_cache();
+    }
+
+    /// Reverts one entry. A batch reverts its parts last to first.
+    fn undo_entry(&mut self, e: &Entry) {
+        match e {
             Entry::Add { annotation, .. } => {
                 if let Some(i) = self.index_of(annotation.id) {
                     self.annotations.remove(i);
@@ -690,16 +764,17 @@ impl Editor {
             }
             Entry::Reorder { before, .. } => self.order_by(before),
             Entry::Destructive { before, .. } => self.restore(before),
+            Entry::Batch(entries) => {
+                for child in entries.iter().rev() {
+                    self.undo_entry(child);
+                }
+            }
         }
-        self.history.redo.push(e);
-        self.selected = self.selected.filter(|id| self.find(*id).is_some());
-        self.modified = true;
-        self.cleanup_cache();
     }
 
-    fn redo(&mut self) {
-        let Some(e) = self.history.redo.pop() else { return };
-        match &e {
+    /// Applies one entry again. A batch applies its parts first to last.
+    fn redo_entry(&mut self, e: &Entry) {
+        match e {
             Entry::Add { index, annotation } => self.annotations.insert((*index).min(self.annotations.len()), annotation.clone()),
             Entry::Remove { annotation, .. } => {
                 if let Some(i) = self.index_of(annotation.id) {
@@ -713,11 +788,12 @@ impl Editor {
             }
             Entry::Reorder { after, .. } => self.order_by(after),
             Entry::Destructive { after, .. } => self.restore(after),
+            Entry::Batch(entries) => {
+                for child in entries {
+                    self.redo_entry(child);
+                }
+            }
         }
-        self.history.undo.push(e);
-        self.selected = self.selected.filter(|id| self.find(*id).is_some());
-        self.modified = true;
-        self.cleanup_cache();
     }
 
     fn order_by(&mut self, ids: &[u64]) {
@@ -819,8 +895,7 @@ impl Editor {
             },
             Tool::Freehand => self.gesture = Gesture::Freehand { points: vec![p] },
             Tool::Step => {
-                let n = self.step_next;
-                self.step_next += self.style.step_increment;
+                let n = self.next_step_number();
                 let radius = (self.style.font.size * 0.8).max(10.0);
                 self.add(AnnotationKind::Step { center: p, number: n, radius });
             }
@@ -922,7 +997,7 @@ impl Editor {
             }
             Tool::Highlight => AnnotationKind::Highlight { rect: r },
             Tool::SmartEraser => {
-                let c = self.base.get(r.x as i32, r.y as i32);
+                let c = self.base.get(start.x as i32, start.y as i32);
                 AnnotationKind::SmartEraser { rect: r, color: Rgba { r: c[0], g: c[1], b: c[2], a: c[3] } }
             }
             Tool::Blur => AnnotationKind::Blur { rect: r },
@@ -1021,14 +1096,27 @@ impl Editor {
         }
     }
 
-    fn finish_editing(&mut self) {
-        let Some((id, before)) = self.editing.take() else { return };
-        let Some(a) = self.find(id).cloned() else { return };
+    /// Ends text editing. A fresh text box left empty is removed together with its Add entry, so it
+    /// leaves no trace. Returns whether the box was removed.
+    fn finish_editing(&mut self) -> bool {
+        let Some((id, before)) = self.editing.take() else { return false };
+        let Some(a) = self.find(id).cloned() else { return false };
+        let empty = matches!(&a.kind, AnnotationKind::Text { text, .. } | AnnotationKind::SpeechBalloon { text, .. } if text.is_empty());
+        let fresh = matches!(self.history.undo.last(), Some(Entry::Add { annotation, .. }) if annotation.id == id);
+        if empty && fresh {
+            self.history.undo.pop();
+            if let Some(i) = self.index_of(id) {
+                self.annotations.remove(i);
+            }
+            self.selected = self.selected.filter(|s| *s != id);
+            return true;
+        }
         if a != *before {
             // The Add entry for a fresh box already holds the empty text; record the typing.
             self.history.push(Entry::Modify { before: *before, after: a });
             self.modified = true;
         }
+        false
     }
 
     /// The keyboard map.
@@ -1036,7 +1124,9 @@ impl Editor {
         if let Some((id, _)) = &self.editing {
             let id = *id;
             match key {
-                EditorKey::Escape => self.finish_editing(),
+                EditorKey::Escape => {
+                    self.finish_editing();
+                }
                 EditorKey::Backspace => {
                     if let Some(i) = self.index_of(id)
                         && let Some(t) = self.annotations[i].kind.text_mut()
@@ -1044,7 +1134,9 @@ impl Editor {
                         t.pop();
                     }
                 }
-                EditorKey::Enter if m.ctrl => self.finish_editing(),
+                EditorKey::Enter if m.ctrl => {
+                    self.finish_editing();
+                }
                 EditorKey::Enter => self.type_newline(id),
                 _ => {}
             }

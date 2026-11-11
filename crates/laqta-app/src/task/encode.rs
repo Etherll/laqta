@@ -9,8 +9,8 @@ use laqta_ports::AppError;
 
 use super::CaptureImage;
 
-/// Longest side of the toast preview, in pixels.
-const PREVIEW_PIXELS: u32 = 256;
+/// Longest side of the toast preview, in pixels: sharp at the widest toast (600 px) on a 2x display.
+const PREVIEW_PIXELS: u32 = 1200;
 
 /// An encoded image: its bytes and the format they are in.
 #[derive(Clone, Debug)]

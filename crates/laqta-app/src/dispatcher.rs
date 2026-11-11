@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_broadcast::{InactiveReceiver, Receiver};
 use futures_channel::oneshot;
 use laqta_domain::geometry::PhysRect;
-use laqta_domain::region::{HoverTarget, SelectionAction};
+use laqta_domain::region::{HoverTarget, SelectionAction, TargetKind};
 use laqta_domain::workflow::{AfterCaptureTasks, TaskSettings};
 use laqta_domain::{Action, Settings, WorkflowId};
 use laqta_domain::{Bitmap, Frame};
@@ -216,11 +216,17 @@ impl App {
         if ts.capture.delay_ms > 0 {
             self.ports.clock.sleep(std::time::Duration::from_millis(ts.capture.delay_ms as u64)).await;
         }
-        self.ports.screen.capture(CaptureRequest { show_cursor: ts.capture.show_cursor }).await.map_err(AppError::from)
+        self.ports
+            .screen
+            .capture(CaptureRequest { show_cursor: ts.capture.show_cursor, hdr_tonemap: ts.capture.hdr_tonemap })
+            .await
+            .map_err(AppError::from)
     }
 
     pub(crate) fn submit(&self, image: CaptureImage, settings: TaskSettings, target: Option<&HoverTarget>) -> Dispatched {
-        let info = target.map(|t| CaptureInfo { window_title: t.title.clone(), process_name: t.process.clone() }).unwrap_or_default();
+        let info = target
+            .map(|t| CaptureInfo { window_title: t.title.clone(), process_name: t.process.clone(), ..Default::default() })
+            .unwrap_or_default();
         Dispatched::Task(self.task.submit(TaskJob::Capture { image, settings, info }))
     }
 
@@ -239,7 +245,7 @@ impl App {
     /// shadow included) when the platform can take it. Otherwise the crop of `frames` to the window's rect.
     async fn window(&self, frames: Vec<Frame>, target: HoverTarget, ts: TaskSettings) -> Result<Dispatched, AppError> {
         if ts.capture.transparent_window {
-            let request = CaptureRequest { show_cursor: ts.capture.show_cursor };
+            let request = CaptureRequest { show_cursor: ts.capture.show_cursor, hdr_tonemap: ts.capture.hdr_tonemap };
             match self.ports.screen.capture_window(&target, request).await {
                 Ok(bitmap) => return Ok(self.submit(CaptureImage::Image(bitmap), ts, Some(&target))),
                 Err(PortError::Unsupported(_)) => {}
@@ -307,7 +313,8 @@ impl App {
     }
 
     /// Submits one Upload job with the workflow's settings: text, a file, a URL to re-upload or a URL to
-    /// shorten. The CLI, IPC and native-messaging requests use it.
+    /// shorten. Tests use it; the CLI, IPC and native-messaging requests enter through
+    /// `dispatch_with` instead (ADR 015), so they get the same confirmation and checks as the tray.
     pub fn upload_source(self: &Arc<Self>, source: UploadSource, workflow: Option<WorkflowId>) -> TaskId {
         let ts = self.settings.get().task_settings(workflow);
         self.task.submit(TaskJob::Upload { source, settings: ts })
@@ -342,9 +349,16 @@ impl App {
 
     /// The image beautifier: one picked image is decoded and beautified on the compute pool, then submitted as a
     /// capture that is saved and copied. The beautifier's flags are the job's; the workflow's capture flags are not used.
-    async fn beautify_file(&self, mut ts: TaskSettings) -> Result<Dispatched, AppError> {
-        let Some(paths) = self.picked_files(Action::ImageBeautifier.label()).await? else { return Ok(Dispatched::Done) };
-        let Some(path) = paths.into_iter().next() else { return Ok(Dispatched::Done) };
+    /// Beautifies `given`, or a file the user picks.
+    async fn beautify_file(&self, mut ts: TaskSettings, given: Option<PathBuf>) -> Result<Dispatched, AppError> {
+        let path = match given {
+            Some(path) => path,
+            None => {
+                let Some(paths) = self.picked_files(Action::ImageBeautifier.label()).await? else { return Ok(Dispatched::Done) };
+                let Some(path) = paths.into_iter().next() else { return Ok(Dispatched::Done) };
+                path
+            }
+        };
         let bytes = files::read(self.ports.spawner.as_ref(), path).await.map_err(|error| AppError::Io(error.to_string()))?;
         let codecs = self.ports.codecs.clone();
         let beautify = ts.beautify.clone();
@@ -400,6 +414,11 @@ impl App {
     async fn route(self: Arc<Self>, action: Action, input: ActionInput, workflow: Option<WorkflowId>) -> Result<Dispatched, AppError> {
         let settings = self.settings.get();
         let ts = settings.task_settings(workflow);
+        // The file a command line names after a file-taking action (`-ImageBeautifier shot.png`).
+        let given = match &input {
+            ActionInput::Files(files) => files.first().cloned(),
+            _ => None,
+        };
         match action {
             Action::PrintScreen => {
                 let frames = self.frames(&ts).await?;
@@ -446,9 +465,11 @@ impl App {
                 }
                 let frames = self.frames(&ts).await?;
                 let targets = self.ports.hover.targets().await.map_err(AppError::from)?;
+                // A window with the title wins over a UI element that has the same text.
                 let target = targets
                     .into_iter()
-                    .find(|t| t.title.to_lowercase().contains(&title))
+                    .filter(|t| t.title.to_lowercase().contains(&title))
+                    .min_by_key(|t| t.kind != TargetKind::Window)
                     .ok_or_else(|| AppError::Io(format!("no window titled like \"{}\"", ts.capture.custom_window_title)))?;
                 self.window(frames, target, ts).await
             }
@@ -548,9 +569,9 @@ impl App {
                 Ok(first_task(self.confirm_upload_many(paths, workflow).await?))
             }
             Action::DragDropUpload => self.open(ToolWindow::Main),
-            Action::ImageEditor => self.open(ToolWindow::Editor(None)),
-            Action::ImageEffects => self.open(ToolWindow::Effects(None)),
-            Action::ImageBeautifier => self.beautify_file(ts).await,
+            Action::ImageEditor => self.open(ToolWindow::Editor(one_file(input))),
+            Action::ImageEffects => self.open(ToolWindow::Effects(one_file(input))),
+            Action::ImageBeautifier => self.beautify_file(ts, given).await,
             Action::StopUploads => {
                 self.task.stop_all();
                 Ok(Dispatched::Done)
@@ -576,7 +597,7 @@ impl App {
                 Ok(Dispatched::Done)
             }
             Action::ExitLaqta => Ok(Dispatched::Exit),
-            a if let Some(r) = self.guarded_tool_route(a, &ts).await => r,
+            a if let Some(r) = self.guarded_tool_route(a, &ts, given.clone()).await => r,
             Action::ScrollingCapture => self.scrolling_capture(ts, workflow).await,
             Action::AutoCapture => self.auto_capture(None),
             Action::StartAutoCapture => self.auto_capture(Some(true)),
@@ -590,6 +611,14 @@ impl App {
 const MULTI_UPLOAD_CONFIRM_ABOVE: usize = 10;
 
 /// The dispatched result for a batch of jobs: the first job's id, or nothing to wait for when the batch is empty.
+/// The file an editor-style action opens: the first file it was given (`-ImageEditor shot.png`).
+fn one_file(input: ActionInput) -> Option<PathBuf> {
+    match input {
+        ActionInput::Files(files) => files.into_iter().next(),
+        _ => None,
+    }
+}
+
 fn first_task(ids: Vec<TaskId>) -> Dispatched {
     match ids.as_slice() {
         [] => Dispatched::Done,

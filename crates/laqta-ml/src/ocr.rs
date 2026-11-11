@@ -27,7 +27,7 @@ pub struct ModelOcr {
 }
 
 impl ModelOcr {
-    /// `det` and `rec` are catalog ids. `rec` is the default recogniser for the empty language.
+    /// `det` and `rec` are catalog ids or installed custom models. `rec` is the default for the empty language.
     pub fn new(runtime: Arc<Runtime>, det: impl Into<String>, rec: impl Into<String>) -> Self {
         ModelOcr { runtime, det: det.into(), rec: rec.into() }
     }
@@ -36,9 +36,9 @@ impl ModelOcr {
     /// language uses the default recogniser. Any other tag or script name picks the first installed
     /// recogniser that lists it.
     fn prepare(&self, language: &str) -> Result<(String, String), MlError> {
-        let det = self.installed(&self.det)?;
+        let det = self.resolve(&self.det, false)?;
         let rec = if language.is_empty() {
-            self.installed(&self.rec)?
+            self.default_recogniser()?
         } else {
             let wanted = language.to_ascii_lowercase();
             catalog()
@@ -54,6 +54,31 @@ impl ModelOcr {
         let entry = catalog().model(id).ok_or_else(|| MlError::UnknownModel(id.to_owned()))?;
         if self.runtime.is_installed(entry) { Ok(id.to_owned()) } else { Err(MlError::NotInstalled(id.to_owned())) }
     }
+
+    /// The default recogniser.
+    fn default_recogniser(&self) -> Result<String, MlError> {
+        self.resolve(&self.rec, true)
+    }
+
+    /// A catalog model, or a custom one (`custom-<family>-<name>`, added in Settings → Models), which is not in
+    /// the catalog. `validate_custom` checked its family when it was added, so it is accepted once its model
+    /// (and a recogniser's dictionary) is installed.
+    fn resolve(&self, id: &str, dictionary: bool) -> Result<String, MlError> {
+        if catalog().model(id).is_some() || !is_custom_id(id) {
+            return self.installed(id);
+        }
+        if self.runtime.model_path(id).is_file() && (!dictionary || self.runtime.dict_path(id).is_file()) {
+            Ok(id.to_owned())
+        } else {
+            Err(MlError::NotInstalled(id.to_owned()))
+        }
+    }
+}
+
+/// Custom ids are `custom-` and then letters, digits and dashes (the app slugs the name when it adds the
+/// model), so the id names a file in the models folder and nothing else.
+fn is_custom_id(id: &str) -> bool {
+    id.starts_with("custom-") && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 impl Ocr for ModelOcr {
@@ -257,5 +282,18 @@ mod tests {
         let ocr = ModelOcr::new(runtime, "ppocr-v5-mobile-det", "ppocr-v5-mobile-rec-multi");
         assert!(matches!(ocr.prepare(""), Err(MlError::NotInstalled(id)) if id == "ppocr-v5-mobile-rec-multi"));
         assert!(matches!(ocr.prepare("klingon"), Err(MlError::NoModelForLanguage(language)) if language == "klingon"));
+    }
+
+    #[test]
+    fn prepare_accepts_installed_custom_models() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        for file in ["custom-o1-det-mine.onnx", "custom-o1-rec-mine.onnx", "custom-o1-rec-mine.dict.txt"] {
+            std::fs::write(dir.path().join(file), b"placeholder").expect("write placeholder");
+        }
+        let runtime = Arc::new(Runtime::new("/nonexistent-lib.so", dir.path(), crate::ExecutionProvider::Cpu));
+        let ocr = ModelOcr::new(runtime.clone(), "custom-o1-det-mine", "custom-o1-rec-mine");
+        assert_eq!(ocr.prepare("").expect("both installed"), ("custom-o1-det-mine".to_owned(), "custom-o1-rec-mine".to_owned()));
+        let missing = ModelOcr::new(runtime, "custom-o1-det-gone", "custom-o1-rec-mine");
+        assert!(matches!(missing.prepare(""), Err(MlError::NotInstalled(id)) if id == "custom-o1-det-gone"));
     }
 }

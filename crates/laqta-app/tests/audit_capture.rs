@@ -121,7 +121,6 @@ fn saved_size(dir: &Path) -> (u32, u32) {
 /// is the final image. Laqta runs Annotate first and beautifies the edited image afterwards
 /// (`task/run.rs` `edit`).
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_beautify_runs_after_annotate() {
     in_compute_pool(|| {
         let tmp = TempDir::new().unwrap();
@@ -138,7 +137,6 @@ fn audit_bug_beautify_runs_after_annotate() {
 /// so with file and path both set only the file is copied.
 /// Laqta runs all of them and the path text overwrites the copied file.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_copy_file_and_path_are_exclusive() {
     in_compute_pool(|| {
         let tmp = TempDir::new().unwrap();
@@ -152,10 +150,9 @@ fn audit_bug_copy_file_and_path_are_exclusive() {
     });
 }
 
-/// The expected behaviour: printing uses the in-memory image, with no file needed. Laqta's print step
-/// needs a saved file and fails without SAVE_IMAGE_TO_FILE.
+/// Printing uses the in-memory image, with no file needed: a print-only workflow prints a
+/// temporary copy.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_print_needs_no_saved_file() {
     in_compute_pool(|| {
         let tmp = TempDir::new().unwrap();
@@ -171,7 +168,6 @@ fn audit_bug_print_needs_no_saved_file() {
 /// sources list UI elements (TargetKind::Element) before windows, so an element named like the
 /// window wins and only that element is captured.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_custom_window_matches_a_ui_element() {
     in_compute_pool(|| {
         let tmp = TempDir::new().unwrap();

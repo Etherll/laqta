@@ -28,6 +28,10 @@ const WINFORMS_NAMES: &[(&str, Key)] = &[
     ("Multiply", Key::NumpadMultiply),
     ("Divide", Key::NumpadDivide),
     ("Decimal", Key::NumpadDecimal),
+    ("MediaNextTrack", Key::MediaNext),
+    ("MediaPreviousTrack", Key::MediaPrev),
+    ("LaunchApplication1", Key::LaunchApp1),
+    ("LaunchApplication2", Key::LaunchApp2),
 ];
 
 /// The hotkey text of a ShareX hotkey. `Ok(None)` for `None` or blank text (no hotkey). `Err` gives the
@@ -104,6 +108,25 @@ mod tests {
         assert_eq!(chord("Oemplus, Control", false).unwrap(), Some(KeyChord::new(Modifiers::CTRL, Key::Equal)));
         assert_eq!(chord("OemMinus", false).unwrap(), Some(KeyChord::new(Modifiers::empty(), Key::Minus)));
         assert_eq!(chord("Snapshot", true).unwrap(), Some(KeyChord::new(Modifiers::SUPER, Key::PrintScreen)));
+    }
+
+    #[test]
+    fn parses_media_and_launch_keys() {
+        let cases = [
+            ("VolumeUp", Key::VolumeUp),
+            ("VolumeDown", Key::VolumeDown),
+            ("VolumeMute", Key::VolumeMute),
+            ("MediaPlayPause", Key::MediaPlayPause),
+            ("MediaNextTrack", Key::MediaNext),
+            ("MediaPreviousTrack", Key::MediaPrev),
+            ("MediaStop", Key::MediaStop),
+            ("LaunchMail", Key::LaunchMail),
+            ("LaunchApplication1", Key::LaunchApp1),
+            ("LaunchApplication2", Key::LaunchApp2),
+        ];
+        for (text, key) in cases {
+            assert_eq!(chord(text, false).unwrap(), Some(KeyChord::new(Modifiers::empty(), key)), "{text}");
+        }
     }
 
     #[test]

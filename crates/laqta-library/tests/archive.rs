@@ -23,6 +23,7 @@ fn new_item(day: i8, file_name: &str) -> NewHistoryItem {
         url: Some(format!("https://imgur.example/{day}")),
         thumbnail_url: None,
         deletion_url: None,
+        short_url: None,
         host: Some("imgur.example".to_owned()),
         width: Some(1920),
         height: Some(1080),

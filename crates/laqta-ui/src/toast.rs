@@ -165,10 +165,10 @@ impl Render for ToastView {
                     .min_h_0()
                     .rounded(crate::theme::radius::MD)
                     .bg(t.muted)
-                    .flex()
-                    .justify_center()
                     .overflow_hidden()
-                    .child(img(image.clone()).max_h_full().max_w_full().rounded(crate::theme::radius::MD)),
+                    // Definite bounds, so the preview scales to fill the box instead of keeping its
+                    // natural size; the default fit (contain) keeps the whole capture visible.
+                    .child(img(image.clone()).size_full()),
             );
         }
         body = body.child(

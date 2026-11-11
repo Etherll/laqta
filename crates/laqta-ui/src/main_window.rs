@@ -663,11 +663,13 @@ impl MainWindow {
                 open_path(path, true, cx),
             ));
         }
-        if let Some(url) = c.url.clone() {
+        // A shortened upload copies its short link, as the clipboard got after the upload.
+        if let Some(url) = c.short_url.clone().or_else(|| c.url.clone()) {
+            let tip = if c.short_url.is_some() { "Copy short link" } else { "Copy link" };
             bar = bar.child(overlay_button(
                 SharedString::from(format!("lib-link-{}", c.id)),
                 IconName::Link,
-                "Copy link",
+                tip,
                 cx.listener(move |this, _, _, cx| {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone()));
                     this.flash("Copied the link", cx);

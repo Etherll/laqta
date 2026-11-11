@@ -93,7 +93,8 @@ fn preset_to_value(preset: &Preset) -> Result<Value, ImportError> {
     for item in &preset.effects {
         let (class, mut fields): (&str, Object) = effects::write(&item.effect)
             .ok_or_else(|| ImportError::Unsupported(format!("the `{}` effect has no ShareX class to write", item.effect.name())))?;
-        fields.insert("$type".to_owned(), Value::String(format!("ShareX.ImageEffectsLib.{class}, ShareX.ImageEffectsLib")));
+        // ShareX's binder resolves only the bare class name (`KnownTypesSerializationBinder`).
+        fields.insert("$type".to_owned(), Value::String(class.to_owned()));
         fields.insert("Enabled".to_owned(), Value::Bool(item.enabled));
         items.push(Value::Object(fields));
     }

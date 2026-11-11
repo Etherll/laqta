@@ -20,7 +20,6 @@ fn add(ed: &mut PhotoEditor, name: &str, kind: LayerKind) -> LayerId {
 /// Merging a layer down into a lower layer whose blend mode is not Normal: the merged layer is reset
 /// to Normal, so the picture changes (Photoshop keeps the lower layer's mode).
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_merge_down_drops_the_lower_layers_blend_mode() {
     let mut ed = PhotoEditor::new(Document::new(W, H).unwrap());
     add(&mut ed, "red", LayerKind::Fill(Fill::Solid(Rgba { r: 255, g: 0, b: 0, a: 255 })));
@@ -36,7 +35,6 @@ fn audit_bug_merge_down_drops_the_lower_layers_blend_mode() {
 /// Merging a raster layer down into an adjustment layer: the adjustment, which applied to every
 /// layer beneath it, becomes a plain raster of the upper layer, so the layers below lose it.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_merge_down_into_an_adjustment_layer_drops_the_adjustment() {
     in_pool(|| {
         let mut ed = PhotoEditor::new(Document::new(W, H).unwrap());

@@ -1,6 +1,7 @@
 //! History in SQLite (ADR 006): entries, tags, a full-text index over file names, and the
 //! task-event subscriber that writes entries.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -9,14 +10,15 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 use std::time::Duration;
 
 use laqta_domain::history::{HistoryItem, HistoryKind, HistoryQuery, HistoryStats, NewHistoryItem, kind_for_path};
-use laqta_ports::{Clock, HistoryEdit, PortError, Spawner, TaskEvent};
+use laqta_ports::{Clock, HistoryEdit, PortError, Spawner, TaskEvent, TaskId};
 use rusqlite::types::{Type, Value};
 use rusqlite::{Connection, OptionalExtension, Row, params_from_iter};
 
 use crate::LibraryError;
 
 /// `MIGRATIONS[i]` moves `PRAGMA user_version` from `i` to `i + 1`. Never edit a shipped entry.
-const MIGRATIONS: [&str; 1] = ["
+const MIGRATIONS: [&str; 2] = [
+    "
 CREATE TABLE history (
     id             INTEGER PRIMARY KEY,
     time           TEXT NOT NULL,
@@ -53,11 +55,15 @@ CREATE TRIGGER history_fts_update AFTER UPDATE OF file_name ON history BEGIN
     INSERT INTO history_fts (history_fts, rowid, file_name) VALUES ('delete', old.id, old.file_name);
     INSERT INTO history_fts (rowid, file_name) VALUES (new.id, new.file_name);
 END;
-"];
+",
+    "
+ALTER TABLE history ADD COLUMN short_url TEXT;
+",
+];
 
 /// Every column `map_row` reads, in its order.
 const COLUMNS: &str = "id, time, kind, file_name, path, url, thumbnail_url, deletion_url, host, width, height, \
-                       size_bytes, thumbnail_path";
+                       size_bytes, thumbnail_path, short_url";
 
 const KINDS: [HistoryKind; 4] = [HistoryKind::Image, HistoryKind::Text, HistoryKind::File, HistoryKind::Url];
 
@@ -185,7 +191,7 @@ impl History {
             let tx = conn.transaction()?;
             tx.execute(
                 "INSERT INTO history (time, kind, file_name, path, url, thumbnail_url, deletion_url, host, width, \
-             height, size_bytes, thumbnail_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             height, size_bytes, thumbnail_path, short_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 rusqlite::params![
                     time,
                     kind_text(item.kind),
@@ -199,6 +205,7 @@ impl History {
                     item.height,
                     size_bytes,
                     thumbnail_path,
+                    item.short_url,
                 ],
             )?;
             let id = tx.last_insert_rowid();
@@ -300,6 +307,37 @@ impl History {
         })
     }
 
+    /// Sets the short link of the entry of the upload at `url`. Returns `false` when no entry has the
+    /// id, or it is another upload's: a deleted entry's id can be taken by a newer one.
+    pub fn set_short_url(&self, id: i64, url: &str, short_url: &str) -> Result<bool, LibraryError> {
+        self.with(|conn| {
+            let changed =
+                conn.execute("UPDATE history SET short_url = ?1 WHERE id = ?2 AND url = ?3", rusqlite::params![short_url, id, url])?;
+            Ok(changed > 0)
+        })
+    }
+
+    /// Sets the upload links and host of the entry of the file at `path`. Returns `false` when no entry
+    /// has the id, or it is another file's: a deleted entry's id can be taken by a newer one.
+    pub fn set_upload(
+        &self,
+        id: i64,
+        path: &Path,
+        url: &str,
+        thumbnail_url: Option<&str>,
+        deletion_url: Option<&str>,
+        host: Option<&str>,
+    ) -> Result<bool, LibraryError> {
+        let path = text_of(path)?;
+        self.with(|conn| {
+            let changed = conn.execute(
+                "UPDATE history SET url = ?1, thumbnail_url = ?2, deletion_url = ?3, host = ?4 WHERE id = ?5 AND path = ?6",
+                rusqlite::params![url, thumbnail_url, deletion_url, host, id, path],
+            )?;
+            Ok(changed > 0)
+        })
+    }
+
     pub fn stats(&self) -> Result<HistoryStats, LibraryError> {
         self.with(|conn| {
             let (total, total_bytes): (u64, u64) =
@@ -358,14 +396,82 @@ impl HistoryEdit for History {
     }
 }
 
-/// Writes a history entry for each `TaskEvent::Saved` until the channel closes. A failure is logged
-/// and that event is skipped. Each entry is timestamped with `clock.now()`.
-pub async fn record_task_events(history: Arc<History>, mut events: async_broadcast::Receiver<TaskEvent>, clock: Arc<dyn Clock>) {
+/// How many recent saves an upload can still link to. An upload of an older save adds its own entry.
+const LINKABLE_SAVES: usize = 64;
+
+/// Writes a history entry for each `TaskEvent::Saved` and records each `TaskEvent::Uploaded` until
+/// the channel closes. An upload of a saved file fills in that file's entry; an upload of a file from
+/// disk adds an entry for that file; an upload with no file (text, a URL) adds an entry of kind `Url`. A failure is logged and that event is skipped.
+/// Each entry is timestamped with `clock.now()`.
+///
+/// After each entry, the oldest entries beyond `max_items()` are deleted (the setting
+/// `history.max_items`, read at each save; 0 keeps everything).
+pub async fn record_task_events(
+    history: Arc<History>,
+    mut events: async_broadcast::Receiver<TaskEvent>,
+    clock: Arc<dyn Clock>,
+    max_items: impl Fn() -> u32,
+) {
+    // Saves not yet matched by an upload: task id, file and history entry id, oldest first.
+    let mut saves: VecDeque<(TaskId, PathBuf, i64)> = VecDeque::with_capacity(LINKABLE_SAVES);
+    // Uploads a shortened link may still follow: task id, upload link and history entry id, oldest first.
+    let mut uploads: VecDeque<(TaskId, String, i64)> = VecDeque::with_capacity(LINKABLE_SAVES);
     loop {
         match events.recv().await {
-            Ok(TaskEvent::Saved { path, .. }) => {
-                if let Err(error) = record_saved(&history, &path, clock.now()) {
-                    tracing::warn!(path = %path.display(), %error, "history: could not record a saved file");
+            Ok(TaskEvent::Saved { id, path }) => {
+                match record_saved(&history, &path, clock.now()) {
+                    Ok(entry) => {
+                        if saves.len() == LINKABLE_SAVES {
+                            saves.pop_front();
+                        }
+                        saves.push_back((id, path, entry));
+                    }
+                    Err(error) => tracing::warn!(path = %path.display(), %error, "history: could not record a saved file"),
+                }
+                if let Err(error) = history.trim(max_items()) {
+                    tracing::warn!(%error, "history: could not remove the oldest entries");
+                }
+            }
+            Ok(TaskEvent::Uploaded { id, url, thumbnail_url, deletion_url, path }) => {
+                // A task can save twice (to its folder and through the dialog): the upload names the file it sent.
+                let at = match &path {
+                    Some(path) => saves.iter().rposition(|(task, saved, _)| *task == id && saved == path),
+                    None => saves.iter().rposition(|(task, ..)| *task == id),
+                };
+                let mut saved = at.and_then(|at| saves.remove(at)).map(|(_, path, entry)| (entry, path));
+                // A file uploaded from disk had no Saved event: its entry is made now, as a save's would be.
+                if saved.is_none()
+                    && let Some(path) = &path
+                {
+                    match record_saved(&history, path, clock.now()) {
+                        Ok(entry) => saved = Some((entry, path.clone())),
+                        Err(error) => tracing::warn!(path = %path.display(), %error, "history: could not record an uploaded file"),
+                    }
+                }
+                match record_upload(&history, saved, &url, thumbnail_url.as_deref(), deletion_url.as_deref(), clock.now()) {
+                    Ok(entry) => {
+                        if uploads.len() == LINKABLE_SAVES {
+                            uploads.pop_front();
+                        }
+                        uploads.push_back((id, url, entry));
+                    }
+                    Err(error) => tracing::warn!(%error, "history: could not record an upload"),
+                }
+                if let Err(error) = history.trim(max_items()) {
+                    tracing::warn!(%error, "history: could not remove the oldest entries");
+                }
+            }
+            Ok(TaskEvent::Shortened { id, url }) => {
+                let upload = uploads
+                    .iter()
+                    .rposition(|(task, ..)| *task == id)
+                    .and_then(|at| uploads.remove(at))
+                    .map(|(_, url, entry)| (entry, url));
+                if let Err(error) = record_short(&history, upload, &url, clock.now()) {
+                    tracing::warn!(%error, "history: could not record a shortened link");
+                }
+                if let Err(error) = history.trim(max_items()) {
+                    tracing::warn!(%error, "history: could not remove the oldest entries");
                 }
             }
             Ok(_) => {}
@@ -377,7 +483,7 @@ pub async fn record_task_events(history: Arc<History>, mut events: async_broadca
     }
 }
 
-fn record_saved(history: &History, path: &Path, now: jiff::civil::DateTime) -> Result<(), LibraryError> {
+fn record_saved(history: &History, path: &Path, now: jiff::civil::DateTime) -> Result<i64, LibraryError> {
     let size_bytes = match fs::metadata(path) {
         Ok(metadata) => Some(metadata.len()),
         Err(error) => {
@@ -403,14 +509,92 @@ fn record_saved(history: &History, path: &Path, now: jiff::civil::DateTime) -> R
         url: None,
         thumbnail_url: None,
         deletion_url: None,
+        short_url: None,
         host: None,
         width,
         height,
         size_bytes,
         thumbnail_path: None,
         tags: Vec::new(),
+    })
+}
+
+/// Adds a short link to its upload's entry when that entry still exists. Otherwise (a link shortened
+/// on its own) adds an entry of kind `Url` whose link and short link are both the short one.
+fn record_short(history: &History, upload: Option<(i64, String)>, short_url: &str, now: jiff::civil::DateTime) -> Result<(), LibraryError> {
+    if let Some((entry, url)) = upload
+        && history.set_short_url(entry, &url, short_url)?
+    {
+        return Ok(());
+    }
+    history.add(&NewHistoryItem {
+        time: now,
+        kind: HistoryKind::Url,
+        file_name: upload_file_name(short_url),
+        path: None,
+        url: Some(short_url.to_owned()),
+        thumbnail_url: None,
+        deletion_url: None,
+        short_url: Some(short_url.to_owned()),
+        host: host_of(short_url).map(str::to_owned),
+        width: None,
+        height: None,
+        size_bytes: None,
+        thumbnail_path: None,
+        tags: Vec::new(),
     })?;
     Ok(())
+}
+
+/// Links an upload to the entry of its saved file when that entry still exists. Otherwise adds an
+/// entry of kind `Url`, named after the last segment of the URL. Returns the entry's id.
+fn record_upload(
+    history: &History,
+    saved: Option<(i64, PathBuf)>,
+    url: &str,
+    thumbnail_url: Option<&str>,
+    deletion_url: Option<&str>,
+    now: jiff::civil::DateTime,
+) -> Result<i64, LibraryError> {
+    let host = host_of(url);
+    if let Some((entry, path)) = saved
+        && history.set_upload(entry, &path, url, thumbnail_url, deletion_url, host)?
+    {
+        return Ok(entry);
+    }
+    history.add(&NewHistoryItem {
+        time: now,
+        kind: HistoryKind::Url,
+        file_name: upload_file_name(url),
+        path: None,
+        url: Some(url.to_owned()),
+        thumbnail_url: thumbnail_url.map(str::to_owned),
+        deletion_url: deletion_url.map(str::to_owned),
+        short_url: None,
+        host: host.map(str::to_owned),
+        width: None,
+        height: None,
+        size_bytes: None,
+        thumbnail_path: None,
+        tags: Vec::new(),
+    })
+}
+
+/// The host of a URL, without scheme, userinfo, port or path. `None` when the URL has no `://`.
+fn host_of(url: &str) -> Option<&str> {
+    let authority = url.split_once("://")?.1.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host = match host.strip_prefix('[') {
+        Some(bracketed) => bracketed.split_once(']').map_or(bracketed, |(inner, _)| inner),
+        None => host.split_once(':').map_or(host, |(name, _)| name),
+    };
+    (!host.is_empty()).then_some(host)
+}
+
+/// The last path segment of a URL, or the whole URL when it has none.
+fn upload_file_name(url: &str) -> String {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    path.rsplit('/').find(|segment| !segment.is_empty()).unwrap_or(url).to_owned()
 }
 
 /// Width and height from the IHDR chunk of a PNG file. `None` for other files, or when the header
@@ -505,6 +689,7 @@ fn map_row(row: &Row<'_>) -> rusqlite::Result<HistoryItem> {
         height: row.get(10)?,
         size_bytes: row.get::<_, Option<i64>>(11)?.map(|size| unsigned(size, 11)).transpose()?,
         thumbnail_path: row.get::<_, Option<String>>(12)?.map(PathBuf::from),
+        short_url: row.get(13)?,
         tags: Vec::new(),
     })
 }

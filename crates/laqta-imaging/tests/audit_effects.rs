@@ -75,14 +75,17 @@ fn audit_bug_black_white_differs_from_sharex() {
     assert!(close(got, want), "BlackWhite of {PIXEL:?}: ShareX {want:?}, Laqta {got:?}");
 }
 
-/// ShareX Contrast 1.5 multiplies by 1.5. Laqta's equivalent scale (value 50 -> c = 1.5) pivots on
-/// mid grey, so the same scale gives a different picture.
+/// ShareX Contrast 1.5 multiplies R, G and B by 1.5, with no pivot. Laqta's `Adjust::Contrast` pivots on
+/// mid grey, so its own scale gives a different picture and stays as it is. The `.sxie` import reads a
+/// ShareX `Contrast` as `Adjust::MatrixColor` holding ShareX's matrix, and that effect must match ShareX
+/// pixel for pixel.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_contrast_pivots_where_sharex_does_not() {
-    let want = sharex_apply(&sharex_contrast(1.5), PIXEL);
-    let got = laqta_apply(Adjust::Contrast { value: 50.0 });
-    assert!(close(got, want), "Contrast x1.5 of {PIXEL:?}: ShareX {want:?}, Laqta {got:?}");
+    let rows = sharex_contrast(1.5);
+    let matrix: [f32; 20] = std::array::from_fn(|k| rows[k / 4][k % 4]);
+    let want = sharex_apply(&rows, PIXEL);
+    let got = laqta_apply(Adjust::MatrixColor { matrix });
+    assert!(close(got, want), "Contrast x1.5 of {PIXEL:?}: ShareX {want:?}, MatrixColor {got:?}");
 }
 
 /// ShareX `Scale.Apply`: a zero percentage keeps the aspect ratio (`ApplyAspectRatio`), and ShareX's

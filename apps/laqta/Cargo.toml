@@ -51,11 +51,17 @@ dirs.workspace = true
 fastrand.workspace = true
 getrandom.workspace = true
 
+[dev-dependencies]
+laqta-ports = { workspace = true, features = ["fakes"] }
+tempfile.workspace = true
+
 [build-dependencies]
 embed-resource = "3.0.12"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 laqta-platform-linux.workspace = true
+# `malloc_trim` after the models are released (`models::ModelReleaser`).
+libc = "0.2.191"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 laqta-platform-macos.workspace = true

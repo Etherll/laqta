@@ -122,6 +122,10 @@ fn state() -> MutexGuard<'static, State> {
 pub struct MacHotkeys;
 
 impl HotkeyRegistrar for MacHotkeys {
+    fn grabs_keys(&self) -> bool {
+        true
+    }
+
     fn register(&self, bindings: &[(KeyChord, Action)], on_fire: HotkeyCallback) -> HotkeyResults {
         on_main(|_| register_on_main(bindings, on_fire))
     }

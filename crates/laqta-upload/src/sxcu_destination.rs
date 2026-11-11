@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use laqta_http::HttpError;
 use laqta_ports::{
-    BoxFuture, Destination, PortError, ProgressCallback, Prompt, Rng, Shortener, UploadData, UploadError, UploadKind, UploadRequest,
-    UploadResult,
+    BoxFuture, Destination, PortError, ProgressCallback, Prompt, Rng, Sharer, Shortener, UploadData, UploadError, UploadKind,
+    UploadRequest, UploadResult,
 };
 
 use crate::sxcu::{CustomUploader, Env, Input, build_request, parse_response};
@@ -91,6 +91,40 @@ impl Shortener for SxcuShortener {
             let result = self.inner.exchange(&input, progress).await?;
             result.url.ok_or_else(|| UploadError::BadResponse("the response has no short URL".into()))
         })
+    }
+}
+
+/// A `.sxcu` URL sharing service: its request carries the URL as `{input}`, and the service does
+/// the sharing, so there is no page to open.
+pub struct SxcuSharer {
+    inner: SxcuDestination,
+}
+
+impl SxcuSharer {
+    pub fn new(id: impl Into<String>, uploader: CustomUploader, prompt: Arc<dyn Prompt>, rng: Arc<dyn Rng>) -> Self {
+        SxcuSharer { inner: SxcuDestination::new(id, uploader, prompt, rng) }
+    }
+}
+
+impl Sharer for SxcuSharer {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    fn share_url(&self, url: &str) -> BoxFuture<'_, Result<Option<String>, UploadError>> {
+        let url = url.to_owned();
+        Box::pin(async move {
+            let input = Input { file_name: "", data: &[], mime: "text/plain", text: Some(url.as_str()) };
+            let progress: ProgressCallback = Arc::new(|_: u64, _: Option<u64>| {});
+            self.inner.exchange(&input, progress).await?;
+            Ok(None)
+        })
+    }
+}
+
+impl fmt::Debug for SxcuSharer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SxcuSharer").field("id", &self.inner.id).finish_non_exhaustive()
     }
 }
 

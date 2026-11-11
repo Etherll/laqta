@@ -2,6 +2,18 @@
 
 use laqta_domain::Key;
 
+/// The virtual key Windows sends with Ctrl held down on Pause (Ctrl+Pause is Break).
+pub(crate) const VK_CANCEL: u32 = 0x03;
+
+/// The virtual key a hotkey for `chord` must register: Ctrl+Pause arrives as `VK_CANCEL`, so a
+/// `VK_PAUSE` registration with Ctrl would never fire.
+pub(crate) fn hotkey_vk(chord: laqta_domain::KeyChord) -> Option<u32> {
+    if chord.key == Key::Pause && chord.modifiers.contains(laqta_domain::Modifiers::CTRL) {
+        return Some(VK_CANCEL);
+    }
+    vk(chord.key)
+}
+
 /// The `VK_*` code for `key`, or `None` if Windows has no key for it.
 pub(crate) fn vk(key: Key) -> Option<u32> {
     let code: u32 = match key {
@@ -109,6 +121,17 @@ pub(crate) fn vk(key: Key) -> Option<u32> {
         Key::BracketLeft => 0xDB,
         Key::BracketRight => 0xDD,
         Key::Backquote => 0xC0,
+        Key::VolumeUp => 0xAF,
+        Key::VolumeDown => 0xAE,
+        Key::VolumeMute => 0xAD,
+        Key::MediaPlayPause => 0xB3,
+        Key::MediaNext => 0xB0,
+        Key::MediaPrev => 0xB1,
+        Key::MediaStop => 0xB2,
+        Key::LaunchMail => 0xB4,
+        Key::LaunchApp1 => 0xB6,
+        // Calculator has no VK_* code of its own: keyboards send it as VK_LAUNCH_APP2.
+        Key::LaunchApp2 | Key::Calculator => 0xB7,
         _ => return None,
     };
     Some(code)
@@ -120,17 +143,22 @@ mod tests {
 
     use super::*;
 
+    /// Keys with no `VK_*` code.
+    const UNMAPPED: &[Key] = &[];
+
     #[test]
-    fn every_key_has_a_virtual_key() {
+    fn unmapped_keys_are_exactly_the_documented_ones() {
         for &key in Key::ALL {
-            assert!(vk(key).is_some(), "{key:?} has no virtual-key code");
+            assert_eq!(vk(key).is_none(), UNMAPPED.contains(&key), "{key:?}");
         }
     }
 
     #[test]
     fn virtual_keys_are_distinct() {
-        let codes: HashSet<u32> = Key::ALL.iter().filter_map(|&key| vk(key)).collect();
-        assert_eq!(codes.len(), Key::ALL.len());
+        // Calculator is the same key as LaunchApp2 on Windows.
+        let mapped: Vec<u32> = Key::ALL.iter().filter(|&&key| key != Key::Calculator).filter_map(|&key| vk(key)).collect();
+        let codes: HashSet<u32> = mapped.iter().copied().collect();
+        assert_eq!(codes.len(), mapped.len());
     }
 
     #[test]

@@ -2,14 +2,16 @@
 //! models through verified fetch and runs them with `laqta-ml`.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 use laqta_domain::Bitmap;
 use laqta_ml::catalog::{Task, catalog};
 use laqta_ml::ocr::ModelOcr;
 use laqta_ml::runtime::Runtime;
 use laqta_ports::{BoxFuture, Notifier, Ocr, OcrResult, PortError, Prompt};
+
+use crate::models::{ModelReleaser, ModelSlot};
 
 /// The title of the download prompt and of the progress toasts.
 const TITLE: &str = "Text recognition";
@@ -26,7 +28,7 @@ pub struct LazyOcr {
     /// The OS engine (Windows.Media.Ocr) used when the models are declined.
     fallback: Option<Arc<dyn Ocr>>,
     /// The engine and the (det, rec, provider) it was built for.
-    ready: Mutex<Option<(EngineKey, Arc<ModelOcr>)>>,
+    ready: ModelSlot<EngineKey, ModelOcr>,
     /// The user turned the download down and the OS engine reads instead. Not asked again until
     /// Laqta restarts; the models can still be installed from the settings.
     declined: AtomicBool,
@@ -66,8 +68,17 @@ impl LazyOcr {
         ui: Arc<U>,
         options: crate::models::SharedModelOptions,
         fallback: Option<Arc<dyn Ocr>>,
+        releaser: Arc<ModelReleaser>,
     ) -> Self {
-        LazyOcr { data, prompt: ui.clone(), options, notifier: ui, fallback, ready: Mutex::new(None), declined: AtomicBool::new(false) }
+        LazyOcr {
+            data,
+            prompt: ui.clone(),
+            options,
+            notifier: ui,
+            fallback,
+            ready: ModelSlot::new(releaser),
+            declined: AtomicBool::new(false),
+        }
     }
 
     /// The models were turned down and the OS engine stands in.
@@ -100,9 +111,7 @@ impl LazyOcr {
             return Err(PortError::Cancelled);
         }
         let Plan { key, dir, lib, ort: ort_entry, runtime, wanted } = self.plan()?;
-        if let Some((k, o)) = self.ready.lock().ok().and_then(|g| g.clone())
-            && k == key
-        {
+        if let Some(o) = self.ready.get(&key) {
             return Ok(o);
         }
         let (det_id, rec_id) = (key.0.clone(), key.1.clone());
@@ -133,10 +142,8 @@ impl LazyOcr {
                 runtime.install(entry, progress, Arc::new(AtomicBool::new(false))).await.map_err(ml)?;
             }
         }
-        let ocr = Arc::new(ModelOcr::new(runtime, det_id, rec_id));
-        if let Ok(mut g) = self.ready.lock() {
-            *g = Some((key, ocr.clone()));
-        }
+        let ocr = Arc::new(ModelOcr::new(runtime.clone(), det_id, rec_id));
+        self.ready.store(key, ocr.clone(), runtime);
         Ok(ocr)
     }
 }
@@ -145,14 +152,18 @@ impl Ocr for LazyOcr {
     fn recognize(&self, image: Bitmap, language: String) -> BoxFuture<'_, Result<OcrResult, PortError>> {
         Box::pin(async move {
             match self.get().await {
-                Ok(o) => o.recognize(image, language).await,
+                Ok(o) => {
+                    let result = o.recognize(image, language).await;
+                    self.ready.ran();
+                    result
+                }
                 Err(PortError::Cancelled) if let Some(f) = &self.fallback => f.recognize(image, language).await,
                 Err(e) => Err(e),
             }
         })
     }
     fn languages(&self) -> Vec<String> {
-        let mut l = self.ready.lock().ok().and_then(|g| g.as_ref().map(|(_, o)| o.languages())).unwrap_or_default();
+        let mut l = self.ready.peek().map(|o| o.languages()).unwrap_or_default();
         if let Some(f) = &self.fallback {
             l.extend(f.languages());
         }

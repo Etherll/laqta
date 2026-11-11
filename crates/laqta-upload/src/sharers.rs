@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use laqta_ports::{Sharer, UploadError};
+use laqta_ports::{BoxFuture, Sharer, UploadError};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 
 /// Everything except the RFC 3986 unreserved characters is encoded, so the URL survives inside a
@@ -40,8 +40,9 @@ impl Sharer for Template {
         self.id
     }
 
-    fn share_url(&self, url: &str) -> Result<String, UploadError> {
+    fn share_url(&self, url: &str) -> BoxFuture<'_, Result<Option<String>, UploadError>> {
         let encoded = utf8_percent_encode(url, QUERY_VALUE).to_string();
-        Ok(self.template.replace("{url}", &encoded))
+        let page = self.template.replace("{url}", &encoded);
+        Box::pin(async move { Ok(Some(page)) })
     }
 }

@@ -9,7 +9,7 @@ use laqta_ports::{Destination, Prompt, Rng, Sharer, Shortener};
 use crate::catalog::catalog;
 use crate::sharers::sharers;
 use crate::sxcu::{CustomUploader, DestinationType, SxcuError};
-use crate::sxcu_destination::{SxcuDestination, SxcuShortener};
+use crate::sxcu_destination::{SxcuDestination, SxcuSharer, SxcuShortener};
 
 /// Hosts by id. An id is unique within each kind: adding one that is already there replaces the
 /// earlier entry.
@@ -84,21 +84,38 @@ impl Registry {
         Ok(id)
     }
 
-    /// Registers a `.sxcu` file as a destination (image, text or file kinds) and, for `UrlShortener`,
-    /// as a shortener. Returns whether it was registered as either.
+    /// Registers a `.sxcu` file as a destination (image, text or file kinds), as a shortener for
+    /// `UrlShortener` and as a sharer for `URLSharingService`. Returns whether it was registered.
     fn add_uploader(&mut self, id: String, uploader: CustomUploader) -> bool {
         let kinds = uploader.destination_types();
         let file_host = kinds.iter().any(|kind| matches!(kind, DestinationType::Image | DestinationType::Text | DestinationType::File));
         let shortener = kinds.contains(&DestinationType::UrlShortener);
+        let sharer = kinds.contains(&DestinationType::UrlSharing);
+        if !(file_host || shortener || sharer) {
+            return false;
+        }
+        // A file that replaces one of the same name drops the kinds it no longer declares.
+        if !file_host {
+            self.destinations.retain(|entry| entry.id() != id);
+        }
+        if !shortener {
+            self.shorteners.retain(|entry| entry.id() != id);
+        }
+        if !sharer {
+            self.sharers.retain(|entry| entry.id() != id);
+        }
         if file_host {
             let destination = SxcuDestination::new(id.clone(), uploader.clone(), Arc::clone(&self.prompt), Arc::clone(&self.rng));
             self.add_destination(Arc::new(destination));
         }
         if shortener {
-            let short = SxcuShortener::new(id, uploader, Arc::clone(&self.prompt), Arc::clone(&self.rng));
+            let short = SxcuShortener::new(id.clone(), uploader.clone(), Arc::clone(&self.prompt), Arc::clone(&self.rng));
             self.add_shortener(Arc::new(short));
         }
-        file_host || shortener
+        if sharer {
+            self.add_sharer(Arc::new(SxcuSharer::new(id, uploader, Arc::clone(&self.prompt), Arc::clone(&self.rng))));
+        }
+        true
     }
 
     pub fn destination(&self, id: &str) -> Option<Arc<dyn Destination>> {
@@ -111,6 +128,16 @@ impl Registry {
 
     pub fn sharer(&self, id: &str) -> Option<Arc<dyn Sharer>> {
         self.sharers.iter().find(|entry| entry.id() == id).cloned()
+    }
+
+    /// The user's own `.sxcu` shorteners as (id, name).
+    pub fn custom_shortener_ids(&self) -> Vec<(String, String)> {
+        custom_ids(self.shorteners.iter().map(|entry| entry.id()))
+    }
+
+    /// The user's own `.sxcu` sharing services as (id, name).
+    pub fn custom_sharer_ids(&self) -> Vec<(String, String)> {
+        custom_ids(self.sharers.iter().map(|entry| entry.id()))
     }
 
     /// Every destination as (id, name), in registration order.
@@ -127,6 +154,11 @@ impl fmt::Debug for Registry {
             .field("sharers", &self.sharers.len())
             .finish_non_exhaustive()
     }
+}
+
+/// `custom:<Name>` ids as (id, Name).
+fn custom_ids<'a>(ids: impl Iterator<Item = &'a str>) -> Vec<(String, String)> {
+    ids.filter_map(|id| id.strip_prefix("custom:").map(|name| (id.to_owned(), name.to_owned()))).collect()
 }
 
 /// A host without a leading `www.`, as ShareX's `URLHelpers.GetHostName` gives it.

@@ -47,6 +47,7 @@ pub fn apply_accounts(registry: &SharedRegistry, accounts: &[HostAccount], deps:
 
 /// `<data>/uploaders/*.sxcu` are the user's custom uploaders.
 pub fn registry(data: &Path, prompt: Arc<dyn Prompt>, rng: Arc<dyn Rng>) -> Arc<SharedRegistry> {
+    laqta_upload::sxcu::set_host_info(crate::stubs::host_info());
     let mut reg = Registry::with_catalog(prompt, rng);
     let dir = data.join("uploaders");
     if let Ok(entries) = std::fs::read_dir(&dir) {

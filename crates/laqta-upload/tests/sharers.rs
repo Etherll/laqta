@@ -2,6 +2,7 @@
 //! URL as one value.
 #![allow(clippy::unwrap_used)]
 
+use futures_lite::future::block_on;
 use laqta_upload::sharers::sharers;
 use url::Url;
 
@@ -12,7 +13,7 @@ const ENCODED: &str = "https%3A%2F%2Fexample.com%2Fa%20b%3Fx%3D1%26y%3D%C3%A9%23
 fn share(id: &str, url: &str) -> String {
     let all = sharers();
     let sharer = all.iter().find(|sharer| sharer.id() == id).unwrap_or_else(|| panic!("no sharer {id}"));
-    sharer.share_url(url).unwrap()
+    block_on(sharer.share_url(url)).unwrap().expect("a page to open")
 }
 
 #[test]
@@ -43,7 +44,7 @@ fn email_puts_the_url_in_the_body() {
 #[test]
 fn every_sharer_hands_the_url_back_intact() {
     for sharer in sharers() {
-        let shared = sharer.share_url(PAGE).unwrap();
+        let shared = block_on(sharer.share_url(PAGE)).unwrap().expect("a page to open");
         let parsed = Url::parse(&shared).unwrap_or_else(|error| panic!("{}: {error}", sharer.id()));
         assert!(parsed.query_pairs().any(|(_, value)| value.contains(PAGE)), "{} does not carry the URL: {shared}", sharer.id());
     }

@@ -8,6 +8,32 @@ use std::path::{Path, PathBuf};
 use futures_channel::oneshot;
 use laqta_ports::Spawner;
 
+/// Largest `%rf` text file read, in bytes. A bigger file gives no lines.
+const MAX_LINES_FILE: u64 = 1024 * 1024;
+
+/// The non-empty lines of each text file, by path. A file that is missing, unreadable, too big or
+/// not UTF-8 gives no entry.
+pub(crate) async fn line_files(spawner: &dyn Spawner, paths: Vec<String>) -> std::collections::HashMap<String, Vec<String>> {
+    blocking(spawner, move || {
+        paths
+            .into_iter()
+            .filter_map(|path| {
+                let file = std::fs::File::open(&path).ok()?;
+                if file.metadata().ok()?.len() > MAX_LINES_FILE {
+                    return None;
+                }
+                let mut text = String::new();
+                file.take(MAX_LINES_FILE).read_to_string(&mut text).ok()?;
+                // A byte-order mark is not part of the first line (ShareX reads with `File.ReadAllLines`).
+                let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+                let lines: Vec<String> = text.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_owned).collect();
+                Some((path, lines))
+            })
+            .collect()
+    })
+    .await
+}
+
 /// Runs `work` on the blocking pool and returns its result.
 async fn blocking<T: Send + 'static>(spawner: &dyn Spawner, work: impl FnOnce() -> T + Send + 'static) -> T {
     let (tx, rx) = oneshot::channel();

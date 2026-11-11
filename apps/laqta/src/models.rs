@@ -2,15 +2,16 @@
 //! custom-model validation, over `laqta-ml`.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::time::Duration;
 
 use laqta_domain::settings::{CustomModel, ModelOptions, ModelProvider};
 use laqta_domain::workflow::ToastOptions;
 use laqta_ml::families::Family;
 use laqta_ml::runtime::{ExecutionProvider, Runtime};
 use laqta_ml::{Task, catalog};
-use laqta_ports::{BoxFuture, Notifier, Toast};
+use laqta_ports::{BoxFuture, Clock, Notifier, Spawner, Toast};
 use laqta_ui::{ModelProgress, ModelRow, ModelService};
 
 /// The settings' model choices, shared with the OCR adapter and updated on save.
@@ -33,6 +34,147 @@ pub fn runtime(data: &Path, options: &ModelOptions) -> Option<Arc<Runtime>> {
     let dir = models_dir(data);
     let ort = laqta_ml::install::ort_for_host()?;
     Some(Arc::new(Runtime::new(laqta_ml::install::library_path(&dir, ort), dir, provider(options.provider))))
+}
+
+/// How long a loaded model may sit unused before its sessions are released (ARCHITECTURE §1.4).
+const MODEL_RELEASE: Duration = Duration::from_secs(60);
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Releases the ONNX Runtime sessions (the model, its working memory and its threads) of every
+/// watched runtime once they go unused for 60 s. One timer runs while any session is loaded, and
+/// none when nothing is (ARCHITECTURE §1.4). It ticks every 60 s, so a session goes 60 to 120 s
+/// after its last use. The ONNX Runtime library itself stays loaded.
+pub struct ModelReleaser {
+    clock: Arc<dyn Clock>,
+    spawner: Arc<dyn Spawner>,
+    state: Arc<ReleaseState>,
+}
+
+#[derive(Default)]
+struct ReleaseState {
+    runtimes: Mutex<Vec<Weak<Runtime>>>,
+    /// Bumped by every `watch`, so the timer doesn't disarm across a use it hasn't seen.
+    uses: std::sync::atomic::AtomicU64,
+    armed: Mutex<bool>,
+}
+
+impl ModelReleaser {
+    pub fn new(clock: Arc<dyn Clock>, spawner: Arc<dyn Spawner>) -> Arc<Self> {
+        Arc::new(ModelReleaser { clock, spawner, state: Arc::default() })
+    }
+
+    /// Call after each model run: keeps `runtime` on the list and the release timer armed.
+    pub fn watch(&self, runtime: &Arc<Runtime>) {
+        {
+            let mut runtimes = lock(&self.state.runtimes);
+            runtimes.retain(|w| w.strong_count() > 0);
+            if !runtimes.iter().any(|w| std::ptr::eq(w.as_ptr(), Arc::as_ptr(runtime))) {
+                runtimes.push(Arc::downgrade(runtime));
+            }
+        }
+        self.state.uses.fetch_add(1, Ordering::SeqCst);
+        {
+            let mut armed = lock(&self.state.armed);
+            if *armed {
+                return;
+            }
+            *armed = true;
+        }
+        let (state, clock, spawner) = (self.state.clone(), self.clock.clone(), self.spawner.clone());
+        self.spawner.spawn(Box::pin(async move {
+            loop {
+                let seen = state.uses.load(Ordering::SeqCst);
+                clock.sleep(MODEL_RELEASE).await;
+                let runtimes: Vec<Arc<Runtime>> = lock(&state.runtimes).iter().filter_map(Weak::upgrade).collect();
+                let loaded = Arc::new(AtomicBool::new(false));
+                let any = loaded.clone();
+                // `release_idle` waits for a model that is running, so it runs on the blocking pool.
+                spawner
+                    .run_blocking(Box::new(move || {
+                        let mut still = false;
+                        for runtime in &runtimes {
+                            still |= runtime.release_idle(MODEL_RELEASE);
+                        }
+                        any.store(still, Ordering::SeqCst);
+                    }))
+                    .await;
+                if loaded.load(Ordering::SeqCst) {
+                    continue;
+                }
+                let mut armed = lock(&state.armed);
+                if state.uses.load(Ordering::SeqCst) != seen {
+                    continue; // used meanwhile: keep timing that use
+                }
+                *armed = false;
+                drop(armed);
+                tracing::debug!("model sessions released");
+                trim_heap();
+                return;
+            }
+        }));
+    }
+}
+
+/// Hands memory the allocator keeps after the models are released back to the system. glibc keeps
+/// freed pages in its per-thread arenas (report item 5); other allocators return them on their own.
+fn trim_heap() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: `malloc_trim` only walks glibc's own arenas; any pad value is valid.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
+/// A key, the engine built for it, and the runtime the engine runs on.
+type Held<K, E> = (K, Arc<E>, Arc<Runtime>);
+
+/// The engine a model adapter built for a key (model ids, provider), with the runtime it runs on.
+/// A different key builds a new engine; each run keeps the `ModelReleaser` timing the runtime.
+pub struct ModelSlot<K, E> {
+    slot: Mutex<Option<Held<K, E>>>,
+    releaser: Arc<ModelReleaser>,
+}
+
+impl<K: PartialEq + Clone, E> ModelSlot<K, E> {
+    pub fn new(releaser: Arc<ModelReleaser>) -> Self {
+        ModelSlot { slot: Mutex::new(None), releaser }
+    }
+
+    /// The engine built for `key`, when that is the one held.
+    pub fn get(&self, key: &K) -> Option<Arc<E>> {
+        lock(&self.slot).as_ref().filter(|(k, _, _)| k == key).map(|(_, e, _)| e.clone())
+    }
+
+    /// The engine held, whatever its key.
+    pub fn peek(&self) -> Option<Arc<E>> {
+        lock(&self.slot).as_ref().map(|(_, e, _)| e.clone())
+    }
+
+    /// Holds a new engine and starts timing its runtime, so its sessions go even if the first run
+    /// never returns (a dropped or panicking job).
+    pub fn store(&self, key: K, engine: Arc<E>, runtime: Arc<Runtime>) {
+        self.releaser.watch(&runtime);
+        *lock(&self.slot) = Some((key, engine, runtime));
+    }
+
+    /// Call after a run: the release timer starts (again) from now.
+    pub fn ran(&self) {
+        let runtime = lock(&self.slot).as_ref().map(|(_, _, r)| r.clone());
+        if let Some(runtime) = runtime {
+            self.releaser.watch(&runtime);
+        }
+    }
+}
+
+/// The character list shipped beside a recogniser `model`: `<stem>.dict.txt`, `<stem>.txt` or
+/// `dict.txt` in the same folder, the first that exists.
+fn dictionary_beside(model: &Path) -> Option<PathBuf> {
+    let dir = model.parent()?;
+    let stem = model.file_stem()?.to_str()?;
+    [format!("{stem}.dict.txt"), format!("{stem}.txt"), "dict.txt".to_owned()].into_iter().map(|name| dir.join(name)).find(|p| p.is_file())
 }
 
 /// Downloads ONNX Runtime when it is not there yet, reporting through `progress`.
@@ -182,9 +324,20 @@ impl ModelService for Models {
             laqta_ml::validate_custom(&path, &family).map_err(|e| e.to_string())?;
             let slug: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
             let id = format!("custom-{}-{}", fam.name(), slug.trim_matches('-'));
+            // A recogniser reads its characters from a dictionary that comes with the model.
+            let dictionary = match fam {
+                Family::O1Rec => Some(dictionary_beside(&path).ok_or_else(|| {
+                    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("model");
+                    format!("a text recogniser needs its character list next to it: {stem}.dict.txt, {stem}.txt or dict.txt")
+                })?),
+                _ => None,
+            };
             let dir = models_dir(&data);
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             std::fs::copy(&path, dir.join(format!("{id}.onnx"))).map_err(|e| e.to_string())?;
+            if let Some(dictionary) = dictionary {
+                std::fs::copy(&dictionary, dir.join(format!("{id}.dict.txt"))).map_err(|e| e.to_string())?;
+            }
             Ok(CustomModel { id, name, task: fam.task().as_str().to_owned(), family })
         })
     }
@@ -258,5 +411,68 @@ mod tests {
             ]
         );
         assert!(recorder.0.lock().expect("lock").iter().all(|t| t.title == "Background removal"));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod release_tests {
+    use super::*;
+
+    #[test]
+    fn a_recogniser_dictionary_is_found_beside_the_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = dir.path().join("rec.onnx");
+        std::fs::write(&model, b"onnx").unwrap();
+        assert_eq!(dictionary_beside(&model), None);
+        std::fs::write(dir.path().join("dict.txt"), b"a\nb\n").unwrap();
+        assert_eq!(dictionary_beside(&model), Some(dir.path().join("dict.txt")));
+        std::fs::write(dir.path().join("rec.dict.txt"), b"a\n").unwrap();
+        assert_eq!(dictionary_beside(&model), Some(dir.path().join("rec.dict.txt")), "the model's own list wins");
+    }
+    use laqta_ports::fakes::{InlineSpawner, ManualClock};
+
+    fn rig() -> (Arc<InlineSpawner>, Arc<ModelReleaser>) {
+        let spawner = Arc::new(InlineSpawner::default());
+        let clock = Arc::new(ManualClock::new(jiff::civil::date(2026, 11, 10).at(9, 0, 0, 0)));
+        (spawner.clone(), ModelReleaser::new(clock, spawner))
+    }
+
+    fn runtime() -> Arc<Runtime> {
+        Arc::new(Runtime::new("/nonexistent/libonnxruntime.so", "/nonexistent-models", ExecutionProvider::Cpu))
+    }
+
+    #[test]
+    fn one_timer_however_often_a_model_runs() {
+        let (spawner, releaser) = rig();
+        let rt = runtime();
+        releaser.watch(&rt);
+        releaser.watch(&rt);
+        assert_eq!(spawner.take_spawned().len(), 1);
+        assert_eq!(lock(&releaser.state.runtimes).len(), 1, "a runtime is listed once");
+    }
+
+    #[test]
+    fn the_timer_disarms_when_nothing_is_loaded() {
+        let (spawner, releaser) = rig();
+        releaser.watch(&runtime());
+        let timer = spawner.take_spawned().pop().unwrap();
+        futures_lite::future::block_on(timer);
+        assert_eq!(*spawner.blocking_calls.lock().unwrap(), 1, "release_idle ran off the async worker");
+        assert!(!*lock(&releaser.state.armed));
+        // The next use arms a new one.
+        releaser.watch(&runtime());
+        assert_eq!(spawner.take_spawned().len(), 1);
+    }
+
+    #[test]
+    fn a_slot_hands_out_only_the_engine_for_its_key() {
+        let (_, releaser) = rig();
+        let slot: ModelSlot<(String, ModelProvider), u8> = ModelSlot::new(releaser);
+        let key = ("a".to_owned(), ModelProvider::Cpu);
+        slot.store(key.clone(), Arc::new(1), runtime());
+        assert_eq!(slot.get(&key).as_deref(), Some(&1));
+        assert!(slot.get(&("a".to_owned(), ModelProvider::Gpu)).is_none(), "a provider change builds a new engine");
+        assert_eq!(slot.peek().as_deref(), Some(&1));
     }
 }

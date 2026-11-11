@@ -65,7 +65,7 @@ impl Media for FfmpegMedia {
         let input = input.to_owned();
         let output = output.to_owned();
         run_blocking(move || {
-            if spec.codec == Some(VideoCodec::Gif) && !spec.single_frame {
+            if two_pass_gif(&spec, &output) {
                 transcode_gif(&paths.ffmpeg, &spec, &input, &output)?;
             } else {
                 let args = argv::transcode_args(&spec, &input, &output);
@@ -86,6 +86,12 @@ impl Media for FfmpegMedia {
             parse_probe(&result.stdout, size)
         })
     }
+}
+
+/// Whether a transcode makes a GIF, named or implied by a `.gif` output (a trimmed GIF), which takes
+/// the two runs of `transcode_gif`.
+fn two_pass_gif(spec: &TranscodeSpec, output: &Path) -> bool {
+    argv::transcode_codec(spec, output) == VideoCodec::Gif && !spec.single_frame
 }
 
 /// A GIF in two runs (palette, then the GIF), so memory stays flat with the clip's length. The
@@ -358,6 +364,18 @@ mod tests {
         assert!(matches!(prepared.feed, Some(Feed::Pcm(_))));
         assert!(matches!(&prepared.audio[0], AudioInputDesc::Pcm { pipe, rate: 48_000, channels: 2 } if pipe == "-"));
         assert!(!stopped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_gif_output_takes_the_two_run_path_whether_or_not_the_spec_names_it() {
+        use laqta_domain::record::VideoCodec;
+        let gif = Path::new("/out/clip.GIF");
+        // A trim of a GIF names no codec: the extension makes it a GIF all the same.
+        let trim = TranscodeSpec { start_secs: Some(1.0), duration_secs: Some(60.0), ..TranscodeSpec::default() };
+        assert!(two_pass_gif(&trim, gif));
+        assert!(two_pass_gif(&TranscodeSpec { codec: Some(VideoCodec::Gif), ..TranscodeSpec::default() }, Path::new("/out/x.part")));
+        assert!(!two_pass_gif(&trim, Path::new("/out/clip.mp4")));
+        assert!(!two_pass_gif(&TranscodeSpec { single_frame: true, ..TranscodeSpec::default() }, gif), "one frame needs no palette");
     }
 
     #[test]

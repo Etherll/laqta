@@ -119,8 +119,10 @@ pub(crate) fn key_code(key: Key) -> Option<u32> {
         Key::Down => 0x7D,
         Key::Up => 0x7E,
         // No code: Scroll Lock, Pause and Insert (the Help key sits where Insert is, but it is not
-        // Insert), and F21 to F24 (Mac keyboard drivers stop at F20). `Key` is non-exhaustive, so a
-        // new variant also lands here until it is mapped; the `UNMAPPED` test then fails to say so.
+        // Insert), F21 to F24 (Mac keyboard drivers stop at F20), and the volume, media, mail, launch
+        // and calculator keys, which macOS handles as system-defined events rather than `kVK_*` codes.
+        // `Key` is non-exhaustive, so a new variant also lands here until it is mapped; the
+        // `UNMAPPED` test then fails to say so.
         _ => return None,
     };
     Some(code)
@@ -146,7 +148,26 @@ mod tests {
     use super::*;
 
     /// Keys a Mac keyboard cannot send. Adding to this list needs a reason in `key_code`.
-    const UNMAPPED: &[Key] = &[Key::ScrollLock, Key::Pause, Key::Insert, Key::F21, Key::F22, Key::F23, Key::F24];
+    const UNMAPPED: &[Key] = &[
+        Key::ScrollLock,
+        Key::Pause,
+        Key::Insert,
+        Key::F21,
+        Key::F22,
+        Key::F23,
+        Key::F24,
+        Key::VolumeUp,
+        Key::VolumeDown,
+        Key::VolumeMute,
+        Key::MediaPlayPause,
+        Key::MediaNext,
+        Key::MediaPrev,
+        Key::MediaStop,
+        Key::LaunchMail,
+        Key::LaunchApp1,
+        Key::LaunchApp2,
+        Key::Calculator,
+    ];
 
     #[test]
     fn unmapped_keys_are_exactly_the_documented_ones() {

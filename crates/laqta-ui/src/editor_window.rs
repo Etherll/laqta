@@ -161,6 +161,10 @@ struct EditorWindow {
     /// Outputs asked for while commands were still running or queued; they run when the queue drains,
     /// so they see every edit made before them.
     deferred: Vec<Deferred>,
+    /// The window closes once the save it asked for lands (the unsaved-edits prompt's Save).
+    close_after_save: bool,
+    /// The last save failed or was cancelled after the editor was marked saved.
+    save_missed: bool,
 }
 
 /// An output that reads the image, so it waits for queued edits.
@@ -250,7 +254,10 @@ impl EditorWindow {
             toast_for: None,
             busy: None,
             deferred: Vec::new(),
+            close_after_save: false,
+            save_missed: false,
         };
+        crate::close_guard::install(Self::close_guard, window, cx);
         if this.interaction.initial() {
             this.start_render(cx);
         }
@@ -441,6 +448,29 @@ impl EditorWindow {
         .detach();
     }
 
+    fn close_guard() -> crate::close_guard::Guard<Self> {
+        crate::close_guard::Guard {
+            dirty: |this: &Self| this.chrome.modified || this.save_missed,
+            message: |this| if this.reply.is_some() { "Use your edits?" } else { "Save changes to this image?" },
+            detail: |this| {
+                if this.reply.is_some() {
+                    "Closing without them continues with the original capture."
+                } else {
+                    "Your edits are lost if you don't save them."
+                }
+            },
+            keep: |this| if this.reply.is_some() { "Use edits" } else { "Save" },
+            on_keep: |this, window, cx| {
+                if this.reply.is_some() {
+                    this.finish(window, cx);
+                } else {
+                    this.close_after_save = true;
+                    this.save(false, window, cx);
+                }
+            },
+        }
+    }
+
     fn save(&mut self, ask: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.save_from(ask, None, window, cx);
     }
@@ -449,6 +479,16 @@ impl EditorWindow {
         if snapshot.is_none() && self.defer(Deferred::Save { ask }) {
             return;
         }
+        // Saved from here on; a failed or cancelled save sets `save_missed`. Nothing is running
+        // (`defer` said so), so the engine's lock is free. An after-capture edit stays unsaved: the
+        // task still waits for the edits, so closing must still ask whether to use them.
+        if self.reply.is_none() {
+            if let Ok(mut editor) = self.interaction.editor().lock() {
+                editor.mark_saved();
+            }
+            self.chrome.modified = false;
+        }
+        let handle = window.window_handle();
         let settings = cx.global::<UiState>().services.app.settings();
         let format = settings.defaults.image.format;
         let ext = format.extension();
@@ -478,6 +518,11 @@ impl EditorWindow {
         cx.spawn(async move |this, cx| {
             let r = task.await;
             let _ = this.update(cx, |this, cx| {
+                this.save_missed = !matches!(r, Ok(Some(_)));
+                // An edit made while the file was written is not in it, so it keeps the window open.
+                if std::mem::take(&mut this.close_after_save) && !(Self::close_guard().dirty)(this) {
+                    crate::close_guard::close(handle, cx);
+                }
                 this.message = Some(match r {
                     Ok(Some(p)) => {
                         let m = format!("Saved {}", p.display());

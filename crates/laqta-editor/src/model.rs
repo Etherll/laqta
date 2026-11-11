@@ -3,6 +3,7 @@
 use laqta_domain::Bitmap;
 use laqta_domain::color::Rgba;
 
+use crate::fx::{self, Img};
 use crate::geom::{PointF, RectF, segment_distance};
 
 /// The 22 editor tools.
@@ -417,6 +418,59 @@ impl AnnotationKind {
         }
     }
 
+    /// Turns the annotation with the base image, which is `w` by `h` before the turn. Pictures turn
+    /// with it, so each rect still matches its pixels. Text stays upright: its box keeps its size and
+    /// moves with its centre, so the text does not reflow.
+    pub fn rotate90(&mut self, w: f32, h: f32, clockwise: bool) {
+        let point = |p: PointF| if clockwise { PointF::new(h - p.y, p.x) } else { PointF::new(p.y, w - p.x) };
+        let rect = |r: RectF| {
+            if clockwise { RectF::new(h - r.y - r.h, r.x, r.h, r.w) } else { RectF::new(r.y, w - r.x - r.w, r.h, r.w) }
+        };
+        // A box that keeps its width and height, centred where the turned box would be.
+        let upright = |r: RectF| {
+            let c = point(r.center());
+            RectF::new(c.x - r.w / 2.0, c.y - r.h / 2.0, r.w, r.h)
+        };
+        let turn = |p: &mut Picture| {
+            p.0 = fx::rotate90(&Img::from_bitmap(&p.0), clockwise).to_bitmap();
+        };
+        match self {
+            AnnotationKind::Line { start, end, curve } | AnnotationKind::Arrow { start, end, curve } => {
+                *start = point(*start);
+                *end = point(*end);
+                *curve = curve.map(point);
+            }
+            AnnotationKind::Freehand { points } => points.iter_mut().for_each(|p| *p = point(*p)),
+            AnnotationKind::Step { center, .. } => *center = point(*center),
+            // `pos` is the top-left corner of the cursor's bitmap: turn the bitmap's box.
+            AnnotationKind::Cursor { pos, bitmap } => {
+                let area = rect(RectF::new(pos.x, pos.y, bitmap.0.width() as f32, bitmap.0.height() as f32));
+                *pos = PointF::new(area.x, area.y);
+                turn(bitmap);
+            }
+            AnnotationKind::SpeechBalloon { rect: r, tail, .. } => {
+                *r = upright(*r);
+                *tail = point(*tail);
+            }
+            AnnotationKind::Text { rect: r, .. } => *r = upright(*r),
+            AnnotationKind::Image { rect: r, bitmap } | AnnotationKind::Emoji { rect: r, bitmap } => {
+                *r = rect(*r);
+                turn(bitmap);
+            }
+            // `dst` is the top-left corner of the copy, which is `src`'s size: turn that box.
+            AnnotationKind::CloneStamp { src, dst } => {
+                let copy = rect(RectF::new(dst.x, dst.y, src.w, src.h));
+                *src = rect(*src);
+                *dst = PointF::new(copy.x, copy.y);
+            }
+            other => {
+                if let Some(r) = other.rect() {
+                    other.set_rect(rect(r));
+                }
+            }
+        }
+    }
+
     /// Whether `p` hits the annotation, with `tolerance` pixels of slack.
     pub fn hit(&self, p: PointF, tolerance: f32) -> bool {
         match self {
@@ -523,5 +577,43 @@ impl Annotation {
             b = b.union(b.offset(self.style.shadow_offset.0, self.style.shadow_offset.1));
         }
         b
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// On a 100x50 image, a copy of (10,10,20,5) drawn at (40,10) covers (40,10,20,5). Turned clockwise
+    /// that area is (35,40,5,20), so the copy's top-left is (35,40).
+    #[test]
+    fn a_clone_lands_on_the_turned_copy_area() {
+        let mut clone = AnnotationKind::CloneStamp { src: RectF::new(10.0, 10.0, 20.0, 5.0), dst: PointF::new(40.0, 10.0) };
+        clone.rotate90(100.0, 50.0, true);
+        assert_eq!(clone, AnnotationKind::CloneStamp { src: RectF::new(35.0, 10.0, 5.0, 20.0), dst: PointF::new(35.0, 40.0) });
+        let mut clone = AnnotationKind::CloneStamp { src: RectF::new(10.0, 10.0, 20.0, 5.0), dst: PointF::new(40.0, 10.0) };
+        clone.rotate90(100.0, 50.0, false);
+        assert_eq!(clone, AnnotationKind::CloneStamp { src: RectF::new(10.0, 70.0, 5.0, 20.0), dst: PointF::new(10.0, 40.0) });
+    }
+
+    /// On a 100x50 image, a 4x6 cursor at (10,10) covers (10,10,4,6). Turned clockwise that area is
+    /// (34,10,6,4), so the turned cursor's top-left is (34,10).
+    #[test]
+    fn a_cursor_turns_with_its_area() {
+        let bitmap = Picture(Bitmap::new(4, 6, laqta_domain::PixelFormat::Rgba8, vec![255; 4 * 6 * 4].into()).expect("a 4x6 bitmap"));
+        let mut cursor = AnnotationKind::Cursor { pos: PointF::new(10.0, 10.0), bitmap };
+        cursor.rotate90(100.0, 50.0, true);
+        assert_eq!(cursor.bounds(), RectF::new(34.0, 10.0, 6.0, 4.0));
+        cursor.rotate90(50.0, 100.0, false);
+        assert_eq!(cursor.bounds(), RectF::new(10.0, 10.0, 4.0, 6.0), "a turn back puts it where it was");
+    }
+
+    /// Text keeps its box size and stays centred where it was on the picture.
+    #[test]
+    fn text_stays_upright_when_turned() {
+        let mut text = AnnotationKind::Text { rect: RectF::new(10.0, 10.0, 40.0, 10.0), text: "Click here".into() };
+        text.rotate90(100.0, 50.0, true);
+        // The centre (30,15) turns to (35,30).
+        assert_eq!(text, AnnotationKind::Text { rect: RectF::new(15.0, 25.0, 40.0, 10.0), text: "Click here".into() });
     }
 }

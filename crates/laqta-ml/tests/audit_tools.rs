@@ -40,9 +40,8 @@ fn audit_catalog_has_no_pending_hashes() {
 /// A custom recogniser added through Settings → Models gets an id like `custom-o1-rec-<name>` and is
 /// stored as `<models>/<id>.onnx` (+ `<id>.dict.txt`). Choosing it ("Use") sets `ocr_rec` to that id,
 /// and `LazyOcr` builds `ModelOcr::new(runtime, det, <custom id>)`. `ModelOcr::prepare` looks every id
-/// up in the catalog, so the custom model is refused as unknown before anything runs.
+/// up in the catalog. A custom recogniser is not a catalog entry, so it is accepted once its files are installed.
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_custom_ocr_recogniser_is_refused_as_unknown() {
     let dir = tempfile::tempdir().expect("temp dir");
     std::fs::write(dir.path().join("ppocr-v5-mobile-det.onnx"), b"placeholder").expect("det");

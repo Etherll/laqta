@@ -355,7 +355,10 @@ fn saved_file_runs_copy_and_reveal_steps() {
             })
             .expect("the file is reported as saved");
         assert!(seen.iter().any(|e| matches!(e, TaskEvent::FileCopied { id } if *id == file_task)));
-        assert!(seen.iter().any(|e| matches!(e, TaskEvent::PathCopied { id, .. } if *id == file_task)));
+        assert!(
+            !seen.iter().any(|e| matches!(e, TaskEvent::PathCopied { id, .. } if *id == file_task)),
+            "the file copy wins over the path copy, as for an image"
+        );
         assert!(seen.iter().any(|e| matches!(e, TaskEvent::Revealed { id, .. } if *id == file_task)));
         assert!(seen.iter().any(|e| matches!(e, TaskEvent::StatusChanged { id, status: TaskStatus::Completed } if *id == file_task)));
         assert_eq!(h.clipboard.files.lock().unwrap().len(), 1);

@@ -63,10 +63,13 @@ internal panel and one 4K external monitor.
   - the compute pool and the SQLite connection (`History::release_when_idle`) time themselves
     with the `Clock` port;
   - the HTTP runtime stops itself after 60 s with no job, on its own thread's timer, because
-    `laqta-http` has no `Clock`.
+    `laqta-http` has no `Clock`;
+  - the loaded models: `main`'s `ModelReleaser` (`apps/laqta/src/models.rs`) drops the ONNX
+    Runtime sessions of OCR, background removal and inpainting, with their threads, after 60 s
+    unused, then calls glibc's `malloc_trim` on Linux.
 
-  Not built yet: nothing releases the font database, the onnxruntime library or the loaded
-  models.
+  Not built yet: nothing releases the font database or the onnxruntime library (its environment
+  is process-wide and cannot be freed).
 - **No CPU-side duplication in process.** A captured frame is an `Arc`-shared buffer. Copies
   happen where a boundary needs one: cropping a region out of the composed desktop
   (`laqta_imaging::crop` copies the pixels), uploading a texture to the GPU, or writing frames to

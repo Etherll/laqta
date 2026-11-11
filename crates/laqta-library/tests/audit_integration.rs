@@ -1,5 +1,5 @@
-//! A watch folder should report only newly created files. The adapter also reports a data write to an
-//! existing file as an arrival, so editing a file in a watched folder uploads it again.
+//! A watch folder reports only newly created (or moved-in) files: a data write to a file that was
+//! already there is not an arrival, so editing a file in a watched folder does not upload it again.
 #![allow(clippy::unwrap_used)]
 
 use std::fs::{self, OpenOptions};
@@ -12,7 +12,6 @@ use laqta_library::NotifyWatcher;
 use laqta_ports::{FileWatcher, WatchCallback};
 
 #[test]
-#[ignore = "known issue, not fixed yet"]
 fn audit_bug_watch_reports_modified_existing_file() {
     let dir = tempfile::tempdir().unwrap();
     let existing = dir.path().join("notes.png");

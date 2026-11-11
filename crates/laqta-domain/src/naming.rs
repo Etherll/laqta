@@ -35,8 +35,9 @@ pub struct NameContext<'a> {
     pub user_name: &'a str,
     pub user_login: &'a str,
     pub computer_name: &'a str,
-    /// Lines for `%rf`.
-    pub random_file_lines: &'a [String],
+    /// Reads the lines of the file a `%rf{path}` names. The caller does the reading, so this module
+    /// stays free of I/O. An empty result draws nothing.
+    pub read_lines: &'a dyn Fn(&str) -> Vec<String>,
     /// Random source for the `%r…` tokens and `%guid`.
     pub rng: &'a mut dyn FnMut() -> u64,
 }
@@ -51,10 +52,28 @@ impl fmt::Debug for NameContext<'_> {
     }
 }
 
+/// The file paths the `%rf{path}` tokens in `pattern` name, in order, without repeats. The caller
+/// reads them and answers `NameContext::read_lines` from what it read.
+pub fn random_line_files(pattern: &str) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    let mut rest = pattern;
+    while let Some(at) = rest.find("%rf{") {
+        let after = &rest[at + 4..];
+        let Some(end) = after.find('}') else { break };
+        let path = after[..end].to_owned();
+        if !path.is_empty() && !paths.contains(&path) {
+            paths.push(path);
+        }
+        rest = &after[end + 1..];
+    }
+    paths
+}
+
 /// Expands the `%` tokens in `pattern`. The longest token name at each `%` wins, and a `%` that
-/// starts no known token stays literal. A `{N}` right after a token is its argument when the token
-/// takes one and N is digits in range (`%rn{3}`, `%i{4}`, `%ib{2}`); otherwise the `{` stays
-/// literal. A `%pm` anywhere in the pattern makes `%h` 12-hour.
+/// starts no known token stays literal. A `{…}` right after a token is its argument when the token
+/// takes one and the contents are valid: a number in range (`%rn{3}`, `%i{4}`), a base and an
+/// optional pad width (`%ib{16,4}`), or a path (`%rf{names.txt}`). Otherwise the `{` stays literal.
+/// A `%pm` anywhere in the pattern makes `%h` 12-hour.
 pub fn expand(pattern: &str, ctx: &mut NameContext<'_>) -> String {
     let twelve_hour = pattern.contains("%pm");
     let mut out = String::with_capacity(pattern.len());
@@ -69,8 +88,8 @@ pub fn expand(pattern: &str, ctx: &mut NameContext<'_>) -> String {
         };
         let tail = &body[name.len()..];
         let (arg, after) = match read_argument(token, tail) {
-            Some((value, used)) => (Some(value), &tail[used..]),
-            None => (None, tail),
+            Some((arg, used)) => (arg, &tail[used..]),
+            None => (Argument::Absent, tail),
         };
         out.push_str(&render(token, arg, twelve_hour, ctx));
         rest = after;
@@ -107,9 +126,7 @@ enum Token {
     Year2,
     Month,
     MonthName,
-    MonthAbbrev,
     Weekday,
-    WeekdayAbbrev,
     IsoWeek,
     Day,
     Hour,
@@ -120,14 +137,20 @@ enum Token {
     Unix,
     Counter,
     CounterBase36,
+    CounterBase36Upper,
     CounterBase62,
+    CounterBase62Inverse,
     CounterBase,
+    CounterBaseAlnum,
     CounterHex,
+    CounterHexUpper,
     RandomDigit,
     RandomAlnum,
     RandomUnambiguous,
     RandomHex,
+    RandomHexUpper,
     Guid,
+    GuidUpper,
     Adjective,
     Animal,
     Emoji,
@@ -148,9 +171,9 @@ const TOKENS: &[(&str, Token)] = &[
     ("yy", Token::Year2),
     ("mo", Token::Month),
     ("mon", Token::MonthName),
-    ("mon2", Token::MonthAbbrev),
+    ("mon2", Token::MonthName),
     ("w", Token::Weekday),
-    ("w2", Token::WeekdayAbbrev),
+    ("w2", Token::Weekday),
     ("wy", Token::IsoWeek),
     ("d", Token::Day),
     ("h", Token::Hour),
@@ -161,14 +184,20 @@ const TOKENS: &[(&str, Token)] = &[
     ("unix", Token::Unix),
     ("i", Token::Counter),
     ("ia", Token::CounterBase36),
+    ("iA", Token::CounterBase36Upper),
     ("iAa", Token::CounterBase62),
+    ("iaA", Token::CounterBase62Inverse),
     ("ib", Token::CounterBase),
+    ("iB", Token::CounterBaseAlnum),
     ("ix", Token::CounterHex),
+    ("iX", Token::CounterHexUpper),
     ("rn", Token::RandomDigit),
     ("ra", Token::RandomAlnum),
     ("rna", Token::RandomUnambiguous),
     ("rx", Token::RandomHex),
+    ("rX", Token::RandomHexUpper),
     ("guid", Token::Guid),
+    ("GUID", Token::GuidUpper),
     ("radjective", Token::Adjective),
     ("ranimal", Token::Animal),
     ("remoji", Token::Emoji),
@@ -204,25 +233,54 @@ const EMOJI: &[&str] = &[
     "🌸", "🌻", "🍎", "🍋", "🍕", "🚀", "🎈", "🎉", "🎯", "🎲", "🎵",
 ];
 
-const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+/// ShareX's `Alphanumeric`: digits, then upper case, then lower case.
+const ALPHANUMERIC: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+/// ShareX's `AlphanumericInverse`: digits, then lower case, then upper case.
+const ALPHANUMERIC_INVERSE: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const DECIMAL: &[u8] = b"0123456789";
 const HEX: &[u8] = b"0123456789abcdef";
+const HEX_UPPER: &[u8] = b"0123456789ABCDEF";
 /// Letters and digits without the look-alikes I, l, O, o, 0 and 1.
 const UNAMBIGUOUS: &[u8] = b"23456789abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
 
-/// The token names that take a `{N}` argument, and the values the argument accepts: a repeat
-/// count for the random tokens, a zero-pad width for the counters, a base for `%ib`.
+/// What the `{…}` after a token holds.
+#[derive(Clone, Copy)]
+enum Argument<'s> {
+    /// No `{…}`, or one the token does not take.
+    Absent,
+    /// A repeat count for the random tokens, a zero-pad width for the counters.
+    Count(u32),
+    /// `%ib{base}` or `%ib{base,digits}`: a base from 2 to 62, and the zero-pad width when given.
+    Base { base: u32, digits: Option<u32> },
+    /// The file `%rf{path}` reads.
+    Path(&'s str),
+}
+
+impl Argument<'_> {
+    fn count(self) -> Option<u32> {
+        match self {
+            Argument::Count(n) => Some(n),
+            _ => None,
+        }
+    }
+}
+
+/// The tokens whose `{N}` is one number, and the values it accepts: a repeat count for the random
+/// tokens, a zero-pad width for the counters.
 fn argument_range(token: Token) -> Option<RangeInclusive<u32>> {
     match token {
         Token::RandomDigit
         | Token::RandomAlnum
         | Token::RandomUnambiguous
         | Token::RandomHex
+        | Token::RandomHexUpper
         | Token::Counter
         | Token::CounterBase36
+        | Token::CounterBase36Upper
         | Token::CounterBase62
-        | Token::CounterHex => Some(1..=100),
-        Token::CounterBase => Some(2..=36),
+        | Token::CounterBase62Inverse
+        | Token::CounterHex
+        | Token::CounterHexUpper => Some(1..=100),
         _ => None,
     }
 }
@@ -232,23 +290,35 @@ fn longest_token(body: &str) -> Option<(&'static str, Token)> {
     TOKENS.iter().copied().filter(|&(name, _)| body.starts_with(name)).max_by_key(|&(name, _)| name.len())
 }
 
-/// The `{N}` at the start of `s`, when `token` takes an argument and N is digits in range: the
-/// value and the number of bytes it spans.
-fn read_argument(token: Token, s: &str) -> Option<(u32, usize)> {
-    let range = argument_range(token)?;
-    let body = s.strip_prefix('{')?;
-    let end = body.find('}')?;
-    let digits = &body[..end];
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+/// `s` as a number in `range`, when it is only digits and in range.
+fn number_in(s: &str, range: RangeInclusive<u32>) -> Option<u32> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let value: u32 = digits.parse().ok()?;
-    range.contains(&value).then_some((value, end + 2))
+    let value: u32 = s.parse().ok()?;
+    range.contains(&value).then_some(value)
 }
 
-fn render(token: Token, arg: Option<u32>, twelve_hour: bool, ctx: &mut NameContext<'_>) -> String {
+/// The `{…}` at the start of `s`, when `token` takes one and its contents are valid: the argument
+/// and the number of bytes it spans.
+fn read_argument(token: Token, s: &str) -> Option<(Argument<'_>, usize)> {
+    let body = s.strip_prefix('{')?;
+    let end = body.find('}')?;
+    let inner = &body[..end];
+    let arg = match token {
+        Token::FileLine if !inner.is_empty() => Argument::Path(inner),
+        Token::CounterBase | Token::CounterBaseAlnum => match inner.split_once(',') {
+            Some((base, digits)) => Argument::Base { base: number_in(base, 2..=62)?, digits: Some(number_in(digits, 1..=100)?) },
+            None => Argument::Base { base: number_in(inner, 2..=62)?, digits: None },
+        },
+        _ => Argument::Count(number_in(inner, argument_range(token)?)?),
+    };
+    Some((arg, end + 2))
+}
+
+fn render(token: Token, arg: Argument<'_>, twelve_hour: bool, ctx: &mut NameContext<'_>) -> String {
     let now = ctx.now;
-    let repeat = arg.unwrap_or(1);
+    let repeat = arg.count().unwrap_or(1);
     match token {
         Token::Title => ctx.window_title.to_owned(),
         Token::ProcessName => ctx.process_name.to_owned(),
@@ -256,9 +326,7 @@ fn render(token: Token, arg: Option<u32>, twelve_hour: bool, ctx: &mut NameConte
         Token::Year2 => format!("{:02}", now.year().rem_euclid(100)),
         Token::Month => format!("{:02}", now.month()),
         Token::MonthName => MONTHS[month_index(now)].to_owned(),
-        Token::MonthAbbrev => MONTHS[month_index(now)][..3].to_owned(),
         Token::Weekday => WEEKDAYS[weekday_index(now)].to_owned(),
-        Token::WeekdayAbbrev => WEEKDAYS[weekday_index(now)][..3].to_owned(),
         Token::IsoWeek => format!("{:02}", now.iso_week_date().week()),
         Token::Day => format!("{:02}", now.day()),
         Token::Hour => {
@@ -277,23 +345,32 @@ fn render(token: Token, arg: Option<u32>, twelve_hour: bool, ctx: &mut NameConte
         Token::Millisecond => format!("{:03}", now.subsec_nanosecond() / 1_000_000),
         Token::Meridiem => String::from(if now.hour() < 12 { "AM" } else { "PM" }),
         Token::Unix => ctx.unix_seconds.to_string(),
-        Token::Counter => pad(radix(ctx.counter, 10), arg),
-        Token::CounterBase36 => pad(radix(ctx.counter, 36), arg),
-        Token::CounterBase62 => pad(radix(ctx.counter, 62), arg),
-        Token::CounterBase => radix(ctx.counter, u64::from(arg.unwrap_or(10))),
-        Token::CounterHex => pad(radix(ctx.counter, 16), arg),
+        Token::Counter => pad(radix(ctx.counter, DECIMAL), arg.count()),
+        Token::CounterBase36 => pad(radix(ctx.counter, &ALPHANUMERIC_INVERSE[..36]), arg.count()),
+        Token::CounterBase36Upper => pad(radix(ctx.counter, &ALPHANUMERIC[..36]), arg.count()),
+        Token::CounterBase62 => pad(radix(ctx.counter, ALPHANUMERIC), arg.count()),
+        Token::CounterBase62Inverse => pad(radix(ctx.counter, ALPHANUMERIC_INVERSE), arg.count()),
+        Token::CounterBase => based(ctx.counter, ALPHANUMERIC_INVERSE, arg),
+        Token::CounterBaseAlnum => based(ctx.counter, ALPHANUMERIC, arg),
+        Token::CounterHex => pad(radix(ctx.counter, HEX), arg.count()),
+        Token::CounterHexUpper => pad(radix(ctx.counter, HEX_UPPER), arg.count()),
         Token::RandomDigit => random_chars(ctx, DECIMAL, repeat),
-        Token::RandomAlnum => random_chars(ctx, DIGITS, repeat),
+        Token::RandomAlnum => random_chars(ctx, ALPHANUMERIC_INVERSE, repeat),
         Token::RandomUnambiguous => random_chars(ctx, UNAMBIGUOUS, repeat),
         Token::RandomHex => random_chars(ctx, HEX, repeat),
-        Token::Guid => guid(ctx),
+        Token::RandomHexUpper => random_chars(ctx, HEX_UPPER, repeat),
+        Token::Guid => guid(ctx, HEX),
+        Token::GuidUpper => guid(ctx, HEX_UPPER),
         Token::Adjective => pick(ctx, ADJECTIVES).to_owned(),
         Token::Animal => pick(ctx, ANIMALS).to_owned(),
         Token::Emoji => pick(ctx, EMOJI).to_owned(),
-        Token::FileLine => {
-            let lines = ctx.random_file_lines;
-            if lines.is_empty() { String::new() } else { lines[pick_index(ctx, lines.len())].clone() }
-        }
+        Token::FileLine => match arg {
+            Argument::Path(path) => {
+                let lines = (ctx.read_lines)(path);
+                if lines.is_empty() { String::new() } else { lines[pick_index(ctx, lines.len())].clone() }
+            }
+            _ => String::from("%rf"),
+        },
         Token::Width => ctx.width.map_or_else(String::new, |w| w.to_string()),
         Token::Height => ctx.height.map_or_else(String::new, |h| h.to_string()),
         Token::UserName => ctx.user_name.to_owned(),
@@ -312,17 +389,28 @@ fn weekday_index(now: jiff::civil::DateTime) -> usize {
     now.weekday().to_monday_zero_offset() as usize
 }
 
-/// `n` written in `base` (2..=62), digits as in `DIGITS`.
-fn radix(mut n: u64, base: u64) -> String {
+/// `n` written with the symbols of `alphabet`, one per digit, so its length is the base.
+fn radix(mut n: u64, alphabet: &[u8]) -> String {
+    let base = alphabet.len() as u64;
     let mut digits = Vec::new();
     loop {
-        digits.push(char::from(DIGITS[(n % base) as usize]));
+        digits.push(char::from(alphabet[(n % base) as usize]));
         n /= base;
         if n == 0 {
             break;
         }
     }
     digits.iter().rev().collect()
+}
+
+/// `%ib` and `%iB`: the counter in the base the argument names (10 without one), zero-padded to
+/// the argument's digits. `alphabet` gives the digit symbols in order.
+fn based(counter: u64, alphabet: &[u8], arg: Argument<'_>) -> String {
+    let (base, digits) = match arg {
+        Argument::Base { base, digits } => (base, digits),
+        _ => (10, None),
+    };
+    pad(radix(counter, &alphabet[..base as usize]), digits)
 }
 
 /// Left-pads `digits` with zeros to the `{N}` width, when there is one.
@@ -337,15 +425,16 @@ fn random_chars(ctx: &mut NameContext<'_>, alphabet: &[u8], count: u32) -> Strin
     (0..count).map(|_| char::from(alphabet[pick_index(ctx, alphabet.len())])).collect()
 }
 
-/// A random version-4 GUID, lowercase.
-fn guid(ctx: &mut NameContext<'_>) -> String {
+/// A random version-4 GUID, with the hex digits of `alphabet`: lowercase or uppercase.
+fn guid(ctx: &mut NameContext<'_>, alphabet: &[u8]) -> String {
     let mut bytes = [0u8; 16];
     let (first, second) = bytes.split_at_mut(8);
     first.copy_from_slice(&(ctx.rng)().to_be_bytes());
     second.copy_from_slice(&(ctx.rng)().to_be_bytes());
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: String = bytes.iter().flat_map(|&b| [HEX[usize::from(b >> 4)], HEX[usize::from(b & 0x0f)]]).map(char::from).collect();
+    let hex: String =
+        bytes.iter().flat_map(|&b| [alphabet[usize::from(b >> 4)], alphabet[usize::from(b & 0x0f)]]).map(char::from).collect();
     format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..])
 }
 
@@ -526,6 +615,11 @@ mod upload_info_tests {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn random_line_files_lists_each_rf_path_once() {
+        assert_eq!(random_line_files("a%rf{x.txt}b%rf{y.txt}%rf{x.txt}%rf{}%rf{open"), vec!["x.txt".to_string(), "y.txt".to_string()]);
+    }
     use super::*;
 
     /// 2026-11-07 14:03:22.045: a Saturday in ISO week 45.
@@ -546,7 +640,16 @@ mod tests {
         }
     }
 
-    fn fixture<'a>(now: jiff::civil::DateTime, lines: &'a [String], rng: &'a mut dyn FnMut() -> u64) -> NameContext<'a> {
+    /// Every file reads as empty.
+    fn no_files(_: &str) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn fixture<'a>(
+        now: jiff::civil::DateTime,
+        read_lines: &'a dyn Fn(&str) -> Vec<String>,
+        rng: &'a mut dyn FnMut() -> u64,
+    ) -> NameContext<'a> {
         NameContext {
             now,
             unix_seconds: 1_794_060_202,
@@ -558,7 +661,7 @@ mod tests {
             user_name: "Ada Lovelace",
             user_login: "ada",
             computer_name: "WORKSTATION",
-            random_file_lines: lines,
+            read_lines,
             rng,
         }
     }
@@ -570,29 +673,32 @@ mod tests {
 
     fn run_at(now: jiff::civil::DateTime, pattern: &str) -> String {
         let mut rng = counting();
-        let mut ctx = fixture(now, &[], &mut rng);
+        let read = no_files;
+        let mut ctx = fixture(now, &read, &mut rng);
         expand(pattern, &mut ctx)
     }
 
     fn run_with_lines(pattern: &str, lines: &[String]) -> String {
+        let read = |_: &str| lines.to_vec();
         let mut rng = counting();
-        let mut ctx = fixture(instant(), lines, &mut rng);
+        let mut ctx = fixture(instant(), &read, &mut rng);
         expand(pattern, &mut ctx)
     }
 
     fn file(pattern: &str) -> String {
         let mut rng = counting();
-        let mut ctx = fixture(instant(), &[], &mut rng);
+        let read = no_files;
+        let mut ctx = fixture(instant(), &read, &mut rng);
         file_name(pattern, &mut ctx)
     }
 
     #[test]
-    fn token_table_is_the_37_documented_tokens() {
+    fn token_table_is_the_43_documented_tokens() {
         let mut names: Vec<&str> = TOKENS.iter().map(|&(name, _)| name).collect();
-        assert_eq!(names.len(), 37);
+        assert_eq!(names.len(), 43);
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 37);
+        assert_eq!(names.len(), 43);
     }
 
     #[test]
@@ -602,9 +708,9 @@ mod tests {
             ("%yy", "26"),
             ("%mo", "11"),
             ("%mon", "November"),
-            ("%mon2", "Nov"),
+            ("%mon2", "November"),
             ("%w", "Saturday"),
-            ("%w2", "Sat"),
+            ("%w2", "Saturday"),
             ("%wy", "45"),
             ("%d", "07"),
             ("%h", "14"),
@@ -631,7 +737,7 @@ mod tests {
 
     #[test]
     fn longest_token_wins() {
-        assert_eq!(run("%mon2"), "Nov");
+        assert_eq!(run("%mon2"), "November");
         assert_eq!(run("%mon"), "November");
         assert_eq!(run("%mo"), "11");
         assert_eq!(run("%iAa"), "47");
@@ -641,7 +747,7 @@ mod tests {
         assert_eq!(run("%un"), "Ada Lovelace");
         assert_eq!(run("%uln"), "ada");
         assert_eq!(run("%wy"), "45");
-        assert_eq!(run("%w2"), "Sat");
+        assert_eq!(run("%w2"), "Saturday");
         assert_eq!(run("%w"), "Saturday");
         assert_eq!(run("%width"), "1920");
         assert_eq!(run("%h"), "14");
@@ -667,8 +773,9 @@ mod tests {
         assert_eq!(run("%width x %height"), "1920 x 1080");
         assert_eq!(run("%un|%uln|%cn"), "Ada Lovelace|ada|WORKSTATION");
         assert_eq!(run("a%nb"), "a\nb");
+        let read = no_files;
         let mut rng = counting();
-        let mut ctx = fixture(instant(), &[], &mut rng);
+        let mut ctx = fixture(instant(), &read, &mut rng);
         ctx.width = None;
         assert_eq!(expand("[%width]", &mut ctx), "[]");
     }
@@ -679,12 +786,48 @@ mod tests {
     }
 
     #[test]
+    fn upper_case_variants_use_the_upper_case_alphabet() {
+        assert_eq!(run("%iX"), "FF");
+        assert_eq!(run("%iX{4}"), "00FF");
+        assert_eq!(run("%iA"), "73");
+        assert_eq!(run("%iA{3}"), "073");
+        assert_eq!(run("%iaA"), "47");
+        assert_eq!(run("%iB"), "255");
+        assert_eq!(run("%iB{62}"), "47");
+        assert_eq!(run("%iB{16,4}"), "00FF");
+    }
+
+    #[test]
+    fn random_hex_and_guid_follow_the_case() {
+        // Every draw is all ones, so each digit is the top of its alphabet.
+        let read = no_files;
+        let mut all_ones = || u64::MAX;
+        let mut ctx = fixture(instant(), &read, &mut all_ones);
+        assert_eq!(
+            expand("%rx %rX %rX{3} %guid %GUID", &mut ctx),
+            "f F FFF ffffffff-ffff-4fff-bfff-ffffffffffff FFFFFFFF-FFFF-4FFF-BFFF-FFFFFFFFFFFF"
+        );
+    }
+
+    #[test]
     fn file_line_is_drawn_only_when_there_are_lines() {
         let lines = vec!["alpha".to_owned(), "beta".to_owned(), "gamma".to_owned()];
-        assert_eq!(run_with_lines("%rf", &lines), "beta");
-        assert_eq!(run_with_lines("%rf", &[]), "");
+        assert_eq!(run_with_lines("%rf{names.txt}", &lines), "beta");
+        assert_eq!(run_with_lines("%rf{names.txt}", &[]), "");
         // An empty list draws nothing, so the next random token gets the first value.
-        assert_eq!(run_with_lines("%rf%rn", &[]), "1");
+        assert_eq!(run_with_lines("%rf{names.txt}%rn", &[]), "1");
+        // Without a path `%rf` is not a token: it stays as written.
+        assert_eq!(run_with_lines("%rf", &lines), "%rf");
+    }
+
+    #[test]
+    fn file_line_reads_the_named_path() {
+        let read = |path: &str| -> Vec<String> { if path == "names.txt" { vec!["alpha".to_owned()] } else { Vec::new() } };
+        let mut rng = counting();
+        let mut ctx = fixture(instant(), &read, &mut rng);
+        assert_eq!(expand("[%rf{names.txt}]", &mut ctx), "[alpha]");
+        assert_eq!(expand("[%rf{other.txt}]", &mut ctx), "[]");
+        assert_eq!(expand("%rf{}", &mut ctx), "%rf{}");
     }
 
     #[test]
@@ -698,6 +841,9 @@ mod tests {
         assert_eq!(run("%ib{2}"), "11111111");
         assert_eq!(run("%ib{16}"), "ff");
         assert_eq!(run("%ib{36}"), "73");
+        assert_eq!(run("%ib{62}"), "47");
+        assert_eq!(run("%ib{16,4}"), "00ff");
+        assert_eq!(run("%iB{62}"), "47");
     }
 
     #[test]
@@ -719,7 +865,11 @@ mod tests {
         assert_eq!(run("%i{101}"), "255{101}");
         assert_eq!(run("%i{99999999999}"), "255{99999999999}");
         assert_eq!(run("%ib{1}"), "255{1}");
-        assert_eq!(run("%ib{37}"), "255{37}");
+        assert_eq!(run("%ib{63}"), "255{63}");
+        assert_eq!(run("%ib{16,0}"), "255{16,0}");
+        assert_eq!(run("%ib{16,101}"), "255{16,101}");
+        assert_eq!(run("%ib{,4}"), "255{,4}");
+        assert_eq!(run("%iB{1}"), "255{1}");
         // Tokens without an argument never take a `{N}`.
         assert_eq!(run("%h{3}"), "14{3}");
         assert_eq!(run("%radjective{3}"), "Calm{3}");
@@ -759,7 +909,9 @@ mod tests {
     fn file_name_falls_back_to_laqta() {
         assert_eq!(file(""), "Laqta");
         assert_eq!(file("..."), "Laqta");
-        assert_eq!(file("%rf"), "Laqta");
+        // A file that gives no lines leaves the name empty; bare `%rf` is not a token.
+        assert_eq!(file("%rf{names.txt}"), "Laqta");
+        assert_eq!(file("%rf"), "%rf");
     }
 
     #[test]

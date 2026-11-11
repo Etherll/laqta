@@ -53,6 +53,8 @@ pub(crate) enum UiCommand {
         kind: crate::prompt_window::PromptKind,
         reply: crate::prompt_window::Reply,
     },
+    /// The hotkey report changed: open windows redraw their shortcut status.
+    HotkeysChanged,
     Quit,
 }
 
@@ -74,6 +76,11 @@ impl UiHandle {
 
     fn send(&self, cmd: UiCommand) -> Result<(), PortError> {
         self.tx.unbounded_send(cmd).map_err(|_| PortError::Unsupported("the UI is not running".into()))
+    }
+
+    /// Tells the UI that the hotkey report changed (registration finished, or the desktop assigned keys).
+    pub fn hotkeys_changed(&self) {
+        let _ = self.send(UiCommand::HotkeysChanged);
     }
 
     /// Asks the GPUI loop to quit.
@@ -405,6 +412,19 @@ pub struct UiServices {
     pub codecs: laqta_imaging::Codecs,
     /// What the last hotkey registration reported, for the Shortcuts page.
     pub hotkey_report: Arc<dyn Fn() -> HotkeyReport + Send + Sync>,
+    /// First-run settings for this OS, for "Reset to default".
+    pub default_settings: Arc<dyn Fn() -> laqta_domain::Settings + Send + Sync>,
+    /// Opens the desktop's own shortcut settings, where the desktop has them. `None` where it has none.
+    pub configure_shortcuts: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Windows: turns off "Use the Print screen key to open screen capture", so Laqta gets bare
+    /// Print Screen (the old value comes back on uninstall). `None` elsewhere.
+    pub free_print_screen: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
+    /// Windows: reports the keys a window can't see (Print Screen, Pause, Scroll Lock, media keys)
+    /// while the shortcut recorder listens. `None` where windows see every key.
+    pub record_keys: Option<Arc<dyn Fn(laqta_ports::ChordCallback) -> Option<laqta_ports::KeyRecording> + Send + Sync>>,
+    /// `true` while the shortcut recorder listens: the global shortcuts do nothing then, so pressing
+    /// a key that is already a shortcut records it instead of running it (as ShareX does).
+    pub hold_hotkeys: Arc<dyn Fn(bool) + Send + Sync>,
 }
 
 /// The outcome of the last global-hotkey registration.
@@ -418,6 +438,9 @@ pub struct HotkeyReport {
     pub unsupported: Option<String>,
     /// Registration hasn't finished yet (the portal can take seconds).
     pub pending: bool,
+    /// The key the desktop uses for each chord Laqta asked for, as `(chord, key text)`. An empty
+    /// key text means the desktop has none for that chord. Empty where the desktop doesn't report keys.
+    pub system_keys: Vec<(laqta_domain::hotkey::KeyChord, String)>,
 }
 
 impl std::fmt::Debug for UiServices {
@@ -591,7 +614,10 @@ pub fn run(services: UiServices, rx: UiReceiver) {
 fn handle(cmd: UiCommand, cx: &mut App) {
     tracing::debug!(target: "laqta::perf", "ui command");
     // The first command that can open a window loads the UI fonts; a tray-only process never does.
-    if !matches!(cmd, UiCommand::UpdateOverlay(_) | UiCommand::CloseOverlay | UiCommand::ClosePins | UiCommand::Quit) {
+    if !matches!(
+        cmd,
+        UiCommand::UpdateOverlay(_) | UiCommand::CloseOverlay | UiCommand::ClosePins | UiCommand::HotkeysChanged | UiCommand::Quit
+    ) {
         crate::theme::ensure_fonts(cx);
     }
     match cmd {
@@ -616,6 +642,7 @@ fn handle(cmd: UiCommand, cx: &mut App) {
         UiCommand::PhotoEditor(image) => crate::photo_window::open(Some(image), None, cx),
         UiCommand::Open(ToolWindow::PhotoEditor(path)) => crate::photo_window::open(None, path, cx),
         UiCommand::ClosePins => crate::pin_window::close_all(cx),
+        UiCommand::HotkeysChanged => cx.refresh_windows(),
         UiCommand::ShowText { title, text } => {
             crate::text_window::open(crate::text_window::TextResult { title, image: None, text, copied: false }, cx)
         }

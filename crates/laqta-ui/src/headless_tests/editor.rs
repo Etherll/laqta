@@ -81,3 +81,97 @@ fn drag_coalesces_renders_while_one_is_pending(cx: &mut TestAppContext) {
     let after_up = drain(&spawner, &mut vcx);
     assert!(after_up <= 2, "committing the shape renders once; ran {after_up}");
 }
+
+#[gpui::test]
+fn closing_an_unedited_editor_does_not_ask(cx: &mut TestAppContext) {
+    let (_spawner, mut vcx, _dir) = open(cx);
+    assert!(vcx.simulate_close(), "nothing to lose, so it closes");
+    assert!(!vcx.has_pending_prompt());
+}
+
+#[gpui::test]
+fn closing_after_an_edit_asks_first(cx: &mut TestAppContext) {
+    let (spawner, mut vcx, _dir) = open(cx);
+    // Draw a rectangle (the default tool).
+    vcx.simulate_mouse_down(at(0), MouseButton::Left, Modifiers::default());
+    vcx.simulate_mouse_move(at(80), Some(MouseButton::Left), Modifiers::default());
+    vcx.simulate_mouse_up(at(80), MouseButton::Left, Modifiers::default());
+    drain(&spawner, &mut vcx);
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+
+    assert!(!vcx.simulate_close(), "the edit holds the window open");
+    vcx.run_until_parked();
+    assert!(vcx.has_pending_prompt(), "it asks about the unsaved edit");
+    vcx.simulate_prompt_answer("Cancel");
+    vcx.run_until_parked();
+    let window = vcx.update(|window, _| window.window_handle());
+    assert!(vcx.windows().contains(&window), "Cancel keeps the editor open");
+
+    assert!(!vcx.simulate_close());
+    vcx.run_until_parked();
+    vcx.simulate_prompt_answer("Don't save");
+    vcx.run_until_parked();
+    assert!(!vcx.windows().contains(&window), "Don't save closes it");
+}
+
+/// An after-capture edit (the task waits on the reply) still asks to use the edits after a Save to a
+/// file: the save does not hand the edits to the task.
+#[gpui::test]
+fn saving_an_after_capture_edit_still_asks_to_use_it(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let spawner = QueuedSpawner::default();
+    install(cx, services(spawner.clone(), dir.path()));
+    let (reply, _answer) = futures_channel::oneshot::channel();
+    let path = dir.path().join("shot.png");
+    cx.update(|cx| crate::editor_window::open(Some(grey(640, 480)), Some(reply), Some(path), cx));
+    let window = *cx.windows().last().expect("the editor window");
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    drain(&spawner, &mut vcx);
+
+    vcx.simulate_mouse_down(at(0), MouseButton::Left, Modifiers::default());
+    vcx.simulate_mouse_move(at(80), Some(MouseButton::Left), Modifiers::default());
+    vcx.simulate_mouse_up(at(80), MouseButton::Left, Modifiers::default());
+    drain(&spawner, &mut vcx);
+    vcx.simulate_keystrokes("ctrl-s");
+    drain(&spawner, &mut vcx);
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+
+    assert!(!vcx.simulate_close(), "the edits the task waits for hold the window open");
+    vcx.run_until_parked();
+    assert!(vcx.has_pending_prompt(), "it asks whether to use the edits");
+}
+
+/// Save from the close prompt, then another edit while the file is written: that edit is not in the
+/// file, so the editor stays open.
+#[gpui::test]
+fn an_edit_made_while_saving_to_close_keeps_the_editor_open(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let spawner = QueuedSpawner::default();
+    install(cx, services(spawner.clone(), dir.path()));
+    let path = dir.path().join("shot.png");
+    cx.update(|cx| crate::editor_window::open(Some(grey(640, 480)), None, Some(path.clone()), cx));
+    let window = *cx.windows().last().expect("the editor window");
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    drain(&spawner, &mut vcx);
+
+    vcx.simulate_mouse_down(at(0), MouseButton::Left, Modifiers::default());
+    vcx.simulate_mouse_move(at(80), Some(MouseButton::Left), Modifiers::default());
+    vcx.simulate_mouse_up(at(80), MouseButton::Left, Modifiers::default());
+    drain(&spawner, &mut vcx);
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+
+    assert!(!vcx.simulate_close());
+    vcx.run_until_parked();
+    vcx.simulate_prompt_answer("Save");
+    vcx.run_until_parked();
+    // The save waits on the compute pool; a second rectangle goes in meanwhile.
+    vcx.simulate_mouse_down(at(400), MouseButton::Left, Modifiers::default());
+    vcx.simulate_mouse_move(at(480), Some(MouseButton::Left), Modifiers::default());
+    vcx.simulate_mouse_up(at(480), MouseButton::Left, Modifiers::default());
+    drain(&spawner, &mut vcx);
+
+    assert!(path.is_file(), "the save went through");
+    assert!(vcx.windows().contains(&window), "the newer edit keeps the editor open");
+}

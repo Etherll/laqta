@@ -60,10 +60,53 @@ pub type ActionCallback = Arc<dyn Fn(Action) + Send + Sync>;
 /// Called with the chord that fired, so the app can pick the workflow bound to that chord.
 pub type HotkeyCallback = Arc<dyn Fn(KeyChord) + Send + Sync>;
 
+/// Called with the key the desktop assigned to each chord, as `(chord, key text)`. An empty key
+/// text means the desktop has none for that chord.
+pub type AssignedCallback = Arc<dyn Fn(Vec<(KeyChord, String)>) + Send + Sync>;
+
+/// Called with each key combination pressed while a [`KeyRecording`] lives.
+pub type ChordCallback = Arc<dyn Fn(KeyChord) + Send + Sync>;
+
+/// A running key recording; dropping it stops the recording.
+pub struct KeyRecording(#[allow(dead_code)] Box<dyn Send>);
+
+impl KeyRecording {
+    /// Wraps the adapter's stop guard: whatever it holds is dropped when the recording ends.
+    pub fn new(guard: impl Send + 'static) -> Self {
+        KeyRecording(Box::new(guard))
+    }
+}
+
+impl std::fmt::Debug for KeyRecording {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("KeyRecording")
+    }
+}
+
 pub trait HotkeyRegistrar: Send + Sync {
     fn register(&self, bindings: &[(KeyChord, Action)], on_fire: HotkeyCallback) -> Vec<(KeyChord, Result<(), PortError>)>;
     /// Drops every registration so `register` can be called again with new bindings.
     fn unregister_all(&self) {}
+    /// True when a registered chord's key events go only to the registrar, never to the focused
+    /// window (Windows `RegisterHotKey`, X11 `XGrabKey`, macOS Carbon hotkeys). The app then drops
+    /// its registrations while a shortcut is being recorded, so a bound chord can be recorded again.
+    fn grabs_keys(&self) -> bool {
+        false
+    }
+    /// Called with the keys the desktop assigned to the registered chords, when it reports them
+    /// (KDE Wayland, after the user changes a shortcut in the desktop's settings). Call before
+    /// `register`; the callback may run at any time after that.
+    fn on_assigned(&self, _assigned: AssignedCallback) {}
+    /// Reports the key combinations pressed while the returned recording lives, for the keys a
+    /// window can't see on this platform (Windows: Print Screen, Pause, Scroll Lock and media
+    /// keys). The keys still reach the system as usual.
+    fn record_keys(&self, _on_chord: ChordCallback) -> Result<KeyRecording, PortError> {
+        Err(PortError::Unsupported("windows see every key here".into()))
+    }
+    /// Opens the desktop's shortcut settings, where it has them.
+    fn configure(&self) -> Result<(), PortError> {
+        Err(PortError::Unsupported("the desktop has no shortcut settings to open".into()))
+    }
 }
 
 #[derive(Clone, Debug)]
