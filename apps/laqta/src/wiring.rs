@@ -169,7 +169,8 @@ const AUTOSTART_MARKER: &str = "autostart-default";
 
 /// Laqta starts at sign-in by default: the first run of a new install turns it on, once. Later runs
 /// leave it as the user set it in Settings. A portable or sandboxed copy, an existing profile (one
-/// with settings) and a debug build are left alone.
+/// with settings) and a debug build are left alone. Only an installed copy writes the marker: a
+/// portable copy whose data fell back to the default folder must not use up an installed copy's turn.
 fn autostart_first_run(
     autostart: &dyn laqta_ports::Autostart,
     data: &std::path::Path,
@@ -178,10 +179,10 @@ fn autostart_first_run(
     exe: &std::path::Path,
 ) {
     let marker = data.join(AUTOSTART_MARKER);
-    if marker.exists() {
+    if !installed || marker.exists() {
         return;
     }
-    if installed && new_profile && !cfg!(debug_assertions) && !autostart.is_enabled().unwrap_or(true) {
+    if new_profile && !cfg!(debug_assertions) && !autostart.is_enabled().unwrap_or(true) {
         match autostart.set_enabled(true, exe) {
             Ok(()) => tracing::info!("Laqta will start at sign-in (turn it off in Settings)"),
             Err(error) => tracing::warn!(%error, "could not turn on starting at sign-in"),
@@ -1118,7 +1119,8 @@ mod tests {
             let sign_in = SignIn::default();
             autostart_first_run(&sign_in, dir.path(), installed, new_profile, std::path::Path::new("/x"));
             assert_eq!(sign_in.sets.load(Ordering::SeqCst), 0, "installed={installed} new={new_profile}");
-            assert!(dir.path().join(AUTOSTART_MARKER).exists());
+            // A portable copy leaves the marker to the installed copy that may share its folder.
+            assert_eq!(dir.path().join(AUTOSTART_MARKER).exists(), installed, "installed={installed} new={new_profile}");
         }
     }
 
