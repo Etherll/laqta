@@ -636,7 +636,10 @@ impl Job {
             return Ok(());
         };
         let spawner = self.cx.ports.spawner.as_ref();
-        let temp = std::env::temp_dir().join(format!("laqta-print-{}.{}", self.id.0, encoded.format.extension()));
+        // Task ids restart with each run and each instance, so the name also carries the process and a
+        // random part: two instances, or a restart, never share a print file.
+        let unique = format!("{}-{}-{:016x}", std::process::id(), self.id.0, self.cx.ports.rng.next_u64());
+        let temp = std::env::temp_dir().join(format!("laqta-print-{unique}.{}", encoded.format.extension()));
         if let Err(error) = files::save_atomic(spawner, temp.clone(), encoded.bytes).await {
             self.step_failed("print", error);
             return Ok(());

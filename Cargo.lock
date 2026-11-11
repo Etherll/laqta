@@ -4860,6 +4860,7 @@ dependencies = [
  "libc",
  "raw-window-handle",
  "rayon",
+ "tempfile",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",

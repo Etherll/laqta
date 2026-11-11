@@ -240,7 +240,7 @@ mod tests {
         let id = TaskId(9);
         list.apply(&TaskEvent::Progress { id, sent: 50, total: Some(200) });
         assert_eq!(list.rows()[0].detail, "Uploading 25%");
-        list.apply(&TaskEvent::Uploaded { id, url: "https://x/y".into(), thumbnail_url: None, deletion_url: None });
+        list.apply(&TaskEvent::Uploaded { id, url: "https://x/y".into(), thumbnail_url: None, deletion_url: None, path: None });
         assert_eq!(list.rows()[0].url.as_deref(), Some("https://x/y"));
     }
 

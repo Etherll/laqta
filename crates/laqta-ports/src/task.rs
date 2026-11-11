@@ -157,6 +157,9 @@ pub enum TaskEvent {
         url: String,
         thumbnail_url: Option<String>,
         deletion_url: Option<String>,
+        /// The file on disk the upload came from, when it had one (a capture's saved file, or a file
+        /// uploaded from disk).
+        path: Option<PathBuf>,
     },
     Shortened {
         id: TaskId,

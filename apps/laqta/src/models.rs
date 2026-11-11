@@ -169,6 +169,14 @@ impl<K: PartialEq + Clone, E> ModelSlot<K, E> {
     }
 }
 
+/// The character list shipped beside a recogniser `model`: `<stem>.dict.txt`, `<stem>.txt` or
+/// `dict.txt` in the same folder, the first that exists.
+fn dictionary_beside(model: &Path) -> Option<PathBuf> {
+    let dir = model.parent()?;
+    let stem = model.file_stem()?.to_str()?;
+    [format!("{stem}.dict.txt"), format!("{stem}.txt"), "dict.txt".to_owned()].into_iter().map(|name| dir.join(name)).find(|p| p.is_file())
+}
+
 /// Downloads ONNX Runtime when it is not there yet, reporting through `progress`.
 pub async fn ensure_onnxruntime(data: &Path, progress: laqta_ml::Progress) -> Result<(), String> {
     let dir = models_dir(data);
@@ -316,9 +324,20 @@ impl ModelService for Models {
             laqta_ml::validate_custom(&path, &family).map_err(|e| e.to_string())?;
             let slug: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
             let id = format!("custom-{}-{}", fam.name(), slug.trim_matches('-'));
+            // A recogniser reads its characters from a dictionary that comes with the model.
+            let dictionary = match fam {
+                Family::O1Rec => Some(dictionary_beside(&path).ok_or_else(|| {
+                    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("model");
+                    format!("a text recogniser needs its character list next to it: {stem}.dict.txt, {stem}.txt or dict.txt")
+                })?),
+                _ => None,
+            };
             let dir = models_dir(&data);
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             std::fs::copy(&path, dir.join(format!("{id}.onnx"))).map_err(|e| e.to_string())?;
+            if let Some(dictionary) = dictionary {
+                std::fs::copy(&dictionary, dir.join(format!("{id}.dict.txt"))).map_err(|e| e.to_string())?;
+            }
             Ok(CustomModel { id, name, task: fam.task().as_str().to_owned(), family })
         })
     }
@@ -399,6 +418,18 @@ mod tests {
 #[allow(clippy::unwrap_used)]
 mod release_tests {
     use super::*;
+
+    #[test]
+    fn a_recogniser_dictionary_is_found_beside_the_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = dir.path().join("rec.onnx");
+        std::fs::write(&model, b"onnx").unwrap();
+        assert_eq!(dictionary_beside(&model), None);
+        std::fs::write(dir.path().join("dict.txt"), b"a\nb\n").unwrap();
+        assert_eq!(dictionary_beside(&model), Some(dir.path().join("dict.txt")));
+        std::fs::write(dir.path().join("rec.dict.txt"), b"a\n").unwrap();
+        assert_eq!(dictionary_beside(&model), Some(dir.path().join("rec.dict.txt")), "the model's own list wins");
+    }
     use laqta_ports::fakes::{InlineSpawner, ManualClock};
 
     fn rig() -> (Arc<InlineSpawner>, Arc<ModelReleaser>) {

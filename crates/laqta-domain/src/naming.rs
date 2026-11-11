@@ -52,11 +52,6 @@ impl fmt::Debug for NameContext<'_> {
     }
 }
 
-/// Expands the `%` tokens in `pattern`. The longest token name at each `%` wins, and a `%` that
-/// starts no known token stays literal. A `{…}` right after a token is its argument when the token
-/// takes one and the contents are valid: a number in range (`%rn{3}`, `%i{4}`), a base and an
-/// optional pad width (`%ib{16,4}`), or a path (`%rf{names.txt}`). Otherwise the `{` stays literal.
-/// A `%pm` anywhere in the pattern makes `%h` 12-hour.
 /// The file paths the `%rf{path}` tokens in `pattern` name, in order, without repeats. The caller
 /// reads them and answers `NameContext::read_lines` from what it read.
 pub fn random_line_files(pattern: &str) -> Vec<String> {
@@ -74,6 +69,11 @@ pub fn random_line_files(pattern: &str) -> Vec<String> {
     paths
 }
 
+/// Expands the `%` tokens in `pattern`. The longest token name at each `%` wins, and a `%` that
+/// starts no known token stays literal. A `{…}` right after a token is its argument when the token
+/// takes one and the contents are valid: a number in range (`%rn{3}`, `%i{4}`), a base and an
+/// optional pad width (`%ib{16,4}`), or a path (`%rf{names.txt}`). Otherwise the `{` stays literal.
+/// A `%pm` anywhere in the pattern makes `%h` 12-hour.
 pub fn expand(pattern: &str, ctx: &mut NameContext<'_>) -> String {
     let twelve_hour = pattern.contains("%pm");
     let mut out = String::with_capacity(pattern.len());

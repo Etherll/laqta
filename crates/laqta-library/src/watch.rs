@@ -67,6 +67,12 @@ fn report_events(events: &[DebouncedEvent], known: &mut HashSet<PathBuf>, on_fil
             }
             continue;
         }
+        // macOS reports both ends of a rename as `Name(Any)`: the end that is gone left.
+        if matches!(event.kind, EventKind::Modify(ModifyKind::Name(RenameMode::Any))) {
+            for path in event.paths.iter().filter(|path| !path.exists()) {
+                known.remove(&key(path));
+            }
+        }
         if !is_arrival(&event.kind) {
             continue;
         }
@@ -125,5 +131,38 @@ fn watch_error(folder: &Path, error: notify::Error) -> PortError {
     match error.kind {
         notify::ErrorKind::Io(ref io) if io.kind() == io::ErrorKind::PermissionDenied => PortError::PermissionDenied,
         _ => PortError::Failed(format!("cannot watch {}: {error}", folder.display())),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use notify::Event;
+
+    use super::*;
+
+    fn event(kind: EventKind, path: &Path) -> DebouncedEvent {
+        DebouncedEvent::new(Event::new(kind).add_path(path.to_path_buf()), std::time::Instant::now())
+    }
+
+    /// A file renamed away the macOS way (`Name(Any)` on a path that is gone) can arrive again.
+    #[test]
+    fn a_name_renamed_away_on_macos_can_arrive_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let shot = dir.path().join("shot.png");
+        std::fs::write(&shot, b"1").unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let on_file: WatchCallback = Arc::new(move |path| sink.lock().unwrap().push(path));
+        let mut known = files_in(dir.path(), false);
+
+        std::fs::remove_file(&shot).unwrap();
+        report_events(&[event(EventKind::Modify(ModifyKind::Name(RenameMode::Any)), &shot)], &mut known, &on_file);
+        std::fs::write(&shot, b"2").unwrap();
+        report_events(&[event(EventKind::Create(CreateKind::File), &shot)], &mut known, &on_file);
+
+        assert_eq!(seen.lock().unwrap().as_slice(), [shot]);
     }
 }

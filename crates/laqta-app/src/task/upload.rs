@@ -141,6 +141,7 @@ impl Job {
             url,
             thumbnail_url: result.thumbnail_url.clone(),
             deletion_url: result.deletion_url.clone(),
+            path: sent.path.clone(),
         });
         Ok(Some(self.after_upload(&result, &sent, flags).await?))
     }

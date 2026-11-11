@@ -392,8 +392,8 @@ impl HistoryEdit for History {
 const LINKABLE_SAVES: usize = 64;
 
 /// Writes a history entry for each `TaskEvent::Saved` and records each `TaskEvent::Uploaded` until
-/// the channel closes. An upload of a saved file fills in that file's entry; an upload without one
-/// (a text upload) adds an entry of kind `Url`. A failure is logged and that event is skipped.
+/// the channel closes. An upload of a saved file fills in that file's entry; an upload of a file from
+/// disk adds an entry for that file; an upload with no file (text, a URL) adds an entry of kind `Url`. A failure is logged and that event is skipped.
 /// Each entry is timestamped with `clock.now()`.
 ///
 /// After each entry, the oldest entries beyond `max_items()` are deleted (the setting
@@ -424,8 +424,17 @@ pub async fn record_task_events(
                     tracing::warn!(%error, "history: could not remove the oldest entries");
                 }
             }
-            Ok(TaskEvent::Uploaded { id, url, thumbnail_url, deletion_url }) => {
-                let saved = saves.iter().rposition(|(task, _)| *task == id).and_then(|at| saves.remove(at)).map(|(_, entry)| entry);
+            Ok(TaskEvent::Uploaded { id, url, thumbnail_url, deletion_url, path }) => {
+                let mut saved = saves.iter().rposition(|(task, _)| *task == id).and_then(|at| saves.remove(at)).map(|(_, entry)| entry);
+                // A file uploaded from disk had no Saved event: its entry is made now, as a save's would be.
+                if saved.is_none()
+                    && let Some(path) = &path
+                {
+                    match record_saved(&history, path, clock.now()) {
+                        Ok(entry) => saved = Some(entry),
+                        Err(error) => tracing::warn!(path = %path.display(), %error, "history: could not record an uploaded file"),
+                    }
+                }
                 match record_upload(&history, saved, &url, thumbnail_url.as_deref(), deletion_url.as_deref(), clock.now()) {
                     Ok(entry) => {
                         if uploads.len() == LINKABLE_SAVES {

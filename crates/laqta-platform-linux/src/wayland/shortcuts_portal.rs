@@ -368,9 +368,9 @@ fn keysym(key: Key) -> Option<String> {
         Key::MediaPrev => "XF86AudioPrev",
         Key::MediaStop => "XF86AudioStop",
         Key::LaunchMail => "XF86Mail",
-        Key::LaunchApp1 => "XF86Launch0",
-        Key::LaunchApp2 => "XF86Launch1",
-        Key::Calculator => "XF86Calculator",
+        // As on X11: Windows' launch keys are My Computer and Calculator.
+        Key::LaunchApp1 => "XF86MyComputer",
+        Key::LaunchApp2 | Key::Calculator => "XF86Calculator",
         // Digits and F-keys: their canonical names are the keysym names.
         _ => {
             let plain = name.bytes().all(|b| b.is_ascii_digit()) || (name.starts_with('F') && name.len() <= 3);

@@ -142,25 +142,67 @@ pub enum RowStatus {
 /// Whether the desktop's key text (KDE: "Ctrl+'", "Print", "Meta+Shift+S") names `chord`.
 /// Spelling differs between desktops, so names are compared loosely, in any order.
 pub fn same_key(chord: KeyChord, desktop: &str) -> bool {
+    /// One spelling per key: Laqta's names (`Minus`, `Numpad1`, `VolumeUp`) and the desktop's
+    /// (Qt/KDE: `-`, `Num+1`, `Volume Up`) meet here.
     fn norm(part: &str) -> String {
         let p = part.trim().to_ascii_lowercase();
-        match p.as_str() {
-            "control" | "ctrl" => "ctrl".into(),
-            "meta" | "super" | "win" | "logo" => "super".into(),
-            "printscreen" | "prtsc" | "print" | "sysreq" => "print".into(),
-            "quote" | "apostrophe" | "'" => "'".into(),
-            "return" | "enter" => "enter".into(),
-            "esc" | "escape" => "escape".into(),
-            "pgup" | "pageup" | "page up" => "pageup".into(),
-            "pgdown" | "pagedown" | "page down" => "pagedown".into(),
-            _ => p,
-        }
+        let same = match p.as_str() {
+            "control" | "ctrl" => "ctrl",
+            "meta" | "super" | "win" | "logo" => "super",
+            "printscreen" | "prtsc" | "print" | "sysreq" => "print",
+            "quote" | "apostrophe" | "'" => "'",
+            "return" | "enter" => "enter",
+            "esc" | "escape" => "escape",
+            "pgup" | "pageup" | "page up" => "pageup",
+            "pgdown" | "pagedown" | "page down" => "pagedown",
+            "minus" | "-" => "-",
+            "equal" | "=" => "=",
+            "comma" | "," => ",",
+            "period" | "." => ".",
+            "slash" | "/" => "/",
+            "backslash" | "\\" => "\\",
+            "semicolon" | ";" => ";",
+            "bracketleft" | "[" => "[",
+            "bracketright" | "]" => "]",
+            "backquote" | "grave" | "`" => "`",
+            "delete" | "del" => "delete",
+            "insert" | "ins" => "insert",
+            "scrolllock" | "scroll lock" => "scrolllock",
+            "volumeup" | "volume up" => "volumeup",
+            "volumedown" | "volume down" => "volumedown",
+            "volumemute" | "volume mute" | "mute" => "volumemute",
+            "mediaplaypause" | "media play" | "toggle media play/pause" | "play" => "mediaplaypause",
+            "medianext" | "media next" => "medianext",
+            "mediaprev" | "media previous" => "mediaprev",
+            "mediastop" | "media stop" => "mediastop",
+            "launchmail" | "launch mail" | "mail" => "launchmail",
+            "calculator" | "calc" => "calculator",
+            "numpadadd" => "numpad+",
+            "numpadsubtract" => "numpad-",
+            "numpadmultiply" => "numpad*",
+            "numpaddivide" => "numpad/",
+            "numpaddecimal" => "numpad.",
+            _ => return p,
+        };
+        same.into()
     }
     fn parts(text: &str) -> Vec<String> {
+        let mut pieces: Vec<String> = text.split('+').filter(|p| !p.trim().is_empty()).map(norm).collect();
         // "Ctrl++" is Ctrl and Plus: an empty piece after a '+' is the '+' key itself.
-        let mut out: Vec<String> = text.split('+').filter(|p| !p.trim().is_empty()).map(norm).collect();
         if text.ends_with("++") {
-            out.push("+".into());
+            pieces.push("+".into());
+        }
+        // Qt writes a keypad key as "Num+<key>": one key, Laqta's `Numpad<key>`.
+        let mut out = Vec::with_capacity(pieces.len());
+        let mut pieces = pieces.into_iter().peekable();
+        while let Some(piece) = pieces.next() {
+            match pieces.peek() {
+                Some(next) if piece == "num" => {
+                    out.push(format!("numpad{next}"));
+                    pieces.next();
+                }
+                _ => out.push(piece),
+            }
         }
         out.sort();
         out
@@ -306,6 +348,15 @@ mod tests {
         assert!(same_key(chord("Ctrl+Shift+PrintScreen"), "Shift+Ctrl+Print"));
         assert!(same_key(chord("Super+S"), "Meta+S"));
         assert!(!same_key(chord("Ctrl+W"), "Ctrl+Q"));
+        // Qt/KDE spell symbols, the keypad and media keys their own way.
+        assert!(same_key(chord("Ctrl+Minus"), "Ctrl+-"));
+        assert!(same_key(chord("Ctrl+Shift+Comma"), "Shift+Ctrl+,"));
+        assert!(same_key(chord("Ctrl+Delete"), "Ctrl+Del"));
+        assert!(same_key(chord("VolumeUp"), "Volume Up"));
+        assert!(same_key(chord("MediaPlayPause"), "Media Play"));
+        assert!(same_key(chord("Ctrl+Numpad1"), "Ctrl+Num+1"));
+        assert!(same_key(chord("Ctrl+NumpadAdd"), "Ctrl+Num++"));
+        assert!(!same_key(chord("Ctrl+1"), "Ctrl+Num+1"), "the keypad 1 is not the top-row 1");
     }
     use laqta_domain::settings::Settings;
 

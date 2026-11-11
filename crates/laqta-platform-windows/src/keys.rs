@@ -130,8 +130,8 @@ pub(crate) fn vk(key: Key) -> Option<u32> {
         Key::MediaStop => 0xB2,
         Key::LaunchMail => 0xB4,
         Key::LaunchApp1 => 0xB6,
-        Key::LaunchApp2 => 0xB7,
-        // Calculator has no VK_* code of its own; keyboards send it as VK_LAUNCH_APP2.
+        // Calculator has no VK_* code of its own: keyboards send it as VK_LAUNCH_APP2.
+        Key::LaunchApp2 | Key::Calculator => 0xB7,
         _ => return None,
     };
     Some(code)
@@ -143,8 +143,8 @@ mod tests {
 
     use super::*;
 
-    /// Keys with no `VK_*` code. `Calculator` is left out because `VK_LAUNCH_APP2` is the code keyboards send.
-    const UNMAPPED: &[Key] = &[Key::Calculator];
+    /// Keys with no `VK_*` code.
+    const UNMAPPED: &[Key] = &[];
 
     #[test]
     fn unmapped_keys_are_exactly_the_documented_ones() {
@@ -155,7 +155,8 @@ mod tests {
 
     #[test]
     fn virtual_keys_are_distinct() {
-        let mapped: Vec<u32> = Key::ALL.iter().filter_map(|&key| vk(key)).collect();
+        // Calculator is the same key as LaunchApp2 on Windows.
+        let mapped: Vec<u32> = Key::ALL.iter().filter(|&&key| key != Key::Calculator).filter_map(|&key| vk(key)).collect();
         let codes: HashSet<u32> = mapped.iter().copied().collect();
         assert_eq!(codes.len(), mapped.len());
     }

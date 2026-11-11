@@ -113,3 +113,31 @@ fn closing_after_an_edit_asks_first(cx: &mut TestAppContext) {
     vcx.run_until_parked();
     assert!(!vcx.windows().contains(&window), "Don't save closes it");
 }
+
+/// An after-capture edit (the task waits on the reply) still asks to use the edits after a Save to a
+/// file: the save does not hand the edits to the task.
+#[gpui::test]
+fn saving_an_after_capture_edit_still_asks_to_use_it(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let spawner = QueuedSpawner::default();
+    install(cx, services(spawner.clone(), dir.path()));
+    let (reply, _answer) = futures_channel::oneshot::channel();
+    let path = dir.path().join("shot.png");
+    cx.update(|cx| crate::editor_window::open(Some(grey(640, 480)), Some(reply), Some(path), cx));
+    let window = *cx.windows().last().expect("the editor window");
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    drain(&spawner, &mut vcx);
+
+    vcx.simulate_mouse_down(at(0), MouseButton::Left, Modifiers::default());
+    vcx.simulate_mouse_move(at(80), Some(MouseButton::Left), Modifiers::default());
+    vcx.simulate_mouse_up(at(80), MouseButton::Left, Modifiers::default());
+    drain(&spawner, &mut vcx);
+    vcx.simulate_keystrokes("ctrl-s");
+    drain(&spawner, &mut vcx);
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+
+    assert!(!vcx.simulate_close(), "the edits the task waits for hold the window open");
+    vcx.run_until_parked();
+    assert!(vcx.has_pending_prompt(), "it asks whether to use the edits");
+}

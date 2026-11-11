@@ -28,6 +28,7 @@ fn audit_bug_uploads_never_reach_history() {
                 url: "https://i.example/abc.png".into(),
                 thumbnail_url: Some("https://i.example/abcm.png".into()),
                 deletion_url: Some("https://i.example/delete/xyz".into()),
+                path: Some(path.clone()),
             })
             .await
             .unwrap();
@@ -38,6 +39,7 @@ fn audit_bug_uploads_never_reach_history() {
                 url: "https://paste.example/q".into(),
                 thumbnail_url: None,
                 deletion_url: None,
+                path: None,
             })
             .await
             .unwrap();

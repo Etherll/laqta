@@ -78,12 +78,12 @@ impl UiHandle {
         self.tx.unbounded_send(cmd).map_err(|_| PortError::Unsupported("the UI is not running".into()))
     }
 
-    /// Asks the GPUI loop to quit.
     /// Tells the UI that the hotkey report changed (registration finished, or the desktop assigned keys).
     pub fn hotkeys_changed(&self) {
         let _ = self.send(UiCommand::HotkeysChanged);
     }
 
+    /// Asks the GPUI loop to quit.
     pub fn quit(&self) {
         let _ = self.send(UiCommand::Quit);
     }

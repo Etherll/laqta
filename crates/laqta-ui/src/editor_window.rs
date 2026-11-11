@@ -480,11 +480,14 @@ impl EditorWindow {
             return;
         }
         // Saved from here on; a failed or cancelled save sets `save_missed`. Nothing is running
-        // (`defer` said so), so the engine's lock is free.
-        if let Ok(mut editor) = self.interaction.editor().lock() {
-            editor.mark_saved();
+        // (`defer` said so), so the engine's lock is free. An after-capture edit stays unsaved: the
+        // task still waits for the edits, so closing must still ask whether to use them.
+        if self.reply.is_none() {
+            if let Ok(mut editor) = self.interaction.editor().lock() {
+                editor.mark_saved();
+            }
+            self.chrome.modified = false;
         }
-        self.chrome.modified = false;
         let handle = window.window_handle();
         let settings = cx.global::<UiState>().services.app.settings();
         let format = settings.defaults.image.format;

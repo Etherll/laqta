@@ -133,7 +133,8 @@ fn shortened_links_are_kept_with_their_upload() {
     block_on(async {
         let id = TaskId(1);
         sender.broadcast(TaskEvent::Saved { id, path: png_path.clone() }).await.unwrap();
-        let uploaded = TaskEvent::Uploaded { id, url: "https://h.example/a.png".into(), thumbnail_url: None, deletion_url: None };
+        let uploaded =
+            TaskEvent::Uploaded { id, url: "https://h.example/a.png".into(), thumbnail_url: None, deletion_url: None, path: None };
         sender.broadcast(uploaded).await.unwrap();
         sender.broadcast(TaskEvent::Shortened { id, url: "https://s.example/x".into() }).await.unwrap();
         sender.broadcast(TaskEvent::Shortened { id: TaskId(2), url: "https://s.example/y".into() }).await.unwrap();
@@ -148,4 +149,36 @@ fn shortened_links_are_kept_with_their_upload() {
     let upload = &items[1];
     assert_eq!(upload.url.as_deref(), Some("https://h.example/a.png"));
     assert_eq!(upload.short_url.as_deref(), Some("https://s.example/x"));
+}
+
+/// A file uploaded from disk (CLI, drag and drop, watch folder) has no Saved event; its entry is the
+/// file's, with its path, kind and size, and the upload's link.
+#[test]
+fn a_file_uploaded_from_disk_gets_a_file_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let png_path = dir.path().join("shot.png");
+    write_png(&png_path, 4, 4);
+    let history = Arc::new(History::open_in_memory().unwrap());
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(date(2026, 11, 7).at(14, 3, 22, 0)));
+    let (sender, receiver) = async_broadcast::broadcast::<TaskEvent>(16);
+
+    block_on(async {
+        let uploaded = TaskEvent::Uploaded {
+            id: TaskId(1),
+            url: "https://h.example/AbC123".into(),
+            thumbnail_url: None,
+            deletion_url: None,
+            path: Some(png_path.clone()),
+        };
+        sender.broadcast(uploaded).await.unwrap();
+        drop(sender);
+    });
+    block_on(record_task_events(Arc::clone(&history), receiver, clock, || 0));
+
+    let items = history.query(&HistoryQuery::default()).unwrap();
+    assert_eq!(items.len(), 1);
+    let item = &items[0];
+    assert_eq!((item.kind, item.file_name.as_str(), item.path.as_deref()), (HistoryKind::Image, "shot.png", Some(png_path.as_path())));
+    assert_eq!(item.url.as_deref(), Some("https://h.example/AbC123"));
+    assert_eq!((item.width, item.height), (Some(4), Some(4)));
 }

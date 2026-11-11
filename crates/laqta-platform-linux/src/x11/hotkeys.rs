@@ -187,9 +187,10 @@ pub(crate) fn keysym(key: Key) -> Option<u32> {
             Key::MediaPrev => Some(0x1008ff16),
             Key::MediaStop => Some(0x1008ff15),
             Key::LaunchMail => Some(0x1008ff19),
-            Key::LaunchApp1 => Some(0x1008ff40),
-            Key::LaunchApp2 => Some(0x1008ff41),
-            Key::Calculator => Some(0x1008ff1d),
+            // Windows' launch keys are My Computer and Calculator (the keys ShareX's LaunchApplication1
+            // and 2 name); XKB names them XF86MyComputer and XF86Calculator.
+            Key::LaunchApp1 => Some(0x1008ff33),
+            Key::LaunchApp2 | Key::Calculator => Some(0x1008ff1d),
             _ => None,
         })
 }
@@ -331,6 +332,8 @@ mod tests {
         }
         syms.sort_unstable();
         syms.dedup();
-        assert_eq!(syms.len(), Key::ALL.len());
+        // LaunchApp2 is the Calculator key (Windows' VK_LAUNCH_APP2), so the two share a keysym.
+        assert_eq!(syms.len(), Key::ALL.len() - 1);
+        assert_eq!(keysym(Key::LaunchApp2), keysym(Key::Calculator));
     }
 }
