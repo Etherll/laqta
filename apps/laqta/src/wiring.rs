@@ -316,11 +316,25 @@ async fn run_request(
     }
 }
 
+/// Steps from each older settings version to the next, oldest first (index 0 takes 1 to 2).
+const SETTINGS_MIGRATIONS: [laqta_library::Migration; 1] = [settings_v1_to_v2];
+
+/// Version 2: a tray click opens the main window. Version 1 saved the old default, a fullscreen
+/// capture, and had no way to change it, so a saved `PrintScreen` moves to the new default.
+fn settings_v1_to_v2(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(click) = value.get_mut("tray_click")
+        && click == "PrintScreen"
+    {
+        *click = serde_json::Value::from("OpenMainWindow");
+    }
+    value
+}
+
 fn load_settings(store: &SettingsStore) -> Settings {
     if !store.path().exists() {
         return default_settings();
     }
-    match store.load::<Settings>(SETTINGS_VERSION, &[]) {
+    match store.load::<Settings>(SETTINGS_VERSION, &SETTINGS_MIGRATIONS) {
         Ok(mut s) => {
             // A file without `screenshots_dir` gets the serde default, a relative path that would put captures in
             // the folder Laqta was started from.
@@ -1098,6 +1112,20 @@ mod tests {
             autostart_first_run(&sign_in, dir.path(), installed, new_profile, std::path::Path::new("/x"));
             assert_eq!(sign_in.sets.load(Ordering::SeqCst), 0, "installed={installed} new={new_profile}");
             assert!(dir.path().join(AUTOSTART_MARKER).exists());
+        }
+    }
+
+    /// A version 1 profile saved the old tray default, a capture, and moves to opening the window.
+    /// Another saved action (set by hand in the file) stays.
+    #[test]
+    fn a_tray_click_in_an_old_profile_opens_the_main_window() {
+        for (saved, loaded) in [("PrintScreen", Action::OpenMainWindow), ("RectangleRegion", Action::RectangleRegion)] {
+            let dir = tempfile::tempdir().unwrap();
+            let file = format!(r#"{{"version": 1, "tray_click": "{saved}"}}"#);
+            std::fs::write(dir.path().join("settings.json"), file).unwrap();
+            let settings = load_settings(&SettingsStore::new(dir.path().to_path_buf()));
+            assert_eq!(settings.tray_click, loaded, "saved {saved}");
+            assert_eq!(settings.version, SETTINGS_VERSION);
         }
     }
 

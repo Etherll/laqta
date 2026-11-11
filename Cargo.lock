@@ -4860,6 +4860,7 @@ dependencies = [
  "libc",
  "raw-window-handle",
  "rayon",
+ "serde_json",
  "tempfile",
  "tracing",
  "tracing-appender",
