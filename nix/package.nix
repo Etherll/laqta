@@ -104,11 +104,27 @@ let
     doCheck = false;
   };
 
-  # Every dependency compiled, with Laqta's own crates stubbed out. Its hash follows the manifests
-  # and `Cargo.lock`, so CI's Cachix copy serves every build that leaves them alone.
+  # The crates `[patch.crates-io]` swaps in from vendor/ are dependencies, so they keep their real
+  # sources; crane would otherwise stub them out with Laqta's own crates.
+  vendored = lib.fileset.toSource {
+    root = ../.;
+    fileset = ../vendor;
+  };
+
+  # Every dependency compiled, with Laqta's own crates stubbed out. Its hash follows the manifests,
+  # `Cargo.lock` and vendor/, so CI's Cachix copy serves every build that leaves them alone.
   cargoArtifacts = craneLib.buildDepsOnly (
-    commonArgs
+    builtins.removeAttrs commonArgs [ "src" ]
     // {
+      dummySrc = craneLib.mkDummySrc (
+        commonArgs
+        // {
+          extraDummyScript = ''
+            rm -rf $out/vendor
+            cp -r --no-preserve=mode,ownership ${vendored}/vendor $out/vendor
+          '';
+        }
+      );
       # The package build runs no `cargo check`, so its artifacts would go unused.
       cargoCheckCommand = "true";
     }
