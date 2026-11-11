@@ -116,6 +116,9 @@ let
   cargoArtifacts = craneLib.buildDepsOnly (
     builtins.removeAttrs commonArgs [ "src" ]
     // {
+      # From the real sources: reading Cargo.lock out of the stubbed ones would build them while
+      # the flake is evaluated.
+      cargoVendorDir = craneLib.vendorCargoDeps { inherit (commonArgs) src; };
       dummySrc = craneLib.mkDummySrc (
         commonArgs
         // {
