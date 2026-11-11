@@ -308,7 +308,8 @@ pub enum NativeWindow {
     HideForCapture,
     /// The window covers its whole screen, menu bar and Dock included. macOS keeps a new window
     /// below the menu bar, which would draw the region overlay's frozen screen lower than the
-    /// real one.
+    /// real one. The window is opened hidden and unfocused; the platform shows it and gives it
+    /// the keyboard once it covers the screen.
     CoverScreen,
 }
 
@@ -320,6 +321,21 @@ pub type NativeWindowHook = Arc<dyn Fn(&gpui::Window, NativeWindow) -> bool + Se
 /// scale is its logical rect. macOS has no physical desktop, so its adapter lays one out and is the
 /// only one that can map back (ADR 030).
 pub type LogicalRectHook = Arc<dyn Fn(laqta_domain::geometry::PhysRect) -> Option<[f32; 4]> + Send + Sync>;
+
+/// `UiServices::permissions`: the OS's privacy permissions, where it has them (macOS).
+#[derive(Clone)]
+pub struct PermissionHooks {
+    /// Whether the permission is granted now; never prompts.
+    pub granted: Arc<dyn Fn(laqta_ports::Permission) -> bool + Send + Sync>,
+    /// Asks for the permission: the OS prompt where there is one, and its settings page.
+    pub request: Arc<dyn Fn(laqta_ports::Permission) + Send + Sync>,
+}
+
+impl std::fmt::Debug for PermissionHooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PermissionHooks")
+    }
+}
 
 /// Checks for an update: the message to show and whether `install_update` can apply it here.
 pub type UpdateCheck = Arc<dyn Fn() -> laqta_ports::BoxFuture<'static, Result<(String, bool), String>> + Send + Sync>;
@@ -401,6 +417,8 @@ pub struct UiServices {
     pub native_window: NativeWindowHook,
     /// Maps a physical rect to logical desktop pixels where dividing by the scale is not enough.
     pub logical_rect: Option<LogicalRectHook>,
+    /// Privacy permissions for the onboarding window. `None` where the OS has none to grant.
+    pub permissions: Option<PermissionHooks>,
     /// Run at login.
     pub autostart: Arc<dyn laqta_ports::Autostart>,
     /// "Upload with Laqta" in file managers, Send To, and the browser native-messaging host.
@@ -563,6 +581,8 @@ pub fn run(services: UiServices, rx: UiReceiver) {
         if cfg!(target_os = "macos") {
             mac_app_menu(services.dispatch.clone(), cx);
         }
+        // Ask for the permissions Laqta needs when it opens, not when a capture first fails.
+        crate::permissions_window::open_if_needed(cx);
 
         // Task events feed the task list; this task sleeps until an event arrives.
         let mut events = services.app.events();

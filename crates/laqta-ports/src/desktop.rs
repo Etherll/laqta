@@ -143,6 +143,22 @@ pub trait HotkeyRegistrar: Send + Sync {
     }
 }
 
+/// A privacy permission the OS grants each app on its own (macOS: Privacy & Security). Only
+/// macOS has these; the onboarding window lists them (ADR 030).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Permission {
+    /// Screenshots, recording, and the titles of other apps' windows. Laqta can't capture without it.
+    ScreenRecording,
+    /// Hovering a window's parts in the region overlay, and scrolling another app's window.
+    Accessibility,
+    /// Seeing clicks in other apps, for the pointer highlighter.
+    InputMonitoring,
+}
+
+impl Permission {
+    pub const ALL: [Permission; 3] = [Permission::ScreenRecording, Permission::Accessibility, Permission::InputMonitoring];
+}
+
 #[derive(Clone, Debug)]
 pub struct TrayItem {
     pub label: String,

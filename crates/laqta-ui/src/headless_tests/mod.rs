@@ -5,6 +5,7 @@
 
 mod editor;
 mod overlay;
+mod permissions;
 mod settings;
 
 use std::path::{Path, PathBuf};
@@ -193,6 +194,7 @@ pub(crate) fn services(spawner: QueuedSpawner, dir: &Path) -> UiServices {
         prompt: Arc::new(laqta_ports::fakes::FakePrompt::default()),
         native_window: Arc::new(|_, _| false),
         logical_rect: None,
+        permissions: None,
         autostart: Arc::new(NoShell),
         integration: Arc::new(NoShell),
         fonts: laqta_editor::Fonts::empty(),

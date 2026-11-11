@@ -294,6 +294,21 @@ fn logical_rect() -> Option<laqta_ui::LogicalRectHook> {
     }
 }
 
+/// The privacy permissions the onboarding window lists, where the platform has them (macOS).
+fn permissions() -> Option<laqta_ui::PermissionHooks> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(laqta_ui::PermissionHooks {
+            granted: Arc::new(laqta_platform_macos::permission_granted),
+            request: Arc::new(laqta_platform_macos::request_permission),
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// True when `dir` exists or can be made, and a file can be created in it.
 fn writable(dir: &std::path::Path) -> bool {
     let probe = dir.join(format!(".laqta-write-{}", std::process::id()));
@@ -1003,6 +1018,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             prompt: Arc::new(ui.clone()),
             native_window: Arc::new(native_window),
             logical_rect: logical_rect(),
+            permissions: permissions(),
             fonts: fonts.clone(),
             spawner: spawner.clone(),
             codecs: laqta_imaging::Codecs::builtin(),
