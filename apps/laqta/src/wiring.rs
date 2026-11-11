@@ -159,6 +159,39 @@ fn pictures_dir() -> std::path::PathBuf {
     dirs::picture_dir().or_else(|| dirs::home_dir().map(|h| h.join("Pictures"))).unwrap_or_else(|| "Pictures".into())
 }
 
+/// Where an installed copy keeps its data. A portable or sandboxed copy keeps it elsewhere.
+fn default_data_dir() -> std::path::PathBuf {
+    dirs::data_local_dir().unwrap_or_else(|| ".".into()).join("Laqta")
+}
+
+/// Marks that the first run of this data folder has turned on starting at sign-in (or chose not to).
+const AUTOSTART_MARKER: &str = "autostart-default";
+
+/// Laqta starts at sign-in by default: the first run of a new install turns it on, once. Later runs
+/// leave it as the user set it in Settings. A portable or sandboxed copy, an existing profile (one
+/// with settings) and a debug build are left alone.
+fn autostart_first_run(
+    autostart: &dyn laqta_ports::Autostart,
+    data: &std::path::Path,
+    installed: bool,
+    new_profile: bool,
+    exe: &std::path::Path,
+) {
+    let marker = data.join(AUTOSTART_MARKER);
+    if marker.exists() {
+        return;
+    }
+    if installed && new_profile && !cfg!(debug_assertions) && !autostart.is_enabled().unwrap_or(true) {
+        match autostart.set_enabled(true, exe) {
+            Ok(()) => tracing::info!("Laqta will start at sign-in (turn it off in Settings)"),
+            Err(error) => tracing::warn!(%error, "could not turn on starting at sign-in"),
+        }
+    }
+    if let Err(error) = std::fs::create_dir_all(data).and_then(|()| std::fs::write(&marker, b"")) {
+        tracing::warn!(%error, "could not record the sign-in default");
+    }
+}
+
 /// `-sandbox`: a fresh temporary folder, removed on exit. `-portable`: `LaqtaData` next to the
 /// binary, as the `portable` marker file or a "portable" executable name does.
 fn data_dir(args: &crate::cli::Args) -> std::path::PathBuf {
@@ -167,7 +200,7 @@ fn data_dir(args: &crate::cli::Args) -> std::path::PathBuf {
     if args.sandbox {
         return std::env::temp_dir().join(format!("laqta-sandbox-{}", std::process::id()));
     }
-    let default = dirs::data_local_dir().unwrap_or_else(|| ".".into()).join("Laqta");
+    let default = default_data_dir();
     let chosen = match (&exe_dir, args.portable) {
         (Some(dir), true) => dir.join("LaqtaData"),
         _ => laqta_library::data_dir(exe.as_deref(), default.clone()),
@@ -439,6 +472,9 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         platform.secrets = Arc::new(stubs::SessionSecrets::new(platform.secrets.clone()));
     }
     let store = Arc::new(SettingsStore::new(data.clone()));
+    if let Ok(exe) = std::env::current_exe() {
+        autostart_first_run(platform.autostart.as_ref(), &data, data == default_data_dir(), !store.path().exists(), &exe);
+    }
     let settings = load_settings(&store);
     let history = if settings.history.enabled && !args.sandbox {
         match History::open(&data.join("history.db")) {
@@ -988,6 +1024,54 @@ mod tests {
         }
         fn grabs_keys(&self) -> bool {
             true
+        }
+    }
+
+    #[derive(Default)]
+    struct SignIn {
+        on: std::sync::atomic::AtomicBool,
+        sets: AtomicUsize,
+    }
+
+    impl laqta_ports::Autostart for SignIn {
+        fn is_enabled(&self) -> Result<bool, PortError> {
+            Ok(self.on.load(Ordering::SeqCst))
+        }
+        fn set_enabled(&self, enabled: bool, _: &std::path::Path) -> Result<(), PortError> {
+            self.on.store(enabled, Ordering::SeqCst);
+            self.sets.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// The first run of a new install turns sign-in start on, once: turned off later, it stays off.
+    /// (Debug builds never turn it on, so this checks the release path only there.)
+    #[test]
+    fn a_new_install_starts_at_sign_in_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let sign_in = SignIn::default();
+        let exe = std::path::Path::new("/opt/laqta/laqta");
+
+        autostart_first_run(&sign_in, dir.path(), true, true, exe);
+        assert_eq!(sign_in.on.load(Ordering::SeqCst), !cfg!(debug_assertions));
+        assert!(dir.path().join(AUTOSTART_MARKER).exists());
+
+        sign_in.on.store(false, Ordering::SeqCst);
+        let sets = sign_in.sets.load(Ordering::SeqCst);
+        autostart_first_run(&sign_in, dir.path(), true, true, exe);
+        assert!(!sign_in.on.load(Ordering::SeqCst), "the user's choice stays");
+        assert_eq!(sign_in.sets.load(Ordering::SeqCst), sets);
+    }
+
+    /// Portable copies and existing profiles are left as they are, and so remembered.
+    #[test]
+    fn portable_copies_and_existing_profiles_keep_their_sign_in_setting() {
+        for (installed, new_profile) in [(false, true), (true, false)] {
+            let dir = tempfile::tempdir().unwrap();
+            let sign_in = SignIn::default();
+            autostart_first_run(&sign_in, dir.path(), installed, new_profile, std::path::Path::new("/x"));
+            assert_eq!(sign_in.sets.load(Ordering::SeqCst), 0, "installed={installed} new={new_profile}");
+            assert!(dir.path().join(AUTOSTART_MARKER).exists());
         }
     }
 
