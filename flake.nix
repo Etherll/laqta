@@ -8,24 +8,41 @@
     extra-trusted-public-keys = [ "laqta.cachix.org-1:ZTaWCeegQ7a7vo/SbzIcA/CCGIVl+Syry34569o9Rz4=" ];
   };
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Builds the dependencies as their own derivation, which Cachix keeps, so a build whose
+    # `Cargo.lock` didn't change compiles only Laqta's crates.
+    crane.url = "github:ipetkov/crane";
+  };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      crane,
+    }:
     let
       systems = [
         "x86_64-linux"
         "aarch64-linux"
       ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      laqtaFor = pkgs: pkgs.callPackage ./nix/package.nix { craneLib = crane.mkLib pkgs; };
     in
     {
       packages = forAllSystems (pkgs: {
-        laqta = pkgs.callPackage ./nix/package.nix { };
+        laqta = laqtaFor pkgs;
         default = self.packages.${pkgs.stdenv.hostPlatform.system}.laqta;
       });
 
-      overlays.default = final: _prev: { laqta = final.callPackage ./nix/package.nix { }; };
+      overlays.default = final: _prev: { laqta = laqtaFor final; };
+
+      # What CI builds for a pull request: the package with the quicker `release` profile.
+      checks = forAllSystems (pkgs: {
+        release = self.packages.${pkgs.stdenv.hostPlatform.system}.laqta.override {
+          cargoProfile = "release";
+        };
+      });
 
       devShells = forAllSystems (
         pkgs:

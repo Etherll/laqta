@@ -3,6 +3,12 @@ name: Nix
 # Builds the flake package with the Cachix cache named by the CACHIX_CACHE repository variable.
 # Builds of main and of release tags are also pushed there (with the CACHIX_AUTH_TOKEN secret),
 # so Nix users download them instead of compiling; pull request builds only read from it.
+#
+# A pull request builds `checks.<system>.release`: the package with the quicker `release` profile
+# instead of the downloads' fat-LTO `dist`. Its compiled dependencies (crane's `cargoArtifacts`)
+# are pushed from main, so a pull request that leaves Cargo.lock alone compiles only Laqta's crates.
+# The main CI workflow already compiles every code change; this one runs on pull requests only for
+# changes to how the package is built.
 
 on:
   push:
@@ -15,9 +21,10 @@ on:
       - nix/**
       - Cargo.toml
       - Cargo.lock
-      - apps/**
-      - crates/**
       - vendor/**
+      - packaging/linux/**
+      - assets/icon/**
+      - .github/workflows/nix.yml
   workflow_dispatch:
 
 permissions:
@@ -34,6 +41,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
+        with:
+          # Fetching the flake inputs through GitHub's API without a token hits its rate limit.
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
       - uses: cachix/cachix-action@v16
         if: vars.CACHIX_CACHE != ''
         with:
@@ -44,11 +54,27 @@ jobs:
           # build-only paths the job also creates.
           skipPush: true
       - run: nix flake check --no-build
-      - run: nix build .#laqta --print-build-logs
+      - name: Build
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            nix build .#checks.x86_64-linux.release --print-build-logs
+          else
+            nix build .#laqta --print-build-logs
+            # The compiled dependencies are not installed anywhere; they are pushed so the next
+            # build of main (dist) and pull requests (release) start from them.
+            nix build .#laqta.cargoArtifacts --out-link deps-dist
+            nix build .#checks.x86_64-linux.release.cargoArtifacts --print-build-logs --out-link deps-release
+          fi
       - run: ./result/bin/laqta --version
       - name: Push to Cachix
         if: env.CACHIX_PUSH == 'true'
-        # Paths already on cache.nixos.org are skipped, so this is Laqta and the FFmpeg it builds.
-        run: cachix push "${{ vars.CACHIX_CACHE }}" ./result
+        # Paths already on cache.nixos.org are skipped, so this is Laqta, the FFmpeg it builds and
+        # the compiled dependencies of both profiles.
+        run: cachix push "${{ vars.CACHIX_CACHE }}" ./result ./deps-dist ./deps-release
+      - name: Pin the release in Cachix
+        if: env.CACHIX_PUSH == 'true' && startsWith(github.ref, 'refs/tags/v')
+        # Pinned paths are never garbage collected, so the last three releases stay downloadable
+        # however full the cache gets; older ones fall back to normal eviction.
+        run: cachix pin "${{ vars.CACHIX_CACHE }}" release ./result --keep-revisions 3
     env:
       CACHIX_PUSH: ${{ github.event_name != 'pull_request' && vars.CACHIX_CACHE != '' && secrets.CACHIX_AUTH_TOKEN != '' }}

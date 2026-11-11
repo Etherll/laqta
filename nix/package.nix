@@ -1,5 +1,6 @@
 {
   lib,
+  craneLib,
   rustPlatform,
   pkg-config,
   aws-lc,
@@ -21,6 +22,9 @@
   # 240 MiB. Without it the app downloads the upstream build on first use, which loads only where
   # `libstdc++` is in a standard library folder (not on a stock NixOS).
   withOnnxruntime ? true,
+  # The Cargo profile. `dist` is what users download (Cargo.toml): fat LTO, slower to build and
+  # smaller to download. CI builds pull requests with `release`, which only has to prove it builds.
+  cargoProfile ? "dist",
 }:
 
 let
@@ -50,90 +54,121 @@ let
     vulkan-loader
     wayland
   ];
-in
-rustPlatform.buildRustPackage {
-  pname = "laqta";
-  inherit (workspace) version;
 
-  # Only what the two binaries compile from, so docs or CI edits do not rebuild the package.
-  src = lib.fileset.toSource {
-    root = ../.;
-    fileset = lib.fileset.unions [
-      ../.cargo
-      ../Cargo.toml
-      ../Cargo.lock
-      ../apps
-      ../assets/icon
-      ../crates
-      ../locales
-      ../packaging
-      ../vendor
-      ../xtask
+  # Shared by the dependency build and the package build. Anything here that changes rebuilds
+  # every dependency, so it holds only what compiling them needs.
+  commonArgs = {
+    pname = "laqta";
+    inherit (workspace) version;
+
+    # Only what the two binaries compile from, so docs or CI edits do not rebuild the package.
+    src = lib.fileset.toSource {
+      root = ../.;
+      fileset = lib.fileset.unions [
+        ../.cargo
+        ../Cargo.toml
+        ../Cargo.lock
+        ../apps
+        ../assets/icon
+        ../crates
+        ../locales
+        ../packaging
+        ../vendor
+        ../xtask
+      ];
+    };
+
+    strictDeps = true;
+    CARGO_PROFILE = cargoProfile;
+    cargoExtraArgs = "--locked --package=laqta --package=laqta-nmh";
+
+    nativeBuildInputs = [
+      pkg-config
+      rustPlatform.bindgenHook
     ];
+
+    buildInputs = [
+      aws-lc # rustls' crypto; nixpkgs links aws-lc-sys to it instead of compiling a copy
+      fontconfig
+      freetype
+      libgbm
+      libxcb
+      libxkbcommon
+      pipewire
+      sqlite # nixpkgs links rusqlite to it (built with FTS5, which history search needs)
+    ]
+    ++ dlopenLibs;
+
+    # The suite needs a display, a portal session and network hosts; run it with `cargo test` in
+    # `nix develop`.
+    doCheck = false;
   };
 
-  cargoLock.lockFile = ../Cargo.lock;
+  # The crates `[patch.crates-io]` swaps in from vendor/ are dependencies, so they keep their real
+  # sources; crane would otherwise stub them out with Laqta's own crates.
+  vendored = lib.fileset.toSource {
+    root = ../.;
+    fileset = ../vendor;
+  };
 
-  # The profile of the downloadable builds (Cargo.toml): longer to build, smaller to download.
-  buildType = "dist";
+  # Every dependency compiled, with Laqta's own crates stubbed out. Its hash follows the manifests,
+  # `Cargo.lock` and vendor/, so CI's Cachix copy serves every build that leaves them alone.
+  cargoArtifacts = craneLib.buildDepsOnly (
+    builtins.removeAttrs commonArgs [ "src" ]
+    // {
+      # From the real sources: reading Cargo.lock out of the stubbed ones would build them while
+      # the flake is evaluated.
+      cargoVendorDir = craneLib.vendorCargoDeps { inherit (commonArgs) src; };
+      dummySrc = craneLib.mkDummySrc (
+        commonArgs
+        // {
+          extraDummyScript = ''
+            rm -rf $out/vendor
+            cp -r --no-preserve=mode,ownership ${vendored}/vendor $out/vendor
+          '';
+        }
+      );
+      # The package build runs no `cargo check`, so its artifacts would go unused.
+      cargoCheckCommand = "true";
+    }
+  );
+in
+craneLib.buildPackage (
+  commonArgs
+  // {
+    inherit cargoArtifacts;
 
-  cargoBuildFlags = [
-    "--package=laqta"
-    "--package=laqta-nmh"
-  ];
-
-  nativeBuildInputs = [
-    pkg-config
-    rustPlatform.bindgenHook
-  ];
-
-  buildInputs = [
-    aws-lc # rustls' crypto; nixpkgs links aws-lc-sys to it instead of compiling a copy
-    fontconfig
-    freetype
-    libgbm
-    libxcb
-    libxkbcommon
-    pipewire
-    sqlite # nixpkgs links rusqlite to it (built with FTS5, which history search needs)
-  ]
-  ++ dlopenLibs;
-
-  # Read with option_env! in apps/laqta/src/main.rs and crates/laqta-ml/src/install.rs, so the
-  # app uses these instead of downloading prebuilt copies that do not run on NixOS.
-  env = {
+    # Read with option_env! in apps/laqta/src/main.rs and crates/laqta-ml/src/install.rs, so the
+    # app uses these instead of downloading prebuilt copies that do not run on NixOS.
     LAQTA_TOOLS_PATH = lib.makeBinPath tools;
   }
   // lib.optionalAttrs withOnnxruntime {
     LAQTA_ONNXRUNTIME = "${lib.getLib onnxruntime}/lib/libonnxruntime.so";
-  };
+  }
+  // {
+    postInstall = ''
+      install -Dm644 packaging/linux/io.github.etherll.Laqta.desktop -t $out/share/applications
+      substituteInPlace $out/share/applications/io.github.etherll.Laqta.desktop \
+        --replace-fail "Exec=/usr/bin/laqta" "Exec=laqta"
+      for size in 16 32 64 128 256 512; do
+        install -Dm644 assets/icon/laqta-$size.png \
+          $out/share/icons/hicolor/''${size}x''${size}/apps/io.github.etherll.Laqta.png
+      done
+      install -Dm644 assets/icon/laqta.svg -T $out/share/icons/hicolor/scalable/apps/io.github.etherll.Laqta.svg
+    '';
 
-  # The suite needs a display, a portal session and network hosts; run it with `cargo test` in
-  # `nix develop`.
-  doCheck = false;
+    postFixup = ''
+      patchelf --add-rpath ${lib.makeLibraryPath dlopenLibs} $out/bin/laqta
+    '';
 
-  postInstall = ''
-    install -Dm644 packaging/linux/io.github.etherll.Laqta.desktop -t $out/share/applications
-    substituteInPlace $out/share/applications/io.github.etherll.Laqta.desktop \
-      --replace-fail "Exec=/usr/bin/laqta" "Exec=laqta"
-    for size in 16 32 64 128 256 512; do
-      install -Dm644 assets/icon/laqta-$size.png \
-        $out/share/icons/hicolor/''${size}x''${size}/apps/io.github.etherll.Laqta.png
-    done
-    install -Dm644 assets/icon/laqta.svg -T $out/share/icons/hicolor/scalable/apps/io.github.etherll.Laqta.svg
-  '';
+    passthru = { inherit ffmpeg cargoArtifacts; };
 
-  postFixup = ''
-    patchelf --add-rpath ${lib.makeLibraryPath dlopenLibs} $out/bin/laqta
-  '';
-
-  passthru = { inherit ffmpeg; };
-
-  meta = {
-    description = "Capture, record, mark up and share your screen";
-    homepage = "https://github.com/Etherll/laqta";
-    license = lib.licenses.gpl3Plus;
-    mainProgram = "laqta";
-    platforms = lib.platforms.linux;
-  };
-}
+    meta = {
+      description = "Capture, record, mark up and share your screen";
+      homepage = "https://github.com/Etherll/laqta";
+      license = lib.licenses.gpl3Plus;
+      mainProgram = "laqta";
+      platforms = lib.platforms.linux;
+    };
+  }
+)
