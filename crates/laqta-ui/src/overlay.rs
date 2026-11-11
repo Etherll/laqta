@@ -166,6 +166,10 @@ fn open_window(
         Bounds { origin: point(px(r.x as f32), px(r.y as f32)), size: size(px(r.width as f32), px(r.height as f32)) }
     });
     let wanted_y = matches!(kind, WindowKind::PopUp).then_some(bounds.origin.y);
+    // macOS opens the overlay hidden: `NativeWindow::CoverScreen` restyles it and then shows it and
+    // gives it the keyboard. Restyling a window that already has the keyboard crashes AppKit later
+    // (its Touch Bar observer still watches the frame view the restyle threw away).
+    let shown_at_once = !cfg!(target_os = "macos");
     let options = WindowOptions {
         titlebar: None,
         window_bounds: Some(if matches!(kind, WindowKind::PopUp) {
@@ -173,8 +177,8 @@ fn open_window(
         } else {
             WindowBounds::Fullscreen(bounds)
         }),
-        focus: true,
-        show: true,
+        focus: shown_at_once,
+        show: shown_at_once,
         kind,
         is_movable: false,
         is_resizable: false,
@@ -192,6 +196,14 @@ fn open_window(
             view
         })
         .map_err(|e| anyhow_like::Error(format!("{e:#}")))?;
+    if !shown_at_once {
+        let native = cx.global::<UiState>().services.native_window.clone();
+        let _ = handle.update(cx, |_, window, _| {
+            if !native(window, crate::runtime::NativeWindow::CoverScreen) {
+                window.activate_window();
+            }
+        });
+    }
     Ok(handle.into())
 }
 
@@ -352,7 +364,6 @@ impl Render for OverlayView {
         if !std::mem::replace(&mut self.raised, true) {
             let native = cx.global::<UiState>().services.native_window.clone();
             native(window, crate::runtime::NativeWindow::BringToFront);
-            native(window, crate::runtime::NativeWindow::CoverScreen);
         }
         let s = window.scale_factor();
         let model = self.model.read(cx);

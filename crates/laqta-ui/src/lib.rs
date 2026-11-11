@@ -24,6 +24,7 @@ mod overlay;
 mod overlay_text;
 mod overlay_tools;
 mod perf;
+mod permissions_window;
 mod photo_window;
 mod pin_window;
 mod popup;
@@ -46,7 +47,8 @@ mod widgets;
 mod headless_tests;
 
 pub use runtime::{
-    HotkeyReport, LogicalRectHook, ModelProgress, ModelRow, ModelService, NativeWindow, UiHandle, UiReceiver, UiServices, run,
+    HotkeyReport, LogicalRectHook, ModelProgress, ModelRow, ModelService, NativeWindow, PermissionHooks, UiHandle, UiReceiver, UiServices,
+    run,
 };
 
 /// The OS this build runs on, for the parts of the core that differ by platform.

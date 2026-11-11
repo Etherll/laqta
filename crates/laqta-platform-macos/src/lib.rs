@@ -54,6 +54,8 @@ mod window_ops;
 #[cfg(target_os = "macos")]
 pub use imp::*;
 #[cfg(target_os = "macos")]
+pub use permissions::{granted as permission_granted, request as request_permission};
+#[cfg(target_os = "macos")]
 pub use sound::play_sound;
 
 #[cfg(target_os = "macos")]

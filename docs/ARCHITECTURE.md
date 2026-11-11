@@ -363,7 +363,7 @@ saves (the token goes to `<data>/screencast-token`). Platform crates never touch
 | `laqta-ipc` | Single-instance lock and forwarding of commands between instances, over a named pipe (Windows) or a Unix socket (Linux). It owns the text names of actions used by the CLI and the IPC protocol |
 | `laqta-platform-windows` | Stills through DXGI duplication with a GDI fallback (HDR via DXGI 1.6). Transparent windows are captured twice, over white and over black pop-ups, and the alpha comes from the difference. Hover targets from `EnumWindows` + UI Automation. Hotkeys and the tray on a dedicated message-loop thread. Credential Manager, the Run-key autostart, shell verbs and Send To. The native recorder (a `Media` adapter on Windows.Graphics.Capture, with WASAPI loopback). It has no toast code: notifications are GPUI toasts |
 | `laqta-platform-linux` | Capture, hover and hotkey backends with their Wayland fallbacks (ADR 019). Also: SNI tray with a DBusMenu menu (`ksni`), Secret Service, XDG autostart, AT-SPI. The overlay is not here: its layer-shell backend is in `laqta-ui`. There are no freedesktop notifications; toasts are GPUI's |
-| `laqta-platform-macos` | Stills and recording frames through ScreenCaptureKit, which leaves Laqta's own app out, with system audio from the same stream. Hover targets from the window list and the Accessibility API. Carbon hotkeys, an `NSStatusItem` menu, the pasteboard, Keychain, `SMAppService` autostart, Vision OCR. AppKit work runs on the main queue. Points become physical pixels in `displays` (ADR 030) |
+| `laqta-platform-macos` | Stills and recording frames through ScreenCaptureKit, which leaves Laqta's own app out, with system audio from the same stream. Hover targets from the window list and the Accessibility API. Carbon hotkeys, an `NSStatusItem` menu, the pasteboard, Keychain, `SMAppService` autostart, Vision OCR. Privacy permissions are read and asked for by the onboarding window at start (ADR 030). AppKit work runs on the main queue. Points become physical pixels in `displays` (ADR 030) |
 
 ### 2.5 Composition root (`apps/laqta`)
 
@@ -529,7 +529,7 @@ partial file, because the container survives a crash.
   searchable); history (list and a paged image grid; thumbnails are decoded into an in-memory
   cache); editor, with its smart tools (text recognition, background removal, object erase,
   analyze); effects editor with live preview; region overlay with the capture toolbar and the
-  selection's text read in place; recording bar; toasts; pin-to-screen windows; tool windows,
+  selection's text read in place; recording bar; toasts; pin-to-screen windows; the macOS permissions onboarding; tool windows,
   including the text window for analysis results and editable OCR text. The platform `Tray` adapter owns the tray icon and its native menu, built from
   the presenters' tray menu model; `laqta-ui` also draws a GPUI pop-up tray menu
   (`Action::ToggleTrayMenu`).
