@@ -58,8 +58,10 @@ pub(crate) struct OverlayModel {
     pub(crate) annot: Option<crate::overlay_tools::Annot>,
     /// The drawing tool in use; `None` is the region tool (adjust the selection).
     pub(crate) tool: Option<laqta_editor::Tool>,
-    /// The mode bar's Text button is on: the next settled selection copies its text.
+    /// The mode bar's Text button is on: the next settled selection is read in place.
     pub(crate) text_mode: bool,
+    /// The selection's text, read in place (`overlay_text`).
+    pub(crate) text: Option<crate::overlay_text::TextUi>,
 }
 
 /// Converts each frame for GPUI, off the GPUI thread: `UiHandle::show` calls this on the caller's
@@ -126,7 +128,7 @@ pub(crate) fn show(frames: Vec<Frame>, images: Vec<Option<Arc<RenderImage>>>, vi
         .filter_map(|(f, image)| Some(MonitorImage { rect: f.monitor.rect, image: image?, bitmap: f.image.clone() }))
         .collect();
     let count = monitors.len();
-    let model = cx.new(|_| OverlayModel { monitors, view, on_input, annot: None, tool: None, text_mode: false });
+    let model = cx.new(|_| OverlayModel { monitors, view, on_input, annot: None, tool: None, text_mode: false, text: None });
     let mut windows = Vec::new();
     for index in 0..count {
         let bounds = display_bounds.get(index).copied().flatten();
@@ -226,6 +228,7 @@ pub(crate) fn update(view: RegionView, cx: &mut App) {
         model.update(cx, |m, cx| {
             m.view = view;
             m.sync_annot(cx);
+            m.sync_text();
             cx.notify();
         });
     }
@@ -437,6 +440,23 @@ impl Render for OverlayView {
         {
             root = root.child(canvas);
         }
+        // The selection's text, read in place: over the canvas, under the border and handles.
+        let now = std::time::Instant::now();
+        let still = cx.reduce_motion();
+        if let Some(sel) = view.selected
+            && let Some(text) = &model.text
+            && sel.x < origin.right()
+            && sel.right() > origin.x
+            && sel.y < origin.bottom()
+            && sel.bottom() > origin.y
+        {
+            let l = local(sel);
+            let at = crate::presenters::capture_toolbar::Rect { x: l.x, y: l.y, w: l.w, h: l.h };
+            root = root.children(crate::overlay_text::layer(text, at, s, now, still));
+            if !still && text.animating(now) {
+                window.request_animation_frame();
+            }
+        }
         for (i, r) in view.regions.iter().enumerate() {
             let active = Some(i) == view.active;
             root = root.child(boxed(&local(*r)).border_2().border_color(color(SELECTION, if active { 1.0 } else { 0.7 })));
@@ -495,14 +515,17 @@ impl Render for OverlayView {
             if holds || (self.index == 0 && !model.monitors.iter().any(|m| contains(m.rect, (cx_sel, cy_sel)))) {
                 let sel_l = to_local(sel);
                 let screen = (win_w, win_h);
-                let (at, side) = crate::presenters::capture_toolbar::place(
-                    sel_l,
-                    (crate::overlay_tools::bar_width(), crate::overlay_tools::BAR_H),
-                    screen,
-                );
+                // While the text shows, its bar takes the toolbar's place.
+                let bar = match &model.text {
+                    Some(text) => crate::overlay_text::bar_size(&text.notice(now), win_w),
+                    None => (crate::overlay_tools::bar_width(), crate::overlay_tools::BAR_H),
+                };
+                let (at, side) = crate::presenters::capture_toolbar::place(sel_l, bar, screen);
                 let badge = crate::presenters::capture_toolbar::badge(sel_l, side, (96.0, 24.0), screen);
                 root = root.child(crate::overlay_tools::size_badge(sel, badge));
-                if model.toolbar_shown() {
+                if model.text.is_some() {
+                    root = root.child(crate::overlay_text::bar(&self.model, at, now, still, cx));
+                } else if model.toolbar_shown() {
                     root = root.child(crate::overlay_tools::toolbar(&self.model, at, cx));
                 }
             }
@@ -516,7 +539,11 @@ impl Render for OverlayView {
         } else if self.index == 0 && view.regions.is_empty() && view.drawing.is_none() && !view.mode_bar {
             root = root.child(crate::overlay_tools::hint(
                 win_w,
-                "Drag to select, or click a window or a part of one  ·  Scroll to grow  ·  Esc to cancel",
+                if view.text_only {
+                    "Drag over the text you want  ·  Click a window to read all of it  ·  Esc to close"
+                } else {
+                    "Drag to select, or click a window or a part of one  ·  Scroll to grow  ·  Esc to cancel"
+                },
             ));
         }
         // The mode bar sits at the top of the monitor under the pointer (the first one otherwise).
@@ -533,6 +560,10 @@ impl Render for OverlayView {
         root.on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
             let (x, y) = this.to_phys(ev.position, window, cx);
             this.send(RegionInput::PointerMove { x, y }, cx);
+            // A drag over the text picks words, wherever the pointer goes.
+            if this.model.update(cx, |m, cx| m.text_drag(x, y, cx)) {
+                return;
+            }
             if let Some((ix, iy)) = this.drawing_at(x, y, cx) {
                 let mods = crate::editor_window::mods(&ev.modifiers);
                 this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerMove { x: ix, y: iy, mods }, cx));
@@ -540,6 +571,15 @@ impl Render for OverlayView {
         }))
         .on_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| {
             let (x, y) = this.to_phys(ev.position, window, cx);
+            // Inside a selection whose text shows, the left button picks words. The handles and
+            // everything outside still belong to the selection, and the other buttons to the session.
+            if ev.button == MouseButton::Left
+                && let Some(at) = this.model.read(cx).text_point(x, y)
+            {
+                let (extend, clicks) = (ev.modifiers.shift, ev.click_count);
+                this.model.update(cx, |m, cx| m.text_press(at, extend, clicks, cx));
+                return;
+            }
             if let Some((ix, iy)) = this.drawing_at(x, y, cx) {
                 // Drawing starts only on the canvas; a press outside it would add a mark nobody sees.
                 let inside = this.model.read(cx).annot.as_ref().is_some_and(|a| contains(a.rect, (x, y)));
@@ -558,6 +598,9 @@ impl Render for OverlayView {
         }))
         .capture_any_mouse_up(cx.listener(|this, ev: &MouseUpEvent, window, cx| {
             let (x, y) = this.to_phys(ev.position, window, cx);
+            if ev.button == MouseButton::Left && this.model.update(cx, |m, cx| m.text_release(cx)) {
+                return;
+            }
             if let Some((ix, iy)) = this.drawing_at(x, y, cx) {
                 if let Some(button) = crate::editor_window::button(ev.button) {
                     let mods = crate::editor_window::mods(&ev.modifiers);
@@ -597,11 +640,16 @@ impl OverlayView {
         Some(((x - a.rect.x) as f32, (y - a.rect.y) as f32))
     }
 
-    /// Keys: typing into a text annotation, the toolbar's shortcuts, the Esc cascade, then the
-    /// region session.
+    /// Keys: the text read in place while it shows, typing into a text annotation, the toolbar's
+    /// shortcuts, the Esc cascade, then the region session.
     fn key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         let key = ev.keystroke.key.as_str();
         let m = &ev.keystroke.modifiers;
+        if self.model.read(cx).text.is_some() {
+            let ctrl = ctrl(m);
+            self.model.update(cx, |model, cx| model.text_key(key, ctrl, cx));
+            return;
+        }
         let (editing, drawing, marks, shown) = {
             let model = self.model.read(cx);
             let a = model.annot.as_ref();

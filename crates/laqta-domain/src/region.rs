@@ -119,13 +119,30 @@ pub enum RegionInput {
     /// the app that runs the session takes it before the input reaches the state, and the state
     /// ignores it.
     Annotated(Bitmap),
+    /// The overlay's text button, or a copy from the text it shows. Like `Annotated`, the app takes
+    /// it before it reaches the state: the recogniser and the clipboard are the app's.
+    Text(TextCommand),
+}
+
+/// What the overlay asks about the text in the selection (ADR 031).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextCommand {
+    /// Read the text in the selection and show it in place. The text follows the selection from
+    /// then on: a new selection is read again.
+    Read,
+    /// Leave the text and go back to the selection.
+    Close,
+    /// Put this text, the words the user picked, on the clipboard.
+    Copy(String),
+    /// End the session and show what was read in the text window, where it can be edited and saved.
+    OpenWindow,
 }
 
 impl PartialEq for RegionInput {
     /// `Bitmap` has no equality of its own, so two annotated crops are equal when their size,
     /// format and pixels are.
     fn eq(&self, other: &Self) -> bool {
-        use RegionInput::{Annotated, Command, Key, PointerDown, PointerMove, PointerUp, TargetsLoaded, Wheel};
+        use RegionInput::{Annotated, Command, Key, PointerDown, PointerMove, PointerUp, TargetsLoaded, Text, Wheel};
         match (self, other) {
             (PointerMove { x: ax, y: ay }, PointerMove { x: bx, y: by }) => (ax, ay) == (bx, by),
             (PointerDown { x: ax, y: ay, button: a }, PointerDown { x: bx, y: by, button: b }) => (ax, ay, a) == (bx, by, b),
@@ -134,6 +151,7 @@ impl PartialEq for RegionInput {
             (TargetsLoaded(a), TargetsLoaded(b)) => a == b,
             (Wheel(a), Wheel(b)) => a == b,
             (Command(a), Command(b)) => a == b,
+            (Text(a), Text(b)) => a == b,
             (Annotated(a), Annotated(b)) => {
                 (a.width(), a.height(), a.format()) == (b.width(), b.height(), b.format()) && a.pixels() == b.pixels()
             }
@@ -460,6 +478,8 @@ impl RegionState {
             RegionInput::TargetsLoaded(_) => {}
             // The app takes the annotated crop; the selection itself does not change.
             RegionInput::Annotated(_) => {}
+            // The app reads and copies text; the selection itself does not change.
+            RegionInput::Text(_) => {}
         }
     }
 

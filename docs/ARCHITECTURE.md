@@ -114,7 +114,7 @@ an outer crate and passed in. The CI guard enforces this with allow-lists (§3, 
 | `image` | `Bitmap` (straight-alpha RGBA or BGRA pixels shared through `Arc`) and `Frame` (one monitor's captured image) |
 | `geometry` | Physical-pixel rects (`PhysRect`, with their union) and monitors (`MonitorId`, `Monitor`). DPI conversion happens in platform code |
 | `capture` | Capture modes and options (delay, cursor, transparency, HDR) |
-| `region` | The region-selection state machine: hover target, drag, resize handles, multi-region, keyboard nudge, the selected state behind the capture toolbar (tools shown or hidden, selection locked, `Finish(SelectionAction)`; ADR 029), magnifier sample rect, info text. Used only by the Region session |
+| `region` | The region-selection state machine: hover target, drag, resize handles, multi-region, keyboard nudge, the selected state behind the capture toolbar (tools shown or hidden, selection locked, `Finish(SelectionAction)`; ADR 029), magnifier sample rect, info text. `RegionInput` also carries what the overlay asks of the app and the state ignores: the annotated crop, and `TextCommand` for text read in place (ADR 031). Used only by the Region session |
 | `workflow` | Workflows, task settings and their sections, the after-capture and after-upload flags (listed in FEATURES.md), destination choices, and the merge of a workflow's overrides onto defaults (ADR 008) |
 | `action` | The `Action` enum: one variant per hotkey action, plus a few Laqta-specific ones (`RectangleLight`, `GifMaker`, `OpenSettings`, `RemoveBackground`). Its CLI and IPC names live in `laqta-ipc`, not here |
 | `naming` | Name patterns and upload-info templates (token lists in FEATURES.md) |
@@ -355,7 +355,7 @@ saves (the token goes to `<data>/screencast-token`). Platform crates never touch
 | `laqta-media` | The `Media` adapter: FFmpeg with hardware or software encoders, GIF through FFmpeg's `palettegen` / `paletteuse`, audio mux (piping Windows loopback PCM to FFmpeg as a second input), cursor overlay. It consumes a `ScreenStream` and never calls platform code. It alone maps Laqta's screen targets and audio inputs to FFmpeg inputs (`ddagrab`, `x11grab`, `dshow`, `pulse`, raw frames and PCM on pipes). It records into a container that survives a crash (fragmented MP4 or MKV), then remuxes on stop |
 | `laqta-library` | Settings (versioned JSON, migrations, atomic writes, rotating and weekly backups, export and import archives, portable mode) and history (SQLite with WAL, the task-event subscriber that records saved files, the `HistoryEdit` adapter, and release of the connection after 60 s idle). It also holds the `notify` adapter for `FileWatcher` and the reader of ShareX's history files (`legacy.rs`). It has no thumbnail cache: `laqta-ui` keeps decoded thumbnails in memory |
 | `laqta-import` | Reads ShareX config, history, `.sxcu`, `.sxie` (it owns the package format) and backup archives into Laqta values. Secrets encrypted with DPAPI decrypt only on Windows; elsewhere the user re-enters them |
-| `laqta-ui` | GPUI views: main window, settings, history, editor window (paints Editor engine output), overlay (`Overlay`, with the capture toolbar and the Editor engine hosted on the selection; ADR 029), prompts (`Prompt`), tool windows (`ToolHost`, including the text window for OCR and analysis results), recording bar, toasts, pin windows, a GPUI tray menu. Its `presenters` module holds GPUI-free logic (task-list rows, history paging, settings shown as differences from defaults, the tray menu model, the capture toolbar's layout and keys, the editor toolbar, and the editor and photo **Editor interaction**: input, render gating and snapshot renders, with compute injected as a function). The CI guard keeps that module free of `gpui` and `laqta_library` imports (ADR 017). It receives the `Fonts` handle from `main` |
+| `laqta-ui` | GPUI views: main window, settings, history, editor window (paints Editor engine output), overlay (`Overlay`, with the capture toolbar and the Editor engine hosted on the selection, ADR 029, and the selection's text read in place, ADR 031), prompts (`Prompt`), tool windows (`ToolHost`, including the text window for analysis results and for OCR text the user wants to edit), recording bar, toasts, pin windows, a GPUI tray menu. Its `presenters` module holds GPUI-free logic (task-list rows, history paging, settings shown as differences from defaults, the tray menu model, the capture toolbar's layout and keys, the words, selection and motion of text read in place, the editor toolbar, and the editor and photo **Editor interaction**: input, render gating and snapshot renders, with compute injected as a function). The CI guard keeps that module free of `gpui` and `laqta_library` imports (ADR 017). It receives the `Fonts` handle from `main` |
 | `laqta-ml` | The **model runtime** (ADR 023):<br>• the model catalog (`catalog/models.toml`) and the user's custom models;<br>• downloads through `laqta-http`'s verified fetch;<br>• `ort` sessions (loaded lazily, at most one per task) and the execution-provider setting (Auto, CPU, GPU; no GPU provider is built in yet);<br>• the model families, one file each (a parametric matting family for models that differ only in numbers, the two PP-OCR families together in `o1.rs`, and LaMa for inpainting);<br>• validation of custom models.<br>Internal modules (catalog, runtime and sessions, families, validation) each have their own tests. Implements `Ocr`, `BackgroundRemover` and `Inpainter` |
 | `laqta-ipc` | Single-instance lock and forwarding of commands between instances, over a named pipe (Windows) or a Unix socket (Linux). It owns the text names of actions used by the CLI and the IPC protocol |
 | `laqta-platform-windows` | Stills through DXGI duplication with a GDI fallback (HDR via DXGI 1.6). Transparent windows are captured twice, over white and over black pop-ups, and the alpha comes from the difference. Hover targets from `EnumWindows` + UI Automation. Hotkeys and the tray on a dedicated message-loop thread. Credential Manager, the Run-key autostart, shell verbs and Send To. The native recorder (a `Media` adapter on Windows.Graphics.Capture, with WASAPI loopback). It has no toast code: notifications are GPUI toasts |
@@ -490,6 +490,8 @@ editor window ── input events ──▶ Editor engine ──▶ dirty rects 
 editor window ◀── paints texture and chrome ───────┘
 export ─▶ Editor engine renders at full resolution (same renderer)
 region overlay ── the same loop on the selection's crop ──▶ annotated crop back to the Region session
+region overlay ── TextCommand::Read ──▶ Region session ── Ocr on the crop ──▶ RegionView::text
+region overlay ◀── words lit on the frozen screen; a drag picks, TextCommand::Copy copies (ADR 031)
 editor "Smart tools" ─▶ App::recognize_text | remove_background | erase | analyze
                          ├─ an image comes back ─▶ Command::ReplaceImage (undoable)
                          └─ text comes back ─▶ the text window (ToolHost::show_ocr for OCR)
@@ -523,9 +525,9 @@ partial file, because the container survives a crash.
   section, per-workflow overrides shown as differences from defaults; only the language list is
   searchable); history (list and a paged image grid; thumbnails are decoded into an in-memory
   cache); editor, with its smart tools (text recognition, background removal, object erase,
-  analyze); effects editor with live preview; region overlay with the capture toolbar; recording
-  bar; toasts; pin-to-screen windows; tool windows, including the text window for OCR and
-  analysis results. The platform `Tray` adapter owns the tray icon and its native menu, built from
+  analyze); effects editor with live preview; region overlay with the capture toolbar and the
+  selection's text read in place; recording bar; toasts; pin-to-screen windows; tool windows,
+  including the text window for analysis results and editable OCR text. The platform `Tray` adapter owns the tray icon and its native menu, built from
   the presenters' tray menu model; `laqta-ui` also draws a GPUI pop-up tray menu
   (`Action::ToggleTrayMenu`).
 - **Rule:** a view may read a presenter or settings, call `dispatch`, paint Editor engine output,
@@ -643,6 +645,7 @@ Full records are in [`adr/`](adr/).
 | [028](adr/028-ui-design-system.md) | One design system in `laqta-ui`: theme tokens, shared components, bundled Inter and Space Grotesk, `gpui-kit-assets` icons, a custom titlebar | inline styling per window; a design-system crate; the platform UI font; the system titlebar |
 | [029](adr/029-capture-toolbar-and-in-place-annotation.md) | A selected region stays adjustable under a capture toolbar; the overlay hosts the Editor engine on the selection while the app owns the pixels; the chosen action becomes Task flags; AI work is `App` use cases | the Region session hosting the engine; an editor window for every annotation; windows calling AI ports |
 | [030](adr/030-macos.md) | macOS through one adapter crate on `objc2`, ScreenCaptureKit and Carbon hotkeys, proven in CI | a Finder Sync extension; macOS 13; a Swift helper |
+| [031](adr/031-text-read-in-place.md) | The Region session reads the selection's text and the overlay shows it on the frozen screen: words light up, a drag picks them, a bar copies them; the text window stays for editing | the overlay calling the recogniser or the clipboard; a window over a live screen; locking the selection; selecting by character |
 
 ---
 

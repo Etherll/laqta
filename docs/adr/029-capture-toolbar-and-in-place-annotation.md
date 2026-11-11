@@ -1,6 +1,6 @@
 # ADR 029: Capture toolbar and in-place annotation
 
-Status: accepted (2026-11-09). Amends ADR 012 (the Region session no longer renders annotations) and ADR 013 (who receives `Fonts`). Replaces the earlier handoff to `EditorHost` for the Region session.
+Status: accepted (2026-11-09), amended by ADR 031 (text is read in place: decision 7, and `CopyText` in decision 3). Amends ADR 012 (the Region session no longer renders annotations) and ADR 013 (who receives `Fonts`). Replaces the earlier handoff to `EditorHost` for the Region session.
 
 **Context.**
 - ADR 012 had the Region session render annotations through the Editor engine. `laqta-app` never got the engine or `Fonts`, so the overlay only set an `annotate` flag on the selection and the editor opened afterwards in its own window.

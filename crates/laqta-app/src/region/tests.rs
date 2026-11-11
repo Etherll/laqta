@@ -12,6 +12,7 @@ use futures_lite::future::{block_on, poll_once};
 use laqta_domain::capture::{RegionCaptureOptions, RegionMouseAction};
 use laqta_domain::region::{
     Button, HoverTarget, KeyMods, RegionCommand, RegionConfig, RegionInput, RegionKey, RegionState, SelectionAction, TargetKind,
+    TextCommand,
 };
 use laqta_domain::{Bitmap, Frame, Monitor, MonitorId, PhysRect, PixelFormat};
 use laqta_imaging::Codecs;
@@ -19,9 +20,9 @@ use laqta_ports::fakes::{
     ClipboardBehaviour, CountingRng, FakeClipboard, FakeHoverSource, FakeNotifier, FakeOverlay, FakeScreen, FakeShell, InlineSpawner,
     ManualClock,
 };
-use laqta_ports::{AppError, BoxFuture, HostInfo, HoverSource, PortError, RegionView};
+use laqta_ports::{AppError, BoxFuture, HostInfo, HoverSource, Ocr, OcrLine, OcrResult, PortError, RegionView, TextLayer};
 
-use super::{Selection, crop_frames, pixel_at, pixel_in_frames, select, view};
+use super::{Selection, crop_frames, pixel_at, pixel_in_frames, read_text, select, view};
 use crate::dispatcher::Ports;
 
 /// The left monitor's pixel as the frame holds it (BGRA), and as the composed image holds it (RGBA).
@@ -762,4 +763,401 @@ fn a_click_inside_a_window_takes_the_region_under_it() {
 fn region_detection_can_be_turned_off() {
     let selection = click_in_sidebar(RegionCaptureOptions { detect_regions: false, ..options() });
     assert_eq!(selection.rects, vec![PhysRect { x: 0, y: 0, width: 400, height: 300 }]);
+}
+
+/// The fakes a text test looks at afterwards.
+struct TextRig {
+    overlay: Arc<FakeOverlay>,
+    ocr: Arc<laqta_ports::fakes::FakeOcr>,
+    clipboard: Arc<FakeClipboard>,
+    tools: Arc<laqta_ports::fakes::FakeToolHost>,
+    ports: Ports,
+}
+
+/// Ports whose recogniser reads "hello" and "world".
+fn text_rig() -> TextRig {
+    let overlay = Arc::new(FakeOverlay::default());
+    let ocr = Arc::new(laqta_ports::fakes::FakeOcr::default());
+    ocr.result.lock().unwrap().lines = vec![text_line("hello"), text_line("world")];
+    let clipboard = Arc::new(FakeClipboard::new(ClipboardBehaviour::Succeed));
+    let tools = Arc::new(laqta_ports::fakes::FakeToolHost::default());
+    let mut ports = test_ports(overlay.clone(), Arc::new(FakeHoverSource::unsupported()));
+    ports.ocr = ocr.clone();
+    ports.clipboard = clipboard.clone();
+    ports.tools = tools.clone();
+    TextRig { overlay, ocr, clipboard, tools, ports }
+}
+
+fn text_line(text: &str) -> OcrLine {
+    OcrLine {
+        rect: PhysRect { x: 0, y: 0, width: 2, height: 1 },
+        text: text.to_owned(),
+        confidence: 0.9,
+        words: Vec::new(),
+        vertical: false,
+    }
+}
+
+fn ask(overlay: &FakeOverlay, command: TextCommand) {
+    overlay.send(RegionInput::Text(command));
+}
+
+/// The text of the lines the overlay was last told to show, and whether they were copied.
+fn shown_text(overlay: &FakeOverlay) -> Option<(String, bool)> {
+    match overlay.last_view().unwrap().text {
+        Some(TextLayer::Read { result, copied, .. }) => Some((result.text(), copied)),
+        _ => None,
+    }
+}
+
+/// A recogniser that answers each call when the test sends its result, in the order of the calls.
+#[derive(Default)]
+struct GatedOcr {
+    answers: Mutex<std::collections::VecDeque<futures_channel::oneshot::Receiver<Result<OcrResult, PortError>>>>,
+    calls: Mutex<usize>,
+}
+
+impl GatedOcr {
+    /// Queues one answer; the test sends it through the returned sender.
+    fn gate(&self) -> futures_channel::oneshot::Sender<Result<OcrResult, PortError>> {
+        let (tx, rx) = futures_channel::oneshot::channel();
+        self.answers.lock().unwrap().push_back(rx);
+        tx
+    }
+}
+
+impl Ocr for GatedOcr {
+    fn recognize(&self, _image: Bitmap, _language: String) -> BoxFuture<'_, Result<OcrResult, PortError>> {
+        *self.calls.lock().unwrap() += 1;
+        let answer = self.answers.lock().unwrap().pop_front().expect("an answer was queued for this call");
+        Box::pin(async move { answer.await.unwrap_or(Err(PortError::Cancelled)) })
+    }
+    fn languages(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+#[test]
+fn the_text_button_reads_the_selection_in_place_and_copies_all_of_it() {
+    in_pool(|| {
+        let rig = text_rig();
+        let opts = selecting();
+        let mut session = pin!(select(&rig.ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+
+        drag(&rig.overlay, (5, 1), (6, 2));
+        assert!(step(session.as_mut()).is_none());
+        assert!(rig.overlay.last_view().unwrap().text.is_none(), "nothing is read until the user asks");
+        assert!(rig.ocr.seen.lock().unwrap().is_empty());
+
+        ask(&rig.overlay, TextCommand::Read);
+        assert!(step(session.as_mut()).is_none(), "reading does not end the session");
+        assert!(rig.overlay.is_open());
+        assert_eq!(shown_text(&rig.overlay), Some(("hello\nworld".to_owned(), true)));
+        assert_eq!(rig.ocr.seen.lock().unwrap().as_slice(), &[(2, 2)], "the recogniser gets the selection's crop");
+        assert_eq!(rig.clipboard.texts.lock().unwrap().as_slice(), &["hello\nworld".to_owned()]);
+        let shown = rig.overlay.last_view().unwrap();
+        assert_eq!(shown.selected, Some(PhysRect { x: 5, y: 1, width: 2, height: 2 }));
+        assert!(!shown.text_only);
+
+        // The same text stays on every later view, so the overlay keeps the words the user picked.
+        rig.overlay.send(RegionInput::PointerMove { x: 1, y: 1 });
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(shown_text(&rig.overlay), Some(("hello\nworld".to_owned(), true)));
+        assert_eq!(rig.ocr.seen.lock().unwrap().len(), 1, "a pointer move reads nothing again");
+
+        ask(&rig.overlay, TextCommand::Copy("world".to_owned()));
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(rig.clipboard.texts.lock().unwrap().last().map(String::as_str), Some("world"));
+    });
+}
+
+#[test]
+fn closing_the_text_goes_back_to_the_selection_which_can_still_be_captured() {
+    in_pool(|| {
+        let rig = text_rig();
+        let opts = selecting();
+        let mut session = pin!(select(&rig.ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+        drag(&rig.overlay, (5, 1), (6, 2));
+        ask(&rig.overlay, TextCommand::Read);
+        assert!(step(session.as_mut()).is_none());
+
+        ask(&rig.overlay, TextCommand::Close);
+        assert!(step(session.as_mut()).is_none());
+        let shown = rig.overlay.last_view().unwrap();
+        assert!(shown.text.is_none());
+        assert_eq!(shown.selected, Some(PhysRect { x: 5, y: 1, width: 2, height: 2 }), "the selection is still there");
+
+        // The text no longer follows the selection: a new one is not read.
+        drag(&rig.overlay, (0, 0), (2, 2));
+        assert!(step(session.as_mut()).is_none());
+        assert!(rig.overlay.last_view().unwrap().text.is_none());
+        assert_eq!(rig.ocr.seen.lock().unwrap().len(), 1);
+
+        rig.overlay.send(RegionInput::Command(RegionCommand::Finish(SelectionAction::Save)));
+        let selection = step(session.as_mut()).expect("Finish confirms").unwrap();
+        assert_eq!(selection.action, SelectionAction::Save);
+    });
+}
+
+#[test]
+fn the_text_follows_the_selection() {
+    in_pool(|| {
+        let rig = text_rig();
+        let opts = selecting();
+        let mut session = pin!(select(&rig.ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+        drag(&rig.overlay, (5, 1), (6, 2));
+        ask(&rig.overlay, TextCommand::Read);
+        assert!(step(session.as_mut()).is_none());
+
+        // While the new region is drawn there is no selection, so the old text goes with it.
+        rig.overlay.send(RegionInput::PointerDown { x: 0, y: 0, button: Button::Left });
+        rig.overlay.send(RegionInput::PointerMove { x: 2, y: 3 });
+        assert!(step(session.as_mut()).is_none());
+        assert!(rig.overlay.last_view().unwrap().text.is_none());
+
+        rig.overlay.send(RegionInput::PointerUp { x: 2, y: 3, button: Button::Left });
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(shown_text(&rig.overlay), Some(("hello\nworld".to_owned(), true)));
+        assert_eq!(rig.ocr.seen.lock().unwrap().as_slice(), &[(2, 2), (3, 4)], "the new selection was read");
+        // The view that brings the new crop already says its text is being read.
+        let views = rig.overlay.views.lock().unwrap();
+        let with_crop = views.iter().rev().find(|v| v.selection_image.is_some()).unwrap();
+        assert_eq!(with_crop.text, Some(TextLayer::Reading));
+    });
+}
+
+#[test]
+fn a_slow_recogniser_shows_reading_and_escape_does_not_wait_for_it() {
+    in_pool(|| {
+        let mut rig = text_rig();
+        let slow = Arc::new(GatedOcr::default());
+        let _answer = slow.gate();
+        rig.ports.ocr = slow.clone();
+        let opts = selecting();
+        let mut session = pin!(select(&rig.ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+        drag(&rig.overlay, (5, 1), (6, 2));
+        ask(&rig.overlay, TextCommand::Read);
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(rig.overlay.last_view().unwrap().text, Some(TextLayer::Reading));
+        // Asking again while it reads starts nothing new.
+        ask(&rig.overlay, TextCommand::Read);
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(*slow.calls.lock().unwrap(), 1);
+
+        press(&rig.overlay, RegionKey::Escape);
+        assert!(matches!(step(session.as_mut()), Some(Err(AppError::Cancelled))));
+        assert!(!rig.overlay.is_open());
+        assert!(rig.clipboard.texts.lock().unwrap().is_empty());
+    });
+}
+
+#[test]
+fn an_answer_for_a_selection_that_is_gone_is_dropped() {
+    in_pool(|| {
+        let mut rig = text_rig();
+        let slow = Arc::new(GatedOcr::default());
+        let (first, second) = (slow.gate(), slow.gate());
+        rig.ports.ocr = slow.clone();
+        let opts = selecting();
+        let mut session = pin!(select(&rig.ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+        drag(&rig.overlay, (5, 1), (6, 2));
+        ask(&rig.overlay, TextCommand::Read);
+        assert!(step(session.as_mut()).is_none());
+
+        drag(&rig.overlay, (0, 0), (2, 2));
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(*slow.calls.lock().unwrap(), 1, "the new selection waits for the read already running");
+        first.send(Ok(OcrResult { lines: vec![text_line("old")] })).unwrap();
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(rig.overlay.last_view().unwrap().text, Some(TextLayer::Reading));
+        assert_eq!(*slow.calls.lock().unwrap(), 2, "the new selection is read once the old read is done");
+
+        second.send(Ok(OcrResult { lines: vec![text_line("new")] })).unwrap();
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(shown_text(&rig.overlay), Some(("new".to_owned(), true)));
+        assert_eq!(rig.clipboard.texts.lock().unwrap().as_slice(), &["new".to_owned()]);
+    });
+}
+
+#[test]
+fn a_recogniser_that_is_not_ready_ends_the_selection_as_copy_text() {
+    in_pool(|| {
+        let rig = text_rig();
+        rig.ocr.not_ready.store(true, std::sync::atomic::Ordering::SeqCst);
+        let opts = selecting();
+        let mut session = pin!(select(&rig.ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+        drag(&rig.overlay, (5, 1), (6, 2));
+
+        ask(&rig.overlay, TextCommand::Read);
+        let selection = step(session.as_mut()).expect("the capture's own text step takes over").unwrap();
+
+        assert_eq!(selection.action, SelectionAction::CopyText);
+        assert!(!rig.overlay.is_open());
+        assert!(rig.ocr.seen.lock().unwrap().is_empty(), "nothing is read under the overlay");
+    });
+}
+
+#[test]
+fn a_failed_read_and_an_empty_one_are_shown_and_copy_nothing() {
+    in_pool(|| {
+        let rig = text_rig();
+        *rig.ocr.error.lock().unwrap() = Some(PortError::Failed("no model".into()));
+        let opts = selecting();
+        let mut session = pin!(select(&rig.ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+        drag(&rig.overlay, (5, 1), (6, 2));
+        ask(&rig.overlay, TextCommand::Read);
+        assert!(step(session.as_mut()).is_none(), "a failure leaves the session open");
+        assert!(matches!(rig.overlay.last_view().unwrap().text, Some(TextLayer::Failed(message)) if message.contains("no model")));
+        // There is nothing to open in the text window.
+        ask(&rig.overlay, TextCommand::OpenWindow);
+        assert!(step(session.as_mut()).is_none());
+
+        *rig.ocr.error.lock().unwrap() = None;
+        rig.ocr.result.lock().unwrap().lines.clear();
+        drag(&rig.overlay, (0, 0), (2, 2));
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(shown_text(&rig.overlay), Some((String::new(), false)));
+        assert!(rig.clipboard.texts.lock().unwrap().is_empty());
+        assert!(rig.tools.ocr.lock().unwrap().is_empty());
+    });
+}
+
+#[test]
+fn a_copy_the_clipboard_refuses_is_told_back_to_the_overlay() {
+    in_pool(|| {
+        let mut rig = text_rig();
+        rig.ports.clipboard = Arc::new(FakeClipboard::new(ClipboardBehaviour::Fail));
+        let opts = selecting();
+        let mut session = pin!(select(&rig.ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+        drag(&rig.overlay, (5, 1), (6, 2));
+        ask(&rig.overlay, TextCommand::Read);
+        assert!(step(session.as_mut()).is_none());
+        let copy_failed = |overlay: &FakeOverlay| match overlay.last_view().unwrap().text {
+            Some(TextLayer::Read { copy_failed, .. }) => copy_failed,
+            other => panic!("the text is shown, not {other:?}"),
+        };
+        assert!(!copy_failed(&rig.overlay), "nothing was copied by hand yet");
+
+        ask(&rig.overlay, TextCommand::Copy("hello".to_owned()));
+        assert!(step(session.as_mut()).is_none());
+        assert!(copy_failed(&rig.overlay));
+    });
+}
+
+#[test]
+fn changes_during_a_read_start_one_read_of_the_last_selection() {
+    in_pool(|| {
+        let mut rig = text_rig();
+        let slow = Arc::new(GatedOcr::default());
+        let (first, second) = (slow.gate(), slow.gate());
+        rig.ports.ocr = slow.clone();
+        let opts = selecting();
+        let mut session = pin!(select(&rig.ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+        drag(&rig.overlay, (5, 1), (6, 2));
+        ask(&rig.overlay, TextCommand::Read);
+        assert!(step(session.as_mut()).is_none());
+
+        // A held arrow key moves the selection many times while the first read runs.
+        for _ in 0..5 {
+            press(&rig.overlay, RegionKey::Left);
+            assert!(step(session.as_mut()).is_none());
+        }
+        assert_eq!(*slow.calls.lock().unwrap(), 1, "no read starts while one is running");
+
+        first.send(Ok(OcrResult { lines: vec![text_line("old")] })).unwrap();
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(*slow.calls.lock().unwrap(), 2);
+        assert_eq!(rig.overlay.last_view().unwrap().text, Some(TextLayer::Reading));
+        assert!(rig.clipboard.texts.lock().unwrap().is_empty(), "the old answer is not copied");
+
+        second.send(Ok(OcrResult { lines: vec![text_line("new")] })).unwrap();
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(shown_text(&rig.overlay), Some(("new".to_owned(), true)));
+        assert_eq!(*slow.calls.lock().unwrap(), 2);
+    });
+}
+
+#[test]
+fn closing_the_text_while_it_reads_and_reading_again_waits_for_that_read() {
+    in_pool(|| {
+        let mut rig = text_rig();
+        let slow = Arc::new(GatedOcr::default());
+        let (first, second) = (slow.gate(), slow.gate());
+        rig.ports.ocr = slow.clone();
+        let opts = selecting();
+        let mut session = pin!(select(&rig.ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+        drag(&rig.overlay, (5, 1), (6, 2));
+        ask(&rig.overlay, TextCommand::Read);
+        assert!(step(session.as_mut()).is_none());
+        ask(&rig.overlay, TextCommand::Close);
+        assert!(step(session.as_mut()).is_none());
+        assert!(rig.overlay.last_view().unwrap().text.is_none());
+        ask(&rig.overlay, TextCommand::Read);
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(*slow.calls.lock().unwrap(), 1);
+
+        first.send(Ok(OcrResult { lines: vec![text_line("old")] })).unwrap();
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(*slow.calls.lock().unwrap(), 2);
+        second.send(Ok(OcrResult { lines: vec![text_line("new")] })).unwrap();
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(shown_text(&rig.overlay), Some(("new".to_owned(), true)));
+    });
+}
+
+#[test]
+fn a_text_session_reads_each_selection_and_ends_when_closed() {
+    in_pool(|| {
+        let rig = text_rig();
+        // The user's own settings must not get in the way: no toolbar, no mode bar, one region.
+        let opts = RegionCaptureOptions { multi_region: true, show_mode_bar: true, ..options() };
+        let mut session = pin!(read_text(&rig.ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+        let first = rig.overlay.shown.lock().unwrap().as_ref().unwrap().1.clone();
+        assert!(first.text_only && !first.mode_bar);
+
+        drag(&rig.overlay, (5, 1), (6, 2));
+        assert!(step(session.as_mut()).is_none(), "the selection is read, not confirmed");
+        assert_eq!(shown_text(&rig.overlay), Some(("hello\nworld".to_owned(), true)));
+        assert!(rig.overlay.last_view().unwrap().text_only);
+
+        drag(&rig.overlay, (0, 0), (2, 2));
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(rig.ocr.seen.lock().unwrap().len(), 2);
+
+        ask(&rig.overlay, TextCommand::Close);
+        assert!(matches!(step(session.as_mut()), Some(Err(AppError::Cancelled))));
+        assert!(!rig.overlay.is_open());
+    });
+}
+
+#[test]
+fn the_text_window_takes_what_was_read_and_ends_the_session() {
+    in_pool(|| {
+        let rig = text_rig();
+        let opts = options();
+        let mut session = pin!(read_text(&rig.ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+        drag(&rig.overlay, (5, 1), (6, 2));
+        assert!(step(session.as_mut()).is_none());
+
+        ask(&rig.overlay, TextCommand::OpenWindow);
+        assert!(matches!(step(session.as_mut()), Some(Err(AppError::Cancelled))));
+
+        assert!(!rig.overlay.is_open());
+        let shown = rig.tools.ocr.lock().unwrap();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].0, (2, 2), "the window gets the selection's crop");
+        assert_eq!(shown[0].1.text(), "hello\nworld");
+    });
 }

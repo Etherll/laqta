@@ -2,6 +2,8 @@
 //! the background, runs the `domain::region` state machine, and crops the confirmed rects out of the
 //! composed frames. A session that keeps its region selected (`show_tools_after_select`) also crops the
 //! selection for the overlay to draw on, and returns the overlay's annotated crop in place of its own.
+//! It also reads the selection's text in place when the overlay asks (ADR 031): the recogniser runs
+//! beside the input loop, and its lines go to the overlay in `RegionView::text`.
 //! Tests script the input (`tests.rs`).
 
 mod layout;
@@ -14,10 +16,12 @@ use std::sync::Arc;
 use futures_channel::{mpsc, oneshot};
 use futures_lite::{StreamExt, future};
 use laqta_domain::capture::RegionCaptureOptions;
-use laqta_domain::region::{HoverTarget, RegionConfig, RegionInput, RegionOutcome, RegionState, SelectionAction};
+use laqta_domain::region::{
+    HoverTarget, RegionCommand, RegionConfig, RegionInput, RegionOutcome, RegionState, SelectionAction, TextCommand,
+};
 use laqta_domain::{Bitmap, Frame, PhysRect, PixelFormat};
 use laqta_imaging::compose_monitors;
-use laqta_ports::{AppError, InputCallback, RegionView, Spawner};
+use laqta_ports::{AppError, BoxFuture, InputCallback, OcrResult, PortError, RegionView, Spawner, TextLayer};
 
 use crate::dispatcher::Ports;
 use crate::task::compute;
@@ -34,6 +38,8 @@ pub struct Selection {
     pub annotate: bool,
     /// What the user chose to do with the capture; `Default` leaves it to the after-capture steps.
     pub action: SelectionAction,
+    /// A text capture ended with the selection's text already on the overlay, read or failed.
+    pub text_shown: bool,
 }
 
 /// Picks an area for a tool that acts on it straight away (recording, scrolling capture, OCR,
@@ -47,7 +53,64 @@ pub(crate) async fn pick(ports: &Ports, frames: Vec<Frame>, options: &RegionCapt
 /// (`Err(AppError::Cancelled)`). Hover targets load after the overlay is up, and a failure there
 /// only means the user draws freely.
 pub(crate) async fn select(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptions) -> Result<Selection, AppError> {
-    session(ports, frames, options, false).await
+    session(ports, frames, options, Kind::Capture).await
+}
+
+/// Text capture (ADR 031): the user selects an area, and its text is read and shown over it, to pick
+/// words from and copy. The selection stays adjustable, and each new one is read again. There is no
+/// capture toolbar and nothing is captured: the session ends when the user closes it (`Cancelled`)
+/// or presses Enter. An area confirmed before its text was shown (Enter right after the drag, or a
+/// click action) comes back to be read; one whose text was shown comes back as `None`.
+pub(crate) async fn read_text(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptions) -> Result<Option<Selection>, AppError> {
+    // The text belongs to one settled selection, which a multi-region session never has.
+    let options = RegionCaptureOptions { show_tools_after_select: true, show_mode_bar: false, multi_region: false, ..options.clone() };
+    let selection = session(ports, frames, &options, Kind::Text).await?;
+    Ok((!selection.text_shown).then_some(selection))
+}
+
+/// What a session is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// Select an area to capture, or to hand to a tool.
+    Capture,
+    /// Pick one pixel.
+    Point,
+    /// Read the text of whatever is selected.
+    Text,
+}
+
+/// The next thing a session acts on.
+enum Next {
+    /// An input, or `None` once every sender is gone.
+    Input(Option<RegionInput>),
+    /// The recogniser's answer for the selection.
+    Read(Result<OcrResult, PortError>),
+}
+
+/// Waits for an input, and for the recogniser too while it runs. An input that is already there
+/// goes first, so Escape is never kept waiting by a slow model.
+async fn next(
+    inputs: &mut mpsc::UnboundedReceiver<RegionInput>,
+    reading: Option<&mut BoxFuture<'_, Result<OcrResult, PortError>>>,
+) -> Next {
+    let input = async { Next::Input(inputs.next().await) };
+    match reading {
+        Some(job) => future::or(input, async { Next::Read(job.await) }).await,
+        None => input.await,
+    }
+}
+
+/// What the overlay shows for the recogniser's answer. The whole text goes to the clipboard at once,
+/// as text capture always did; the overlay then lets the user copy only some of it.
+fn text_layer(ports: &Ports, read: Result<OcrResult, PortError>) -> TextLayer {
+    match read {
+        Ok(result) => {
+            let all = result.text();
+            let copied = !all.trim().is_empty() && ports.clipboard.set_text(&all).is_ok();
+            TextLayer::Read { result: Arc::new(result), copied, copy_failed: false }
+        }
+        Err(error) => TextLayer::Failed(AppError::from(error).to_string()),
+    }
 }
 
 /// Picks one pixel for the screen colour picker: a click or Enter confirms the 1×1 rect under the
@@ -62,10 +125,12 @@ pub(crate) async fn pick_color(ports: &Ports, frames: Vec<Frame>, options: &Regi
         dim_alpha: 0,
         ..options.clone()
     };
-    session(ports, frames, &options, true).await
+    session(ports, frames, &options, Kind::Point).await
 }
 
-async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptions, pick_point: bool) -> Result<Selection, AppError> {
+async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptions, kind: Kind) -> Result<Selection, AppError> {
+    let pick_point = kind == Kind::Point;
+    let text_only = kind == Kind::Text;
     let bounds = bounds_of(&frames)?;
     // The overlay takes the frames, so keep each monitor's rect and primary flag for an ActiveMonitor outcome.
     let monitors: Vec<(PhysRect, bool)> = frames.iter().map(|f| (frame_rect(f), f.monitor.primary)).collect();
@@ -91,7 +156,7 @@ async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptio
         // The session may have ended already. A late input has nowhere to go.
         let _ = tx.unbounded_send(input);
     });
-    let first = view(&state, bounds, options, pixel_in_frames(&frames, state.cursor()));
+    let first = RegionView { text_only, ..view(&state, bounds, options, pixel_in_frames(&frames, state.cursor())) };
     ports.overlay.show(frames, first, on_input)?;
 
     // The session hands the composed desktop over for the region analysis once it has it.
@@ -122,29 +187,126 @@ async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptio
         // The selection the overlay was last given a crop for, and the annotated crop it sent since.
         let mut cropped: Option<PhysRect> = None;
         let mut annotated: Option<Bitmap> = None;
-        while let Some(input) = inputs.next().await {
-            // The overlay's edited crop is the app's to keep; the state has nothing to do with it.
-            if let RegionInput::Annotated(bitmap) = input {
-                annotated = Some(bitmap);
-                continue;
-            }
+        // Text read in place: the selection's crop, whether its text is wanted, the recogniser while
+        // it runs, whether its answer is still for that crop, and what the overlay shows of it. A
+        // recogniser cannot be stopped once started, so at most one read runs: a newer crop waits
+        // for it rather than queueing more work behind it.
+        let mut crop: Option<Arc<Bitmap>> = None;
+        let mut reads_text = text_only;
+        let mut reading: Option<BoxFuture<'_, Result<OcrResult, PortError>>> = None;
+        let mut current = false;
+        let mut text: Option<TextLayer> = None;
+        let paint = |state: &RegionState, text: &Option<TextLayer>, selection_image: Option<Arc<Bitmap>>| {
+            let pixel = pixel_at(&composed, bounds, state.cursor());
+            ports.overlay.update(RegionView { selection_image, text: text.clone(), text_only, ..view(state, bounds, options, pixel) });
+        };
+        loop {
+            let input = match next(&mut inputs, reading.as_mut()).await {
+                Next::Input(Some(input)) => input,
+                Next::Input(None) => break,
+                Next::Read(read) => {
+                    reading = None;
+                    if current {
+                        text = Some(text_layer(ports, read));
+                        paint(&state, &text, None);
+                    } else if let (Some(TextLayer::Reading), Some(image)) = (&text, &crop) {
+                        // The answer is for a crop that is gone; read the one that replaced it.
+                        reading = Some(ports.ocr.recognize((**image).clone(), String::new()));
+                        current = true;
+                    }
+                    continue;
+                }
+            };
+            let input = match input {
+                // The overlay's edited crop is the app's to keep; the state has nothing to do with it.
+                RegionInput::Annotated(bitmap) => {
+                    annotated = Some(bitmap);
+                    continue;
+                }
+                // The overlay already says "Copied"; a copy that fails is told back so it can say so.
+                RegionInput::Text(TextCommand::Copy(words)) => {
+                    let failed = ports.clipboard.set_text(&words).is_err();
+                    if let Some(TextLayer::Read { copy_failed, .. }) = &mut text {
+                        *copy_failed = failed;
+                        paint(&state, &text, None);
+                    }
+                    continue;
+                }
+                // A recogniser that first asks about its models would ask under the overlay. End the
+                // selection as "copy text" instead: the capture's own text step asks, then reads.
+                RegionInput::Text(TextCommand::Read) if !ports.ocr.ready() => {
+                    RegionInput::Command(RegionCommand::Finish(SelectionAction::CopyText))
+                }
+                RegionInput::Text(TextCommand::Read) => {
+                    reads_text = true;
+                    if text.is_none()
+                        && let Some(image) = &crop
+                    {
+                        if reading.is_none() {
+                            reading = Some(ports.ocr.recognize((**image).clone(), String::new()));
+                            current = true;
+                        }
+                        text = Some(TextLayer::Reading);
+                        paint(&state, &text, None);
+                    }
+                    continue;
+                }
+                RegionInput::Text(TextCommand::Close) => {
+                    // A text session has nothing else to show.
+                    if text_only {
+                        ports.overlay.close();
+                        return Err(AppError::Cancelled);
+                    }
+                    reads_text = false;
+                    current = false;
+                    if text.take().is_some() {
+                        paint(&state, &text, None);
+                    }
+                    continue;
+                }
+                RegionInput::Text(TextCommand::OpenWindow) => {
+                    let (Some(TextLayer::Read { result, .. }), Some(image)) = (&text, &crop) else { continue };
+                    ports.overlay.close();
+                    ports.tools.show_ocr((**image).clone(), (**result).clone())?;
+                    return Err(AppError::Cancelled);
+                }
+                input => input,
+            };
             let changed = state.handle(input);
             if let Some(outcome) = state.outcome().cloned() {
                 ports.overlay.close();
                 let annotate = state.annotate_requested();
-                return outcome_selection(outcome, &composed, bounds, &monitors, state.cursor(), annotated)
-                    .map(|s| Selection { annotate, ..s });
+                return outcome_selection(outcome, &composed, bounds, &monitors, state.cursor(), annotated).map(|s| Selection {
+                    annotate,
+                    text_shown: matches!(text, Some(TextLayer::Read { .. } | TextLayer::Failed(_))),
+                    ..s
+                });
             }
             // Crop on a change of the selection only: moving the pointer over it is not one.
             let mut selection_image = None;
             let selected = state.selected();
+            let mut text_gone = false;
             if selected != cropped {
                 cropped = selected;
-                // An annotated crop belongs to the selection it was drawn on.
+                // An annotated crop belongs to the selection it was drawn on, and so does its text.
                 annotated = None;
+                crop = None;
+                current = false;
+                text_gone = text.take().is_some();
                 if let Some(rect) = selected {
                     match crop_selected(ports.spawner.as_ref(), &composed, bounds, rect).await {
-                        Ok(image) => selection_image = Some(Arc::new(image)),
+                        Ok(image) => {
+                            let image = Arc::new(image);
+                            if reads_text {
+                                if reading.is_none() {
+                                    reading = Some(ports.ocr.recognize((*image).clone(), String::new()));
+                                    current = true;
+                                }
+                                text = Some(TextLayer::Reading);
+                            }
+                            crop = Some(image.clone());
+                            selection_image = Some(image);
+                        }
                         Err(error) => {
                             ports.overlay.close();
                             return Err(error);
@@ -152,9 +314,8 @@ async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptio
                     }
                 }
             }
-            if changed || selection_image.is_some() {
-                let pixel = pixel_at(&composed, bounds, state.cursor());
-                ports.overlay.update(RegionView { selection_image, ..view(&state, bounds, options, pixel) });
+            if changed || selection_image.is_some() || text_gone {
+                paint(&state, &text, selection_image);
             }
         }
         // Every sender is gone, so no input can arrive.
@@ -206,7 +367,7 @@ pub(crate) async fn crop_frames(
     let bounds = bounds_of(&frames)?;
     let composed = compose(ports.spawner.as_ref(), frames).await?;
     let image = crop_rects(&composed, bounds, &rects)?;
-    Ok(Selection { rects, target, image, annotate: false, action: SelectionAction::Default })
+    Ok(Selection { rects, target, image, annotate: false, action: SelectionAction::Default, text_shown: false })
 }
 
 /// The overlay's view of `state`. `pixel` is the RGB under the cursor, and `bounds` is the desktop
@@ -235,6 +396,8 @@ pub(crate) fn view(state: &RegionState, bounds: PhysRect, options: &RegionCaptur
         locked: state.locked(),
         mode_bar: options.show_mode_bar,
         pick_point: state.picks_point(),
+        text: None,
+        text_only: false,
     }
 }
 
@@ -255,7 +418,7 @@ fn outcome_selection(
                 Some(image) => image,
                 None => crop_rects(composed, bounds, &rects)?,
             };
-            Ok(Selection { rects, target, image, annotate: false, action })
+            Ok(Selection { rects, target, image, annotate: false, action, text_shown: false })
         }
         RegionOutcome::Fullscreen => whole_rect(composed, bounds, bounds),
         RegionOutcome::ActiveMonitor => {
@@ -270,7 +433,7 @@ fn outcome_selection(
 fn whole_rect(composed: &Bitmap, bounds: PhysRect, rect: PhysRect) -> Result<Selection, AppError> {
     let rects = vec![rect];
     let image = crop_rects(composed, bounds, &rects)?;
-    Ok(Selection { rects, target: None, image, annotate: false, action: SelectionAction::Default })
+    Ok(Selection { rects, target: None, image, annotate: false, action: SelectionAction::Default, text_shown: false })
 }
 
 /// The rect of the monitor under `at`. A point in a gap of a non-rectangular layout falls back to the
