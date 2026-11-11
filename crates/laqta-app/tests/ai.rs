@@ -352,3 +352,47 @@ fn show_ocr_defaults_to_the_text_window() {
         &[("Recognised text".to_owned(), "hello\nworld".to_owned()), ("Recognised text".to_owned(), "No text found.".to_owned())]
     );
 }
+
+/// A 6x3 PNG file in a fresh folder.
+fn png_file() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shot.png");
+    let image = Bitmap::new(6, 3, PixelFormat::Rgba8, vec![200; 6 * 3 * 4].into()).unwrap();
+    // Encoding must run inside the compute pool (ADR 024), so the fixture is encoded there too.
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    std::fs::write(&path, pool.install(|| laqta_imaging::encode_png(&image)).unwrap()).unwrap();
+    (dir, path)
+}
+
+fn dispatch_file(h: &H, action: Action, path: &std::path::Path) -> Result<Dispatched, AppError> {
+    let input = laqta_app::ActionInput::Files(vec![path.to_path_buf()]);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    pool.install(|| block_on(h.app.dispatch_with(action, input, None)))
+}
+
+/// `-OCR shot.png` reads the file: no area is picked on screen.
+#[test]
+fn the_ocr_route_reads_a_given_file() {
+    let h = harness();
+    h.ocr.result.lock().unwrap().lines.push(line("from the file"));
+    let (_dir, path) = png_file();
+
+    assert_eq!(dispatch_file(&h, Action::Ocr, &path).unwrap(), Dispatched::Done);
+
+    assert!(h.overlay.shown.lock().unwrap().is_none(), "no overlay");
+    assert_eq!(h.clipboard.texts.lock().unwrap().as_slice(), &["from the file".to_owned()]);
+    assert_eq!(h.tools.ocr.lock().unwrap()[0].0, (6, 3));
+}
+
+/// `-PinToScreen shot.png` and `-PinToScreenFromFile shot.png` pin the file.
+#[test]
+fn pin_routes_pin_a_given_file() {
+    let h = harness();
+    let (_dir, path) = png_file();
+
+    assert_eq!(dispatch_file(&h, Action::PinToScreen, &path).unwrap(), Dispatched::Done);
+    assert_eq!(dispatch_file(&h, Action::PinToScreenFromFile, &path).unwrap(), Dispatched::Done);
+
+    assert!(h.overlay.shown.lock().unwrap().is_none(), "no area is picked");
+    assert_eq!(h.tools.pins.lock().unwrap().as_slice(), &[(6, 3), (6, 3)]);
+}

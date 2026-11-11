@@ -2,6 +2,7 @@
 //! (screen colour picker, ruler, pin, OCR, QR scan) run a Region session first and show the result.
 
 use std::panic::AssertUnwindSafe;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures_lite::FutureExt;
@@ -69,24 +70,37 @@ impl App {
     }
 
     /// `tool_route` under the unwind guard (ADR 020): a panic in a tool route becomes `AppError::Panic`.
-    pub(crate) async fn guarded_tool_route(self: &Arc<Self>, action: Action, ts: &TaskSettings) -> Option<Result<Dispatched, AppError>> {
-        match AssertUnwindSafe(self.tool_route(action, ts)).catch_unwind().await {
+    pub(crate) async fn guarded_tool_route(
+        self: &Arc<Self>,
+        action: Action,
+        ts: &TaskSettings,
+        given: Option<PathBuf>,
+    ) -> Option<Result<Dispatched, AppError>> {
+        match AssertUnwindSafe(self.tool_route(action, ts, given)).catch_unwind().await {
             Ok(route) => route,
             Err(payload) => Some(Err(AppError::Panic(panic_message(&*payload)))),
         }
     }
 
-    /// `None` when `action` is not a tool route.
-    pub(crate) async fn tool_route(self: &Arc<Self>, action: Action, ts: &TaskSettings) -> Option<Result<Dispatched, AppError>> {
+    /// `None` when `action` is not a tool route. `given` is the file a command line named for it
+    /// (`-PinToScreen shot.png`, `-OCR shot.png`): the action works on it instead of asking.
+    pub(crate) async fn tool_route(
+        self: &Arc<Self>,
+        action: Action,
+        ts: &TaskSettings,
+        given: Option<PathBuf>,
+    ) -> Option<Result<Dispatched, AppError>> {
         if let Some(kind) = tool_kind(action) {
             return Some(self.ports.tools.open(ToolWindow::Tool(kind)).map(|()| Dispatched::Done).map_err(AppError::from));
         }
         let r = match action {
             Action::ScreenColorPicker => self.screen_color(ts).await,
             Action::Ruler => self.ruler(ts).await,
+            Action::PinToScreen | Action::PinToScreenFromFile if let Some(path) = given => self.pin_files(vec![path]).await,
             Action::PinToScreen | Action::PinToScreenFromScreen => self.pin_from_screen(ts).await,
             Action::PinToScreenFromClipboard => self.pin_from_clipboard(),
             Action::PinToScreenFromFile => self.pin_from_file().await,
+            Action::Ocr if let Some(path) = given => self.ocr_file(path).await,
             Action::PinToScreenCloseAll => self.ports.tools.close_pins().map(|()| Dispatched::Done).map_err(AppError::from),
             Action::Ocr => self.ocr_region(ts).await,
             Action::QrCodeDecodeFromScreen => match crate::tools::qr_decode_screen(&self.ports).await {
@@ -107,7 +121,7 @@ impl App {
                 }
                 Err(e) => Err(e),
             },
-            Action::PhotoEditor => self.ports.tools.open(ToolWindow::PhotoEditor(None)).map(|()| Dispatched::Done).map_err(AppError::from),
+            Action::PhotoEditor => self.ports.tools.open(ToolWindow::PhotoEditor(given)).map(|()| Dispatched::Done).map_err(AppError::from),
             Action::AnalyzeImage => self.analyze_region(ts).await,
             Action::RemoveBackground => self.remove_background_region(ts).await,
             Action::MouseHighlighter => {
@@ -171,11 +185,31 @@ impl App {
             Err(laqta_ports::PortError::Cancelled) => return Ok(Dispatched::Done),
             Err(e) => return Err(AppError::from(e)),
         };
+        self.pin_files(paths).await
+    }
+
+    async fn pin_files(&self, paths: Vec<PathBuf>) -> Result<Dispatched, AppError> {
         for path in paths {
-            let bytes = crate::files::read(self.ports.spawner.as_ref(), path).await.map_err(|e| AppError::Io(e.to_string()))?;
-            let image = self.ports.codecs.decode(&bytes).map_err(|e| AppError::Io(e.to_string()))?;
+            let image = self.read_image(path).await?;
             self.ports.tools.pin(image).map_err(AppError::from)?;
         }
+        Ok(Dispatched::Done)
+    }
+
+    async fn read_image(&self, path: PathBuf) -> Result<laqta_domain::Bitmap, AppError> {
+        let bytes = crate::files::read(self.ports.spawner.as_ref(), path).await.map_err(|e| AppError::Io(e.to_string()))?;
+        self.ports.codecs.decode(&bytes).map_err(|e| AppError::Io(e.to_string()))
+    }
+
+    /// OCR of an image file: its text is copied and shown in the result window.
+    async fn ocr_file(&self, path: PathBuf) -> Result<Dispatched, AppError> {
+        let image = self.read_image(path).await?;
+        let result = self.recognize_text(image.clone()).await?;
+        let text = result.text();
+        if !text.is_empty() {
+            let _ = self.ports.clipboard.set_text(&text);
+        }
+        self.ports.tools.show_ocr(image, result).map_err(AppError::from)?;
         Ok(Dispatched::Done)
     }
 

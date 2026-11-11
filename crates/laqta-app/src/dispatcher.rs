@@ -349,9 +349,16 @@ impl App {
 
     /// The image beautifier: one picked image is decoded and beautified on the compute pool, then submitted as a
     /// capture that is saved and copied. The beautifier's flags are the job's; the workflow's capture flags are not used.
-    async fn beautify_file(&self, mut ts: TaskSettings) -> Result<Dispatched, AppError> {
-        let Some(paths) = self.picked_files(Action::ImageBeautifier.label()).await? else { return Ok(Dispatched::Done) };
-        let Some(path) = paths.into_iter().next() else { return Ok(Dispatched::Done) };
+    /// Beautifies `given`, or a file the user picks.
+    async fn beautify_file(&self, mut ts: TaskSettings, given: Option<PathBuf>) -> Result<Dispatched, AppError> {
+        let path = match given {
+            Some(path) => path,
+            None => {
+                let Some(paths) = self.picked_files(Action::ImageBeautifier.label()).await? else { return Ok(Dispatched::Done) };
+                let Some(path) = paths.into_iter().next() else { return Ok(Dispatched::Done) };
+                path
+            }
+        };
         let bytes = files::read(self.ports.spawner.as_ref(), path).await.map_err(|error| AppError::Io(error.to_string()))?;
         let codecs = self.ports.codecs.clone();
         let beautify = ts.beautify.clone();
@@ -407,6 +414,11 @@ impl App {
     async fn route(self: Arc<Self>, action: Action, input: ActionInput, workflow: Option<WorkflowId>) -> Result<Dispatched, AppError> {
         let settings = self.settings.get();
         let ts = settings.task_settings(workflow);
+        // The file a command line names after a file-taking action (`-ImageBeautifier shot.png`).
+        let given = match &input {
+            ActionInput::Files(files) => files.first().cloned(),
+            _ => None,
+        };
         match action {
             Action::PrintScreen => {
                 let frames = self.frames(&ts).await?;
@@ -559,7 +571,7 @@ impl App {
             Action::DragDropUpload => self.open(ToolWindow::Main),
             Action::ImageEditor => self.open(ToolWindow::Editor(one_file(input))),
             Action::ImageEffects => self.open(ToolWindow::Effects(one_file(input))),
-            Action::ImageBeautifier => self.beautify_file(ts).await,
+            Action::ImageBeautifier => self.beautify_file(ts, given).await,
             Action::StopUploads => {
                 self.task.stop_all();
                 Ok(Dispatched::Done)
@@ -585,7 +597,7 @@ impl App {
                 Ok(Dispatched::Done)
             }
             Action::ExitLaqta => Ok(Dispatched::Exit),
-            a if let Some(r) = self.guarded_tool_route(a, &ts).await => r,
+            a if let Some(r) = self.guarded_tool_route(a, &ts, given.clone()).await => r,
             Action::ScrollingCapture => self.scrolling_capture(ts, workflow).await,
             Action::AutoCapture => self.auto_capture(None),
             Action::StartAutoCapture => self.auto_capture(Some(true)),

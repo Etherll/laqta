@@ -114,6 +114,38 @@ fn image_beautifier_saves_and_copies_the_beautified_picture() {
     assert_eq!((copied.width(), copied.height()), (4 + 2 * 64, 2 + 2 * 64));
 }
 
+/// `-ImageBeautifier picture.png` beautifies that file: no picker is shown.
+#[test]
+fn image_beautifier_takes_a_given_file() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path());
+    let picture = tmp.path().join("picture.png");
+    let image = Bitmap::new(4, 2, PixelFormat::Rgba8, vec![90; 4 * 2 * 4].into()).unwrap();
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    let bytes = pool.install(|| Codecs::builtin().encode(&image, &EncodeOptions { format: ImageFormat::Png, jpeg_quality: 90 }).unwrap());
+    std::fs::write(&picture, bytes).unwrap();
+    // A picker would cancel.
+    h.prompt.files.lock().unwrap().push_back(Err(PortError::Cancelled));
+
+    let input = laqta_app::ActionInput::Files(vec![picture]);
+    let ended = pool.install(|| {
+        let result = block_on(h.app.dispatch_with(Action::ImageBeautifier, input, None));
+        while let jobs = h.spawner.take_spawned()
+            && !jobs.is_empty()
+        {
+            for job in jobs {
+                block_on(job);
+            }
+        }
+        result
+    });
+
+    assert_eq!(ended.unwrap(), Dispatched::Task(TaskId(1)));
+    assert_eq!(h.prompt.files.lock().unwrap().len(), 1, "the picker was not asked");
+    let copied = copied_image(&h);
+    assert_eq!((copied.width(), copied.height()), (4 + 2 * 64, 2 + 2 * 64));
+}
+
 #[test]
 fn image_beautifier_cancelled_in_the_picker_submits_nothing() {
     let tmp = TempDir::new().unwrap();
