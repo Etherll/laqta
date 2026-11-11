@@ -17,7 +17,7 @@ pub mod fakes;
 
 pub use desktop::{
     ActionCallback, AssignedCallback, ChordCallback, Clipboard, ClipboardContent, HotkeyCallback, HotkeyRegistrar, KeyRecording,
-    RejectedCallback, Shell, Tray, TrayItem, TrayMenu,
+    RejectedCallback, Rejection, Shell, Tray, TrayItem, TrayMenu,
 };
 pub use error::PortError;
 pub use history::HistoryEdit;

@@ -64,9 +64,35 @@ pub type HotkeyCallback = Arc<dyn Fn(KeyChord) + Send + Sync>;
 /// text means the desktop has none for that chord.
 pub type AssignedCallback = Arc<dyn Fn(Vec<(KeyChord, String)>) + Send + Sync>;
 
-/// Called with the chords and the reason when the desktop turns down chords that `register`
-/// reported as registered (a GlobalShortcuts bind that fails or is cancelled after its dialog).
-pub type RejectedCallback = Arc<dyn Fn(Vec<KeyChord>, String) + Send + Sync>;
+/// Called when the desktop turns down chords that `register` reported as registered (a
+/// GlobalShortcuts bind that fails or is cancelled after its dialog).
+pub type RejectedCallback = Arc<dyn Fn(Rejection) + Send + Sync>;
+
+/// Chords the desktop turned down after `register` reported them registered, and why.
+pub struct Rejection {
+    pub chords: Vec<KeyChord>,
+    pub reason: String,
+    current: Box<dyn Fn() -> bool + Send + Sync>,
+}
+
+impl std::fmt::Debug for Rejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Rejection").field("chords", &self.chords).field("reason", &self.reason).finish_non_exhaustive()
+    }
+}
+
+impl Rejection {
+    /// `current` answers whether the registration this rejects is still the live one.
+    pub fn new(chords: Vec<KeyChord>, reason: String, current: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Rejection { chords, reason, current: Box::new(current) }
+    }
+
+    /// False once `unregister_all` ended the registration this rejects. Check it while holding the
+    /// lock the caller registers under, so a newer registration can't start in between.
+    pub fn is_current(&self) -> bool {
+        (self.current)()
+    }
+}
 
 /// Called with each key combination pressed while a [`KeyRecording`] lives.
 pub type ChordCallback = Arc<dyn Fn(KeyChord) + Send + Sync>;

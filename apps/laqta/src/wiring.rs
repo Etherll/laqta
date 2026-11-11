@@ -169,8 +169,8 @@ const AUTOSTART_MARKER: &str = "autostart-default";
 
 /// Laqta starts at sign-in by default: the first run of a new install turns it on, once. Later runs
 /// leave it as the user set it in Settings. A portable or sandboxed copy, an existing profile (one
-/// with settings) and a debug build are left alone. Only an installed copy writes the marker: a
-/// portable copy whose data fell back to the default folder must not use up an installed copy's turn.
+/// with settings) and a debug build are left alone. Only an installed release copy writes the
+/// marker: a portable copy or a debug build sharing the default folder must not use up its turn.
 fn autostart_first_run(
     autostart: &dyn laqta_ports::Autostart,
     data: &std::path::Path,
@@ -179,10 +179,10 @@ fn autostart_first_run(
     exe: &std::path::Path,
 ) {
     let marker = data.join(AUTOSTART_MARKER);
-    if !installed || marker.exists() {
+    if !installed || cfg!(debug_assertions) || marker.exists() {
         return;
     }
-    if new_profile && !cfg!(debug_assertions) && !autostart.is_enabled().unwrap_or(true) {
+    if new_profile && !autostart.is_enabled().unwrap_or(true) {
         match autostart.set_enabled(true, exe) {
             Ok(()) => tracing::info!("Laqta will start at sign-in (turn it off in Settings)"),
             Err(error) => tracing::warn!(%error, "could not turn on starting at sign-in"),
@@ -399,17 +399,19 @@ fn merge_system_keys(keys: Vec<(KeyChord, String)>) {
     hotkeys_changed();
 }
 
-/// The desktop turned down `chords`, which the last registration reported as registered: they show as
-/// failed, and the next sync registers them again. A rejection of an older registration, which a newer
-/// one with other chords replaced meanwhile, changes nothing.
-fn reject_hotkeys(registered: &RegisteredBindings, rejected: &[KeyChord], why: &str) {
+/// The desktop turned down chords the last registration reported as registered: they show as failed,
+/// and the next sync registers them again. A rejection of an older registration, which a newer one
+/// replaced meanwhile, changes nothing. `sync_hotkeys` replaces a registration while holding
+/// `registered`, so checking under that lock leaves no gap for a newer one to start.
+fn reject_hotkeys(registered: &RegisteredBindings, rejection: &laqta_ports::Rejection) {
     let mut current = registered.lock().unwrap_or_else(|e| e.into_inner());
     let reports = hotkey_reports();
     let mut report = reports.lock().unwrap_or_else(|e| e.into_inner());
     let set = |chords: &[KeyChord]| chords.iter().copied().collect::<std::collections::HashSet<_>>();
-    if set(&report.registered) != set(rejected) {
+    if !rejection.is_current() || set(&report.registered) != set(&rejection.chords) {
         return;
     }
+    let why = rejection.reason.as_str();
     // Not registered after all, so an unchanged save must not skip the next try.
     current.take();
     drop(current);
@@ -605,7 +607,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let registered: RegisteredBindings = Arc::new(Mutex::new(None));
     {
         let registered = registered.clone();
-        hotkeys.on_rejected(Arc::new(move |chords, why| reject_hotkeys(&registered, &chords, &why)));
+        hotkeys.on_rejected(Arc::new(move |rejection| reject_hotkeys(&registered, &rejection)));
     }
 
     // Task events: the log and the history writer.
@@ -1086,14 +1088,34 @@ mod tests {
         let exe = std::path::Path::new("/opt/laqta/laqta");
 
         autostart_first_run(&sign_in, dir.path(), true, true, exe);
+        // A debug build leaves both the setting and the marker to the release build.
         assert_eq!(sign_in.on.load(Ordering::SeqCst), !cfg!(debug_assertions));
-        assert!(dir.path().join(AUTOSTART_MARKER).exists());
+        assert_eq!(dir.path().join(AUTOSTART_MARKER).exists(), !cfg!(debug_assertions));
 
         sign_in.on.store(false, Ordering::SeqCst);
         let sets = sign_in.sets.load(Ordering::SeqCst);
         autostart_first_run(&sign_in, dir.path(), true, true, exe);
         assert!(!sign_in.on.load(Ordering::SeqCst), "the user's choice stays");
         assert_eq!(sign_in.sets.load(Ordering::SeqCst), sets);
+    }
+
+    fn rejection(chord: KeyChord, current: bool) -> laqta_ports::Rejection {
+        laqta_ports::Rejection::new(vec![chord], "cancelled".to_owned(), move || current)
+    }
+
+    /// A rejection of a registration that was replaced is stale even with the same chords (a remap
+    /// that kept them): it changes nothing.
+    #[test]
+    fn a_rejection_of_a_replaced_registration_with_the_same_chords_changes_nothing() {
+        let _report = REPORT.lock().unwrap_or_else(|e| e.into_inner());
+        let chord: KeyChord = "Ctrl+Shift+F6".parse().expect("a chord");
+        let registered: RegisteredBindings = Arc::new(Mutex::new(Some(vec![(chord, Action::ActiveWindow)])));
+        *hotkey_reports().lock().unwrap() = laqta_ui::HotkeyReport { registered: vec![chord], ..Default::default() };
+
+        reject_hotkeys(&registered, &rejection(chord, false));
+
+        assert!(registered.lock().unwrap().is_some(), "the newer registration stays cached");
+        assert_eq!(hotkey_reports().lock().unwrap().registered, vec![chord]);
     }
 
     /// A rejection that comes after a newer registration with other chords is stale: it changes nothing.
@@ -1105,7 +1127,7 @@ mod tests {
         let registered: RegisteredBindings = Arc::new(Mutex::new(Some(vec![(new, Action::PrintScreen)])));
         *hotkey_reports().lock().unwrap() = laqta_ui::HotkeyReport { registered: vec![new], ..Default::default() };
 
-        reject_hotkeys(&registered, &[old], "cancelled");
+        reject_hotkeys(&registered, &rejection(old, true));
 
         assert!(registered.lock().unwrap().is_some(), "the newer registration stays cached");
         assert_eq!(hotkey_reports().lock().unwrap().registered, vec![new]);
@@ -1120,7 +1142,8 @@ mod tests {
             autostart_first_run(&sign_in, dir.path(), installed, new_profile, std::path::Path::new("/x"));
             assert_eq!(sign_in.sets.load(Ordering::SeqCst), 0, "installed={installed} new={new_profile}");
             // A portable copy leaves the marker to the installed copy that may share its folder.
-            assert_eq!(dir.path().join(AUTOSTART_MARKER).exists(), installed, "installed={installed} new={new_profile}");
+            let recorded = installed && !cfg!(debug_assertions);
+            assert_eq!(dir.path().join(AUTOSTART_MARKER).exists(), recorded, "installed={installed} new={new_profile}");
         }
     }
 
@@ -1163,7 +1186,7 @@ mod tests {
         let registered: RegisteredBindings = Arc::new(Mutex::new(Some(vec![(chord, Action::PrintScreen)])));
         *hotkey_reports().lock().unwrap() = laqta_ui::HotkeyReport { registered: vec![chord], ..Default::default() };
 
-        reject_hotkeys(&registered, &[chord], "cancelled");
+        reject_hotkeys(&registered, &rejection(chord, true));
 
         assert!(registered.lock().unwrap().is_none(), "the next sync registers again");
         let report = hotkey_reports().lock().unwrap().clone();

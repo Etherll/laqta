@@ -7,7 +7,7 @@ use ashpd::desktop::global_shortcuts::{BindShortcutsOptions, ConfigureShortcutsO
 use ashpd::desktop::{CreateSessionOptions, Session};
 use futures_lite::{StreamExt, future};
 use laqta_domain::{Action, Key, KeyChord, Modifiers};
-use laqta_ports::{AssignedCallback, HotkeyCallback, HotkeyRegistrar, PortError, RejectedCallback};
+use laqta_ports::{AssignedCallback, HotkeyCallback, HotkeyRegistrar, PortError, RejectedCallback, Rejection};
 
 /// GlobalShortcuts portal: one session at a time. Shortcut ids come from the action's name
 /// (`PrintScreen` → `print-screen`). A missing portal is `Unsupported`.
@@ -25,6 +25,7 @@ pub struct PortalShortcuts {
 }
 
 /// Which session a listener serves. It is current until that session is ended.
+#[derive(Clone)]
 struct SessionTag {
     generation: Arc<AtomicU64>,
     id: u64,
@@ -204,7 +205,8 @@ async fn serve(
                 && callbacks.session.is_current()
             {
                 let chords = bindings.iter().map(|(chord, _)| *chord).collect();
-                on_rejected(chords, format!("the desktop did not bind the shortcuts: {e}"));
+                let session = callbacks.session.clone();
+                on_rejected(Rejection::new(chords, format!("the desktop did not bind the shortcuts: {e}"), move || session.is_current()));
             }
             return;
         }
