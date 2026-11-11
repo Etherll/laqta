@@ -344,6 +344,20 @@ fn merge_system_keys(keys: Vec<(KeyChord, String)>) {
     hotkeys_changed();
 }
 
+/// The desktop turned down chords the last registration reported as registered: they show as failed,
+/// and the next sync registers them again.
+fn reject_hotkeys(registered: &RegisteredBindings, why: &str) {
+    // Not registered after all, so an unchanged save must not skip the next try.
+    registered.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let reports = hotkey_reports();
+    let mut report = reports.lock().unwrap_or_else(|e| e.into_inner());
+    let chords = std::mem::take(&mut report.registered);
+    report.failed.extend(chords.into_iter().map(|chord| (chord, why.to_owned())));
+    report.system_keys.clear();
+    drop(report);
+    hotkeys_changed();
+}
+
 /// Drops every hotkey while a shortcut is being recorded. A partial registration is cached as `None`
 /// (so the next save retries it) while its other chords stay grabbed, so the release does not go by
 /// the cache.
@@ -520,6 +534,10 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let hotkeys = platform.hotkeys;
     hotkeys.on_assigned(Arc::new(merge_system_keys));
     let registered: RegisteredBindings = Arc::new(Mutex::new(None));
+    {
+        let registered = registered.clone();
+        hotkeys.on_rejected(Arc::new(move |why| reject_hotkeys(&registered, &why)));
+    }
 
     // Task events: the log and the history writer.
     let mut events = app.events();
@@ -948,6 +966,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -970,6 +989,22 @@ mod tests {
         fn grabs_keys(&self) -> bool {
             true
         }
+    }
+
+    /// A bind the desktop turned down after `register` said yes: the chords show as failed, and the
+    /// cache is cleared so the next save registers them again.
+    #[test]
+    fn a_rejected_bind_shows_the_chords_as_failed() {
+        let chord: KeyChord = "Ctrl+Shift+F9".parse().expect("a chord");
+        let registered: RegisteredBindings = Arc::new(Mutex::new(Some(vec![(chord, Action::PrintScreen)])));
+        *hotkey_reports().lock().unwrap() = laqta_ui::HotkeyReport { registered: vec![chord], ..Default::default() };
+
+        reject_hotkeys(&registered, "cancelled");
+
+        assert!(registered.lock().unwrap().is_none(), "the next sync registers again");
+        let report = hotkey_reports().lock().unwrap().clone();
+        assert!(report.registered.is_empty());
+        assert_eq!(report.failed, vec![(chord, "cancelled".to_owned())]);
     }
 
     /// A partial registration is cached as `None`, yet its other chords are still grabbed: recording

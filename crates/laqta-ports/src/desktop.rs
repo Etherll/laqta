@@ -64,6 +64,10 @@ pub type HotkeyCallback = Arc<dyn Fn(KeyChord) + Send + Sync>;
 /// text means the desktop has none for that chord.
 pub type AssignedCallback = Arc<dyn Fn(Vec<(KeyChord, String)>) + Send + Sync>;
 
+/// Called with the reason when the desktop turns down chords that `register` reported as
+/// registered (a GlobalShortcuts bind that fails or is cancelled after its dialog).
+pub type RejectedCallback = Arc<dyn Fn(String) + Send + Sync>;
+
 /// Called with each key combination pressed while a [`KeyRecording`] lives.
 pub type ChordCallback = Arc<dyn Fn(KeyChord) + Send + Sync>;
 
@@ -97,6 +101,10 @@ pub trait HotkeyRegistrar: Send + Sync {
     /// (KDE Wayland, after the user changes a shortcut in the desktop's settings). Call before
     /// `register`; the callback may run at any time after that.
     fn on_assigned(&self, _assigned: AssignedCallback) {}
+    /// Called when the desktop turns the registered chords down after `register` reported them
+    /// registered: the GlobalShortcuts portal binds after `register` returns, as the bind can wait on
+    /// a dialog. None of the chords is active then. Call before `register`.
+    fn on_rejected(&self, _rejected: RejectedCallback) {}
     /// Reports the key combinations pressed while the returned recording lives, for the keys a
     /// window can't see on this platform (Windows: Print Screen, Pause, Scroll Lock and media
     /// keys). The keys still reach the system as usual.
