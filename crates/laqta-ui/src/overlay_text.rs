@@ -376,15 +376,16 @@ fn word(rect: Rect, s: f32, shown: f32, flash: f32) -> gpui::Div {
         .hover(|style| style.bg(rgba(0xffffff, WORD_HOVER)))
 }
 
-/// The bar's size for what it says.
-pub(crate) fn bar_size(notice: &Notice) -> (f32, f32) {
-    let width = match notice {
+/// The bar's size for what it says, on a window `screen_w` wide. On a narrow one it shrinks to
+/// fit, and its line is cut short rather than its buttons pushed off the edge.
+pub(crate) fn bar_size(notice: &Notice, screen_w: f32) -> (f32, f32) {
+    let width: f32 = match notice {
         Notice::Reading => 196.0,
         Notice::NoText => 360.0,
         Notice::Failed(_) | Notice::CopyFailed => 480.0,
         Notice::Copied(_) | Notice::Picked(_) | Notice::Found { .. } => 560.0,
     };
-    (width, BAR_H)
+    (width.min((screen_w - 2.0 * bar::GAP).max(0.0)), BAR_H)
 }
 
 /// The bar under the selection: what happened on the left, what to do about it on the right.
@@ -512,4 +513,18 @@ fn button(
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .on_click(move |_, _, cx| model.update(cx, act))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bar_fits_a_narrow_window() {
+        let found = Notice::Found { words: 3, copied: true };
+        assert_eq!(bar_size(&found, 1920.0).0, 560.0);
+        // A 1024-pixel monitor at 200%.
+        let (w, _) = bar_size(&found, 512.0);
+        assert!(w + 2.0 * bar::GAP <= 512.0, "{w}");
+    }
 }

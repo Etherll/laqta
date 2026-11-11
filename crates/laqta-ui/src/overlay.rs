@@ -517,7 +517,7 @@ impl Render for OverlayView {
                 let screen = (win_w, win_h);
                 // While the text shows, its bar takes the toolbar's place.
                 let bar = match &model.text {
-                    Some(text) => crate::overlay_text::bar_size(&text.notice(now)),
+                    Some(text) => crate::overlay_text::bar_size(&text.notice(now), win_w),
                     None => (crate::overlay_tools::bar_width(), crate::overlay_tools::BAR_H),
                 };
                 let (at, side) = crate::presenters::capture_toolbar::place(sel_l, bar, screen);
