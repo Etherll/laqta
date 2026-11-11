@@ -6,11 +6,25 @@ use laqta_domain::region::HoverTarget;
 
 use crate::{BoxFuture, PortError};
 
+/// One word of a recognised line, where the engine can place it.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct OcrWord {
+    /// In the pixels of the image that was read, like the line's `rect`.
+    pub rect: PhysRect,
+    pub text: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct OcrLine {
     pub rect: PhysRect,
     pub text: String,
     pub confidence: f32,
+    /// The line's words in reading order, with a box each, when the engine reports them. Empty when
+    /// it places only the line: whoever needs word boxes then divides `rect` by the text.
+    pub words: Vec<OcrWord>,
+    /// The line runs down the page, its words top to bottom, as the engine read it. False when the
+    /// engine does not say; whoever lays the line out may then judge by its shape.
+    pub vertical: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -31,6 +45,12 @@ pub trait Ocr: Send + Sync {
     fn recognize(&self, image: Bitmap, language: String) -> BoxFuture<'_, Result<OcrResult, PortError>>;
     /// Languages or scripts that are ready (installed) now.
     fn languages(&self) -> Vec<String>;
+    /// Whether `recognize` can answer now, without asking the user anything first. An adapter that
+    /// downloads its models on first use says false until it has them: its question would open
+    /// under the region overlay, so the overlay reads text in place only from a ready recogniser.
+    fn ready(&self) -> bool {
+        true
+    }
 }
 
 /// Window tools.

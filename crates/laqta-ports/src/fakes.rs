@@ -46,7 +46,7 @@ impl ScreenSource for FakeScreen {
     }
 }
 
-/// What the fake clipboard does on `set_image`.
+/// What the fake clipboard does on `set_image` and `set_text`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardBehaviour {
     Succeed,
@@ -88,6 +88,9 @@ impl Clipboard for FakeClipboard {
         }
     }
     fn set_text(&self, text: &str) -> Result<(), PortError> {
+        if *self.behaviour.lock().unwrap() == ClipboardBehaviour::Fail {
+            return Err(PortError::Failed("clipboard unavailable".into()));
+        }
         self.texts.lock().unwrap().push(text.to_string());
         Ok(())
     }
@@ -787,19 +790,31 @@ impl crate::EditorHost for FakeEditorHost {
     }
 }
 
-/// Returns a fixed result.
+/// Returns a fixed result, or `error` when one is set.
 #[derive(Debug, Default)]
 pub struct FakeOcr {
     pub result: Mutex<crate::OcrResult>,
+    pub error: Mutex<Option<PortError>>,
+    /// The size of each image it was asked to read.
+    pub seen: Mutex<Vec<(u32, u32)>>,
+    /// Answers `ready` with false: a recogniser that would first ask about its models.
+    pub not_ready: std::sync::atomic::AtomicBool,
 }
 
 impl crate::Ocr for FakeOcr {
-    fn recognize(&self, _image: Bitmap, _language: String) -> BoxFuture<'_, Result<crate::OcrResult, PortError>> {
-        let r = self.result.lock().unwrap().clone();
-        Box::pin(async move { Ok(r) })
+    fn recognize(&self, image: Bitmap, _language: String) -> BoxFuture<'_, Result<crate::OcrResult, PortError>> {
+        self.seen.lock().unwrap().push((image.width(), image.height()));
+        let r = match self.error.lock().unwrap().clone() {
+            Some(error) => Err(error),
+            None => Ok(self.result.lock().unwrap().clone()),
+        };
+        Box::pin(async move { r })
     }
     fn languages(&self) -> Vec<String> {
         vec!["en".into()]
+    }
+    fn ready(&self) -> bool {
+        !self.not_ready.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 

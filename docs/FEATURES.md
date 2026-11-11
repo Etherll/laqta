@@ -20,7 +20,7 @@ scope.
 | Overlay: window and UI-element detection, multi-region, dim, magnifier, crosshairs, info text, toolbar, mouse-button actions, keyboard nudge | Capture core | done |
 | Scrolling capture (wheel, arrow, page down, scroll message; stitching) | Integration | done |
 | Auto capture (start / stop / interval) | Integration | done |
-| Text capture (OCR) | Tools | done |
+| Text capture (OCR): the text is read in place on the frozen screen, words are picked with a drag and copied (ADR 031) | Tools | done |
 
 ## Recording
 

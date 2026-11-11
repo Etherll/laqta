@@ -16,4 +16,5 @@ pub mod render_gate;
 pub mod settings;
 pub mod settings_reset;
 pub mod task_list;
+pub mod text_layer;
 pub mod tray;

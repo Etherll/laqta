@@ -113,9 +113,9 @@ impl OverlayModel {
                     if let Some(tool) = self.tool {
                         self.command(Command::SetTool(tool), cx);
                     }
-                    // Text mode: the selection is the area to read, so finish with it right away.
+                    // Text mode: the selection is the area to read, so ask for its text right away.
                     if self.text_mode {
-                        self.finish(SelectionAction::CopyText, cx);
+                        self.read_text();
                     }
                 }
             }
@@ -127,9 +127,10 @@ impl OverlayModel {
         }
     }
 
-    /// The toolbar shows for a settled selection while the user hasn't hidden it (Space).
+    /// The toolbar shows for a settled selection while the user hasn't hidden it (Space). The
+    /// selection's text, read in place, has a bar of its own, and a text capture has no toolbar.
     pub(crate) fn toolbar_shown(&self) -> bool {
-        self.view.selected.is_some() && self.view.tools_visible && self.annot.is_some()
+        self.view.selected.is_some() && self.view.tools_visible && self.annot.is_some() && self.text.is_none() && !self.view.text_only
     }
 
     fn send(&self, input: RegionInput) {
@@ -202,7 +203,7 @@ impl OverlayModel {
             }
             Item::Undo => self.command(Command::Undo, cx),
             Item::Redo => self.command(Command::Redo, cx),
-            Item::CopyText => self.finish(SelectionAction::CopyText, cx),
+            Item::CopyText => self.read_text(),
             Item::Pin => self.finish(SelectionAction::Pin, cx),
             Item::Edit => self.finish(SelectionAction::Edit, cx),
             Item::Upload => self.finish(SelectionAction::Upload, cx),
@@ -432,7 +433,7 @@ impl Mode {
             Mode::Monitor => "Capture this monitor",
             Mode::EditAfter => "Open in the editor after capturing",
             Mode::ColorPicker => "Pick a color from the screen",
-            Mode::Text => "Copy the text in the area you select",
+            Mode::Text => "Read the text in the area you select",
             Mode::Close => "Close  ·  Esc",
         }
     }
@@ -471,7 +472,7 @@ impl OverlayModel {
             }
             Mode::Text => {
                 if self.view.selected.is_some() {
-                    self.finish(SelectionAction::CopyText, cx);
+                    self.toggle_text();
                 } else {
                     self.text_mode = !self.text_mode;
                 }
@@ -498,9 +499,9 @@ impl OverlayModel {
     fn mode_active(&self, mode: Mode) -> bool {
         match mode {
             Mode::Screenshot => true,
-            Mode::Region => !self.text_mode,
+            Mode::Region => !self.text_mode && self.text.is_none(),
             Mode::EditAfter => self.view.annotate,
-            Mode::Text => self.text_mode,
+            Mode::Text => self.text_mode || self.text.is_some(),
             _ => false,
         }
     }

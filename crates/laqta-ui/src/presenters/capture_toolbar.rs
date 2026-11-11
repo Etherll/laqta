@@ -13,7 +13,7 @@ pub enum Item {
     Tool(Tool),
     Undo,
     Redo,
-    /// Recognise the text in the selection and copy it.
+    /// Read the text in the selection in place, to pick words from and copy.
     CopyText,
     Pin,
     /// Open the capture in the image editor.
@@ -48,7 +48,7 @@ pub fn label(item: Item) -> &'static str {
         Item::Tool(t) => super::editor_toolbar::label(t),
         Item::Undo => "Undo",
         Item::Redo => "Redo",
-        Item::CopyText => "Copy text (OCR)",
+        Item::CopyText => "Select and copy text (OCR)",
         Item::Pin => "Pin to screen",
         Item::Edit => "Open in editor",
         Item::Upload => "Upload",
