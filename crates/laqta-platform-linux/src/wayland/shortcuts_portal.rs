@@ -178,7 +178,8 @@ async fn serve(
             // `register` already said yes (the bind can wait on a dialog): take it back.
             tracing::warn!("GlobalShortcuts bind failed: {e}");
             if let Some(on_rejected) = &callbacks.on_rejected {
-                on_rejected(format!("the desktop did not bind the shortcuts: {e}"));
+                let chords = bindings.iter().map(|(chord, _)| *chord).collect();
+                on_rejected(chords, format!("the desktop did not bind the shortcuts: {e}"));
             }
             return;
         }

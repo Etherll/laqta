@@ -377,13 +377,20 @@ fn merge_system_keys(keys: Vec<(KeyChord, String)>) {
     hotkeys_changed();
 }
 
-/// The desktop turned down chords the last registration reported as registered: they show as failed,
-/// and the next sync registers them again.
-fn reject_hotkeys(registered: &RegisteredBindings, why: &str) {
-    // Not registered after all, so an unchanged save must not skip the next try.
-    registered.lock().unwrap_or_else(|e| e.into_inner()).take();
+/// The desktop turned down `chords`, which the last registration reported as registered: they show as
+/// failed, and the next sync registers them again. A rejection of an older registration, which a newer
+/// one with other chords replaced meanwhile, changes nothing.
+fn reject_hotkeys(registered: &RegisteredBindings, rejected: &[KeyChord], why: &str) {
+    let mut current = registered.lock().unwrap_or_else(|e| e.into_inner());
     let reports = hotkey_reports();
     let mut report = reports.lock().unwrap_or_else(|e| e.into_inner());
+    let set = |chords: &[KeyChord]| chords.iter().copied().collect::<std::collections::HashSet<_>>();
+    if set(&report.registered) != set(rejected) {
+        return;
+    }
+    // Not registered after all, so an unchanged save must not skip the next try.
+    current.take();
+    drop(current);
     let chords = std::mem::take(&mut report.registered);
     report.failed.extend(chords.into_iter().map(|chord| (chord, why.to_owned())));
     report.system_keys.clear();
@@ -572,7 +579,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let registered: RegisteredBindings = Arc::new(Mutex::new(None));
     {
         let registered = registered.clone();
-        hotkeys.on_rejected(Arc::new(move |why| reject_hotkeys(&registered, &why)));
+        hotkeys.on_rejected(Arc::new(move |chords, why| reject_hotkeys(&registered, &chords, &why)));
     }
 
     // Task events: the log and the history writer.
@@ -1063,6 +1070,21 @@ mod tests {
         assert_eq!(sign_in.sets.load(Ordering::SeqCst), sets);
     }
 
+    /// A rejection that comes after a newer registration with other chords is stale: it changes nothing.
+    #[test]
+    fn a_stale_rejection_leaves_a_newer_registration_alone() {
+        let _report = REPORT.lock().unwrap_or_else(|e| e.into_inner());
+        let old: KeyChord = "Ctrl+Shift+F7".parse().expect("a chord");
+        let new: KeyChord = "Ctrl+Shift+F8".parse().expect("a chord");
+        let registered: RegisteredBindings = Arc::new(Mutex::new(Some(vec![(new, Action::PrintScreen)])));
+        *hotkey_reports().lock().unwrap() = laqta_ui::HotkeyReport { registered: vec![new], ..Default::default() };
+
+        reject_hotkeys(&registered, &[old], "cancelled");
+
+        assert!(registered.lock().unwrap().is_some(), "the newer registration stays cached");
+        assert_eq!(hotkey_reports().lock().unwrap().registered, vec![new]);
+    }
+
     /// Portable copies and existing profiles are left as they are, and so remembered.
     #[test]
     fn portable_copies_and_existing_profiles_keep_their_sign_in_setting() {
@@ -1075,15 +1097,19 @@ mod tests {
         }
     }
 
+    /// The tests that set the shared hotkey report take turns.
+    static REPORT: Mutex<()> = Mutex::new(());
+
     /// A bind the desktop turned down after `register` said yes: the chords show as failed, and the
     /// cache is cleared so the next save registers them again.
     #[test]
     fn a_rejected_bind_shows_the_chords_as_failed() {
+        let _report = REPORT.lock().unwrap_or_else(|e| e.into_inner());
         let chord: KeyChord = "Ctrl+Shift+F9".parse().expect("a chord");
         let registered: RegisteredBindings = Arc::new(Mutex::new(Some(vec![(chord, Action::PrintScreen)])));
         *hotkey_reports().lock().unwrap() = laqta_ui::HotkeyReport { registered: vec![chord], ..Default::default() };
 
-        reject_hotkeys(&registered, "cancelled");
+        reject_hotkeys(&registered, &[chord], "cancelled");
 
         assert!(registered.lock().unwrap().is_none(), "the next sync registers again");
         let report = hotkey_reports().lock().unwrap().clone();
