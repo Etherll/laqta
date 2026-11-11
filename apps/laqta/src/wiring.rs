@@ -480,7 +480,11 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     }
     let store = Arc::new(SettingsStore::new(data.clone()));
     if let Ok(exe) = std::env::current_exe() {
-        autostart_first_run(platform.autostart.as_ref(), &data, data == default_data_dir(), !store.path().exists(), &exe);
+        let installed = data == default_data_dir();
+        if installed && let Err(error) = platform.autostart.migrate(&exe) {
+            tracing::warn!(%error, "could not update the start at sign-in entry");
+        }
+        autostart_first_run(platform.autostart.as_ref(), &data, installed, !store.path().exists(), &exe);
     }
     let settings = load_settings(&store);
     let history = if settings.history.enabled && !args.sandbox {

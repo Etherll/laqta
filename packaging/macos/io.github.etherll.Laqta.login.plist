@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Start at login. SMAppService registers this from Contents/Library/LaunchAgents, so launchd
+     starts Laqta with -silent: the tray icon only, as on Windows and Linux. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>io.github.etherll.Laqta.login</string>
+  <key>BundleProgram</key><string>Contents/MacOS/laqta</string>
+  <key>ProgramArguments</key>
+  <array><string>laqta</string><string>-silent</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>AssociatedBundleIdentifiers</key>
+  <array><string>io.github.etherll.Laqta</string></array>
+</dict>
+</plist>

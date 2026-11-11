@@ -137,10 +137,15 @@ pub trait FileWatcher: Send + Sync {
 }
 
 /// Run at login: Windows `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, Linux
-/// `~/.config/autostart/laqta.desktop`.
+/// `~/.config/autostart/laqta.desktop`, macOS a launch agent in the app bundle.
 pub trait Autostart: Send + Sync {
     fn is_enabled(&self) -> Result<bool, PortError>;
     fn set_enabled(&self, enabled: bool, executable: &std::path::Path) -> Result<(), PortError>;
+    /// Moves a start-at-login entry an earlier version made to the current kind, keeping it on.
+    /// Runs at each start of an installed copy; most platforms have nothing to move.
+    fn migrate(&self, _executable: &std::path::Path) -> Result<(), PortError> {
+        Ok(())
+    }
 }
 
 /// "Upload with Laqta" in the file manager and Send To.

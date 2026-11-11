@@ -13,6 +13,10 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$laqta" "$app/Contents/MacOS/laqta"
 cp "$nmh" "$app/Contents/MacOS/laqta-nmh"
 sed "s/@VERSION@/$version/g" "$root/packaging/macos/Info.plist" > "$app/Contents/Info.plist"
+# Start at login runs this agent, which passes -silent; the bare app would open its main window.
+mkdir -p "$app/Contents/Library/LaunchAgents"
+cp "$root/packaging/macos/io.github.etherll.Laqta.login.plist" "$app/Contents/Library/LaunchAgents/"
+plutil -lint "$app/Contents/Library/LaunchAgents/io.github.etherll.Laqta.login.plist"
 
 # iconutil wants each size under a fixed name.
 set_dir="$out/laqta.iconset"
