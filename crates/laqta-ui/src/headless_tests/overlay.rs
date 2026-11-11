@@ -391,3 +391,58 @@ fn a_text_capture_shows_no_toolbar_and_closing_it_ends_the_session(cx: &mut Test
     vcx.simulate_keystrokes("escape");
     assert_eq!(sent.lock().unwrap().last(), Some(&RegionInput::Text(TextCommand::Close)));
 }
+
+/// Enter while the text is still being read waits for it: the session copies the whole text when
+/// the read is done, and only then is the text left.
+#[gpui::test]
+fn enter_while_reading_leaves_once_the_text_is_read(cx: &mut TestAppContext) {
+    use laqta_domain::region::{RegionInput, TextCommand};
+    use laqta_ports::{OcrResult, TextLayer};
+    use std::sync::Mutex;
+
+    // SAFETY: tests in this binary don't read this variable concurrently with writing it.
+    unsafe { std::env::set_var("LAQTA_NO_LAYER_SHELL", "1") };
+    let dir = tempfile::tempdir().unwrap();
+    install(cx, services(QueuedSpawner::default(), dir.path()));
+    let frame = Frame {
+        monitor: Monitor {
+            id: MonitorId("m0".into()),
+            name: "m0".into(),
+            rect: PhysRect { x: 0, y: 0, width: 400, height: 300 },
+            scale: 1.0,
+            primary: true,
+        },
+        image: Bitmap::new(400, 300, PixelFormat::Bgra8, vec![0u8; 400 * 300 * 4].into()).unwrap(),
+    };
+    let sent: Arc<Mutex<Vec<RegionInput>>> = Arc::default();
+    let log = sent.clone();
+    let images = crate::overlay::render_images(std::slice::from_ref(&frame));
+    let first = RegionView { text_only: true, ..RegionView::default() };
+    cx.update(|cx| crate::overlay::show(vec![frame], images, first, Arc::new(move |i| log.lock().unwrap().push(i)), cx));
+    let model = cx.update(|cx| cx.global::<crate::runtime::UiState>().overlay.model()).expect("an overlay model");
+    let window = *cx.windows().last().expect("the overlay window");
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let sel = PhysRect { x: 50, y: 50, width: 200, height: 100 };
+    let crop = Bitmap::new(200, 100, PixelFormat::Rgba8, vec![255u8; 200 * 100 * 4].into()).unwrap();
+    let view = RegionView {
+        regions: vec![sel],
+        active: Some(0),
+        selected: Some(sel),
+        selection_image: Some(Arc::new(crop)),
+        tools_visible: true,
+        text_only: true,
+        text: Some(TextLayer::Read { result: Arc::new(OcrResult::default()), copied: false, copy_failed: false }),
+        ..RegionView::default()
+    };
+    let reading = RegionView { text: Some(TextLayer::Reading), ..view.clone() };
+    vcx.update(|_, cx| crate::overlay::update(reading, cx));
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    vcx.simulate_keystrokes("enter");
+    assert!(!sent.lock().unwrap().iter().any(|i| matches!(i, RegionInput::Text(TextCommand::Close))), "the read is not given up");
+    assert!(vcx.update(|_, cx| model.read(cx).text.is_some()), "the text layer stays while it reads");
+
+    vcx.update(|_, cx| crate::overlay::update(view, cx));
+    assert_eq!(sent.lock().unwrap().last(), Some(&RegionInput::Text(TextCommand::Close)));
+}

@@ -63,6 +63,8 @@ pub(crate) struct TextUi {
     copy: Option<(Instant, Option<usize>)>,
     /// The session said that copy did not reach the clipboard.
     copy_failed: bool,
+    /// Enter came while reading: leave the text once it is read.
+    leave_when_read: bool,
 }
 
 fn ms(from: Instant, now: Instant) -> f32 {
@@ -77,7 +79,16 @@ fn rgba(rgb: u32, alpha: f32) -> Hsla {
 
 impl TextUi {
     fn new(phase: Phase, now: Instant) -> Self {
-        TextUi { phase, since: now, pick: Pick::default(), result: None, copied_all: false, copy: None, copy_failed: false }
+        TextUi {
+            phase,
+            since: now,
+            pick: Pick::default(),
+            result: None,
+            copied_all: false,
+            copy: None,
+            copy_failed: false,
+            leave_when_read: false,
+        }
     }
 
     /// Words are shown and can be picked.
@@ -136,12 +147,17 @@ impl OverlayModel {
                 if let Some(text) = self.text.as_mut().filter(|_| same) {
                     text.copy_failed = *copy_failed;
                 } else {
+                    let leave = self.text.as_ref().is_some_and(|t| t.leave_when_read);
                     self.text = Some(TextUi {
                         pick: Pick::new(Layout::new(result)),
                         result: Some(result.clone()),
                         copied_all: *copied,
                         ..TextUi::new(Phase::Read, now)
                     });
+                    // The session copied the whole text with the read, which is what Enter asked for.
+                    if leave {
+                        self.close_text();
+                    }
                 }
             }
             Some(TextLayer::Failed(message)) => {
@@ -204,7 +220,7 @@ impl OverlayModel {
     }
 
     /// A key while the text is showing. Escape drops the picked words, then leaves the text.
-    /// Enter copies and leaves. Ctrl+C copies, Ctrl+A picks everything. Other keys do nothing:
+    /// Enter copies and leaves, once the text is read. Ctrl+C copies, Ctrl+A picks everything. Other keys do nothing:
     /// nudging the selection would read it again on every press.
     pub(crate) fn text_key(&mut self, key: &str, ctrl: bool, cx: &mut Context<Self>) {
         match key {
@@ -216,6 +232,10 @@ impl OverlayModel {
                 }
             }
             "enter" => {
+                if let Some(text) = self.text.as_mut().filter(|t| matches!(t.phase, Phase::Reading)) {
+                    text.leave_when_read = true;
+                    return;
+                }
                 self.copy_text(cx);
                 self.close_text();
             }
