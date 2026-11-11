@@ -63,14 +63,14 @@ fn report_events(events: &[DebouncedEvent], known: &mut HashSet<PathBuf>, on_fil
     for event in events {
         if is_departure(&event.kind) {
             for path in &event.paths {
-                known.remove(&key(path));
+                forget(known, path);
             }
             continue;
         }
         // macOS reports both ends of a rename as `Name(Any)`: the end that is gone left.
         if matches!(event.kind, EventKind::Modify(ModifyKind::Name(RenameMode::Any))) {
             for path in event.paths.iter().filter(|path| !path.exists()) {
-                known.remove(&key(path));
+                forget(known, path);
             }
         }
         if !is_arrival(&event.kind) {
@@ -82,6 +82,13 @@ fn report_events(events: &[DebouncedEvent], known: &mut HashSet<PathBuf>, on_fil
             }
         }
     }
+}
+
+/// Forgets a path that left, and the files under it when it was a folder: the event names only the
+/// folder.
+fn forget(known: &mut HashSet<PathBuf>, path: &Path) {
+    let gone = key(path);
+    known.retain(|file| !file.starts_with(&gone));
 }
 
 /// An event that may mean a file appeared. Platforms differ (Windows reports a write as `Modify(Any)`,
@@ -160,6 +167,28 @@ mod tests {
 
         std::fs::remove_file(&shot).unwrap();
         report_events(&[event(EventKind::Modify(ModifyKind::Name(RenameMode::Any)), &shot)], &mut known, &on_file);
+        std::fs::write(&shot, b"2").unwrap();
+        report_events(&[event(EventKind::Create(CreateKind::File), &shot)], &mut known, &on_file);
+
+        assert_eq!(seen.lock().unwrap().as_slice(), [shot]);
+    }
+
+    /// A subfolder renamed away takes its files with it: a folder of that name made again brings new files.
+    #[test]
+    fn the_files_of_a_folder_renamed_away_can_arrive_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("day");
+        std::fs::create_dir(&sub).unwrap();
+        let shot = sub.join("shot.png");
+        std::fs::write(&shot, b"1").unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let on_file: WatchCallback = Arc::new(move |path| sink.lock().unwrap().push(path));
+        let mut known = files_in(dir.path(), true);
+
+        std::fs::rename(&sub, dir.path().join("day-old")).unwrap();
+        report_events(&[event(EventKind::Modify(ModifyKind::Name(RenameMode::From)), &sub)], &mut known, &on_file);
+        std::fs::create_dir(&sub).unwrap();
         std::fs::write(&shot, b"2").unwrap();
         report_events(&[event(EventKind::Create(CreateKind::File), &shot)], &mut known, &on_file);
 

@@ -307,9 +307,14 @@ impl History {
         })
     }
 
-    /// Sets the short link of an entry. Returns `false` when no entry has the id.
-    pub fn set_short_url(&self, id: i64, short_url: &str) -> Result<bool, LibraryError> {
-        self.with(|conn| Ok(conn.execute("UPDATE history SET short_url = ?1 WHERE id = ?2", rusqlite::params![short_url, id])? > 0))
+    /// Sets the short link of the entry of the upload at `url`. Returns `false` when no entry has the
+    /// id, or it is another upload's: a deleted entry's id can be taken by a newer one.
+    pub fn set_short_url(&self, id: i64, url: &str, short_url: &str) -> Result<bool, LibraryError> {
+        self.with(|conn| {
+            let changed =
+                conn.execute("UPDATE history SET short_url = ?1 WHERE id = ?2 AND url = ?3", rusqlite::params![short_url, id, url])?;
+            Ok(changed > 0)
+        })
     }
 
     /// Sets the upload links and host of the entry of the file at `path`. Returns `false` when no entry
@@ -409,8 +414,8 @@ pub async fn record_task_events(
 ) {
     // Saves not yet matched by an upload: task id, file and history entry id, oldest first.
     let mut saves: VecDeque<(TaskId, PathBuf, i64)> = VecDeque::with_capacity(LINKABLE_SAVES);
-    // Uploads a shortened link may still follow: task id and history entry id, oldest first.
-    let mut uploads: VecDeque<(TaskId, i64)> = VecDeque::with_capacity(LINKABLE_SAVES);
+    // Uploads a shortened link may still follow: task id, upload link and history entry id, oldest first.
+    let mut uploads: VecDeque<(TaskId, String, i64)> = VecDeque::with_capacity(LINKABLE_SAVES);
     loop {
         match events.recv().await {
             Ok(TaskEvent::Saved { id, path }) => {
@@ -448,7 +453,7 @@ pub async fn record_task_events(
                         if uploads.len() == LINKABLE_SAVES {
                             uploads.pop_front();
                         }
-                        uploads.push_back((id, entry));
+                        uploads.push_back((id, url, entry));
                     }
                     Err(error) => tracing::warn!(%error, "history: could not record an upload"),
                 }
@@ -457,7 +462,11 @@ pub async fn record_task_events(
                 }
             }
             Ok(TaskEvent::Shortened { id, url }) => {
-                let upload = uploads.iter().rposition(|(task, _)| *task == id).and_then(|at| uploads.remove(at)).map(|(_, entry)| entry);
+                let upload = uploads
+                    .iter()
+                    .rposition(|(task, ..)| *task == id)
+                    .and_then(|at| uploads.remove(at))
+                    .map(|(_, url, entry)| (entry, url));
                 if let Err(error) = record_short(&history, upload, &url, clock.now()) {
                     tracing::warn!(%error, "history: could not record a shortened link");
                 }
@@ -512,9 +521,9 @@ fn record_saved(history: &History, path: &Path, now: jiff::civil::DateTime) -> R
 
 /// Adds a short link to its upload's entry when that entry still exists. Otherwise (a link shortened
 /// on its own) adds an entry of kind `Url` whose link and short link are both the short one.
-fn record_short(history: &History, upload: Option<i64>, short_url: &str, now: jiff::civil::DateTime) -> Result<(), LibraryError> {
-    if let Some(entry) = upload
-        && history.set_short_url(entry, short_url)?
+fn record_short(history: &History, upload: Option<(i64, String)>, short_url: &str, now: jiff::civil::DateTime) -> Result<(), LibraryError> {
+    if let Some((entry, url)) = upload
+        && history.set_short_url(entry, &url, short_url)?
     {
         return Ok(());
     }

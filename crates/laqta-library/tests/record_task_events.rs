@@ -249,3 +249,40 @@ fn an_upload_does_not_link_to_a_newer_entry_that_reused_its_id() {
     let items = history.query(&HistoryQuery::default()).unwrap();
     assert!(items.iter().any(|i| i.url.as_deref() == Some("https://h.example/first")), "the upload still gets an entry");
 }
+
+/// The entry of an upload being shortened is deleted, and the next save takes its row id: the short
+/// link must not land on that other file.
+#[test]
+fn a_short_link_does_not_land_on_a_newer_entry_that_reused_its_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.png");
+    let second = dir.path().join("second.png");
+    write_png(&first, 4, 4);
+    write_png(&second, 4, 4);
+    let history = Arc::new(History::open_in_memory().unwrap());
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(date(2026, 11, 7).at(14, 3, 22, 0)));
+    let (sender, receiver) = async_broadcast::broadcast::<TaskEvent>(16);
+    let recorder = record_task_events(Arc::clone(&history), receiver, clock, || 0);
+    let entry_of = |path: &Path| history.query(&HistoryQuery::default()).unwrap().into_iter().find(|i| i.path.as_deref() == Some(path));
+    let driver = async {
+        sender.broadcast(TaskEvent::Saved { id: TaskId(1), path: first.clone() }).await.unwrap();
+        sender.broadcast(uploaded(1, "https://h.example/first", &first)).await.unwrap();
+        while entry_of(&first).is_none_or(|e| e.url.is_none()) {
+            futures_lite::future::yield_now().await;
+        }
+        let gone = entry_of(&first).unwrap().id;
+        history.delete(gone).unwrap();
+        sender.broadcast(TaskEvent::Saved { id: TaskId(2), path: second.clone() }).await.unwrap();
+        while entry_of(&second).is_none() {
+            futures_lite::future::yield_now().await;
+        }
+        assert_eq!(entry_of(&second).unwrap().id, gone, "SQLite gives the new entry the deleted one's id");
+        sender.broadcast(TaskEvent::Shortened { id: TaskId(1), url: "https://s.example/f".into() }).await.unwrap();
+        drop(sender);
+    };
+    block_on(futures_lite::future::zip(recorder, driver));
+
+    assert_eq!(entry_of(&second).unwrap().short_url, None, "the other file's entry keeps no short link");
+    let items = history.query(&HistoryQuery::default()).unwrap();
+    assert!(items.iter().any(|i| i.short_url.as_deref() == Some("https://s.example/f")), "the short link still gets an entry");
+}

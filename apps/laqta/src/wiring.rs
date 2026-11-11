@@ -671,10 +671,12 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                         if use_hotkeys {
                             sync_hotkeys(&app_b, hotkeys.as_ref(), &registered, hotkey_dispatch);
                         }
+                        // Starting a watch lists the folder's files (all its subfolders' too), so it
+                        // stays off the thread that saved the settings.
+                        app_b.start_watch_folders();
                     }))
                     .await;
             }));
-            app.start_watch_folders();
             Ok(())
         })
     };
