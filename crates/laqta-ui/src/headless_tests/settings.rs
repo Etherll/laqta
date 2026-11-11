@@ -76,9 +76,10 @@ fn settings_at_their_defaults_show_no_reset(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_changed_field_and_choice_offer_their_resets(cx: &mut TestAppContext) {
     use laqta_domain::settings::Theme;
-    // The theme row is at the top of the page, so its button is inside the test window.
+    // Both rows are near the top of the page, so their buttons are inside the test window on every
+    // platform (the window's size is the platform's default).
     let (mut vcx, _dir) = open_with_defaults(cx, |d| {
-        d.defaults.general.toast.duration_ms += 1000;
+        d.screenshots_dir = d.screenshots_dir.join("elsewhere");
         d.theme = if d.theme == Theme::Dark { Theme::Light } else { Theme::Dark };
     });
     draw(&mut vcx);
@@ -87,10 +88,10 @@ fn a_changed_field_and_choice_offer_their_resets(cx: &mut TestAppContext) {
     draw(&mut vcx);
     assert!(vcx.debug_bounds("theme-reset").is_none(), "the choice is back at its default");
 
-    let field = vcx.debug_bounds("toast-ms-reset").expect("the duration field's reset button");
+    let field = vcx.debug_bounds("dir-browse-reset").expect("the folder field's reset button");
     vcx.simulate_click(field.center(), Modifiers::default());
     draw(&mut vcx);
-    assert!(vcx.debug_bounds("toast-ms-reset").is_none(), "the field shows its default text");
+    assert!(vcx.debug_bounds("dir-browse-reset").is_none(), "the field shows its default text");
 }
 
 /// On a platform whose window can't see some keys (Windows: Print Screen, media keys), recording a

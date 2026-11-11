@@ -3,12 +3,13 @@
 
 use std::collections::HashSet;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use laqta_ports::{FileWatcher, PortError, WatchCallback, WatchHandle};
 use notify::RecursiveMode;
-use notify::event::{CreateKind, EventKind, ModifyKind, RenameMode};
+use notify::event::{CreateKind, EventKind, ModifyKind, RemoveKind, RenameMode};
 use notify_debouncer_full::{DebounceEventResult, DebouncedEvent, new_debouncer};
 
 /// Reports a file once writes to it have stopped for `settle`.
@@ -34,7 +35,9 @@ impl FileWatcher for NotifyWatcher {
         if !folder.is_dir() {
             return Err(PortError::Failed(format!("watch folder is missing: {}", folder.display())));
         }
-        let mut debouncer = new_debouncer(self.settle, None, move |result: DebounceEventResult| report(result, &on_file))
+        // The files already there are not arrivals, whatever event a later write to them raises.
+        let known = Mutex::new(files_in(folder, recursive));
+        let mut debouncer = new_debouncer(self.settle, None, move |result: DebounceEventResult| report(result, &known, &on_file))
             .map_err(|error| PortError::Failed(format!("file watcher did not start: {error}")))?;
         let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
         debouncer.watch(folder, mode).map_err(|error| watch_error(folder, error))?;
@@ -43,9 +46,9 @@ impl FileWatcher for NotifyWatcher {
     }
 }
 
-fn report(result: DebounceEventResult, on_file: &WatchCallback) {
+fn report(result: DebounceEventResult, known: &Mutex<HashSet<PathBuf>>, on_file: &WatchCallback) {
     match result {
-        Ok(events) => report_events(&events, on_file),
+        Ok(events) => report_events(&events, &mut known.lock().unwrap_or_else(PoisonError::into_inner), on_file),
         Err(errors) => {
             for error in errors {
                 tracing::warn!(%error, "file watch error");
@@ -54,27 +57,68 @@ fn report(result: DebounceEventResult, on_file: &WatchCallback) {
     }
 }
 
-fn report_events(events: &[DebouncedEvent], on_file: &WatchCallback) {
-    let mut seen = HashSet::new();
+/// Reports each path that arrived and was not in `known`, and keeps `known` up to date: a removed or
+/// renamed-away file can arrive again.
+fn report_events(events: &[DebouncedEvent], known: &mut HashSet<PathBuf>, on_file: &WatchCallback) {
     for event in events {
+        if is_departure(&event.kind) {
+            for path in &event.paths {
+                known.remove(&key(path));
+            }
+            continue;
+        }
         if !is_arrival(&event.kind) {
             continue;
         }
         for path in &event.paths {
-            if seen.insert(path) && path.is_file() {
+            if path.is_file() && known.insert(key(path)) {
                 on_file(path.clone());
             }
         }
     }
 }
 
-/// A file was created or renamed into the folder. A data write to a file that was already there is
-/// not an arrival. Writes to a file created in the same settle window are merged into its create event.
+/// An event that may mean a file appeared. Platforms differ (Windows reports a write as `Modify(Any)`,
+/// macOS a rename as `Name(Any)` and can repeat a file's old "created" flag), so `known` decides
+/// whether the file is new.
 fn is_arrival(kind: &EventKind) -> bool {
     matches!(
         kind,
-        EventKind::Create(CreateKind::File | CreateKind::Any) | EventKind::Modify(ModifyKind::Any | ModifyKind::Name(RenameMode::To))
+        EventKind::Create(CreateKind::File | CreateKind::Any)
+            | EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_) | ModifyKind::Name(RenameMode::To | RenameMode::Any))
     )
+}
+
+/// A file left: removed, or renamed away.
+fn is_departure(kind: &EventKind) -> bool {
+    matches!(kind, EventKind::Remove(RemoveKind::File | RemoveKind::Any) | EventKind::Modify(ModifyKind::Name(RenameMode::From)))
+}
+
+/// One spelling for a file's path: its folder resolved (macOS reports `/private/var` for `/var`), so
+/// paths from events and from the folder listing compare equal, even after the file is gone.
+fn key(path: &Path) -> PathBuf {
+    match (path.parent().and_then(|parent| parent.canonicalize().ok()), path.file_name()) {
+        (Some(parent), Some(name)) => parent.join(name),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// The files in `folder` now, and in its subfolders when `recursive`.
+fn files_in(folder: &Path, recursive: bool) -> HashSet<PathBuf> {
+    let mut files = HashSet::new();
+    let mut folders = vec![folder.to_path_buf()];
+    while let Some(dir) = folders.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_file() {
+                files.insert(key(&entry.path()));
+            } else if kind.is_dir() && recursive {
+                folders.push(entry.path());
+            }
+        }
+    }
+    files
 }
 
 fn watch_error(folder: &Path, error: notify::Error) -> PortError {

@@ -97,7 +97,9 @@ fn audit_bug_relative_path_forwarded_unresolved() {
     std::fs::write(sub.join("shot.png"), b"png").unwrap();
     assert_eq!(run(&f, &sub, &["shot.png"]), Some(0));
     let got = seen(&f);
-    assert_eq!(got, vec![Request::Upload(sub.join("shot.png"))], "relative path not made absolute before forwarding");
+    // The child's working directory is what the OS reports, with links resolved (macOS: `/private/var`).
+    let expected = sub.canonicalize().unwrap().join("shot.png");
+    assert_eq!(got, vec![Request::Upload(expected)], "relative path not made absolute before forwarding");
 }
 
 /// `-CustomUploader x.sxcu` / `-ImageEffect y.sxie` while Laqta runs are forwarded to it as
@@ -130,7 +132,9 @@ fn audit_bug_sharex_switches_rejected() {
     let mut rejected = Vec::new();
     // ShareX has no `-p` switch (Program.cs reads only -silent/-s, -multi/-m and -NoHotkeys).
     for flag in ["-s", "-m", "-BackgroundRemover", "-AnimatedGifTrimmer"] {
-        if run(&f, &f.dir, &[flag]) == Some(2) {
+        // `-m` starts an instance of its own, by design; `--version` after it stops once it has parsed.
+        let args: &[&str] = if flag == "-m" { &[flag, "--version"] } else { &[flag] };
+        if run(&f, &f.dir, args) == Some(2) {
             rejected.push(flag);
         }
     }

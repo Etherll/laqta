@@ -50,7 +50,8 @@ fn clipboard_round_trip_keeps_size() {
 #[test]
 fn hotkey_registration_succeeds() {
     let ports = laqta_platform_windows::ports();
-    let chord = KeyChord { modifiers: Modifiers::empty(), key: Key::PrintScreen };
+    // Not bare Print Screen: on Windows 11 Snipping Tool owns it, and registration refuses it then.
+    let chord = KeyChord { modifiers: Modifiers::CTRL | Modifiers::ALT | Modifiers::SHIFT, key: Key::F11 };
     let results = ports.hotkeys.register(&[(chord, Action::PrintScreen)], Arc::new(|_| {}));
     assert_eq!(results.len(), 1);
     assert!(results[0].1.is_ok(), "{:?}", results[0].1);
