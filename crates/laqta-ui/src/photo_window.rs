@@ -555,8 +555,7 @@ impl PhotoWindow {
             let r = task.await;
             let revision = saved.await.ok();
             let _ = this.update(cx, |this, cx| {
-                let close = this.close_after_save && matches!(r, Ok(Some(_)));
-                this.close_after_save = false;
+                let close = std::mem::take(&mut this.close_after_save) && matches!(r, Ok(Some(_)));
                 match r {
                     Ok(Some(p)) => {
                         if let Some(revision) = revision {
@@ -568,7 +567,8 @@ impl PhotoWindow {
                     Ok(None) => {}
                     Err(e) => this.message = Some(format!("Save failed: {e}")),
                 }
-                if close {
+                // An edit made while the file was written is not in it, so it keeps the window open.
+                if close && !(Self::close_guard().dirty)(this) {
                     crate::close_guard::close(handle, cx);
                 }
                 cx.notify();

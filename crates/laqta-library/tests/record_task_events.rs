@@ -182,3 +182,70 @@ fn a_file_uploaded_from_disk_gets_a_file_entry() {
     assert_eq!(item.url.as_deref(), Some("https://h.example/AbC123"));
     assert_eq!((item.width, item.height), (Some(4), Some(4)));
 }
+
+fn uploaded(id: u64, url: &str, path: &Path) -> TaskEvent {
+    TaskEvent::Uploaded { id: TaskId(id), url: url.into(), thumbnail_url: None, deletion_url: None, path: Some(path.to_path_buf()) }
+}
+
+/// A capture saved both to its folder and through the dialog uploads the folder's file: the link goes
+/// to that file's entry, not to the one saved last.
+#[test]
+fn an_upload_links_to_the_entry_of_the_file_it_sent() {
+    let dir = tempfile::tempdir().unwrap();
+    let plain = dir.path().join("shot.png");
+    let chosen = dir.path().join("chosen.png");
+    write_png(&plain, 4, 4);
+    write_png(&chosen, 4, 4);
+    let history = Arc::new(History::open_in_memory().unwrap());
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(date(2026, 11, 7).at(14, 3, 22, 0)));
+    let (sender, receiver) = async_broadcast::broadcast::<TaskEvent>(16);
+    block_on(async {
+        sender.broadcast(TaskEvent::Saved { id: TaskId(1), path: plain.clone() }).await.unwrap();
+        sender.broadcast(TaskEvent::Saved { id: TaskId(1), path: chosen.clone() }).await.unwrap();
+        sender.broadcast(uploaded(1, "https://h.example/AbC", &plain)).await.unwrap();
+        drop(sender);
+    });
+    block_on(record_task_events(Arc::clone(&history), receiver, clock, || 0));
+
+    let items = history.query(&HistoryQuery::default()).unwrap();
+    assert_eq!(items.len(), 2);
+    let url_of = |path: &Path| items.iter().find(|i| i.path.as_deref() == Some(path)).unwrap().url.clone();
+    assert_eq!(url_of(&plain).as_deref(), Some("https://h.example/AbC"));
+    assert_eq!(url_of(&chosen), None);
+}
+
+/// The entry of a file still uploading is deleted, and the next save takes its row id: the upload
+/// must not link to that other file.
+#[test]
+fn an_upload_does_not_link_to_a_newer_entry_that_reused_its_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.png");
+    let second = dir.path().join("second.png");
+    write_png(&first, 4, 4);
+    write_png(&second, 4, 4);
+    let history = Arc::new(History::open_in_memory().unwrap());
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(date(2026, 11, 7).at(14, 3, 22, 0)));
+    let (sender, receiver) = async_broadcast::broadcast::<TaskEvent>(16);
+    let recorder = record_task_events(Arc::clone(&history), receiver, clock, || 0);
+    let entry_of = |path: &Path| history.query(&HistoryQuery::default()).unwrap().into_iter().find(|i| i.path.as_deref() == Some(path));
+    let driver = async {
+        sender.broadcast(TaskEvent::Saved { id: TaskId(1), path: first.clone() }).await.unwrap();
+        while entry_of(&first).is_none() {
+            futures_lite::future::yield_now().await;
+        }
+        let gone = entry_of(&first).unwrap().id;
+        history.delete(gone).unwrap();
+        sender.broadcast(TaskEvent::Saved { id: TaskId(2), path: second.clone() }).await.unwrap();
+        while entry_of(&second).is_none() {
+            futures_lite::future::yield_now().await;
+        }
+        assert_eq!(entry_of(&second).unwrap().id, gone, "SQLite gives the new entry the deleted one's id");
+        sender.broadcast(uploaded(1, "https://h.example/first", &first)).await.unwrap();
+        drop(sender);
+    };
+    block_on(futures_lite::future::zip(recorder, driver));
+
+    assert_eq!(entry_of(&second).unwrap().url, None, "the other file's entry keeps no link");
+    let items = history.query(&HistoryQuery::default()).unwrap();
+    assert!(items.iter().any(|i| i.url.as_deref() == Some("https://h.example/first")), "the upload still gets an entry");
+}

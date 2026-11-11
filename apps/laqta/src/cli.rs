@@ -94,8 +94,12 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
                 let name = args.next().ok_or("-workflow needs a name")?;
                 out.requests.push(Request::Workflow(name));
             }
-            // As in ShareX, `-task` picks settings for the uploads; it does not run the workflow.
-            "-task" | "--task" => task = Some(args.next().ok_or("-task needs a name")?),
+            // As in ShareX, `-task` picks settings for the uploads; it does not run the workflow. Only
+            // the first one counts.
+            "-task" | "--task" => {
+                let name = args.next().ok_or("-task needs a name")?;
+                task.get_or_insert(name);
+            }
             "-customuploader" | "--custom-uploader" => out.import_uploaders.push(args.next().ok_or("-CustomUploader needs a file")?.into()),
             "-imageeffect" | "--image-effect" => out.import_effects.push(args.next().ok_or("-ImageEffect needs a file")?.into()),
             "-nativemessaginginput" => {
@@ -124,10 +128,14 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     }
     if let Some(workflow) = task {
         for request in &mut out.requests {
-            if let Request::Upload(path) = request
-                && !["sxcu", "sxie", "sxb"].iter().any(|ext| path.extension().is_some_and(|x| x.eq_ignore_ascii_case(ext)))
-            {
-                *request = Request::UploadWith { workflow: workflow.clone(), path: std::mem::take(path) };
+            match request {
+                Request::Upload(path)
+                    if !["sxcu", "sxie", "sxb"].iter().any(|ext| path.extension().is_some_and(|x| x.eq_ignore_ascii_case(ext))) =>
+                {
+                    *request = Request::UploadWith { workflow: workflow.clone(), path: std::mem::take(path) };
+                }
+                Request::UploadUrl(url) => *request = Request::UploadUrlWith { workflow: workflow.clone(), url: std::mem::take(url) },
+                _ => {}
             }
         }
     }
@@ -156,6 +164,19 @@ mod tests {
         assert!(p(&["--bogus"]).is_err());
         assert!(p(&["--action", "nope"]).is_err());
         assert!(p(&["--action"]).is_err());
+    }
+
+    #[test]
+    fn the_first_task_picks_the_settings_for_files_and_urls() {
+        // As in ShareX: only the first `-task` counts, wherever it is, and it applies to URLs too.
+        let args = run(&["a.png", "-task", "To FTP", "https://x/y.png", "-task", "Other"]);
+        assert_eq!(
+            args.requests,
+            vec![
+                Request::UploadWith { workflow: "To FTP".into(), path: "a.png".into() },
+                Request::UploadUrlWith { workflow: "To FTP".into(), url: "https://x/y.png".into() },
+            ]
+        );
     }
 
     #[test]

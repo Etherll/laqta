@@ -312,19 +312,22 @@ impl History {
         self.with(|conn| Ok(conn.execute("UPDATE history SET short_url = ?1 WHERE id = ?2", rusqlite::params![short_url, id])? > 0))
     }
 
-    /// Sets the upload links and host of an entry. Returns `false` when no entry has the id.
+    /// Sets the upload links and host of the entry of the file at `path`. Returns `false` when no entry
+    /// has the id, or it is another file's: a deleted entry's id can be taken by a newer one.
     pub fn set_upload(
         &self,
         id: i64,
+        path: &Path,
         url: &str,
         thumbnail_url: Option<&str>,
         deletion_url: Option<&str>,
         host: Option<&str>,
     ) -> Result<bool, LibraryError> {
+        let path = text_of(path)?;
         self.with(|conn| {
             let changed = conn.execute(
-                "UPDATE history SET url = ?1, thumbnail_url = ?2, deletion_url = ?3, host = ?4 WHERE id = ?5",
-                rusqlite::params![url, thumbnail_url, deletion_url, host, id],
+                "UPDATE history SET url = ?1, thumbnail_url = ?2, deletion_url = ?3, host = ?4 WHERE id = ?5 AND path = ?6",
+                rusqlite::params![url, thumbnail_url, deletion_url, host, id, path],
             )?;
             Ok(changed > 0)
         })
@@ -404,8 +407,8 @@ pub async fn record_task_events(
     clock: Arc<dyn Clock>,
     max_items: impl Fn() -> u32,
 ) {
-    // Saves not yet matched by an upload: task id and history entry id, oldest first.
-    let mut saves: VecDeque<(TaskId, i64)> = VecDeque::with_capacity(LINKABLE_SAVES);
+    // Saves not yet matched by an upload: task id, file and history entry id, oldest first.
+    let mut saves: VecDeque<(TaskId, PathBuf, i64)> = VecDeque::with_capacity(LINKABLE_SAVES);
     // Uploads a shortened link may still follow: task id and history entry id, oldest first.
     let mut uploads: VecDeque<(TaskId, i64)> = VecDeque::with_capacity(LINKABLE_SAVES);
     loop {
@@ -416,7 +419,7 @@ pub async fn record_task_events(
                         if saves.len() == LINKABLE_SAVES {
                             saves.pop_front();
                         }
-                        saves.push_back((id, entry));
+                        saves.push_back((id, path, entry));
                     }
                     Err(error) => tracing::warn!(path = %path.display(), %error, "history: could not record a saved file"),
                 }
@@ -425,13 +428,18 @@ pub async fn record_task_events(
                 }
             }
             Ok(TaskEvent::Uploaded { id, url, thumbnail_url, deletion_url, path }) => {
-                let mut saved = saves.iter().rposition(|(task, _)| *task == id).and_then(|at| saves.remove(at)).map(|(_, entry)| entry);
+                // A task can save twice (to its folder and through the dialog): the upload names the file it sent.
+                let at = match &path {
+                    Some(path) => saves.iter().rposition(|(task, saved, _)| *task == id && saved == path),
+                    None => saves.iter().rposition(|(task, ..)| *task == id),
+                };
+                let mut saved = at.and_then(|at| saves.remove(at)).map(|(_, path, entry)| (entry, path));
                 // A file uploaded from disk had no Saved event: its entry is made now, as a save's would be.
                 if saved.is_none()
                     && let Some(path) = &path
                 {
                     match record_saved(&history, path, clock.now()) {
-                        Ok(entry) => saved = Some(entry),
+                        Ok(entry) => saved = Some((entry, path.clone())),
                         Err(error) => tracing::warn!(path = %path.display(), %error, "history: could not record an uploaded file"),
                     }
                 }
@@ -533,15 +541,15 @@ fn record_short(history: &History, upload: Option<i64>, short_url: &str, now: ji
 /// entry of kind `Url`, named after the last segment of the URL. Returns the entry's id.
 fn record_upload(
     history: &History,
-    saved: Option<i64>,
+    saved: Option<(i64, PathBuf)>,
     url: &str,
     thumbnail_url: Option<&str>,
     deletion_url: Option<&str>,
     now: jiff::civil::DateTime,
 ) -> Result<i64, LibraryError> {
     let host = host_of(url);
-    if let Some(entry) = saved
-        && history.set_upload(entry, url, thumbnail_url, deletion_url, host)?
+    if let Some((entry, path)) = saved
+        && history.set_upload(entry, &path, url, thumbnail_url, deletion_url, host)?
     {
         return Ok(entry);
     }

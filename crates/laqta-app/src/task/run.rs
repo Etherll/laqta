@@ -649,7 +649,7 @@ impl Job {
             Err(error) => self.step_failed("print", error),
         }
         // Windows' print verb returns before the print handler opens the file, so the file stays a
-        // while. The next run's job with this id overwrites it if the app quits first.
+        // while. If the app quits first, it is left in the temporary folder.
         let ports = Arc::clone(&self.cx.ports);
         self.cx.ports.spawner.spawn(Box::pin(async move {
             ports.clock.sleep(PRINT_FILE_LIFETIME).await;

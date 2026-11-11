@@ -141,7 +141,7 @@ pub fn record_args_on(
 /// The command that converts a finished file: a transcode, a trim, a scale, or a single thumbnail
 /// frame. With no codec named, the output's extension picks one (see `codec_for_extension`).
 pub fn transcode_args(spec: &TranscodeSpec, input: &Path, output: &Path) -> Vec<String> {
-    let codec = spec.codec.unwrap_or_else(|| codec_for_extension(output));
+    let codec = transcode_codec(spec, output);
     let input = input.to_string_lossy().into_owned();
     let output = output.to_string_lossy().into_owned();
     let mut a = Argv::default();
@@ -179,6 +179,12 @@ pub fn transcode_args(spec: &TranscodeSpec, input: &Path, output: &Path) -> Vec<
     }
     a.push(output);
     a.finish()
+}
+
+/// The codec a transcode to `output` encodes with: the one `spec` names, or else the one its extension
+/// needs (see `codec_for_extension`).
+pub fn transcode_codec(spec: &TranscodeSpec, output: &Path) -> VideoCodec {
+    spec.codec.unwrap_or_else(|| codec_for_extension(output))
 }
 
 /// The codec for a transcode that names none: a `.gif` or `.webm` output must stay in its container's

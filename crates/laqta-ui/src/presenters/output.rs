@@ -43,9 +43,10 @@ pub fn read_file(path: &Path) -> Result<Vec<u8>, String> {
 /// Temporary uploads older than this are removed when the next one is written.
 const TEMP_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Writes a temporary file for an upload as `<dir>/<stem>_<n>.<ext>`, with the first free `n`, and
+/// Writes a temporary file for an upload as `<dir>/<stem>_<time>_<n>.<ext>`, with the first free `n`, and
 /// removes the files in `dir` older than a day. An upload reads its file later, so the file can't be
-/// removed when this returns. Blocks: call it from a background executor.
+/// removed when this returns. The time (in seconds) keeps a name from being used again once its file
+/// is gone, as history may still point at it. Blocks: call it from a background executor.
 pub fn write_temp(dir: &Path, stem: &str, ext: &str, bytes: &[u8], now: SystemTime) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -57,8 +58,9 @@ pub fn write_temp(dir: &Path, stem: &str, ext: &str, bytes: &[u8], now: SystemTi
         }
     }
     // `create_new` reserves the name, so two uploads that finish together never share a file.
+    let time = now.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |since| since.as_secs());
     for n in 0u32.. {
-        let path = dir.join(format!("{stem}_{n}.{ext}"));
+        let path = dir.join(format!("{stem}_{time}_{n}.{ext}"));
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut file) => {
                 use std::io::Write as _;
@@ -112,10 +114,11 @@ mod tests {
         let second = write_temp(tmp.path(), "edit", "png", b"2", now).unwrap();
         assert_ne!(first, second);
         assert_eq!(read_file(&first).unwrap(), b"1");
-        // Two days later both are stale: the next write removes them and reuses the first name.
+        // Two days later both are stale: the next write removes them, and takes a name of its own (the
+        // history entry of an upload still names the old file).
         let third = write_temp(tmp.path(), "edit", "png", b"3", now + Duration::from_secs(2 * 24 * 60 * 60)).unwrap();
-        assert_eq!(third, first);
-        assert!(!second.exists());
+        assert_ne!(third, first);
+        assert!(!first.exists() && !second.exists());
         assert_eq!(read_file(&third).unwrap(), b"3");
     }
 

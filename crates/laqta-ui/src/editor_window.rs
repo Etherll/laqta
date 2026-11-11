@@ -519,9 +519,8 @@ impl EditorWindow {
             let r = task.await;
             let _ = this.update(cx, |this, cx| {
                 this.save_missed = !matches!(r, Ok(Some(_)));
-                if this.save_missed {
-                    this.close_after_save = false;
-                } else if this.close_after_save {
+                // An edit made while the file was written is not in it, so it keeps the window open.
+                if std::mem::take(&mut this.close_after_save) && !(Self::close_guard().dirty)(this) {
                     crate::close_guard::close(handle, cx);
                 }
                 this.message = Some(match r {

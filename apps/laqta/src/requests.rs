@@ -24,6 +24,15 @@ fn has_ext(path: &Path, ext: &str) -> bool {
     path.extension().is_some_and(|x| x.eq_ignore_ascii_case(ext))
 }
 
+/// The workflow `-task` names, matched as a hotkey's name is.
+fn named<'a>(settings: &'a Settings, workflow: &str) -> Result<&'a laqta_domain::workflow::Workflow, String> {
+    settings
+        .workflows
+        .iter()
+        .find(|w| w.name.eq_ignore_ascii_case(workflow.trim()))
+        .ok_or_else(|| format!("no workflow named `{workflow}`"))
+}
+
 /// What a request does. An action runs the first enabled workflow bound to it, as a hotkey does.
 pub fn route(request: Request, settings: &Settings) -> Result<Route, String> {
     Ok(match request {
@@ -53,13 +62,10 @@ pub fn route(request: Request, settings: &Settings) -> Result<Route, String> {
             Route::DispatchFile(action, std::path::absolute(&path).unwrap_or(path), workflow)
         }
         Request::UploadWith { workflow, path } => {
-            let w = settings
-                .workflows
-                .iter()
-                .find(|w| w.name.eq_ignore_ascii_case(workflow.trim()))
-                .ok_or_else(|| format!("no workflow named `{workflow}`"))?;
+            let w = named(settings, &workflow)?;
             Route::Upload(UploadSource::File(std::path::absolute(&path).unwrap_or(path)), Some(w.id))
         }
+        Request::UploadUrlWith { workflow, url } => Route::Upload(UploadSource::Url(url), Some(named(settings, &workflow)?.id)),
     })
 }
 
@@ -101,5 +107,8 @@ mod tests {
         assert!(matches!(route(Request::Upload(png.into()), &s), Ok(Route::Upload(UploadSource::File(p), None)) if p == Path::new(png)));
         assert!(matches!(route(Request::ShortenUrl("https://x".into()), &s), Ok(Route::Upload(UploadSource::ShortenUrl(_), None))));
         assert!(matches!(route(Request::UploadText("hi".into()), &s), Ok(Route::Upload(UploadSource::Text(_), None))));
+        let url = Request::UploadUrlWith { workflow: "region to imgur".into(), url: "https://x/y.png".into() };
+        assert!(matches!(route(url, &s), Ok(Route::Upload(UploadSource::Url(u), Some(WorkflowId(7)))) if u == "https://x/y.png"));
+        assert!(route(Request::UploadUrlWith { workflow: "nope".into(), url: "https://x".into() }, &s).is_err());
     }
 }

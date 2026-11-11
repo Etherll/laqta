@@ -141,6 +141,11 @@ pub enum Request {
         workflow: String,
         path: std::path::PathBuf,
     },
+    /// Download a URL and upload it again with a workflow's settings (`-task <name> <url>`).
+    UploadUrlWith {
+        workflow: String,
+        url: String,
+    },
 }
 
 /// Escapes a payload so it stays on one line: `\` → `\\`, line breaks → `\n` / `\r`.
@@ -192,6 +197,7 @@ pub(crate) fn encode(request: &Request) -> String {
         Request::ActionFile(a, p) => format!("actionfile {} {}\n", action_name(*a), escape(&p.to_string_lossy())),
         // A tab separates the two fields; `escape` writes a tab inside either as `\t`.
         Request::UploadWith { workflow, path } => format!("uploadwith {}\t{}\n", escape(workflow), escape(&path.to_string_lossy())),
+        Request::UploadUrlWith { workflow, url } => format!("urlwith {}\t{}\n", escape(workflow), escape(url)),
     }
 }
 
@@ -224,6 +230,10 @@ pub(crate) fn parse(line: &str) -> Result<Request, String> {
         "uploadwith" => {
             let (workflow, path) = rest.split_once('\t').ok_or_else(|| "malformed request".to_owned())?;
             Request::UploadWith { workflow: unescape(workflow), path: unescape(path).into() }
+        }
+        "urlwith" => {
+            let (workflow, url) = rest.split_once('\t').ok_or_else(|| "malformed request".to_owned())?;
+            Request::UploadUrlWith { workflow: unescape(workflow), url: unescape(url) }
         }
         _ => return Err("malformed request".to_owned()),
     })
@@ -274,6 +284,7 @@ mod request_tests {
             Request::UploadText("line 1\nline 2\\".into()),
             Request::ActionFile(Action::ImageEditor, "/tmp/a b.png".into()),
             Request::UploadWith { workflow: "To\tFTP".into(), path: "/tmp/c\td.png".into() },
+            Request::UploadUrlWith { workflow: "To\tFTP".into(), url: "https://x/a\tb".into() },
             Request::UploadUrl("https://x/y".into()),
             Request::ShortenUrl("https://x/z".into()),
         ] {
