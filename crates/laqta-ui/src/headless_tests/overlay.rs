@@ -258,7 +258,7 @@ fn text_read_in_place_is_picked_with_the_pointer_and_copied_through_the_session(
             },
         ],
     });
-    let read = RegionView { text: Some(TextLayer::Read { result: result.clone(), copied: true }), ..settled.clone() };
+    let read = RegionView { text: Some(TextLayer::Read { result: result.clone(), copied: true, copy_failed: false }), ..settled.clone() };
     vcx.update(|_, cx| crate::overlay::update(read.clone(), cx));
     assert_eq!(notice(&mut vcx), Some(Notice::Found { words: 5, copied: true }));
     vcx.update(|window, cx| window.draw(cx).clear(cx));
@@ -292,6 +292,15 @@ fn text_read_in_place_is_picked_with_the_pointer_and_copied_through_the_session(
 
     vcx.simulate_keystrokes("ctrl-c");
     assert_eq!(sent.lock().unwrap().last(), Some(&RegionInput::Text(TextCommand::Copy("big world\nsecond".to_owned()))));
+    assert_eq!(notice(&mut vcx), Some(Notice::Copied(Some(3))));
+    // The session says the clipboard refused it: the bar says so instead.
+    let refused = RegionView { text: Some(TextLayer::Read { result: result.clone(), copied: true, copy_failed: true }), ..read.clone() };
+    vcx.update(|_, cx| crate::overlay::update(refused, cx));
+    assert_eq!(notice(&mut vcx), Some(Notice::CopyFailed));
+    assert_eq!(picked(&mut vcx).as_deref(), Some("big world\nsecond"), "the picked words stay");
+    vcx.simulate_keystrokes("ctrl-c");
+    assert_eq!(notice(&mut vcx), Some(Notice::Copied(Some(3))), "a new copy starts over");
+    vcx.update(|_, cx| crate::overlay::update(read.clone(), cx));
     assert_eq!(notice(&mut vcx), Some(Notice::Copied(Some(3))));
 
     // Arrow keys would nudge the selection and read it again on every press: they do nothing here.
@@ -367,7 +376,7 @@ fn a_text_capture_shows_no_toolbar_and_closing_it_ends_the_session(cx: &mut Test
         selection_image: Some(Arc::new(crop)),
         tools_visible: true,
         text_only: true,
-        text: Some(TextLayer::Read { result: Arc::new(OcrResult::default()), copied: false }),
+        text: Some(TextLayer::Read { result: Arc::new(OcrResult::default()), copied: false, copy_failed: false }),
         ..RegionView::default()
     };
     vcx.update(|_, cx| crate::overlay::update(view, cx));

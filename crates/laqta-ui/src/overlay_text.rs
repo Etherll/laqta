@@ -61,6 +61,8 @@ pub(crate) struct TextUi {
     copied_all: bool,
     /// The user's last copy: when, and how many words (`None` is everything).
     copy: Option<(Instant, Option<usize>)>,
+    /// The session said that copy did not reach the clipboard.
+    copy_failed: bool,
 }
 
 fn ms(from: Instant, now: Instant) -> f32 {
@@ -75,7 +77,7 @@ fn rgba(rgb: u32, alpha: f32) -> Hsla {
 
 impl TextUi {
     fn new(phase: Phase, now: Instant) -> Self {
-        TextUi { phase, since: now, pick: Pick::default(), result: None, copied_all: false, copy: None }
+        TextUi { phase, since: now, pick: Pick::default(), result: None, copied_all: false, copy: None, copy_failed: false }
     }
 
     /// Words are shown and can be picked.
@@ -90,6 +92,7 @@ impl TextUi {
             Phase::Failed(message) => Notice::Failed(message.clone()),
             Phase::Read if self.pick.layout().is_empty() => Notice::NoText,
             Phase::Read => match (self.copy, self.pick.count()) {
+                (Some((at, _)), _) if ms(at, now) < motion::NOTICE_MS && self.copy_failed => Notice::CopyFailed,
                 (Some((at, count)), _) if ms(at, now) < motion::NOTICE_MS => Notice::Copied(count),
                 (_, 0) => Notice::Found { words: self.pick.layout().tokens().len(), copied: self.copied_all },
                 (_, count) => Notice::Picked(count),
@@ -109,6 +112,9 @@ impl TextUi {
 
     /// The brightness a copy adds at `now`.
     fn flash(&self, now: Instant) -> f32 {
+        if self.copy_failed {
+            return 0.0;
+        }
         self.copy.map_or(0.0, |(at, _)| motion::flash(ms(at, now)))
     }
 }
@@ -125,9 +131,11 @@ impl OverlayModel {
                     self.text = Some(TextUi::new(Phase::Reading, now));
                 }
             }
-            Some(TextLayer::Read { result, copied }) => {
+            Some(TextLayer::Read { result, copied, copy_failed }) => {
                 let same = self.text.as_ref().and_then(|t| t.result.as_ref()).is_some_and(|shown| Arc::ptr_eq(shown, result));
-                if !same {
+                if let Some(text) = self.text.as_mut().filter(|_| same) {
+                    text.copy_failed = *copy_failed;
+                } else {
                     self.text = Some(TextUi {
                         pick: Pick::new(Layout::new(result)),
                         result: Some(result.clone()),
@@ -171,6 +179,7 @@ impl OverlayModel {
             None => (text.pick.layout().all_text(), None),
         };
         text.copy = Some((Instant::now(), count));
+        text.copy_failed = false;
         text.copied_all = count.is_none();
         (self.on_input)(RegionInput::Text(TextCommand::Copy(words)));
         // One more paint when the notice is over, with or without animation frames.
@@ -350,7 +359,7 @@ pub(crate) fn bar_size(notice: &Notice) -> (f32, f32) {
     let width = match notice {
         Notice::Reading => 196.0,
         Notice::NoText => 360.0,
-        Notice::Failed(_) => 480.0,
+        Notice::Failed(_) | Notice::CopyFailed => 480.0,
         Notice::Copied(_) | Notice::Picked(_) | Notice::Found { .. } => 560.0,
     };
     (width, BAR_H)
@@ -365,7 +374,7 @@ pub(crate) fn bar(model: &Entity<OverlayModel>, at: bar::Rect, now: Instant, sti
     let (icon, tint, breath) = match &notice {
         Notice::Reading => (IconName::Sparkles, ACCENT, if still { 1.0 } else { 0.45 + 0.55 * motion::breath(elapsed) }),
         Notice::NoText => (IconName::ScanLine, 0xffffff, 0.7),
-        Notice::Failed(_) => (IconName::CircleX, FAILED, 1.0),
+        Notice::Failed(_) | Notice::CopyFailed => (IconName::CircleX, FAILED, 1.0),
         _ if notice.done() => (IconName::Check, DONE, 1.0),
         _ => (IconName::ScanText, 0xffffff, 0.9),
     };

@@ -440,6 +440,8 @@ pub enum Notice {
     Failed(String),
     /// The user just copied: this many words, or everything.
     Copied(Option<usize>),
+    /// The user's copy did not reach the clipboard.
+    CopyFailed,
     /// Words are picked and not copied yet.
     Picked(usize),
     /// Nothing is picked. `copied`: the whole text went to the clipboard when it was read.
@@ -458,6 +460,7 @@ impl Notice {
             Notice::Failed(message) => (format!("Couldn't read the text: {message}"), None),
             Notice::Copied(Some(count)) => (format!("Copied {}", words(*count)), None),
             Notice::Copied(None) => ("Copied all text".to_owned(), None),
+            Notice::CopyFailed => ("Couldn't copy to the clipboard".to_owned(), Some("Try again")),
             Notice::Picked(count) => (format!("{} selected", words(*count)), None),
             Notice::Found { copied: true, .. } => ("All text copied".to_owned(), Some("Drag to pick words")),
             Notice::Found { words: count, copied: false } => (format!("{} found", words(*count)), Some("Drag to pick words")),

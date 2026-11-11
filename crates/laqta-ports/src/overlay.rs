@@ -21,6 +21,8 @@ pub enum TextLayer {
         result: Arc<crate::OcrResult>,
         /// The whole text is on the clipboard already.
         copied: bool,
+        /// The user's last copy (`TextCommand::Copy`) did not reach the clipboard.
+        copy_failed: bool,
     },
     /// The recogniser failed, with its message.
     Failed(String),

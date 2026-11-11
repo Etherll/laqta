@@ -799,7 +799,7 @@ fn ask(overlay: &FakeOverlay, command: TextCommand) {
 /// The text of the lines the overlay was last told to show, and whether they were copied.
 fn shown_text(overlay: &FakeOverlay) -> Option<(String, bool)> {
     match overlay.last_view().unwrap().text {
-        Some(TextLayer::Read { result, copied }) => Some((result.text(), copied)),
+        Some(TextLayer::Read { result, copied, .. }) => Some((result.text(), copied)),
         _ => None,
     }
 }
@@ -1020,6 +1020,29 @@ fn a_failed_read_and_an_empty_one_are_shown_and_copy_nothing() {
         assert_eq!(shown_text(&rig.overlay), Some((String::new(), false)));
         assert!(rig.clipboard.texts.lock().unwrap().is_empty());
         assert!(rig.tools.ocr.lock().unwrap().is_empty());
+    });
+}
+
+#[test]
+fn a_copy_the_clipboard_refuses_is_told_back_to_the_overlay() {
+    in_pool(|| {
+        let mut rig = text_rig();
+        rig.ports.clipboard = Arc::new(FakeClipboard::new(ClipboardBehaviour::Fail));
+        let opts = selecting();
+        let mut session = pin!(select(&rig.ports, two_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+        drag(&rig.overlay, (5, 1), (6, 2));
+        ask(&rig.overlay, TextCommand::Read);
+        assert!(step(session.as_mut()).is_none());
+        let copy_failed = |overlay: &FakeOverlay| match overlay.last_view().unwrap().text {
+            Some(TextLayer::Read { copy_failed, .. }) => copy_failed,
+            other => panic!("the text is shown, not {other:?}"),
+        };
+        assert!(!copy_failed(&rig.overlay), "nothing was copied by hand yet");
+
+        ask(&rig.overlay, TextCommand::Copy("hello".to_owned()));
+        assert!(step(session.as_mut()).is_none());
+        assert!(copy_failed(&rig.overlay));
     });
 }
 

@@ -46,7 +46,7 @@ impl ScreenSource for FakeScreen {
     }
 }
 
-/// What the fake clipboard does on `set_image`.
+/// What the fake clipboard does on `set_image` and `set_text`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardBehaviour {
     Succeed,
@@ -88,6 +88,9 @@ impl Clipboard for FakeClipboard {
         }
     }
     fn set_text(&self, text: &str) -> Result<(), PortError> {
+        if *self.behaviour.lock().unwrap() == ClipboardBehaviour::Fail {
+            return Err(PortError::Failed("clipboard unavailable".into()));
+        }
         self.texts.lock().unwrap().push(text.to_string());
         Ok(())
     }

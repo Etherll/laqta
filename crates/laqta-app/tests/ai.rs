@@ -297,7 +297,7 @@ fn the_ocr_route_reads_the_text_in_place_and_copies_it() {
 
     let (shown, ended) = read_in_place(&h, escape());
 
-    let Some(TextLayer::Read { result, copied }) = shown else { panic!("the overlay shows what was read, not {shown:?}") };
+    let Some(TextLayer::Read { result, copied, .. }) = shown else { panic!("the overlay shows what was read, not {shown:?}") };
     assert_eq!(result.text(), "hello\nworld");
     assert!(copied);
     assert_eq!(h.ocr.seen.lock().unwrap().as_slice(), &[(8, 4)], "the selection was read");

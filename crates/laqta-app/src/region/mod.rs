@@ -103,7 +103,7 @@ fn text_layer(ports: &Ports, read: Result<OcrResult, PortError>) -> TextLayer {
         Ok(result) => {
             let all = result.text();
             let copied = !all.trim().is_empty() && ports.clipboard.set_text(&all).is_ok();
-            TextLayer::Read { result: Arc::new(result), copied }
+            TextLayer::Read { result: Arc::new(result), copied, copy_failed: false }
         }
         Err(error) => TextLayer::Failed(AppError::from(error).to_string()),
     }
@@ -219,8 +219,13 @@ async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptio
                     annotated = Some(bitmap);
                     continue;
                 }
+                // The overlay already says "Copied"; a copy that fails is told back so it can say so.
                 RegionInput::Text(TextCommand::Copy(words)) => {
-                    let _ = ports.clipboard.set_text(&words);
+                    let failed = ports.clipboard.set_text(&words).is_err();
+                    if let Some(TextLayer::Read { copy_failed, .. }) = &mut text {
+                        *copy_failed = failed;
+                        paint(&state, &text, None);
+                    }
                     continue;
                 }
                 // A recogniser that first asks about its models would ask under the overlay. End the
