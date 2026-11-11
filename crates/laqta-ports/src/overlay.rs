@@ -38,6 +38,10 @@ pub struct RegionView {
     pub drawing: Option<PhysRect>,
     pub hovered: Option<HoverTarget>,
     pub handles: Vec<(Handle, PhysRect)>,
+    /// The handle being dragged, while the user resizes the selection.
+    pub resizing: Option<Handle>,
+    /// A draw, move or resize is in progress, so no handle takes a press until it ends.
+    pub gesture: bool,
     pub cursor: (i32, i32),
     pub magnifier: Option<PhysRect>,
     pub info_text: Option<String>,
@@ -82,6 +86,8 @@ impl PartialEq for RegionView {
             drawing,
             hovered,
             handles,
+            resizing,
+            gesture,
             cursor,
             magnifier,
             info_text,
@@ -109,6 +115,8 @@ impl PartialEq for RegionView {
             && *drawing == other.drawing
             && *hovered == other.hovered
             && *handles == other.handles
+            && *resizing == other.resizing
+            && *gesture == other.gesture
             && *cursor == other.cursor
             && *magnifier == other.magnifier
             && *info_text == other.info_text
@@ -122,6 +130,14 @@ impl PartialEq for RegionView {
             && *pick_point == other.pick_point
             && *text == other.text
             && *text_only == other.text_only
+    }
+}
+
+impl RegionView {
+    /// The handle a left press at `at` would drag: none on a locked selection or while a gesture
+    /// runs. The same hit test the session uses.
+    pub fn handle_at(&self, at: (i32, i32)) -> Option<Handle> {
+        if self.locked || self.gesture { None } else { laqta_domain::region::handle_at(&self.handles, at) }
     }
 }
 
@@ -241,4 +257,19 @@ pub trait ToolHost: Send + Sync {
 /// the user continues, `Cancelled` when they close it.
 pub trait EditorHost: Send + Sync {
     fn edit(&self, image: laqta_domain::Bitmap) -> crate::BoxFuture<'_, Result<laqta_domain::Bitmap, PortError>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_press_takes_a_handle_only_on_a_free_selection_between_gestures() {
+        let rect = PhysRect { x: 0, y: 0, width: 8, height: 8 };
+        let view = RegionView { handles: vec![(Handle::NW, rect)], ..RegionView::default() };
+        assert_eq!(view.handle_at((4, 4)), Some(Handle::NW));
+        assert_eq!(view.handle_at((9, 4)), None);
+        assert_eq!(RegionView { locked: true, ..view.clone() }.handle_at((4, 4)), None);
+        assert_eq!(RegionView { gesture: true, ..view }.handle_at((4, 4)), None);
+    }
 }

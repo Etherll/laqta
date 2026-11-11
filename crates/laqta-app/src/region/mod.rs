@@ -146,6 +146,7 @@ async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptio
         min_size: options.min_size,
         magnifier_pixels: options.magnifier_pixels,
         info_text: options.info_text.clone(),
+        handle_size: handle_size(&frames),
         right_click: options.right_click,
         middle_click: options.middle_click,
     });
@@ -370,6 +371,14 @@ pub(crate) async fn crop_frames(
     Ok(Selection { rects, target, image, annotate: false, action: SelectionAction::Default, text_shown: false })
 }
 
+/// The side of a handle in physical pixels: `HANDLE_SIZE` display pixels at the largest monitor
+/// scale, so a handle is as easy to grab on a high-density display as on a plain one.
+fn handle_size(frames: &[Frame]) -> u32 {
+    let scale = frames.iter().map(|f| f.monitor.scale).fold(1.0_f32, f32::max);
+    let side = (laqta_domain::region::HANDLE_SIZE as f32 * scale).ceil();
+    if side.is_finite() { (side as u32).max(laqta_domain::region::HANDLE_SIZE) } else { laqta_domain::region::HANDLE_SIZE }
+}
+
 /// The overlay's view of `state`. `pixel` is the RGB under the cursor, and `bounds` is the desktop
 /// area the state was built with. `RegionState` does not expose it. The view has no selection image:
 /// the session adds the crop to the view that follows a change of the selection.
@@ -384,6 +393,8 @@ pub(crate) fn view(state: &RegionState, bounds: PhysRect, options: &RegionCaptur
         drawing: state.drawing_rect(),
         hovered: state.hovered_target().cloned(),
         handles: state.handle_rects(),
+        resizing: state.resizing(),
+        gesture: state.in_gesture(),
         cursor: state.cursor(),
         magnifier: options.show_magnifier.then(|| state.magnifier_rect()),
         info_text: options.show_info.then(|| state.info_text(pixel)),

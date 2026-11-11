@@ -40,6 +40,8 @@ pub struct RegionConfig {
     pub magnifier_pixels: u32,
     pub info_text: String,
     /// What a right press does while idle.
+    /// The side of a handle's hit rect, in physical pixels (`HANDLE_SIZE` at the display scale).
+    pub handle_size: u32,
     pub right_click: RegionMouseAction,
     /// What a middle press does while idle.
     pub middle_click: RegionMouseAction,
@@ -214,7 +216,15 @@ pub enum Phase {
     Finished(RegionOutcome),
 }
 
+/// The side of a handle at a display scale of 1, in pixels. The session scales it to the displays
+/// (`RegionConfig::handle_size`), and the overlay draws each handle over its hit rect.
 pub const HANDLE_SIZE: u32 = 8;
+
+/// The handle whose hit rect holds `at`, from a list such as [`RegionState::handle_rects`]. The
+/// session, the overlay's pointer and the text picking all use this one test.
+pub fn handle_at(handles: &[(Handle, PhysRect)], at: (i32, i32)) -> Option<Handle> {
+    handles.iter().find(|(_, rect)| contains(*rect, at)).map(|(handle, _)| *handle)
+}
 
 /// The region state machine. Feed it input with [`RegionState::handle`]; it reports when the
 /// overlay must repaint and the outcome once the session ends.
@@ -349,6 +359,19 @@ impl RegionState {
         self.hover.and_then(|i| self.targets.get(i))
     }
 
+    /// The handle being dragged while the user resizes the selection.
+    pub fn resizing(&self) -> Option<Handle> {
+        match self.phase {
+            Phase::Resizing { handle, .. } => Some(handle),
+            _ => None,
+        }
+    }
+
+    /// A draw, move or resize is in progress.
+    pub fn in_gesture(&self) -> bool {
+        matches!(self.phase, Phase::Drawing { .. } | Phase::Moving { .. } | Phase::Resizing { .. })
+    }
+
     pub fn cursor(&self) -> (i32, i32) {
         self.cursor
     }
@@ -358,7 +381,8 @@ impl RegionState {
         let Some(r) = self.active_region() else {
             return Vec::new();
         };
-        let half = to_i32(HANDLE_SIZE / 2);
+        let side = self.config.handle_size.max(1);
+        let half = to_i32(side / 2);
         let left = r.x;
         let centre_x = r.x.saturating_add_unsigned(r.width / 2);
         let right = r.right().saturating_sub(1);
@@ -366,7 +390,7 @@ impl RegionState {
         let centre_y = r.y.saturating_add_unsigned(r.height / 2);
         let bottom = r.bottom().saturating_sub(1);
         let at = |handle: Handle, x: i32, y: i32| {
-            let rect = PhysRect { x: x.saturating_sub(half), y: y.saturating_sub(half), width: HANDLE_SIZE, height: HANDLE_SIZE };
+            let rect = PhysRect { x: x.saturating_sub(half), y: y.saturating_sub(half), width: side, height: side };
             (handle, rect)
         };
         vec![
@@ -639,7 +663,7 @@ impl RegionState {
     }
 
     fn handle_at(&self, at: (i32, i32)) -> Option<Handle> {
-        self.handle_rects().into_iter().find(|(_, rect)| contains(*rect, at)).map(|(handle, _)| handle)
+        handle_at(&self.handle_rects(), at)
     }
 
     fn pointer_up(&mut self, at: (i32, i32), button: Button) {
@@ -908,6 +932,7 @@ mod tests {
             min_size: 5,
             magnifier_pixels: 5,
             info_text: String::new(),
+            handle_size: HANDLE_SIZE,
             right_click: RegionMouseAction::RemoveShapeOrCancel,
             middle_click: RegionMouseAction::CancelCapture,
         }
@@ -1140,6 +1165,30 @@ mod tests {
         assert_eq!(state.active_region(), Some(rect(50, 50, 50, 50)));
         state.handle(move_to(99, 99));
         assert_eq!(state.active_region(), Some(rect(100, 100, 1, 1)));
+    }
+
+    #[test]
+    fn the_state_reports_the_handle_it_resizes_until_the_gesture_ends() {
+        let mut state = RegionState::new(multi());
+        drag(&mut state, (100, 100), (199, 199));
+        assert_eq!((state.resizing(), state.in_gesture()), (None, false));
+        assert_eq!(handle_at(&state.handle_rects(), (100, 100)), Some(Handle::NW));
+
+        state.handle(press(100, 100));
+        assert_eq!((state.resizing(), state.in_gesture()), (Some(Handle::NW), true));
+        // A right press drops the resize, wherever the pointer is.
+        state.handle(right_press(50, 50));
+        assert_eq!((state.resizing(), state.in_gesture()), (None, false));
+
+        state.handle(press(150, 150));
+        assert_eq!((state.resizing(), state.in_gesture()), (None, true), "a move is a gesture with no handle");
+    }
+
+    #[test]
+    fn handles_take_the_configured_size() {
+        let mut state = RegionState::new(RegionConfig { handle_size: 16, ..multi() });
+        drag(&mut state, (100, 100), (199, 199));
+        assert!(state.handle_rects().contains(&(Handle::NW, rect(92, 92, 16, 16))));
     }
 
     #[test]
@@ -1861,6 +1910,7 @@ mod command_tests {
             min_size: 2,
             magnifier_pixels: 5,
             info_text: String::new(),
+            handle_size: HANDLE_SIZE,
             right_click: Default::default(),
             middle_click: Default::default(),
         })
