@@ -50,14 +50,14 @@ pub fn changed(scope: Scope, draft: &Settings, defaults: &Settings) -> usize {
                 .iter()
                 .filter_map(|w| default_workflow(w, defaults).map(|d| (w, d)))
                 .map(|(w, d)| usize::from(w.name != d.name) + differ(&w.patch, &d.patch))
-                .sum::<usize>()
-            + defaults.workflows.iter().filter(|d| !has_workflow(draft, d)).count();
+                .sum::<usize>();
     }
     if scope == Scope::Shortcuts {
         // A key is one setting, however many fields it serializes to.
         let keys = draft.workflows.iter().filter_map(|w| default_workflow(w, defaults).map(|d| (w, d)));
         return keys.map(|(w, d)| usize::from(w.hotkey != d.hotkey) + usize::from(w.enabled != d.enabled)).sum::<usize>()
-            + usize::from(draft.disable_hotkeys != defaults.disable_hotkeys);
+            + usize::from(draft.disable_hotkeys != defaults.disable_hotkeys)
+            + missing_workflows(draft, defaults);
     }
     let mut probe = draft.clone();
     reset(scope, &mut probe, defaults);
@@ -90,6 +90,7 @@ pub fn reset(scope: Scope, draft: &mut Settings, defaults: &Settings) {
                     reset_shortcut(workflow, default);
                 }
             }
+            restore_workflows(draft, defaults);
         }
         Scope::Uploads => {
             d.upload.clone_from(&f.upload);
@@ -123,13 +124,21 @@ pub fn reset(scope: Scope, draft: &mut Settings, defaults: &Settings) {
                     workflow.patch = default.patch.clone();
                 }
             }
-            // A removed built-in workflow comes back, where it was in the defaults.
-            for (index, default) in defaults.workflows.iter().enumerate() {
-                if !has_workflow(draft, default) {
-                    let at = index.min(draft.workflows.len());
-                    draft.workflows.insert(at, default.clone());
-                }
-            }
+        }
+    }
+}
+
+/// How many built-in workflows the draft no longer has (the Workflows page can remove one).
+fn missing_workflows(draft: &Settings, defaults: &Settings) -> usize {
+    defaults.workflows.iter().filter(|d| !has_workflow(draft, d)).count()
+}
+
+/// Brings back each removed built-in workflow, where it was in the defaults.
+fn restore_workflows(draft: &mut Settings, defaults: &Settings) {
+    for (index, default) in defaults.workflows.iter().enumerate() {
+        if !has_workflow(draft, default) {
+            let at = index.min(draft.workflows.len());
+            draft.workflows.insert(at, default.clone());
         }
     }
 }
@@ -309,6 +318,17 @@ mod tests {
         reset(Scope::All, &mut s, &d);
         assert_eq!(s.workflows[1], removed, "back where it was");
         assert_eq!(changed(Scope::All, &s, &d), 0);
+    }
+
+    #[test]
+    fn the_shortcuts_reset_brings_back_a_removed_built_in_workflow() {
+        let d = defaults();
+        let mut s = d.clone();
+        let removed = s.workflows.remove(2);
+        assert_eq!(changed(Scope::Shortcuts, &s, &d), 1, "the page would hide its reset button");
+        reset(Scope::Shortcuts, &mut s, &d);
+        assert_eq!(s.workflows[2], removed);
+        assert_eq!(changed(Scope::Shortcuts, &s, &d), 0);
     }
 
     #[test]
