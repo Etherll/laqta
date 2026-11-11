@@ -146,6 +146,10 @@ impl OverlayModel {
                 let same = self.text.as_ref().and_then(|t| t.result.as_ref()).is_some_and(|shown| Arc::ptr_eq(shown, result));
                 if let Some(text) = self.text.as_mut().filter(|_| same) {
                     text.copy_failed = *copy_failed;
+                    // A refused copy of everything leaves the clipboard without the text.
+                    if *copy_failed {
+                        text.copied_all = false;
+                    }
                 } else {
                     let leave = self.text.as_ref().is_some_and(|t| t.leave_when_read);
                     self.text = Some(TextUi {
@@ -155,7 +159,8 @@ impl OverlayModel {
                         ..TextUi::new(Phase::Read, now)
                     });
                     // The session copied the whole text with the read, which is what Enter asked for.
-                    if leave {
+                    // When it could not, the text stays so the user sees what was read.
+                    if leave && *copied {
                         self.close_text();
                     }
                 }
@@ -220,7 +225,7 @@ impl OverlayModel {
     }
 
     /// A key while the text is showing. Escape drops the picked words, then leaves the text.
-    /// Enter copies and leaves, once the text is read. Ctrl+C copies, Ctrl+A picks everything. Other keys do nothing:
+    /// Enter copies and leaves, once the text is read and copied. Ctrl+C copies, Ctrl+A picks everything. Other keys do nothing:
     /// nudging the selection would read it again on every press.
     pub(crate) fn text_key(&mut self, key: &str, ctrl: bool, cx: &mut Context<Self>) {
         match key {

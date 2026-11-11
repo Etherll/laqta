@@ -307,6 +307,9 @@ fn text_read_in_place_is_picked_with_the_pointer_and_copied_through_the_session(
     let refused = RegionView { text: Some(TextLayer::Read { result: result.clone(), copied: true, copy_failed: true }), ..read.clone() };
     vcx.update(|_, cx| crate::overlay::update(refused, cx));
     assert_eq!(notice(&mut vcx), Some(Notice::CopyFailed));
+    let later = |vcx: &mut VisualTestContext| {
+        vcx.update(|_, cx| model.read(cx).text.as_ref().map(|t| t.notice(std::time::Instant::now() + std::time::Duration::from_secs(5))))
+    };
     assert_eq!(picked(&mut vcx).as_deref(), Some("big world\nsecond"), "the picked words stay");
     vcx.simulate_keystrokes("ctrl-c");
     assert_eq!(notice(&mut vcx), Some(Notice::Copied(Some(3))), "a new copy starts over");
@@ -322,6 +325,14 @@ fn text_read_in_place_is_picked_with_the_pointer_and_copied_through_the_session(
     vcx.simulate_keystrokes("escape");
     assert_eq!(picked(&mut vcx), None);
     assert_eq!(sent.lock().unwrap().len(), before, "the first Escape stays on the overlay");
+
+    // Copy all, refused: once its notice is over the bar does not say the text was copied.
+    vcx.simulate_keystrokes("ctrl-c");
+    assert_eq!(sent.lock().unwrap().last(), Some(&RegionInput::Text(TextCommand::Copy("Hello big world\nsecond line".to_owned()))));
+    let refused = RegionView { text: Some(TextLayer::Read { result: result.clone(), copied: true, copy_failed: true }), ..read.clone() };
+    vcx.update(|_, cx| crate::overlay::update(refused, cx));
+    assert_eq!(later(&mut vcx), Some(Notice::Found { words: 5, copied: false }));
+    vcx.update(|_, cx| crate::overlay::update(read.clone(), cx));
     vcx.simulate_keystrokes("ctrl-a");
     assert_eq!(picked(&mut vcx).as_deref(), Some("Hello big world\nsecond line"));
     vcx.simulate_keystrokes("escape");
@@ -453,6 +464,25 @@ fn enter_while_reading_leaves_once_the_text_is_read(cx: &mut TestAppContext) {
     assert!(!sent.lock().unwrap().iter().any(|i| matches!(i, RegionInput::Text(TextCommand::Close))), "the read is not given up");
     assert!(vcx.update(|_, cx| model.read(cx).text.is_some()), "the text layer stays while it reads");
 
-    vcx.update(|_, cx| crate::overlay::update(view, cx));
+    // The whole text did not reach the clipboard: the text stays, so the user sees what was read.
+    let refused = OcrResult {
+        lines: vec![laqta_ports::OcrLine {
+            rect: PhysRect { x: 0, y: 0, width: 50, height: 20 },
+            text: "hello".into(),
+            confidence: 1.0,
+            words: Vec::new(),
+        }],
+    };
+    let not_copied =
+        RegionView { text: Some(TextLayer::Read { result: Arc::new(refused.clone()), copied: false, copy_failed: false }), ..view.clone() };
+    vcx.update(|_, cx| crate::overlay::update(not_copied, cx));
+    assert!(!sent.lock().unwrap().iter().any(|i| matches!(i, RegionInput::Text(TextCommand::Close))), "nothing was copied");
+    assert!(vcx.update(|_, cx| model.read(cx).text.is_some()));
+
+    // Read again, Enter, and this time the text is copied: the text is left.
+    vcx.update(|_, cx| crate::overlay::update(RegionView { text: Some(TextLayer::Reading), ..view.clone() }, cx));
+    vcx.simulate_keystrokes("enter");
+    let copied = RegionView { text: Some(TextLayer::Read { result: Arc::new(refused), copied: true, copy_failed: false }), ..view };
+    vcx.update(|_, cx| crate::overlay::update(copied, cx));
     assert_eq!(sent.lock().unwrap().last(), Some(&RegionInput::Text(TextCommand::Close)));
 }
