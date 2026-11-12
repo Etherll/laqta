@@ -16,9 +16,12 @@ Status: accepted (2026-11-12). Amends ADR 029: decision 1 (`Lock` and `Unlock` a
 2. **The session crops once per settled change.** The desktop is cropped when a move or resize settles, not on every pointer move, so a drag costs one crop at release.
 3. **Hover only while no selection is held.** A held selection shows no hover target, and a click outside it with no drag changes nothing.
 4. **The grab area is separate from the drawn dot.** `grab_size` is the side of each corner's grab square and the width of each edge's grab strip, in physical pixels, and is at least `handle_size`. `grab_at` tests the corners before the edges. `handle_rects` still draws the dots.
-5. **Presenters decide the pointer and the Esc ladder** (ADR 017). `presenters/capture_pointer` decides who gets a press and which pointer shape shows. `presenters/capture_escape` decides what Esc and the ✕ do. The route chosen on a press receives that press's moves and release.
+5. **Two tools work on the selection: Move and Select.** Move (M, and the tool a settled selection starts with) moves the selection; Select (V) picks, moves and resizes marks, and a click on nothing lets the picked mark go. Select never moves the selection, so a missed click cannot shift the capture.
+   - A move carries the marks along: `Reframe` gets (0, 0), so the marks keep their place in the crop. Holding Alt at the press moves the frame alone, and the marks stay over the same desktop pixels. A resize always keeps them over their pixels.
+   - While a move carries the marks, the canvas steps aside until release, since its pixels are the old crop's.
+6. **Presenters decide the pointer and the Esc ladder** (ADR 017). `presenters/capture_pointer` decides who gets a press and which pointer shape shows. `presenters/capture_escape` decides what Esc does. The route chosen on a press receives that press's moves and release.
    - With marks on screen, a press outside the frame does nothing. A right or middle press does nothing either, so it cannot cancel the capture. Handles and edges always resize, whatever tool is out.
-   - Esc steps back one layer at a time: typing, then a selected mark, then the tool. With marks left, the first press shows "Press Esc again to discard N annotations". A second press within `DISARM_AFTER` (3 s) cancels the capture. The ✕ follows the same rule.
+   - Esc steps back one layer at a time: typing, then a selected mark, then the tool. With marks left, the first press shows "Press Esc again to discard N annotations". A second press within `DISARM_AFTER` (3 s) cancels the capture. The warning shows beside the toolbar. The ✕ cancels at once: a click on it is a choice, where Esc is also the key that steps back.
 
 **Rejected.**
 - **An editor over the whole desktop.** The editor would hold the full desktop as its base image and render all of it. ARCHITECTURE §1.2 caps the peak memory of region capture on two 4K monitors at under 150 MB.
@@ -26,6 +29,6 @@ Status: accepted (2026-11-12). Amends ADR 029: decision 1 (`Lock` and `Unlock` a
 - **Keeping the lock.** The selection could not be adjusted after the first mark, which is the problem this ADR removes.
 
 **Consequences.**
-- Marks partly outside the frame are clipped on export.
+- Marks partly outside the frame are clipped on export. A plain move cannot put them there; an Alt move or a resize can.
 - A mark fully outside the frame survives in the editor and returns when the frame moves back over it.
 - `Lock`, `Unlock` and `RegionView::locked` are removed. ADR 029 decision 1 keeps the old lock text as history, with the amendment above.

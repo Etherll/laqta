@@ -86,7 +86,8 @@ pub(crate) const ACCENT: u32 = 0x3d8bfd;
 
 fn icon(item: Item) -> IconName {
     match item {
-        Item::Region => IconName::SquareDashedMousePointer,
+        Item::Move => IconName::Move,
+        Item::Tool(Tool::Select) => IconName::MousePointer2,
         Item::Tool(Tool::Rectangle) => IconName::Square,
         Item::Tool(Tool::Ellipse) => IconName::Circle,
         Item::Tool(Tool::Arrow) => IconName::MoveUpRight,
@@ -122,11 +123,18 @@ impl OverlayModel {
         match (view.selected, view.selection_image.clone()) {
             (Some(_), None) => {}
             (Some(rect), Some(base)) => {
-                if let Some(a) = self.annot.as_mut() {
+                if let Some(a) = self.annot.as_ref() {
                     if Arc::ptr_eq(&a.base, &base) {
                         return;
                     }
-                    let (dx, dy) = ((a.rect.x - rect.x) as f32, (a.rect.y - rect.y) as f32);
+                    // A move carries the marks along, unless Alt left them in place; a resize keeps
+                    // them over the pixels they were drawn on.
+                    let moved = (a.rect.width, a.rect.height) == (rect.width, rect.height);
+                    let old = a.rect;
+                    let frame_only = std::mem::take(&mut self.frame_only);
+                    let carry = moved && !frame_only;
+                    let (dx, dy) = if carry { (0.0, 0.0) } else { ((old.x - rect.x) as f32, (old.y - rect.y) as f32) };
+                    let Some(a) = self.annot.as_mut() else { return };
                     a.rect = rect;
                     a.base = base.clone();
                     self.command(Command::Reframe { image: (*base).clone(), dx, dy }, cx);
@@ -157,20 +165,30 @@ impl OverlayModel {
     /// engine's lock even while a render holds it: a press needs the true answer, a hover move can
     /// make do without the mark test.
     pub(crate) fn pointer_scene(&self, at: (i32, i32), wait: bool) -> PointerScene {
-        let over_mark = self.annot.as_ref().is_some_and(|a| {
+        // A handle of the picked mark under the pointer, which reaches past the mark's outline.
+        let mark_grip = self.annot.as_ref().and_then(|a| {
             let (x, y) = ((at.0 - a.rect.x) as f32, (at.1 - a.rect.y) as f32);
-            // The picked mark's handles reach past its outline.
-            if a.chrome.handles.iter().any(|(_, p)| (p.x - x).abs() <= MARK_GRAB && (p.y - y).abs() <= MARK_GRAB) {
-                return true;
-            }
-            let editor = a.interaction.editor();
-            let hit = |e: &Editor| e.annotation_at(x, y);
-            if wait { hit(&editor.lock().unwrap_or_else(|p| p.into_inner())) } else { editor.try_lock().is_ok_and(|e| hit(&e)) }
+            let handles = &a.chrome.handles;
+            let (handle, _) = handles.iter().find(|(_, p)| (p.x - x).abs() <= MARK_GRAB && (p.y - y).abs() <= MARK_GRAB)?;
+            Some(crate::presenters::capture_pointer::grip(*handle, handles))
         });
+        let over_mark = mark_grip.is_some()
+            || self.annot.as_ref().is_some_and(|a| {
+                let (x, y) = ((at.0 - a.rect.x) as f32, (at.1 - a.rect.y) as f32);
+                let editor = a.interaction.editor();
+                let hit = |e: &Editor| e.annotation_at(x, y);
+                if wait { hit(&editor.lock().unwrap_or_else(|p| p.into_inner())) } else { editor.try_lock().is_ok_and(|e| hit(&e)) }
+            });
         // A multi-region session holds no selection; its active region moves and resizes the same way.
         let active = self.view.active.and_then(|i| self.view.regions.get(i).copied());
+        let over_picked = mark_grip.is_some()
+            || self.annot.as_ref().is_some_and(|a| {
+                let (x, y) = ((at.0 - a.rect.x) as f32, (at.1 - a.rect.y) as f32);
+                a.chrome.selection.is_some_and(|r| x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h)
+            });
         PointerScene {
             frame: self.view.selected.or(active.filter(|_| !self.view.gesture)),
+            over_picked,
             grab: self.view.handle_at(at),
             resizing: self.view.resizing,
             gesture: self.view.gesture,
@@ -178,6 +196,14 @@ impl OverlayModel {
             over_mark,
             over_text: self.text_point(at.0, at.1).is_some(),
             marks: self.annot.as_ref().is_some_and(Annot::has_marks),
+            mark_grip,
+        }
+    }
+
+    /// Lets the picked mark go: a Move press elsewhere on the selection is about the selection.
+    pub(crate) fn let_go_of_mark(&mut self, cx: &mut Context<Self>) {
+        if self.mark_selected() {
+            self.command(Command::Deselect, cx);
         }
     }
 
@@ -262,7 +288,7 @@ impl OverlayModel {
     /// A toolbar button or its shortcut.
     pub(crate) fn pick(&mut self, item: Item, cx: &mut Context<Self>) {
         match item {
-            Item::Region => self.region_tool(),
+            Item::Move => self.region_tool(),
             Item::Tool(tool) => {
                 if self.annot.is_none() {
                     return;
@@ -284,7 +310,7 @@ impl OverlayModel {
         cx.notify();
     }
 
-    /// Back to the region tool: presses move and resize the selection, or pick a mark.
+    /// Back to the Move tool: a drag inside moves the selection, and the engine idles on `Select`.
     pub(crate) fn region_tool(&mut self) {
         self.tool = None;
         if let Some(a) = self.annot.as_mut() {
@@ -325,10 +351,10 @@ impl OverlayModel {
         self.escape_step(step, cx);
     }
 
-    /// The toolbar's and the mode bar's close buttons: the same warning before the marks go.
+    /// The toolbar's and the mode bar's close buttons end the capture at once: a click on ✕ is a
+    /// choice, unlike Esc, which also steps back.
     pub(crate) fn cancel(&mut self, cx: &mut Context<Self>) {
-        let step = capture_escape::cancel_button(&self.escape_scene());
-        self.escape_step(step, cx);
+        self.escape_step(EscapeStep::Cancel, cx);
     }
 
     fn escape_step(&mut self, step: EscapeStep, cx: &mut Context<Self>) {
@@ -452,7 +478,7 @@ pub(crate) fn toolbar(model: &Entity<OverlayModel>, at: bar::Rect, cx: &App) -> 
         }
         for item in group {
             let active = match item {
-                Item::Region => m.tool.is_none(),
+                Item::Move => m.tool.is_none(),
                 Item::Tool(t) => m.tool == Some(t),
                 _ => false,
             };
@@ -615,6 +641,35 @@ pub(crate) fn size_badge(text: String, at: bar::Rect) -> AnyElement {
         .text_color(rgba(0xffffff, 0.92))
         .text_size(px(12.))
         .font_weight(FontWeight::MEDIUM)
+        .child(text)
+        .into_any_element()
+}
+
+/// The notice's height.
+pub(crate) const NOTICE_H: f32 = 30.0;
+
+/// The notice's width for `text`.
+pub(crate) fn notice_width(text: &str) -> f32 {
+    28.0 + 7.0 * text.chars().count() as f32
+}
+
+/// A short notice at `at`, beside the toolbar, such as the warning before marks are discarded.
+pub(crate) fn notice(text: String, at: bar::Rect) -> AnyElement {
+    div()
+        .absolute()
+        .left(px(at.x))
+        .top(px(at.y))
+        .w(px(at.w))
+        .h(px(at.h))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(radius::PILL)
+        .bg(rgba(0x1c1c1f, 0.95))
+        .border_1()
+        .border_color(rgba(0xff6b6b, 0.7))
+        .text_color(rgba(0xffffff, 0.95))
+        .text_size(px(12.5))
         .child(text)
         .into_any_element()
 }

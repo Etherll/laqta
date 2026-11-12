@@ -69,6 +69,8 @@ pub(crate) struct OverlayModel {
     /// Who took the press under way (`capture_pointer::route`): its moves and release go there too,
     /// on whichever monitor's window they reach.
     pub(crate) pressed: Option<Route>,
+    /// The last press on the selection held Alt: a move leaves the marks where they are on screen.
+    pub(crate) frame_only: bool,
 }
 
 /// Converts each frame for GPUI, off the GPUI thread: `UiHandle::show` calls this on the caller's
@@ -145,6 +147,7 @@ pub(crate) fn show(frames: Vec<Frame>, images: Vec<Option<Arc<RenderImage>>>, vi
         text: None,
         discard_armed: None,
         pressed: None,
+        frame_only: false,
     });
     let mut windows = Vec::new();
     for index in 0..count {
@@ -463,7 +466,11 @@ impl Render for OverlayView {
             }
         }
         // The annotation canvas sits under the selection's border and handles, clipped to the frame.
-        if let Some(sel) = view.selected
+        // While a move carries the marks along it steps aside: its pixels are the old crop's, and
+        // the marks come back on the new crop at release.
+        let carrying = view.gesture && view.resizing.is_none() && !model.frame_only;
+        if !carrying
+            && let Some(sel) = view.selected
             && let Some(a) = &model.annot
             && let Some(canvas) = crate::overlay_tools::canvas(
                 a,
@@ -584,8 +591,13 @@ impl Render for OverlayView {
                         }
                     }
                 }
-                if let Some(notice) = model.discard_notice() {
-                    root = root.child(crate::overlay_tools::hint(win_w, notice));
+                // Beside the toolbar, where the eye already is; the mode bar covers the screen's top.
+                if let Some(text) = model.discard_notice() {
+                    let (w, h) = (crate::overlay_tools::notice_width(&text), crate::overlay_tools::NOTICE_H);
+                    let x = (at.x + (at.w - w) / 2.0).clamp(bar::GAP, (win_w - w - bar::GAP).max(bar::GAP));
+                    let below = at.y + at.h + 8.0;
+                    let y = if below + h + bar::GAP <= win_h { below } else { at.y - 8.0 - h };
+                    root = root.child(crate::overlay_tools::notice(text, bar::Rect { x, y, w, h }));
                 }
             }
         } else if view.pick_point {
@@ -659,7 +671,14 @@ impl Render for OverlayView {
                         this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerDown { x: ix, y: iy, button, mods }, cx));
                     }
                 }
-                Route::Session => this.send(RegionInput::PointerDown { x, y, button: pressed }, cx),
+                Route::Session => {
+                    let alt = ev.modifiers.alt;
+                    this.model.update(cx, |m, cx| {
+                        m.frame_only = alt;
+                        m.let_go_of_mark(cx);
+                    });
+                    this.send(RegionInput::PointerDown { x, y, button: pressed }, cx);
+                }
                 Route::Ignore => {}
             }
         }))
@@ -711,6 +730,7 @@ fn contains(r: PhysRect, (x, y): (i32, i32)) -> bool {
 fn pointer_style(pointer: Pointer, gesture: bool) -> gpui::CursorStyle {
     use gpui::CursorStyle;
     match pointer {
+        Pointer::Arrow => CursorStyle::Arrow,
         Pointer::Crosshair | Pointer::Draw => CursorStyle::Crosshair,
         Pointer::Move if gesture => CursorStyle::ClosedHand,
         Pointer::Move => CursorStyle::OpenHand,

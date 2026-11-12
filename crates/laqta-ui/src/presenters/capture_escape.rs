@@ -35,7 +35,7 @@ pub enum EscapeStep {
 /// How long a discard stays armed before it lapses.
 pub const DISARM_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// The step for an Esc press. Each level goes before the next; the last is `cancel_button`.
+/// The step for an Esc press. Each level goes before the next; the last is `last_escape`.
 pub fn escape(s: &EscapeScene) -> EscapeStep {
     if s.typing {
         EscapeStep::StopTyping
@@ -44,13 +44,14 @@ pub fn escape(s: &EscapeScene) -> EscapeStep {
     } else if s.tool_out {
         EscapeStep::PutToolAway
     } else {
-        cancel_button(s)
+        last_escape(s)
     }
 }
 
-/// The step for the Cancel button, and for Esc once nothing else is in the way. With annotations
-/// on the capture the first press arms a discard; a second one, while armed, cancels.
-pub fn cancel_button(s: &EscapeScene) -> EscapeStep {
+/// The step for Esc once nothing else is in the way. With annotations on the capture the first
+/// press arms a discard; a second one, while armed, cancels. The ✕ button cancels at once: a click
+/// on it is a choice, where Esc is also the key that steps back.
+pub fn last_escape(s: &EscapeScene) -> EscapeStep {
     if s.marks > 0 && !s.armed { EscapeStep::ArmDiscard } else { EscapeStep::Cancel }
 }
 
@@ -77,18 +78,18 @@ mod tests {
     }
 
     #[test]
-    fn with_nothing_in_the_way_escape_is_the_cancel_button() {
+    fn with_nothing_in_the_way_escape_is_the_last_escape() {
         assert_eq!(escape(&EscapeScene::default()), EscapeStep::Cancel);
         let s = EscapeScene { marks: 1, ..EscapeScene::default() };
-        assert_eq!(escape(&s), cancel_button(&s));
+        assert_eq!(escape(&s), last_escape(&s));
     }
 
     #[test]
-    fn cancel_arms_a_discard_once_when_there_are_annotations() {
+    fn the_last_escape_arms_a_discard_once_when_there_are_annotations() {
         let s = EscapeScene { marks: 1, ..EscapeScene::default() };
-        assert_eq!(cancel_button(&s), EscapeStep::ArmDiscard);
-        assert_eq!(cancel_button(&EscapeScene { armed: true, ..s }), EscapeStep::Cancel);
-        assert_eq!(cancel_button(&EscapeScene { marks: 0, armed: false, ..s }), EscapeStep::Cancel);
+        assert_eq!(last_escape(&s), EscapeStep::ArmDiscard);
+        assert_eq!(last_escape(&EscapeScene { armed: true, ..s }), EscapeStep::Cancel);
+        assert_eq!(last_escape(&EscapeScene { marks: 0, armed: false, ..s }), EscapeStep::Cancel);
     }
 
     #[test]

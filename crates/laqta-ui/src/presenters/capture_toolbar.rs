@@ -10,8 +10,8 @@ use laqta_editor::{Style, Tool};
 /// One button on the capture toolbar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
-    /// Back to adjusting the selection (no drawing tool).
-    Region,
+    /// Move the selection, its marks with it (no editor tool). Alt leaves the marks in place.
+    Move,
     Tool(Tool),
     Undo,
     Redo,
@@ -35,7 +35,7 @@ pub const TOOLS: [Tool; 9] =
 /// The bar's groups, left to right; the view draws a divider between groups.
 pub fn groups() -> Vec<Vec<Item>> {
     vec![
-        std::iter::once(Item::Region).chain(TOOLS.iter().map(|t| Item::Tool(*t))).collect(),
+        [Item::Move, Item::Tool(Tool::Select)].into_iter().chain(TOOLS.iter().map(|t| Item::Tool(*t))).collect(),
         vec![Item::Undo, Item::Redo],
         vec![Item::CopyText],
         vec![Item::Pin, Item::Edit, Item::Upload, Item::Save, Item::Copy],
@@ -46,7 +46,8 @@ pub fn groups() -> Vec<Vec<Item>> {
 /// The tooltip text.
 pub fn label(item: Item) -> &'static str {
     match item {
-        Item::Region => "Adjust selection",
+        Item::Move => "Move the selection with its marks (hold Alt to leave the marks)",
+        Item::Tool(Tool::Select) => "Select, move and resize marks",
         Item::Tool(t) => super::editor_toolbar::label(t),
         Item::Undo => "Undo",
         Item::Redo => "Redo",
@@ -64,7 +65,8 @@ pub fn label(item: Item) -> &'static str {
 /// The shortcut shown next to the tooltip, if any.
 pub fn shortcut(item: Item) -> Option<&'static str> {
     Some(match item {
-        Item::Region => "V",
+        Item::Move => "M",
+        Item::Tool(Tool::Select) => "V",
         Item::Tool(Tool::Rectangle) => "R",
         Item::Tool(Tool::Ellipse) => "E",
         Item::Tool(Tool::Arrow) => "A",
@@ -119,7 +121,8 @@ pub fn key_item(key: &str, mods: Mods) -> Option<Item> {
         return (key == "c").then_some(Item::CopyText);
     }
     Some(match key {
-        "v" => Item::Region,
+        "m" => Item::Move,
+        "v" => Item::Tool(Tool::Select),
         "r" => Item::Tool(Tool::Rectangle),
         "e" => Item::Tool(Tool::Ellipse),
         "a" => Item::Tool(Tool::Arrow),

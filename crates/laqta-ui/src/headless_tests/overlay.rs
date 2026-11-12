@@ -87,8 +87,8 @@ fn the_capture_toolbar_switches_tools_and_finishes_with_its_action(cx: &mut Test
 
     cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Rectangle), cx)));
     assert_eq!(cx.update(|cx| model.read(cx).tool), Some(Tool::Rectangle));
-    cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Region, cx)));
-    assert_eq!(cx.update(|cx| model.read(cx).tool), None, "back to the region tool");
+    cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Move, cx)));
+    assert_eq!(cx.update(|cx| model.read(cx).tool), None, "back to the Move tool");
     assert!(sent.lock().unwrap().is_empty(), "switching tools is the overlay's own business");
 
     cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Copy, cx)));
@@ -538,10 +538,10 @@ fn draw(cx: &mut impl gpui::AppContext, model: &gpui::Entity<crate::overlay::Ove
     });
 }
 
-/// Moving the selection after drawing keeps the mark over the same desktop pixels (ADR 032), and
-/// the tool and the marks carry over to the new crop.
+/// Moving the selection carries its marks along, and Alt leaves them over the same desktop pixels;
+/// a resize always leaves them there (ADR 032). The tool carries over to the new crop.
 #[gpui::test]
-fn a_moved_selection_keeps_its_marks_over_the_same_pixels(cx: &mut TestAppContext) {
+fn a_moved_selection_carries_its_marks_unless_alt_leaves_them(cx: &mut TestAppContext) {
     use laqta_editor::{RectF, Tool};
 
     use crate::presenters::capture_toolbar::Item;
@@ -557,7 +557,19 @@ fn a_moved_selection_keeps_its_marks_over_the_same_pixels(cx: &mut TestAppContex
     let moved = PhysRect { x: 120, y: 110, ..sel };
     cx.update(|cx| crate::overlay::update(settled_view(moved), cx));
     assert_eq!(cx.update(|cx| model.read(cx).annot.as_ref().map(|a| a.rect)), Some(moved));
-    assert_eq!(marks(cx), vec![RectF::new(-10.0, 0.0, 40.0, 30.0)], "the mark stays put on the desktop");
+    assert_eq!(marks(cx), vec![RectF::new(10.0, 10.0, 40.0, 30.0)], "the mark moved with the selection");
+
+    // With Alt, the same kind of move leaves the mark on the desktop.
+    cx.update(|cx| model.update(cx, |m, _| m.frame_only = true));
+    let back = PhysRect { x: 100, y: 100, ..sel };
+    cx.update(|cx| crate::overlay::update(settled_view(back), cx));
+    assert_eq!(marks(cx), vec![RectF::new(30.0, 20.0, 40.0, 30.0)], "the mark stayed put on the desktop");
+    assert!(!cx.update(|cx| model.read(cx).frame_only), "Alt counts for one move");
+
+    // A resize from the left edge keeps the mark over its pixels.
+    let wider = PhysRect { x: 90, width: 210, ..back };
+    cx.update(|cx| crate::overlay::update(settled_view(wider), cx));
+    assert_eq!(marks(cx), vec![RectF::new(40.0, 20.0, 40.0, 30.0)]);
     assert_eq!(cx.update(|cx| model.read(cx).tool), Some(Tool::Rectangle));
     assert!(sent.lock().unwrap().is_empty());
 }
@@ -592,14 +604,17 @@ fn escape_steps_back_and_warns_before_discarding_marks(cx: &mut TestAppContext) 
     assert!(cancelled(&sent), "the second one ends the capture");
 }
 
-/// Without marks the toolbar's close button ends the capture at once.
+/// The toolbar's close button ends the capture at once, marks or not: a click on ✕ is a choice.
 #[gpui::test]
-fn the_close_button_cancels_at_once_without_marks(cx: &mut TestAppContext) {
+fn the_close_button_cancels_at_once_even_with_marks(cx: &mut TestAppContext) {
     use laqta_domain::region::{RegionCommand, RegionInput};
+    use laqta_editor::Tool;
 
     use crate::presenters::capture_toolbar::Item;
 
     let (model, sent) = settled_overlay(cx, PhysRect { x: 100, y: 100, width: 200, height: 100 });
+    cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Rectangle), cx)));
+    draw(cx, &model, (10.0, 10.0), (50.0, 40.0));
     cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Cancel, cx)));
     assert!(matches!(sent.lock().unwrap().last(), Some(RegionInput::Command(RegionCommand::Cancel))));
 }
@@ -619,7 +634,7 @@ fn delete_and_actions_never_lose_the_marks(cx: &mut TestAppContext) {
     let mut vcx = VisualTestContext::from_window(window, cx);
     vcx.update(|_, cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Rectangle), cx)));
     draw(&mut vcx, &model, (10.0, 10.0), (50.0, 40.0));
-    vcx.update(|_, cx| model.update(cx, |m, cx| m.pick(Item::Region, cx)));
+    vcx.update(|_, cx| model.update(cx, |m, cx| m.pick(Item::Move, cx)));
     let count = |vcx: &mut VisualTestContext| vcx.update(|_, cx| model.read(cx).annot.as_ref().map_or(0, |a| a.chrome.annotation_count));
 
     let picked = vcx.update(|_, cx| model.read(cx).mark_selected());

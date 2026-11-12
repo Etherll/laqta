@@ -321,6 +321,12 @@ impl Editor {
         self.hit(PointF::new(x, y)).is_some()
     }
 
+    /// Whether the canvas point `(x, y)` is inside the picked mark's box, where a `Select` press
+    /// drags it.
+    pub fn in_picked(&self, x: f32, y: f32) -> bool {
+        self.selected.and_then(|id| self.find(id)).is_some_and(|a| a.kind.bounds().contains(PointF::new(x, y), 0.0))
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.history.undo.is_empty()
     }
@@ -923,15 +929,19 @@ impl Editor {
             return;
         }
         match self.tool {
-            Tool::Select => match self.hit(p) {
-                Some(id) => {
-                    self.selected = Some(id);
-                    if let Some(a) = self.find(id).cloned() {
-                        self.gesture = Gesture::Moving { id, last: p, before: Box::new(a) };
+            // A mark under the pointer is picked and dragged. Inside the picked mark's box counts as
+            // on it, so a thin arrow or line moves by its inside and not only by its stroke.
+            Tool::Select => {
+                match self.hit(p).or_else(|| self.selected.filter(|id| self.find(*id).is_some_and(|a| a.kind.bounds().contains(p, 0.0)))) {
+                    Some(id) => {
+                        self.selected = Some(id);
+                        if let Some(a) = self.find(id).cloned() {
+                            self.gesture = Gesture::Moving { id, last: p, before: Box::new(a) };
+                        }
                     }
+                    None => self.selected = None,
                 }
-                None => self.selected = None,
-            },
+            }
             Tool::Freehand => self.gesture = Gesture::Freehand { points: vec![p] },
             Tool::Step => {
                 let n = self.next_step_number();
@@ -1361,5 +1371,30 @@ mod tests {
         draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
         assert!(e.annotation_at(10.0, 17.0));
         assert!(!e.annotation_at(50.0, 40.0));
+    }
+
+    #[test]
+    fn a_select_press_inside_the_picked_mark_s_box_drags_it() {
+        let mut e = editor();
+        e.execute(Command::SetTool(Tool::Arrow));
+        let mods = Mods::default();
+        let drag = |e: &mut Editor, from: (f32, f32), to: (f32, f32)| {
+            e.handle(EditorInput::PointerDown { x: from.0, y: from.1, button: PointerButton::Left, mods });
+            e.handle(EditorInput::PointerMove { x: to.0, y: to.1, mods });
+            e.handle(EditorInput::PointerUp { x: to.0, y: to.1, button: PointerButton::Left, mods });
+        };
+        drag(&mut e, (10.0, 10.0), (40.0, 40.0));
+        e.execute(Command::SetTool(Tool::Select));
+        e.execute(Command::SelectAll);
+        // (35, 15) is inside the arrow's box but far from its stroke.
+        assert!(!e.annotation_at(35.0, 15.0));
+        assert!(e.in_picked(35.0, 15.0));
+        let before = e.annotations()[0].kind.bounds();
+        drag(&mut e, (35.0, 15.0), (40.0, 20.0));
+        let after = e.annotations()[0].kind.bounds();
+        assert_eq!((after.x - before.x, after.y - before.y), (5.0, 5.0), "the arrow moved by (5, 5)");
+        // Outside the box a press lets it go.
+        drag(&mut e, (60.0, 45.0), (60.0, 45.0));
+        assert!(!e.in_picked(35.0, 15.0));
     }
 }
