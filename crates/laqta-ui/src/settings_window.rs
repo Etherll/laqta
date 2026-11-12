@@ -113,6 +113,8 @@ struct SettingsWindow {
     draft: Settings,
     /// The saved settings the draft started from, so a save keeps what other windows wrote since.
     opened: Settings,
+    /// What a reset made the window's own since the last save.
+    claimed: settings_reset::Claimed,
     /// First-run settings for this OS: what "Reset to default" goes back to.
     defaults: Settings,
     /// The text each field shows at its default.
@@ -273,6 +275,7 @@ impl SettingsWindow {
             },
             default_texts: InputTexts::of(&defaults),
             opened: draft.clone(),
+            claimed: settings_reset::Claimed::default(),
             draft,
             defaults,
             page: Page::General,
@@ -441,10 +444,11 @@ impl SettingsWindow {
             Ok(()) => {
                 let conflicts = present::hotkey_conflicts(&self.draft);
                 let services = cx.global::<UiState>().services.clone();
-                settings_reset::keep_outside_edits(&mut self.draft, &self.opened, &services.app.settings());
+                settings_reset::keep_outside_edits(&mut self.draft, &self.opened, &services.app.settings(), self.claimed);
                 match (services.save_settings)(self.draft.clone()) {
                     Ok(()) => {
                         self.opened = self.draft.clone();
+                        self.claimed = settings_reset::Claimed::default();
                         crate::theme::apply(self.draft.theme, cx);
                         if conflicts.is_empty() {
                             (true, "Settings saved.".into())
@@ -518,7 +522,7 @@ impl SettingsWindow {
     fn reset(&mut self, scope: Scope, window: &mut Window, cx: &mut Context<Self>) {
         let theme = self.draft.theme;
         settings_reset::reset(scope, &mut self.draft, &self.defaults);
-        settings_reset::claim_reset(scope, &mut self.opened, &cx.global::<UiState>().services.app.settings());
+        settings_reset::claim_reset(scope, &mut self.claimed);
         if matches!(scope, Scope::Models | Scope::All) {
             let (models, background) = (self.draft.models.clone(), self.draft.cloud.background);
             self.apply_now(
@@ -1711,6 +1715,7 @@ impl SettingsWindow {
                 Ok(Some(summary)) => {
                     this.draft = cx.global::<UiState>().services.app.settings();
                     this.opened = this.draft.clone();
+                    this.claimed = settings_reset::Claimed::default();
                     this.report(Ok(summary), cx);
                 }
                 Ok(None) => {}
