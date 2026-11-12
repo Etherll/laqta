@@ -699,10 +699,17 @@ impl Render for OverlayView {
         .on_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| {
             let (x, y) = this.to_phys(ev.position, window, cx);
             let Some(pressed) = button(ev.button) else { return };
-            // Another button mid-drag is ignored. The same button again means its release was lost
-            // (outside the overlay), so this press starts afresh.
+            // Another button mid-drag keeps the drag's route. A selection drag still hands it to the
+            // session, where a right or middle click cancels the gesture. The same button again
+            // means its release was lost (outside the overlay), so this press starts afresh.
             let m = this.model.read(cx);
-            if m.finishing || m.pressed_button.is_some_and(|b| b != ev.button) {
+            if m.finishing {
+                return;
+            }
+            if m.pressed_button.is_some_and(|b| b != ev.button) {
+                if m.pressed == Some(Route::Session) {
+                    this.send(RegionInput::PointerDown { x, y, button: pressed }, cx);
+                }
                 return;
             }
             let mut scene = this.model.read(cx).pointer_scene((x, y), true);

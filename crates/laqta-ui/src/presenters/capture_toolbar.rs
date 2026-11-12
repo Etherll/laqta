@@ -304,9 +304,20 @@ pub fn with_color(style: &Style, tool: Tool, color: Rgba) -> Style {
     match tool {
         Tool::Highlight => s.highlight_color = color,
         Tool::Text => s.font.color = color,
+        // A step's numeral sits on its colour: dark on light colours, white on the rest.
+        Tool::Step => {
+            s.border_color = color;
+            s.font.color = numeral_on(color);
+        }
         _ => s.border_color = color,
     }
     s
+}
+
+/// A numeral colour that reads on `fill`.
+fn numeral_on(fill: Rgba) -> Rgba {
+    let luma = 0.299 * f32::from(fill.r) + 0.587 * f32::from(fill.g) + 0.114 * f32::from(fill.b);
+    if luma > 160.0 { INK[6] } else { Rgba::rgb(0xff, 0xff, 0xff) }
 }
 
 /// The small, medium and large values of the style field a size sets for `tool`.
@@ -482,6 +493,16 @@ mod tests {
         let mut marks = Vec::new();
         remember(&mut marks, Tool::Step, &with_color(&step, Tool::Step, INK[4]));
         assert_eq!(style_for(Tool::Step, &marks).font.size, step.font.size, "a colour pick leaves the size alone");
+    }
+
+    #[test]
+    fn a_step_s_numeral_reads_on_every_swatch() {
+        for &c in palette(Tool::Step) {
+            let s = with_color(&base_style(Tool::Step), Tool::Step, c);
+            assert_ne!(s.font.color, s.border_color, "{c:?}");
+        }
+        assert_eq!(with_color(&Style::default(), Tool::Step, INK[7]).font.color, INK[6], "dark on white");
+        assert_eq!(with_color(&Style::default(), Tool::Step, INK[0]).font.color, Rgba::rgb(0xff, 0xff, 0xff), "white on red");
     }
 
     #[test]
