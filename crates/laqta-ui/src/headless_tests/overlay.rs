@@ -576,10 +576,22 @@ fn a_moved_selection_carries_its_marks_unless_alt_leaves_them(cx: &mut TestAppCo
     let mut resizing = settled_view(wider);
     resizing.resizing = Some(laqta_domain::region::Handle::W);
     resizing.selection_image = None;
+    resizing.gesture = true;
     cx.update(|cx| crate::overlay::update(resizing, cx));
     let flipped = PhysRect { x: 300, ..wider };
     cx.update(|cx| crate::overlay::update(settled_view(flipped), cx));
     assert_eq!(marks(cx), vec![RectF::new(-170.0, 20.0, 40.0, 30.0)], "the mark stayed over its pixels");
+
+    // A resize released where it began sends no crop; the next plain move still carries the mark.
+    let mut resizing = settled_view(flipped);
+    resizing.resizing = Some(laqta_domain::region::Handle::E);
+    resizing.selection_image = None;
+    resizing.gesture = true;
+    cx.update(|cx| crate::overlay::update(resizing, cx));
+    let mut settled = settled_view(flipped);
+    settled.selection_image = None;
+    cx.update(|cx| crate::overlay::update(settled, cx));
+    assert!(!cx.update(|cx| model.read(cx).resized), "no stale resize");
     assert!(sent.lock().unwrap().is_empty());
 }
 

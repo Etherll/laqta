@@ -310,6 +310,11 @@ pub(crate) fn update(view: RegionView, cx: &mut App) {
             }
             m.view = view;
             m.sync_annot(cx);
+            // A resize that settled where it began brings no crop to consume the flag: drop it once
+            // the frame rests on the engine's rect.
+            if !m.view.gesture && m.annot.as_ref().is_some_and(|a| Some(a.rect) == m.view.selected) {
+                m.resized = false;
+            }
             m.sync_text();
             cx.notify();
         });
