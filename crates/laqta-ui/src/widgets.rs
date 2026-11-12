@@ -747,3 +747,68 @@ pub(crate) fn toggle_chip(
         .child(label);
     clickable(el, on_click, cx)
 }
+
+/// One option in a list where a single one is chosen (a model, a preset): a radio dot, the name,
+/// a muted detail line, and an optional control at the end that doesn't pick the row. Screen
+/// readers hear a radio button with its state.
+pub(crate) fn option_row(
+    id: impl Into<ElementId>,
+    name: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+    selected: bool,
+    trailing: Option<AnyElement>,
+    on_pick: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> Stateful<Div> {
+    use gpui::accesskit::{Role, Toggled};
+    let t = cx.theme();
+    let x = theme::extra(cx);
+    let name: SharedString = name.into();
+    let dot = div()
+        .flex_none()
+        .size(px(16.))
+        .rounded(radius::PILL)
+        .border_1()
+        .border_color(if selected { t.primary } else { t.muted_foreground })
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(selected, |d| d.child(div().size(px(8.)).rounded(radius::PILL).bg(t.primary)));
+    let el = div()
+        .id(id)
+        .role(Role::RadioButton)
+        .aria_label(name.clone())
+        .aria_toggled(if selected { Toggled::True } else { Toggled::False })
+        .flex()
+        .items_center()
+        .gap(space::S3)
+        .min_h(px(52.))
+        .px(space::S3)
+        .py(space::S2)
+        .rounded(radius::MD)
+        .border_1()
+        .border_color(if selected { t.primary.opacity(0.5) } else { gpui::transparent_black() })
+        .when(selected, |d| d.bg(x.wash))
+        .hover(|s| s.bg(x.wash))
+        .child(dot)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(div().text_size(text::BODY).font_weight(FontWeight::MEDIUM).text_color(t.foreground).child(name))
+                .child(div().text_size(text::LABEL).text_color(t.muted_foreground).child(detail.into())),
+        )
+        .children(trailing.map(|c| {
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(space::S2)
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(c)
+        }));
+    clickable(el, on_pick, cx)
+}

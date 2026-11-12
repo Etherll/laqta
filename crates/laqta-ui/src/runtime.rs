@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use futures_lite::StreamExt;
@@ -340,6 +341,9 @@ impl std::fmt::Debug for PermissionHooks {
 /// Checks for an update: the message to show and whether `install_update` can apply it here.
 pub type UpdateCheck = Arc<dyn Fn() -> laqta_ports::BoxFuture<'static, Result<(String, bool), String>> + Send + Sync>;
 pub type UpdateInstall = Arc<dyn Fn() -> laqta_ports::BoxFuture<'static, Result<(), String>> + Send + Sync>;
+/// Lists the models an OpenAI-compatible service offers, from its base URL and an API key (`None`
+/// reads the stored analyzer key).
+pub type AnalyzerModels = Arc<dyn Fn(String, Option<String>) -> laqta_ports::BoxFuture<'static, Result<Vec<String>, String>> + Send + Sync>;
 /// One model in the model manager (catalog or custom).
 #[derive(Clone, Debug)]
 pub struct ModelRow {
@@ -355,6 +359,25 @@ pub struct ModelRow {
     pub custom: bool,
     /// False while the catalog has no pinned hash for it.
     pub available: bool,
+    /// True for the catalog's default model for its task.
+    pub default: bool,
+    /// `fast`, `balanced` or `best`; empty for a custom model.
+    pub speed: String,
+    /// The languages a recogniser reads; empty for a custom model.
+    pub languages: Vec<String>,
+}
+
+/// One OCR preset from the catalog: a detector and a recogniser offered as a single choice.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OcrPresetRow {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// The catalog id of the detector.
+    pub det: String,
+    /// The catalog id of the recogniser.
+    pub rec: String,
+    pub default: bool,
 }
 
 pub type ModelProgress = Arc<dyn Fn(u64, Option<u64>) + Send + Sync>;
@@ -364,7 +387,20 @@ pub trait ModelService: Send + Sync {
     fn rows(&self) -> Vec<ModelRow>;
     /// (task, family) pairs a custom model can use.
     fn families(&self) -> Vec<(String, String)>;
-    fn install(&self, id: String, progress: ModelProgress) -> laqta_ports::BoxFuture<'static, Result<(), String>>;
+    /// Downloads a catalog model; stops early when `cancel` is set.
+    fn install(&self, id: String, progress: ModelProgress, cancel: Arc<AtomicBool>) -> laqta_ports::BoxFuture<'static, Result<(), String>>;
+    /// The OCR presets the catalog offers, in catalog order.
+    fn ocr_presets(&self) -> Vec<OcrPresetRow>;
+    /// True when the ONNX Runtime library is already in the models folder.
+    fn runtime_ready(&self) -> bool;
+    /// The size of the ONNX Runtime download in bytes.
+    fn runtime_size(&self) -> u64;
+    /// The bytes the models folder takes up on disk.
+    fn disk_usage(&self) -> u64;
+    /// The folder the models are stored in.
+    fn models_dir(&self) -> PathBuf;
+    /// True when the OS provides its own OCR, so the OCR models are not needed for it.
+    fn system_ocr(&self) -> bool;
     fn remove(&self, id: &str) -> Result<(), String>;
     /// Checks the file against the family and copies it into the models folder.
     fn add_custom(
@@ -410,6 +446,8 @@ pub struct UiServices {
     /// Update check and install.
     pub check_update: UpdateCheck,
     pub install_update: UpdateInstall,
+    /// Lists an OpenAI-compatible service's models: base URL and key (`None` = the stored analyzer key).
+    pub analyzer_models: AnalyzerModels,
     /// The system file and folder pickers (the `Prompt` port).
     pub prompt: Arc<dyn laqta_ports::Prompt>,
     /// Asks the platform to do something to a window that GPUI has no call for. It returns
@@ -549,6 +587,7 @@ pub fn run(services: UiServices, rx: UiReceiver) {
     }
     app.run(move |cx: &mut App| {
         gpui_component::init(cx);
+        crate::dialog::install(cx);
         crate::theme::apply(services.app.settings().theme, cx);
         let tasks = cx.new(|_| TaskList::default());
         cx.set_global(UiState {

@@ -17,7 +17,7 @@ pub mod tensor;
 pub mod validate;
 
 pub use background::ModelBackground;
-pub use catalog::{Catalog, ModelEntry, OrtArchive, Task, catalog};
+pub use catalog::{Catalog, ModelEntry, OcrPreset, OrtArchive, Speed, Task, catalog};
 pub use error::MlError;
 pub use inpaint::ModelInpainter;
 pub use ocr::ModelOcr;

@@ -9,7 +9,7 @@ mod permissions;
 mod settings;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_channel::oneshot;
@@ -20,7 +20,7 @@ use laqta_ports::fakes::{ClipboardBehaviour, FakeClipboard, FakeScreen, FakeShel
 use laqta_ports::{BoxFuture, PortError, Spawner};
 
 use crate::presenters::task_list::TaskList;
-use crate::runtime::{ModelProgress, ModelRow, ModelService, UiServices, UiState};
+use crate::runtime::{ModelProgress, ModelRow, ModelService, OcrPresetRow, UiServices, UiState};
 
 type Job = (Box<dyn FnOnce() + Send>, oneshot::Sender<()>);
 
@@ -95,8 +95,26 @@ impl ModelService for NoModels {
     fn families(&self) -> Vec<(String, String)> {
         Vec::new()
     }
-    fn install(&self, _: String, _: ModelProgress) -> BoxFuture<'static, Result<(), String>> {
+    fn install(&self, _: String, _: ModelProgress, _: Arc<AtomicBool>) -> BoxFuture<'static, Result<(), String>> {
         Box::pin(async { Err("no models in tests".into()) })
+    }
+    fn ocr_presets(&self) -> Vec<OcrPresetRow> {
+        Vec::new()
+    }
+    fn runtime_ready(&self) -> bool {
+        false
+    }
+    fn runtime_size(&self) -> u64 {
+        0
+    }
+    fn disk_usage(&self) -> u64 {
+        0
+    }
+    fn models_dir(&self) -> PathBuf {
+        PathBuf::new()
+    }
+    fn system_ocr(&self) -> bool {
+        false
     }
     fn remove(&self, _: &str) -> Result<(), String> {
         Err("no models in tests".into())
@@ -191,6 +209,7 @@ pub(crate) fn services(spawner: QueuedSpawner, dir: &Path) -> UiServices {
         models: Arc::new(NoModels),
         check_update: Arc::new(|| Box::pin(async { Err("tests".into()) })),
         install_update: Arc::new(|| Box::pin(async { Err("tests".into()) })),
+        analyzer_models: Arc::new(|_, _| Box::pin(async { Err("no network in tests".into()) })),
         prompt: Arc::new(laqta_ports::fakes::FakePrompt::default()),
         native_window: Arc::new(|_, _| false),
         logical_rect: None,

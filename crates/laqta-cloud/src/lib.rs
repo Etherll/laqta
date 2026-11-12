@@ -163,6 +163,43 @@ impl ImageAnalyzer for OpenAiCompatible {
     }
 }
 
+/// The model ids a service lists: `data[].id` (OpenAI-compatible) or `models[].name` (Ollama).
+/// Sorted, without duplicates.
+pub fn model_ids(body: &[u8]) -> Result<Vec<String>, PortError> {
+    let v: serde_json::Value =
+        serde_json::from_slice(body).map_err(|e| PortError::Failed(format!("the service sent invalid JSON: {e}")))?;
+    let mut ids: Vec<String> = if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
+        data.iter().filter_map(|m| m.get("id")?.as_str()).map(str::to_owned).collect()
+    } else if let Some(models) = v.get("models").and_then(|m| m.as_array()) {
+        models.iter().filter_map(|m| m.get("name")?.as_str()).map(str::to_owned).collect()
+    } else {
+        return Err(PortError::Failed("the service's reply lists no models".into()));
+    };
+    ids.retain(|id| !id.is_empty());
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+/// Lists the models at `{base_url}/models`. The key, when present, goes as a Bearer header, as in
+/// `analyze`.
+pub async fn list_models(transport: &Transport, base_url: &str, key: Option<&str>) -> Result<Vec<String>, PortError> {
+    let base = base_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Err(PortError::Failed("set the service address first".into()));
+    }
+    let mut request = Request::new(Method::Get, format!("{base}/models"));
+    if let Some(key) = key.filter(|k| !k.is_empty()) {
+        request.headers.push(("Authorization".into(), format!("Bearer {key}")));
+    }
+    request.timeout_secs = 15;
+    let reply = transport(request).await.map_err(net)?;
+    if !(200..300).contains(&reply.status) {
+        return Err(status_error("The service", &reply));
+    }
+    model_ids(&reply.body)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -275,5 +312,37 @@ mod tests {
         let err = block_on(a.analyze(image(), "p".into())).unwrap_err().to_string();
         assert!(err.contains("bad key") && err.contains("401"), "{err}");
         assert!(seen.lock().unwrap()[0].headers.contains(&("Authorization".into(), "Bearer sk".into())));
+    }
+
+    #[test]
+    fn model_ids_read_openai_and_ollama_lists() {
+        let openai = br#"{"object":"list","data":[{"id":"b"},{"id":"a"},{"id":"b"},{"id":""}]}"#;
+        assert_eq!(model_ids(openai).unwrap(), vec!["a", "b"]);
+        let ollama = br#"{"models":[{"name":"llava:latest"},{"name":"gemma3"}]}"#;
+        assert_eq!(model_ids(ollama).unwrap(), vec!["gemma3", "llava:latest"]);
+        assert!(model_ids(br#"{"other":1}"#).unwrap_err().to_string().contains("no models"));
+        assert!(model_ids(b"nope").unwrap_err().to_string().contains("invalid JSON"));
+    }
+
+    #[test]
+    fn list_models_sends_the_key_only_when_present() {
+        let (transport, seen) = canned(reply(200, br#"{"data":[{"id":"m1"}]}"#));
+        assert_eq!(block_on(list_models(&transport, " http://localhost:1234/v1/ ", None)).unwrap(), vec!["m1"]);
+        block_on(list_models(&transport, "http://x/v1", Some("sk"))).unwrap();
+        block_on(list_models(&transport, "http://x/v1", Some(""))).unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0].method, Method::Get);
+        assert_eq!(seen[0].url, "http://localhost:1234/v1/models");
+        assert!(!seen[0].headers.iter().any(|(k, _)| k == "Authorization"), "no key, no header");
+        assert!(seen[1].headers.contains(&("Authorization".into(), "Bearer sk".into())));
+        assert!(!seen[2].headers.iter().any(|(k, _)| k == "Authorization"), "an empty key is no key");
+    }
+
+    #[test]
+    fn list_models_reports_errors() {
+        let (transport, _) = canned(reply(401, br#"{"error":{"message":"bad key"}}"#));
+        let err = block_on(list_models(&transport, "http://x/v1", Some("sk"))).unwrap_err().to_string();
+        assert!(err.contains("rejected the API key") && err.contains("bad key") && err.contains("401"), "{err}");
+        assert!(block_on(list_models(&transport, " / ", None)).unwrap_err().to_string().contains("set the service address first"));
     }
 }

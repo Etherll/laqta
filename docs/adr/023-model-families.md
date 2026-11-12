@@ -106,3 +106,26 @@ measures them on the reference machine before defaults are final.
   input image and its expected mask or text, compared within a tolerance.
 - Weights licences are shown before download. Gated or non-commercial models (for example
   RMBG-2.0) are not in the catalog. Users can still add them as custom models from their own copy.
+
+**Amendment (2026-11-12): the settings page is organised by feature.**
+- Settings → AI features shows one section per feature (text recognition, background removal,
+  object removal, describe image), not one per catalog task. Each section has its engine, a
+  status (ready, not downloaded with the size including ONNX Runtime, downloading with
+  cancel, failed with retry) and its model choice. The rules behind the section live in the
+  `ai_features` presenter (ADR 017).
+- Every catalog entry carries a `speed` tier (`fast`, `balanced`, `best`), shown beside its
+  size and licence; this replaces the "expected speed" above until the M5 spike measures it.
+- OCR is chosen by `[[ocr_preset]]` tables in the catalog: a named detector and recogniser
+  pair, one of them the default. The detector and recogniser can still be chosen separately
+  under Advanced, where custom models are added too. Presets are not a setting: the page
+  matches the saved pair against them.
+- A model choice applies on the click. A model that isn't on disk is downloaded first (with
+  ONNX Runtime when it's missing) and put in use only when the download finishes, so the
+  feature keeps working meanwhile. `ModelService::install` takes a cancel flag.
+- `ModelOptions::ocr_engine` saves the choice between the PP-OCR models and the OS engine
+  (Windows.Media.Ocr), which before was only offered by the first-use download question.
+- The execution provider stays a setting, but the page doesn't offer it while no GPU build
+  ships; it says the models run on the processor.
+- The analyzer's section offers presets for known OpenAI-compatible services and a connection
+  test that lists the service's models (`GET {base}/models`, `laqta_cloud::list_models`),
+  handed to the UI as a `UiServices` closure. It is not a port: there is one adapter (ADR 021).

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use laqta_domain::Bitmap;
+use laqta_domain::settings::OcrEngine;
 use laqta_ml::catalog::{Task, catalog};
 use laqta_ml::ocr::ModelOcr;
 use laqta_ml::runtime::Runtime;
@@ -61,6 +62,11 @@ fn ml(e: laqta_ml::error::MlError) -> PortError {
     PortError::Failed(e.to_string())
 }
 
+/// The OS engine reads when the OS has one and the user chose it or turned the models down.
+fn reads_with_system(engine: OcrEngine, declined: bool, has_system: bool) -> bool {
+    has_system && (engine == OcrEngine::System || declined)
+}
+
 impl LazyOcr {
     /// `ui` asks before a download and shows its progress as toasts.
     pub fn new<U: Prompt + Notifier + 'static>(
@@ -81,9 +87,12 @@ impl LazyOcr {
         }
     }
 
-    /// The models were turned down and the OS engine stands in.
+    /// The OS engine reads instead of the models: chosen in settings, or the models were turned down
+    /// and are still missing (once they are on disk, say from the settings page, they read again).
     fn uses_fallback(&self) -> bool {
-        self.fallback.is_some() && self.declined.load(Ordering::Relaxed)
+        let engine = self.options.read().map(|o| o.ocr_engine).unwrap_or_default();
+        let declined = self.declined.load(Ordering::Relaxed) && !self.plan().is_ok_and(|plan| plan.complete());
+        reads_with_system(engine, declined, self.fallback.is_some())
     }
 
     fn plan(&self) -> Result<Plan, PortError> {
@@ -122,7 +131,7 @@ impl LazyOcr {
                 .confirm(
                     TITLE,
                     &if self.fallback.is_some() {
-                        format!("Download ONNX Runtime and the text models (about {mb} MB) for better accuracy? Choose No to use Windows' built-in OCR.")
+                        format!("Download ONNX Runtime and the text models (about {mb} MB) for better accuracy? Choose No to use Windows' built-in OCR. You can change this in Settings → AI features.")
                     } else {
                         format!("Text recognition needs ONNX Runtime and its models (about {mb} MB). Download them now?")
                     },
@@ -173,5 +182,28 @@ impl Ocr for LazyOcr {
     /// chose the OS engine. Until then `recognize` opens the download question first.
     fn ready(&self) -> bool {
         self.uses_fallback() || self.plan().is_ok_and(|plan| plan.complete())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_os_engine_reads_only_when_present_and_chosen_or_declined() {
+        // (engine, declined, has_system, reads)
+        let cases = [
+            (OcrEngine::Models, false, false, false),
+            (OcrEngine::Models, true, false, false),
+            (OcrEngine::System, false, false, false),
+            (OcrEngine::System, true, false, false),
+            (OcrEngine::Models, false, true, false),
+            (OcrEngine::Models, true, true, true),
+            (OcrEngine::System, false, true, true),
+            (OcrEngine::System, true, true, true),
+        ];
+        for (engine, declined, has_system, reads) in cases {
+            assert_eq!(reads_with_system(engine, declined, has_system), reads, "{engine:?}, declined {declined}, system {has_system}");
+        }
     }
 }

@@ -582,6 +582,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let cloud_options: crate::cloud::SharedCloudOptions = Arc::new(std::sync::RwLock::new(settings.cloud.clone()));
     let recorder_backend = Arc::new(std::sync::RwLock::new(settings.defaults.recording.backend));
     let model_options: crate::models::SharedModelOptions = Arc::new(std::sync::RwLock::new(settings.models.clone()));
+    let system_ocr = platform.os_ocr.is_some();
     let ports = Ports {
         screen: platform.screen,
         clipboard: platform.clipboard,
@@ -1031,7 +1032,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                 let deps = host_deps.clone();
                 Arc::new(move || laqta_upload::remote_storages(&app.settings().hosts, &deps))
             },
-            models: Arc::new(crate::models::Models { data: data.clone(), options: model_options.clone() }),
+            models: Arc::new(crate::models::Models { data: data.clone(), options: model_options.clone(), system_ocr }),
             check_update: {
                 let last = last_release.clone();
                 Arc::new(move || {
@@ -1060,6 +1061,19 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                         laqta_http::run(crate::updates::install(release, data)).await?;
                         let _ = quit.send(());
                         Ok(())
+                    })
+                })
+            },
+            analyzer_models: {
+                let secrets = platform.secrets.clone();
+                Arc::new(move |base_url: String, key: Option<String>| {
+                    let secrets = secrets.clone();
+                    Box::pin(async move {
+                        let key = key.or_else(|| secrets.get(laqta_cloud::ANALYZER_KEY).ok().flatten());
+                        let transport = laqta_cloud::http();
+                        laqta_http::run(async move { laqta_cloud::list_models(&transport, &base_url, key.as_deref()).await })
+                            .await
+                            .map_err(|e| e.to_string())
                     })
                 })
             },
