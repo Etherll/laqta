@@ -40,6 +40,9 @@ pub struct RegionView {
     pub handles: Vec<(Handle, PhysRect)>,
     /// The handle being dragged, while the user resizes the selection.
     pub resizing: Option<Handle>,
+    /// The side of the grab square at each corner and edge midpoint, in physical pixels; a press
+    /// on an edge strip of this width also grabs that edge (`laqta_domain::region::grab_at`).
+    pub grab_size: u32,
     /// A draw, move or resize is in progress, so no handle takes a press until it ends.
     pub gesture: bool,
     pub cursor: (i32, i32),
@@ -60,8 +63,6 @@ pub struct RegionView {
     pub selection_image: Option<Arc<Bitmap>>,
     /// The capture tools (toolbar and info badge) are shown; Space toggles them.
     pub tools_visible: bool,
-    /// The selection is frozen because annotations exist on it.
-    pub locked: bool,
     /// Show the mode bar at the top of the screen (`RegionCaptureOptions::show_mode_bar`).
     pub mode_bar: bool,
     /// The session picks one pixel (the screen colour picker): a click picks, nothing is drawn.
@@ -87,6 +88,7 @@ impl PartialEq for RegionView {
             hovered,
             handles,
             resizing,
+            grab_size,
             gesture,
             cursor,
             magnifier,
@@ -97,7 +99,6 @@ impl PartialEq for RegionView {
             selected,
             selection_image,
             tools_visible,
-            locked,
             mode_bar,
             pick_point,
             text,
@@ -116,6 +117,7 @@ impl PartialEq for RegionView {
             && *hovered == other.hovered
             && *handles == other.handles
             && *resizing == other.resizing
+            && *grab_size == other.grab_size
             && *gesture == other.gesture
             && *cursor == other.cursor
             && *magnifier == other.magnifier
@@ -125,7 +127,6 @@ impl PartialEq for RegionView {
             && *annotate == other.annotate
             && *selected == other.selected
             && *tools_visible == other.tools_visible
-            && *locked == other.locked
             && *mode_bar == other.mode_bar
             && *pick_point == other.pick_point
             && *text == other.text
@@ -134,10 +135,14 @@ impl PartialEq for RegionView {
 }
 
 impl RegionView {
-    /// The handle a left press at `at` would drag: none on a locked selection or while a gesture
-    /// runs. The same hit test the session uses.
+    /// The handle a left press at `at` would grab: none while a gesture runs or without an active
+    /// region. The same hit test the session uses (`laqta_domain::region::grab_at`).
     pub fn handle_at(&self, at: (i32, i32)) -> Option<Handle> {
-        if self.locked || self.gesture { None } else { laqta_domain::region::handle_at(&self.handles, at) }
+        if self.gesture {
+            return None;
+        }
+        let rect = self.regions.get(self.active?)?;
+        laqta_domain::region::grab_at(*rect, at, self.grab_size)
     }
 }
 
@@ -264,12 +269,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_press_takes_a_handle_only_on_a_free_selection_between_gestures() {
-        let rect = PhysRect { x: 0, y: 0, width: 8, height: 8 };
-        let view = RegionView { handles: vec![(Handle::NW, rect)], ..RegionView::default() };
-        assert_eq!(view.handle_at((4, 4)), Some(Handle::NW));
-        assert_eq!(view.handle_at((9, 4)), None);
-        assert_eq!(RegionView { locked: true, ..view.clone() }.handle_at((4, 4)), None);
-        assert_eq!(RegionView { gesture: true, ..view }.handle_at((4, 4)), None);
+    fn a_press_takes_a_handle_only_on_an_active_region_between_gestures() {
+        let rect = PhysRect { x: 100, y: 100, width: 200, height: 100 };
+        let view = RegionView { regions: vec![rect], active: Some(0), grab_size: 16, ..RegionView::default() };
+        assert_eq!(view.handle_at((100, 100)), Some(Handle::NW));
+        assert_eq!(view.handle_at((300, 150)), Some(Handle::E));
+        assert_eq!(view.handle_at((150, 100)), Some(Handle::N));
+        assert_eq!(view.handle_at((200, 150)), None);
+        assert_eq!(RegionView { active: None, ..view.clone() }.handle_at((100, 100)), None);
+        assert_eq!(RegionView { gesture: true, ..view }.handle_at((100, 100)), None);
     }
 }

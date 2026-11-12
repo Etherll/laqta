@@ -35,6 +35,38 @@ const PAGES: [Scope; 10] = [
     Scope::Models,
 ];
 
+/// The settings other windows write that a reset in the settings window made its own, until the
+/// next save: Save writes them as the window has them, whatever they were before.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Claimed {
+    pub capture_marks: bool,
+    pub editor_hidden_tools: bool,
+}
+
+/// Puts back into `draft` the settings other windows write while the settings window is open (the
+/// capture toolbar's colours, the editor's hidden tools), unless the window changed them itself
+/// (edited, or `claimed` by a reset): `opened` is what the window started from and `live` what is
+/// saved now.
+pub fn keep_outside_edits(draft: &mut Settings, opened: &Settings, live: &Settings, claimed: Claimed) {
+    if !claimed.capture_marks && draft.capture_marks == opened.capture_marks {
+        draft.capture_marks.clone_from(&live.capture_marks);
+    }
+    if !claimed.editor_hidden_tools && draft.editor_hidden_tools == opened.editor_hidden_tools {
+        draft.editor_hidden_tools.clone_from(&live.editor_hidden_tools);
+    }
+}
+
+/// A reset of `scope` is the window's own change to the settings other windows write, even when
+/// it leaves them as they opened: they stop following the saved ones, so Save writes the reset.
+pub fn claim_reset(scope: Scope, claimed: &mut Claimed) {
+    if matches!(scope, Scope::Capture | Scope::All) {
+        claimed.capture_marks = true;
+    }
+    if scope == Scope::All {
+        claimed.editor_hidden_tools = true;
+    }
+}
+
 /// How many settings in `scope` differ from `defaults`.
 pub fn changed(scope: Scope, draft: &Settings, defaults: &Settings) -> usize {
     if scope == Scope::All {
@@ -82,6 +114,8 @@ pub fn reset(scope: Scope, draft: &mut Settings, defaults: &Settings) {
             let scrolling = d.capture.scrolling.clone();
             d.capture.clone_from(&f.capture);
             d.capture.scrolling = scrolling;
+            // The capture toolbar's colours and sizes belong to the capture page too.
+            draft.capture_marks.clone_from(&defaults.capture_marks);
         }
         Scope::Shortcuts => {
             draft.disable_hotkeys = defaults.disable_hotkeys;
@@ -297,6 +331,66 @@ mod tests {
         for scope in PAGES.into_iter().chain([Scope::All]) {
             assert_eq!(changed(scope, &d, &d), 0, "{scope:?}");
         }
+    }
+
+    #[test]
+    fn the_capture_page_owns_the_toolbar_colours() {
+        let d = defaults();
+        let mut s = d.clone();
+        s.capture_marks.push(laqta_domain::capture::MarkStyle {
+            tool: "Freehand".into(),
+            color: laqta_domain::color::Rgba::rgb(1, 2, 3),
+            size: 2,
+        });
+        assert_eq!(changed(Scope::Capture, &s, &d), 1);
+        assert_eq!(changed(Scope::All, &s, &d), 1, "counted once");
+        reset(Scope::Capture, &mut s, &d);
+        assert!(s.capture_marks.is_empty());
+    }
+
+    #[test]
+    fn a_save_keeps_what_other_windows_wrote_since_it_opened() {
+        let opened = defaults();
+        let mut draft = opened.clone();
+        draft.theme = Theme::Dark;
+        let mut live = opened.clone();
+        live.capture_marks.push(laqta_domain::capture::MarkStyle {
+            tool: "Arrow".into(),
+            color: laqta_domain::color::Rgba::rgb(1, 2, 3),
+            size: 0,
+        });
+        live.editor_hidden_tools.push("Spotlight".into());
+        keep_outside_edits(&mut draft, &opened, &live, Claimed::default());
+        assert_eq!(draft.capture_marks, live.capture_marks);
+        assert_eq!(draft.editor_hidden_tools, live.editor_hidden_tools);
+        assert_eq!(draft.theme, Theme::Dark, "the window's own edits stay");
+
+        let mut reset_here = opened.clone();
+        reset_here.editor_hidden_tools.clear();
+        let mut opened_with = opened.clone();
+        opened_with.editor_hidden_tools.push("Blur".into());
+        keep_outside_edits(&mut reset_here, &opened_with, &live, Claimed::default());
+        assert!(reset_here.editor_hidden_tools.is_empty(), "a change made in the window wins");
+    }
+
+    #[test]
+    fn a_reset_wins_over_colours_picked_since_the_window_opened() {
+        // The colours were at their defaults at the reset, and another window picked one after it.
+        let d = defaults();
+        let opened = d.clone();
+        let mut draft = d.clone();
+        let mut claimed = Claimed::default();
+        reset(Scope::Capture, &mut draft, &d);
+        claim_reset(Scope::Capture, &mut claimed);
+        let mut live = d.clone();
+        live.capture_marks.push(laqta_domain::capture::MarkStyle {
+            tool: "Arrow".into(),
+            color: laqta_domain::color::Rgba::rgb(1, 2, 3),
+            size: 0,
+        });
+        keep_outside_edits(&mut draft, &opened, &live, claimed);
+        assert!(draft.capture_marks.is_empty(), "Save writes the reset");
+        assert_eq!(draft.editor_hidden_tools, live.editor_hidden_tools, "a Capture reset claims only its own");
     }
 
     #[test]

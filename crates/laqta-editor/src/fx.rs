@@ -1,4 +1,4 @@
-//! Pixel work for the effect annotations (Blur, Pixelate, Highlight, Smart eraser, Magnify, Clone)
+//! Pixel work for the effect annotations (Blur, Pixelate, Smart eraser, Magnify, Clone)
 //! and whole-image operations (rotate, flip, cut out, auto crop). Straight-alpha RGBA buffers.
 
 use laqta_domain::color::Rgba;
@@ -137,16 +137,6 @@ pub(crate) fn pixelate(img: &Img, size: u32) -> Img {
 }
 
 /// Multiplies by a highlighter colour.
-pub(crate) fn highlight(img: &Img, color: Rgba) -> Img {
-    let mut out = img.clone();
-    for p in out.px.as_chunks_mut::<4>().0 {
-        p[0] = (p[0] as u16 * color.r as u16 / 255) as u8;
-        p[1] = (p[1] as u16 * color.g as u16 / 255) as u8;
-        p[2] = (p[2] as u16 * color.b as u16 / 255) as u8;
-    }
-    out
-}
-
 pub(crate) fn solid(w: u32, h: u32, color: Rgba) -> Img {
     let mut out = Img::new(w, h);
     for p in out.px.as_chunks_mut::<4>().0 {

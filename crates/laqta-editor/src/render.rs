@@ -157,6 +157,23 @@ fn shape(pm: &mut Pixmap, path: &tiny_skia::Path, style: &Style, t: Transform) {
     }
 }
 
+/// A path through `points`; a single point becomes a dot.
+fn polyline(points: &[PointF]) -> Option<tiny_skia::Path> {
+    let (first, rest) = points.split_first()?;
+    let mut pb = PathBuilder::new();
+    pb.move_to(first.x, first.y);
+    if rest.is_empty() {
+        pb.line_to(first.x + 0.01, first.y);
+    }
+    for p in rest {
+        pb.line_to(p.x, p.y);
+    }
+    pb.finish()
+}
+
+/// How opaque the Highlight marker is.
+const MARKER_ALPHA: u8 = 115;
+
 fn line_path(start: PointF, end: PointF, curve: Option<PointF>) -> Option<tiny_skia::Path> {
     let mut pb = PathBuilder::new();
     pb.move_to(start.x, start.y);
@@ -228,7 +245,6 @@ fn effect_pixels(a: &Annotation, base: &Img) -> Option<(i32, i32, Pixmap)> {
             blurred.crop(PhysRect { x: m, y: m, width: area.width, height: area.height })
         }
         AnnotationKind::Pixelate { .. } => fx::pixelate(&base.crop(area), a.style.pixel_size),
-        AnnotationKind::Highlight { .. } => fx::highlight(&base.crop(area), a.style.highlight_color),
         AnnotationKind::SmartEraser { color, .. } => fx::solid(area.width, area.height, *color),
         AnnotationKind::Magnify { rect } => {
             let r = rect.normalized();
@@ -327,18 +343,17 @@ fn draw_annotation(pm: &mut Pixmap, a: &Annotation, base: &Img, fonts: &Fonts, c
             }
         }
         AnnotationKind::Freehand { points } => {
-            let mut pb = PathBuilder::new();
-            if let Some(first) = points.first() {
-                pb.move_to(first.x, first.y);
-                if points.len() == 1 {
-                    pb.line_to(first.x + 0.01, first.y);
-                }
-                for p in &points[1..] {
-                    pb.line_to(p.x, p.y);
-                }
-            }
-            if let Some(path) = pb.finish() {
+            if let Some(path) = polyline(points) {
                 pm.stroke_path(&path, &paint(s.border_color), &stroke(s.border_size.max(1.0)), t, None);
+            }
+        }
+        // See-through, so the text under it stays readable on light and dark backgrounds alike
+        // (multiplying would vanish on dark ones). One path, so it never darkens where it crosses
+        // itself.
+        AnnotationKind::Highlight { points } => {
+            if let Some(path) = polyline(points) {
+                let ink = Rgba { a: MARKER_ALPHA, ..s.highlight_color };
+                pm.stroke_path(&path, &paint(ink), &stroke(s.highlight_size.max(1.0)), t, None);
             }
         }
         AnnotationKind::Text { rect, text } => {

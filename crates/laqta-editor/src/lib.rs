@@ -150,6 +150,16 @@ pub enum Command {
     /// flattened away like any destructive operation; one undo restores the old image and them.
     /// Used when the host edited the pixels elsewhere (AI erase, background removal).
     ReplaceImage(Bitmap),
+    /// Swaps the base image for the same scene seen through a moved frame, and moves every
+    /// annotation by `(dx, dy)` so each stays over the same scene pixels. The overlay sends it when
+    /// the selection moves or resizes. Not undoable: the undo and redo entries move with the
+    /// annotations. Refused (no change) while the history holds a destructive entry, whose pixel
+    /// snapshot cannot move.
+    Reframe {
+        image: Bitmap,
+        dx: f32,
+        dy: f32,
+    },
 }
 
 /// Something the UI should do (save, copy, close) after a keyboard shortcut.
@@ -197,13 +207,32 @@ pub struct EditorOutput {
 #[derive(Clone, Debug)]
 enum Gesture {
     Idle,
-    Drawing { start: PointF, current: PointF, shift: bool },
-    Freehand { points: Vec<PointF> },
-    Moving { id: u64, last: PointF, before: Box<Annotation> },
-    Resizing { id: u64, handle: Handle, before: Box<Annotation> },
+    Drawing {
+        start: PointF,
+        current: PointF,
+        shift: bool,
+    },
+    /// `straight_from`: the point a held Shift draws straight from, kept while Shift is down.
+    Freehand {
+        points: Vec<PointF>,
+        marker: bool,
+        straight_from: Option<usize>,
+    },
+    Moving {
+        id: u64,
+        last: PointF,
+        before: Box<Annotation>,
+    },
+    Resizing {
+        id: u64,
+        handle: Handle,
+        before: Box<Annotation>,
+    },
 }
 
-const HANDLE_RADIUS: f32 = 6.0;
+/// How far from a handle, along each axis, a press still takes it, in canvas pixels, until the
+/// host sets its own reach (`set_handle_reach`).
+const HANDLE_REACH: f32 = 6.0;
 
 /// Everything one render needs, copied out of the engine so it can run on another thread
 /// with no engine borrow or lock held. Made by `Editor::render_job`.
@@ -265,6 +294,8 @@ pub struct Editor {
     clipboard: Option<Annotation>,
     modified: bool,
     cache: Arc<Mutex<EffectCache>>,
+    /// How far from a handle a press still takes it (`set_handle_reach`).
+    handle_reach: f32,
 }
 
 impl std::fmt::Debug for Editor {
@@ -295,6 +326,7 @@ impl Editor {
             clipboard: None,
             modified: false,
             cache: Arc::new(Mutex::new(EffectCache::default())),
+            handle_reach: HANDLE_REACH,
         }
     }
 
@@ -304,6 +336,31 @@ impl Editor {
 
     pub fn annotations(&self) -> &[Annotation] {
         &self.annotations
+    }
+
+    /// Whether a mark is under the canvas point `(x, y)`, with the same tolerance a click uses.
+    pub fn annotation_at(&self, x: f32, y: f32) -> bool {
+        self.hit(PointF::new(x, y)).is_some()
+    }
+
+    /// Sets how far from a handle, along each axis, a press still takes it, in canvas pixels. The
+    /// host passes its on-screen grab size divided by its zoom, so the area a press takes is the
+    /// area its resize cursor shows.
+    pub fn set_handle_reach(&mut self, reach: f32) {
+        self.handle_reach = reach.max(1.0);
+    }
+
+    /// The box of the mark under the canvas point `(x, y)` that a click would pick, for a hover
+    /// outline; `None` over nothing or over the mark already picked.
+    pub fn hover_at(&self, x: f32, y: f32) -> Option<RectF> {
+        let id = self.hit(PointF::new(x, y)).filter(|id| Some(*id) != self.selected)?;
+        self.find(id).map(Annotation::pick_box)
+    }
+
+    /// Whether the canvas point `(x, y)` is inside the picked mark's box, where a `Select` press
+    /// drags it.
+    pub fn in_picked(&self, x: f32, y: f32) -> bool {
+        self.selected.and_then(|id| self.find(id)).is_some_and(|a| a.pick_box().contains(PointF::new(x, y), 0.0))
     }
 
     pub fn can_undo(&self) -> bool {
@@ -393,7 +450,7 @@ impl Editor {
             tool: self.tool,
             style: self.style.clone(),
             canvas: (self.base.w, self.base.h),
-            selection: sel.map(|a| a.kind.bounds()).or_else(|| self.rubber_band()),
+            selection: sel.map(Annotation::pick_box).or_else(|| self.rubber_band()),
             handles: sel.map(|a| a.kind.handles()).unwrap_or_default(),
             pending: self.pending.map(|(_, r)| r),
             caret,
@@ -586,7 +643,31 @@ impl Editor {
                 self.finish_editing();
                 self.commit_base(Img::from_bitmap(&bitmap), Vec::new());
             }
+            Command::Reframe { image, dx, dy } => self.reframe(&image, dx, dy),
         }
+    }
+
+    /// Moves the frame: see `Command::Reframe`. The text being typed is ended first, so its saved
+    /// state is in the undo history and moves with the rest.
+    fn reframe(&mut self, image: &Bitmap, dx: f32, dy: f32) {
+        if self.history.has_destructive() || image.width() == 0 || image.height() == 0 {
+            return;
+        }
+        self.finish_editing();
+        self.base = Arc::new(Img::from_bitmap(image));
+        for a in &mut self.annotations {
+            a.kind.translate(dx, dy);
+        }
+        for e in self.history.undo.iter_mut().chain(self.history.redo.iter_mut()) {
+            e.translate(dx, dy);
+        }
+        if let Some(a) = &mut self.clipboard {
+            a.kind.translate(dx, dy);
+        }
+        self.pending = None;
+        self.gesture = Gesture::Idle;
+        self.generation += 1;
+        self.reset_cache();
     }
 
     /// The number for a new step: one past the highest step still on the canvas, so undo and
@@ -851,13 +932,13 @@ impl Editor {
         a.kind
             .handles()
             .into_iter()
-            .filter(|(_, hp)| hp.distance(p) <= HANDLE_RADIUS)
+            .filter(|(_, hp)| (hp.x - p.x).abs() <= self.handle_reach && (hp.y - p.y).abs() <= self.handle_reach)
             .min_by(|x, y| x.1.distance(p).total_cmp(&y.1.distance(p)))
             .map(|(h, _)| (a.id, h))
     }
 
     fn hit(&self, p: PointF) -> Option<u64> {
-        self.annotations.iter().rev().find(|a| a.kind.hit(p, (a.style.border_size / 2.0 + 3.0).max(4.0))).map(|a| a.id)
+        self.annotations.iter().rev().find(|a| a.kind.hit(p, (a.stroke_width() / 2.0 + 3.0).max(4.0))).map(|a| a.id)
     }
 
     fn pointer_down(&mut self, p: PointF, button: PointerButton, mods: Mods) {
@@ -884,16 +965,23 @@ impl Editor {
             return;
         }
         match self.tool {
-            Tool::Select => match self.hit(p) {
-                Some(id) => {
-                    self.selected = Some(id);
-                    if let Some(a) = self.find(id).cloned() {
-                        self.gesture = Gesture::Moving { id, last: p, before: Box::new(a) };
+            // A mark under the pointer is picked and dragged. Inside the picked mark's box counts as
+            // on it, so a thin arrow or line moves by its inside and not only by its stroke.
+            Tool::Select => {
+                match self.hit(p).or_else(|| self.selected.filter(|id| self.find(*id).is_some_and(|a| a.pick_box().contains(p, 0.0)))) {
+                    Some(id) => {
+                        self.selected = Some(id);
+                        if let Some(a) = self.find(id).cloned() {
+                            self.gesture = Gesture::Moving { id, last: p, before: Box::new(a) };
+                        }
                     }
+                    None => self.selected = None,
                 }
-                None => self.selected = None,
-            },
-            Tool::Freehand => self.gesture = Gesture::Freehand { points: vec![p] },
+            }
+            Tool::Freehand | Tool::Highlight => {
+                self.selected = None;
+                self.gesture = Gesture::Freehand { points: vec![p], marker: self.tool == Tool::Highlight, straight_from: None };
+            }
             Tool::Step => {
                 let n = self.next_step_number();
                 let radius = (self.style.font.size * 0.8).max(10.0);
@@ -925,9 +1013,19 @@ impl Editor {
                 *current = p;
                 *shift = mods.shift;
             }
-            Gesture::Freehand { points } => {
-                if points.last().is_none_or(|l| l.distance(p) >= 1.0) {
-                    points.push(p);
+            Gesture::Freehand { points, straight_from, .. } => {
+                // Shift draws straight (snapped to 45°) from where the stroke was when it went down,
+                // for a neat line under or over text; what was drawn before stays.
+                if mods.shift && !points.is_empty() {
+                    let from = *straight_from.get_or_insert(points.len() - 1);
+                    points.truncate(from + 1);
+                    let start = points[from];
+                    points.push(geom::snap_45(start, p));
+                } else {
+                    *straight_from = None;
+                    if points.last().is_none_or(|l| l.distance(p) >= 1.0) {
+                        points.push(p);
+                    }
                 }
             }
             Gesture::Moving { id, last, .. } => {
@@ -955,8 +1053,8 @@ impl Editor {
         self.pointer_move(p, mods);
         match std::mem::replace(&mut self.gesture, Gesture::Idle) {
             Gesture::Drawing { start, current, shift } => return self.finish_drawing(start, current, shift),
-            Gesture::Freehand { points } => {
-                self.add(AnnotationKind::Freehand { points });
+            Gesture::Freehand { points, marker, .. } => {
+                self.add(stroke_kind(points, marker));
             }
             Gesture::Moving { id, before, .. } | Gesture::Resizing { id, before, .. } => {
                 if let Some(i) = self.index_of(id) {
@@ -995,7 +1093,6 @@ impl Editor {
             Tool::SpeechBalloon => {
                 AnnotationKind::SpeechBalloon { rect: r, tail: PointF::new(r.x + r.w * 0.3, r.bottom() + 30.0), text: String::new() }
             }
-            Tool::Highlight => AnnotationKind::Highlight { rect: r },
             Tool::SmartEraser => {
                 let c = self.base.get(start.x as i32, start.y as i32);
                 AnnotationKind::SmartEraser { rect: r, color: Rgba { r: c[0], g: c[1], b: c[2], a: c[3] } }
@@ -1020,8 +1117,8 @@ impl Editor {
                 let kind = self.kind_for(*start, end)?;
                 Some(Annotation { id: 0, kind, style: self.style.clone() })
             }
-            Gesture::Freehand { points } => {
-                Some(Annotation { id: 0, kind: AnnotationKind::Freehand { points: points.clone() }, style: self.style.clone() })
+            Gesture::Freehand { points, marker, .. } => {
+                Some(Annotation { id: 0, kind: stroke_kind(points.clone(), *marker), style: self.style.clone() })
             }
             _ => None,
         }
@@ -1174,7 +1271,13 @@ impl Editor {
             EditorKey::Escape => {
                 if self.pending.is_some() || !matches!(self.gesture, Gesture::Idle) {
                     self.pending = None;
-                    self.gesture = Gesture::Idle;
+                    // A move or resize under way puts the mark back where the press found it.
+                    if let Gesture::Moving { id, before, .. } | Gesture::Resizing { id, before, .. } =
+                        std::mem::replace(&mut self.gesture, Gesture::Idle)
+                        && let Some(i) = self.index_of(id)
+                    {
+                        self.annotations[i] = *before;
+                    }
                 } else {
                     self.selected = None;
                 }
@@ -1230,5 +1333,181 @@ impl Editor {
         {
             t.push('\n');
         }
+    }
+}
+
+/// The annotation a finished freehand gesture leaves: a pen line, or a marker stroke (`marker`,
+/// the Highlight tool).
+fn stroke_kind(points: Vec<PointF>, marker: bool) -> AnnotationKind {
+    if marker { AnnotationKind::Highlight { points } } else { AnnotationKind::Freehand { points } }
+}
+
+#[cfg(test)]
+mod tests {
+    use laqta_domain::PixelFormat;
+
+    use super::*;
+
+    fn bitmap(w: u32, h: u32) -> Bitmap {
+        let px: Vec<u8> = std::iter::repeat_n([120u8, 120, 120, 255], (w * h) as usize).flatten().collect();
+        Bitmap::new(w, h, PixelFormat::Rgba8, px.into()).expect("a bitmap of the given size")
+    }
+
+    fn editor() -> Editor {
+        Editor::new(bitmap(64, 48), Fonts::empty())
+    }
+
+    /// Draws with the default tool: a pointer drag from `from` to `to`.
+    fn draw_rect(e: &mut Editor, from: (f32, f32), to: (f32, f32)) {
+        let mods = Mods::default();
+        e.handle(EditorInput::PointerDown { x: from.0, y: from.1, button: PointerButton::Left, mods });
+        e.handle(EditorInput::PointerMove { x: to.0, y: to.1, mods });
+        e.handle(EditorInput::PointerUp { x: to.0, y: to.1, button: PointerButton::Left, mods });
+    }
+
+    fn rect_of(e: &Editor, index: usize) -> RectF {
+        e.annotations()[index].kind.rect().expect("a rectangle")
+    }
+
+    #[test]
+    fn reframe_moves_marks_and_resizes_the_canvas() {
+        let mut e = editor();
+        draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
+        e.execute(Command::Reframe { image: bitmap(40, 30), dx: -5.0, dy: -5.0 });
+        assert_eq!(e.canvas_size(), (40, 30));
+        assert_eq!(rect_of(&e, 0), RectF::new(5.0, 5.0, 20.0, 15.0));
+    }
+
+    #[test]
+    fn undo_and_redo_follow_a_reframe() {
+        let mut e = editor();
+        draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
+        e.execute(Command::Reframe { image: bitmap(64, 48), dx: -5.0, dy: -5.0 });
+        e.execute(Command::Undo);
+        assert!(e.annotations().is_empty());
+        e.execute(Command::Redo);
+        assert_eq!(e.annotations().len(), 1);
+        assert_eq!(rect_of(&e, 0), RectF::new(5.0, 5.0, 20.0, 15.0));
+    }
+
+    #[test]
+    fn a_mark_moved_off_the_canvas_comes_back() {
+        let mut e = editor();
+        draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
+        e.execute(Command::Reframe { image: bitmap(64, 48), dx: -100.0, dy: 0.0 });
+        assert_eq!(e.annotations().len(), 1);
+        assert_eq!(rect_of(&e, 0), RectF::new(-90.0, 10.0, 20.0, 15.0));
+        e.execute(Command::Reframe { image: bitmap(64, 48), dx: 100.0, dy: 0.0 });
+        assert_eq!(rect_of(&e, 0), RectF::new(10.0, 10.0, 20.0, 15.0));
+    }
+
+    #[test]
+    fn export_has_the_new_size() {
+        let mut e = editor();
+        draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
+        e.execute(Command::Reframe { image: bitmap(40, 30), dx: -5.0, dy: -5.0 });
+        let out = e.export();
+        assert_eq!((out.width(), out.height()), (40, 30));
+    }
+
+    #[test]
+    fn reframe_is_refused_while_a_destructive_entry_is_in_history() {
+        let mut e = editor();
+        e.execute(Command::Flip { horizontal: true });
+        draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
+        e.execute(Command::Reframe { image: bitmap(40, 30), dx: 5.0, dy: 5.0 });
+        assert_eq!(e.canvas_size(), (64, 48));
+        assert_eq!(rect_of(&e, 0), RectF::new(10.0, 10.0, 20.0, 15.0));
+        // Undone twice, the flip sits in the redo stack, which also blocks the move.
+        e.execute(Command::Undo);
+        e.execute(Command::Undo);
+        e.execute(Command::Reframe { image: bitmap(40, 30), dx: 5.0, dy: 5.0 });
+        assert_eq!(e.canvas_size(), (64, 48));
+    }
+
+    #[test]
+    fn annotation_at_finds_a_mark_by_its_border() {
+        let mut e = editor();
+        draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
+        assert!(e.annotation_at(10.0, 17.0));
+        assert!(!e.annotation_at(50.0, 40.0));
+    }
+
+    #[test]
+    fn a_select_press_inside_the_picked_mark_s_box_drags_it() {
+        let mut e = editor();
+        e.execute(Command::SetTool(Tool::Arrow));
+        let mods = Mods::default();
+        let drag = |e: &mut Editor, from: (f32, f32), to: (f32, f32)| {
+            e.handle(EditorInput::PointerDown { x: from.0, y: from.1, button: PointerButton::Left, mods });
+            e.handle(EditorInput::PointerMove { x: to.0, y: to.1, mods });
+            e.handle(EditorInput::PointerUp { x: to.0, y: to.1, button: PointerButton::Left, mods });
+        };
+        drag(&mut e, (10.0, 10.0), (40.0, 40.0));
+        e.execute(Command::SetTool(Tool::Select));
+        e.execute(Command::SelectAll);
+        // (35, 15) is inside the arrow's box but far from its stroke.
+        assert!(!e.annotation_at(35.0, 15.0));
+        assert!(e.in_picked(35.0, 15.0));
+        let before = e.annotations()[0].kind.bounds();
+        drag(&mut e, (35.0, 15.0), (40.0, 20.0));
+        let after = e.annotations()[0].kind.bounds();
+        assert_eq!((after.x - before.x, after.y - before.y), (5.0, 5.0), "the arrow moved by (5, 5)");
+        // Outside the box a press lets it go.
+        drag(&mut e, (60.0, 45.0), (60.0, 45.0));
+        assert!(!e.in_picked(35.0, 15.0));
+    }
+
+    #[test]
+    fn a_straight_marker_is_picked_by_the_width_it_is_drawn_with() {
+        let mut e = editor();
+        e.execute(Command::SetTool(Tool::Highlight));
+        draw_rect(&mut e, (10.0, 30.0), (50.0, 30.0));
+        e.execute(Command::SetTool(Tool::Select));
+        e.execute(Command::Deselect);
+        // 6 px under the centre line of a 20 px marker: inside the stroke as drawn.
+        let hover = e.hover_at(30.0, 36.0).expect("the marker is under the pointer");
+        assert!(hover.h >= 20.0, "the box is as tall as the stroke: {hover:?}");
+        e.execute(Command::SelectAll);
+        assert!(e.in_picked(30.0, 38.0));
+        // A press in the box's corner, off the stroke, drags the marker rather than letting it go.
+        // (0.5, 39.5) is 13.4 px from the stroke's end, past the 13 px stroke hit.
+        draw_rect(&mut e, (0.5, 39.5), (4.5, 39.5));
+        assert!(e.chrome().selection.is_some(), "still picked");
+        assert_eq!(e.annotations()[0].kind.bounds().x, 14.0, "moved by the drag");
+    }
+
+    #[test]
+    fn esc_mid_drag_drops_the_stroke_or_puts_the_mark_back() {
+        let mut e = editor();
+        e.execute(Command::SetTool(Tool::Freehand));
+        let mods = Mods::default();
+        e.handle(EditorInput::PointerDown { x: 5.0, y: 5.0, button: PointerButton::Left, mods });
+        e.handle(EditorInput::PointerMove { x: 20.0, y: 20.0, mods });
+        e.handle(EditorInput::Key { key: EditorKey::Escape, mods });
+        e.handle(EditorInput::PointerUp { x: 20.0, y: 20.0, button: PointerButton::Left, mods });
+        assert!(e.annotations().is_empty(), "the stroke is dropped");
+
+        e.execute(Command::SetTool(Tool::Rectangle));
+        draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
+        e.execute(Command::SetTool(Tool::Select));
+        e.handle(EditorInput::PointerDown { x: 10.0, y: 15.0, button: PointerButton::Left, mods });
+        e.handle(EditorInput::PointerMove { x: 30.0, y: 15.0, mods });
+        e.handle(EditorInput::Key { key: EditorKey::Escape, mods });
+        e.handle(EditorInput::PointerUp { x: 30.0, y: 15.0, button: PointerButton::Left, mods });
+        assert_eq!(rect_of(&e, 0), RectF::new(10.0, 10.0, 20.0, 15.0), "the mark is back where it was");
+    }
+
+    #[test]
+    fn a_press_within_the_handle_reach_resizes_the_picked_mark() {
+        let mut e = editor();
+        draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
+        e.execute(Command::SetTool(Tool::Select));
+        e.execute(Command::SelectAll);
+        e.set_handle_reach(10.0);
+        // 9 px above and to the left of the top-left corner: past the old 6 px radius.
+        draw_rect(&mut e, (1.0, 1.0), (5.0, 5.0));
+        assert_eq!(rect_of(&e, 0), RectF::new(5.0, 5.0, 25.0, 20.0), "the corner moved; no new mark");
+        assert_eq!(e.annotations().len(), 1);
     }
 }

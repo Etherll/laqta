@@ -10,13 +10,13 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    App, AppContext as _, Bounds, ClipboardItem, Context, Div, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
+    App, AppContext as _, Bounds, ClipboardItem, Context, Div, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, WindowOptions, div, img, prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_component::{ActiveTheme as _, Disableable as _, Icon, Root};
+use gpui_component::{ActiveTheme as _, Disableable as _, Icon, Root, Sizable as _};
 use laqta_domain::color::Rgba;
 use laqta_domain::{Bitmap, ImageFormat};
 use laqta_editor::{Chrome, Command, Editor, EditorInput, EditorKey, EditorRequest, Mods, PointerButton, Tool};
@@ -26,8 +26,10 @@ use crate::assets::IconName;
 use crate::chrome;
 use crate::presenters::editor_interaction::{Batch, EditorInteraction, Step, Submitted, Work};
 use crate::presenters::editor_toolbar;
+use crate::presenters::notice::{AiTool, Notice};
 use crate::presenters::output;
 use crate::presenters::render_gate::ComputeFn;
+use crate::presenters::space_lend::SpaceLend;
 use crate::runtime::UiState;
 use crate::theme::{self, radius, space, text};
 use crate::widgets;
@@ -149,13 +151,13 @@ struct EditorWindow {
     reply: Option<EditReply>,
     path: Option<PathBuf>,
     focus: FocusHandle,
-    message: Option<String>,
+    message: Option<Notice>,
     zoom: f32,
     emoji_open: bool,
     /// The stage's bounds from the last frame; the canvas is laid out inside them.
     stage: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The message the dismiss timer is running for.
-    toast_for: Option<String>,
+    toast_for: Option<Notice>,
     /// A smart tool at work ("Removing the background…"); others wait for it.
     busy: Option<&'static str>,
     /// Outputs asked for while commands were still running or queued; they run when the queue drains,
@@ -165,6 +167,21 @@ struct EditorWindow {
     close_after_save: bool,
     /// The last save failed or was cancelled after the editor was marked saved.
     save_missed: bool,
+    /// The pointer over the canvas, in image pixels, for its cursor shape.
+    pointer_at: Option<(f32, f32)>,
+    /// The box of the annotation the Select tool hovers, outlined so the next click's target shows.
+    hover: Option<laqta_editor::RectF>,
+    /// A button is down on the canvas.
+    pressed: bool,
+    /// The button that made `pressed`: another button's press and release during the drag are
+    /// ignored, so they can't end it.
+    press_button: Option<MouseButton>,
+    /// Holding Space lends Select while a drawing tool is out.
+    space: SpaceLend<Tool>,
+    /// The handle reach last given to the engine, in image pixels (`sync_reach`).
+    reach: f32,
+    /// The failure on show had its detail copied: its button says so.
+    detail_copied: bool,
 }
 
 /// An output that reads the image, so it waits for queued edits.
@@ -188,12 +205,13 @@ enum Smart {
 }
 
 impl Smart {
-    fn busy(self) -> &'static str {
+    /// The tool, by what its notices say.
+    fn tool(self) -> AiTool {
         match self {
-            Smart::CopyText => "Reading the text…",
-            Smart::RemoveBackground => "Removing the background…",
-            Smart::Erase(_) => "Erasing…",
-            Smart::Describe => "Describing the image…",
+            Smart::CopyText => AiTool::CopyText,
+            Smart::RemoveBackground => AiTool::RemoveBackground,
+            Smart::Erase(_) => AiTool::Erase,
+            Smart::Describe => AiTool::Describe,
         }
     }
 }
@@ -256,7 +274,35 @@ impl EditorWindow {
             deferred: Vec::new(),
             close_after_save: false,
             save_missed: false,
+            pointer_at: None,
+            hover: None,
+            pressed: false,
+            press_button: None,
+            space: SpaceLend::new(Tool::Select),
+            reach: 0.0,
+            detail_copied: false,
         };
+        // Space let go in another window never comes back as a key-up here: losing focus ends the
+        // lend and any press.
+        cx.observe_window_activation(window, |this, window, cx| {
+            if !window.is_window_active() {
+                // A drag whose release went to another window ends here, so the engine doesn't
+                // keep moving the mark (or lose its undo step) when the pointer comes back.
+                if this.pressed
+                    && let Some((x, y)) = this.pointer_at
+                {
+                    let up = EditorInput::PointerUp { x, y, button: PointerButton::Left, mods: Mods::default() };
+                    this.input(up, window, cx);
+                }
+                this.pressed = false;
+                this.press_button = None;
+                if this.space.is_lent() {
+                    this.return_select(window, cx);
+                }
+                this.space.picked();
+            }
+        })
+        .detach();
         crate::close_guard::install(Self::close_guard, window, cx);
         if this.interaction.initial() {
             this.start_render(cx);
@@ -290,6 +336,10 @@ impl EditorWindow {
 
     fn apply(&mut self, step: Step, window: &mut Window, cx: &mut Context<Self>) {
         self.chrome = step.chrome;
+        // The marks may have moved under a still pointer (undo, a nudge, delete).
+        if let Some((x, y)) = self.pointer_at {
+            self.track_hover(x, y);
+        }
         if step.render_now {
             self.start_render(cx);
         }
@@ -333,7 +383,7 @@ impl EditorWindow {
                 let done = this.interaction.batch_finished(outputs);
                 match done.step {
                     Some(step) => this.apply(step, window, cx),
-                    None if done.failed => this.message = Some("The command failed.".into()),
+                    None if done.failed => this.message = Some(Notice::error("The command failed.")),
                     None => {}
                 }
                 for (request, snapshot) in done.requests {
@@ -525,12 +575,12 @@ impl EditorWindow {
                 }
                 this.message = Some(match r {
                     Ok(Some(p)) => {
-                        let m = format!("Saved {}", p.display());
+                        let m = Notice::info(format!("Saved {}", p.display()));
                         this.path = Some(p);
                         m
                     }
                     Ok(None) => return,
-                    Err(e) => format!("Save failed: {e}"),
+                    Err(e) => Notice::failure_text("Couldn't save the image", &e.to_string()),
                 });
                 cx.notify();
             });
@@ -546,11 +596,11 @@ impl EditorWindow {
         let app = cx.global::<UiState>().services.app.clone();
         cx.spawn(async move |this, cx| {
             let copied = match export.await {
-                Some(image) => app.copy_image(image).await.map_err(|error| format!("Copy failed: {error}")),
-                None => Err("Copy failed.".to_owned()),
+                Some(image) => app.copy_image(image).await.map_err(|error| Notice::failure("Couldn't copy the image", &error)),
+                None => Err(Notice::error("Couldn't copy the image")),
             };
             let _ = this.update(cx, |this, cx| {
-                this.message = Some(copied.map_or_else(|e| e, |()| "Copied to the clipboard.".into()));
+                this.message = Some(copied.map_or_else(|e| e, |()| Notice::info("Copied to the clipboard.")));
                 cx.notify();
             });
         })
@@ -575,8 +625,8 @@ impl EditorWindow {
             // Submitted here, not in the view update: the upload goes ahead even if the editor was
             // closed while the image was being written.
             let message = match written.await {
-                Ok(path) => format!("Uploading ({} task).", services.app.upload_files(vec![path], None).len()),
-                Err(e) => format!("Upload failed: {e}"),
+                Ok(path) => Notice::info(format!("Uploading ({} task).", services.app.upload_files(vec![path], None).len())),
+                Err(e) => Notice::failure_text("Couldn't upload the image", &e),
             };
             let _ = this.update(cx, |this, cx| {
                 this.message = Some(message);
@@ -596,26 +646,25 @@ impl EditorWindow {
         if self.busy.is_some() || (snapshot.is_none() && self.defer(Deferred::Smart(op))) {
             return;
         }
-        self.busy = Some(op.busy());
+        self.busy = Some(op.tool().busy());
         cx.notify();
         let app = cx.global::<UiState>().services.app.clone();
         let prompt = app.settings().cloud.analyzer.prompt.clone();
         let export = self.image(snapshot, window, cx);
         let work = cx.background_spawn(async move {
-            let image = export.await.ok_or_else(|| "Couldn't read the image.".to_string())?;
-            let fail = |e: laqta_ports::AppError| e.to_string();
-            Ok::<_, String>(match op {
+            let image = export.await.ok_or_else(|| laqta_ports::AppError::Io("couldn't read the image".into()))?;
+            Ok::<_, laqta_ports::AppError>(match op {
                 Smart::CopyText => {
-                    let text = app.recognize_text(image.clone()).await.map_err(fail)?.text();
+                    let text = app.recognize_text(image.clone()).await?.text();
                     SmartResult::Text { image, text }
                 }
-                Smart::RemoveBackground => SmartResult::Image(app.remove_background(image).await.map_err(fail)?),
+                Smart::RemoveBackground => SmartResult::Image(app.remove_background(image).await?),
                 Smart::Erase(rect) => {
                     let mask = rect_mask(image.width(), image.height(), rect);
-                    SmartResult::Image(app.erase(image, mask).await.map_err(fail)?)
+                    SmartResult::Image(app.erase(image, mask).await?)
                 }
                 Smart::Describe => {
-                    let text = app.analyze(image.clone(), prompt).await.map_err(fail)?;
+                    let text = app.analyze(image.clone(), prompt).await?;
                     SmartResult::Description { image, text }
                 }
             })
@@ -638,7 +687,7 @@ impl EditorWindow {
                         let title = "Image description".into();
                         crate::text_window::open(crate::text_window::TextResult { title, image: Some(image), text, copied: false }, cx);
                     }
-                    Err(e) => this.message = Some(e),
+                    Err(e) => this.message = Some(Notice::failure(op.tool().failed(), &e)),
                 }
                 cx.notify();
             });
@@ -683,7 +732,7 @@ impl EditorWindow {
                         this.command(Command::SetToolImage(b), window, cx);
                         this.command(Command::SetTool(Tool::Emoji), window, cx);
                     }
-                    None => this.message = Some("No emoji font is installed.".into()),
+                    None => this.message = Some(Notice::error("No emoji font is installed.")),
                 }
                 cx.notify();
             });
@@ -741,7 +790,15 @@ impl EditorWindow {
     /// Switches tools on the UI thread when the engine is free: `SetTool` only changes engine state,
     /// so it needs no pool job. A busy engine queues it instead, so a tool key never blocks the window.
     fn select_tool(&mut self, t: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        // A tool picked while Space is held is the one to keep.
+        self.space.picked();
+        self.set_tool(t, window, cx);
+    }
+
+    /// Switches tools without touching what Space lent (`select_tool` is the user's pick).
+    fn set_tool(&mut self, t: Tool, window: &mut Window, cx: &mut Context<Self>) {
         self.emoji_open = false;
+        self.hover = None;
         if self.busy.is_some() {
             return cx.notify();
         }
@@ -753,17 +810,78 @@ impl EditorWindow {
         cx.notify();
     }
 
+    /// Holds Space: Select stands in for the drawing tool until Space comes up.
+    fn borrow_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Only when the switch lands at once: mid-press it would end the drag as the wrong tool,
+        // and a busy or queued engine would leave `chrome.tool` behind the lend.
+        if self.pressed || self.busy.is_some() || !self.interaction.idle() {
+            return;
+        }
+        if let Some(t) = self.space.space_down(self.chrome.tool) {
+            self.set_tool(t, window, cx);
+        }
+    }
+
+    /// Space came up: the drawing tool comes back, once any drag under way has ended.
+    fn return_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(t) = self.space.space_up(self.pressed, self.chrome.tool) {
+            self.set_tool(t, window, cx);
+        }
+    }
+
+    /// The hover outline at the image point (`x`, `y`): only under Select with no press under way.
+    /// Returns whether it changed.
+    fn track_hover(&mut self, x: f32, y: f32) -> bool {
+        let next = if self.chrome.tool == Tool::Select && !self.pressed {
+            // A hover move can't wait on a render; it keeps the old outline until the lock frees.
+            match self.interaction.editor().try_lock() {
+                Ok(e) => e.hover_at(x, y),
+                Err(_) => return false,
+            }
+        } else {
+            None
+        };
+        std::mem::replace(&mut self.hover, next) != next
+    }
+
+    /// The cursor over the canvas at the last pointer position.
+    fn canvas_cursor(&self, z: f32) -> gpui::CursorStyle {
+        use crate::presenters::mark_pointer::{GRAB, canvas_pointer, handle_under};
+        let Some((x, y)) = self.pointer_at else { return gpui::CursorStyle::Arrow };
+        let grab = handle_under(&self.chrome.handles, (x, y), GRAB / z);
+        let in_picked = self.chrome.selection.is_some_and(|r| x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h);
+        match canvas_pointer(self.chrome.tool, grab, self.hover.is_some(), in_picked) {
+            Some(p) => crate::mark_chrome::pointer_style(p, self.pressed),
+            None => gpui::CursorStyle::Arrow,
+        }
+    }
+
+    /// Gives the engine the handle reach for zoom `z`, so a press takes a handle over the area its
+    /// resize cursor shows. Never waits on the engine: a busy one gets it on a later move or press.
+    fn sync_reach(&mut self, z: f32) {
+        let reach = crate::presenters::mark_pointer::GRAB / z;
+        if reach == self.reach {
+            return;
+        }
+        if let Ok(mut e) = self.interaction.editor().try_lock() {
+            e.set_handle_reach(reach);
+            self.reach = reach;
+        }
+    }
+
     /// Clears a message a few seconds after it appears.
     fn dismiss_later(&mut self, cx: &mut Context<Self>) {
         if self.message == self.toast_for {
             return;
         }
+        self.detail_copied = false;
         self.toast_for = self.message.clone();
-        let Some(shown) = self.message.clone() else { return };
+        // A failure stays until dismissed, so its reason can be read and its detail copied.
+        let Some(shown) = self.message.clone().filter(|m| !m.error) else { return };
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(std::time::Duration::from_millis(3200)).await;
             let _ = this.update(cx, |this, cx| {
-                if this.message.as_deref() == Some(shown.as_str()) {
+                if this.message.as_ref() == Some(&shown) {
                     this.message = None;
                     this.toast_for = None;
                     cx.notify();
@@ -956,15 +1074,20 @@ impl EditorWindow {
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(editor_toolbar::label(chrome.tool)),
         );
+        // The marker draws with its own colour and width, not the border's.
+        let marker = chrome.tool == Tool::Highlight;
         if controls.color {
             let mut track =
                 div().flex().flex_none().items_center().gap(px(1.)).p(px(3.)).rounded(radius::PILL).bg(cx.theme().foreground.opacity(0.06));
+            let current = if marker { chrome.style.highlight_color } else { chrome.style.border_color };
             for (i, c) in PALETTE.into_iter().enumerate() {
                 track = track.child(widgets::swatch(
                     ("col", i),
                     rgba(c),
-                    chrome.style.border_color == c,
-                    cx.listener(move |this, _, window, cx| this.set_style(|s| s.border_color = c, window, cx)),
+                    current == c,
+                    cx.listener(move |this, _, window, cx| {
+                        this.set_style(|s| if marker { s.highlight_color = c } else { s.border_color = c }, window, cx)
+                    }),
                     cx,
                 ));
             }
@@ -975,9 +1098,33 @@ impl EditorWindow {
                 "stroke",
                 "Width",
                 "Line width",
-                format!("{:.0} px", chrome.style.border_size),
-                cx.listener(|this, _, w, cx| this.set_style(|s| s.border_size = (s.border_size - 1.0).max(1.0), w, cx)),
-                cx.listener(|this, _, w, cx| this.set_style(|s| s.border_size = (s.border_size + 1.0).min(40.0), w, cx)),
+                format!("{:.0} px", if marker { chrome.style.highlight_size } else { chrome.style.border_size }),
+                cx.listener(move |this, _, w, cx| {
+                    this.set_style(
+                        |s| {
+                            if marker {
+                                s.highlight_size = (s.highlight_size - 2.0).max(4.0)
+                            } else {
+                                s.border_size = (s.border_size - 1.0).max(1.0)
+                            }
+                        },
+                        w,
+                        cx,
+                    )
+                }),
+                cx.listener(move |this, _, w, cx| {
+                    this.set_style(
+                        |s| {
+                            if marker {
+                                s.highlight_size = (s.highlight_size + 2.0).min(60.0)
+                            } else {
+                                s.border_size = (s.border_size + 1.0).min(40.0)
+                            }
+                        },
+                        w,
+                        cx,
+                    )
+                }),
                 cx,
             ));
         }
@@ -1211,6 +1358,74 @@ impl EditorWindow {
             .child(actions)
     }
 
+    /// The toast over the stage. Information is one line that fades; a failure is a card with its
+    /// reason, wrapped, a Copy details button when the raw error says more, and a close button.
+    fn toast(&self, m: Notice, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let t = cx.theme().clone();
+        if !m.error {
+            return widgets::floating(cx)
+                .px(space::S4)
+                .py(space::S2)
+                .gap(space::S2)
+                .text_size(text::LABEL)
+                .child(widgets::icon(IconName::Info, t.muted_foreground))
+                .child(m.title)
+                .into_any_element();
+        }
+        let danger = t.danger;
+        let mut body = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .child(div().text_size(text::LABEL).font_weight(gpui::FontWeight::MEDIUM).child(m.title.clone()));
+        if let Some(reason) = m.reason.clone() {
+            body = body.child(div().text_size(text::SMALL).text_color(t.muted_foreground).child(reason));
+        }
+        if let Some(detail) = m.detail.clone() {
+            // The card stays: copying is not dismissing, and the reason may still be needed.
+            let label = if self.detail_copied { "Copied" } else { "Copy details" };
+            body = body.child(div().pt(px(4.)).child(Button::new("toast-copy").label(label).xsmall().ghost().on_click(cx.listener(
+                move |this, _, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(detail.clone()));
+                    this.detail_copied = true;
+                    cx.notify();
+                },
+            ))));
+        }
+        stop_canvas(div())
+            .id("toast")
+            .w(px(420.))
+            .max_w(gpui::relative(0.9))
+            .flex()
+            .items_start()
+            .gap(space::S2)
+            .px(space::S3)
+            .py(space::S2)
+            .rounded(radius::LG)
+            .bg(t.popover)
+            .border_1()
+            .border_color(t.border)
+            .shadow_md()
+            .child(div().pt(px(1.)).child(widgets::icon(IconName::TriangleAlert, danger)))
+            .child(body)
+            .child(widgets::icon_button(
+                "toast-close",
+                IconName::X,
+                "Dismiss",
+                false,
+                cx.listener(|this, _, _, cx| {
+                    this.message = None;
+                    // The same failure again later is a new card, with its own Copy details.
+                    this.toast_for = None;
+                    cx.notify();
+                }),
+                cx,
+            ))
+            .into_any_element()
+    }
+
     fn stage(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let (ox, oy, z) = self.layout(window);
         let (cw, ch) = (self.chrome.canvas.0 as f32 * z, self.chrome.canvas.1 as f32 * z);
@@ -1250,9 +1465,12 @@ impl EditorWindow {
             canvas =
                 canvas.child(abs(r.x * z, r.y * z, r.w * z, r.h * z).border_1().border_color(sel).bg(theme::extra(cx).info.opacity(0.16)));
         }
-        for (_, p) in &chrome.handles {
+        if let Some(r) = self.hover {
             canvas =
-                canvas.child(abs(p.x * z - 4.5, p.y * z - 4.5, 9.0, 9.0).rounded(px(2.)).bg(gpui::white()).border_1().border_color(sel));
+                canvas.child(abs(r.x * z - 2.0, r.y * z - 2.0, r.w * z + 4.0, r.h * z + 4.0).border_1().border_color(sel.opacity(0.7)));
+        }
+        for (_, p) in &chrome.handles {
+            canvas = canvas.child(crate::mark_chrome::mark_handle(p.x * z, p.y * z, sel));
         }
         if let Some(c) = chrome.caret {
             canvas = canvas.child(abs(c.x * z, c.y * z, 2.0, chrome.style.font.size * z).bg(t.foreground));
@@ -1317,9 +1535,19 @@ impl EditorWindow {
             .child(tracker)
             .child(canvas)
             .child(zoom)
+            .cursor(self.canvas_cursor(z))
             .on_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                 if let Some(b) = button(ev.button) {
+                    // Another button mid-drag is ignored; the same one again means its release was lost.
+                    if this.press_button.is_some_and(|p| p != ev.button) {
+                        return;
+                    }
                     window.focus(&this.focus, cx);
+                    this.pressed = true;
+                    this.press_button = Some(ev.button);
+                    this.hover = None;
+                    let (_, _, z) = this.layout(window);
+                    this.sync_reach(z);
                     let (x, y) = this.to_image(ev.position, window);
                     this.input(EditorInput::PointerDown { x, y, button: b, mods: mods(&ev.modifiers) }, window, cx);
                 }
@@ -1369,17 +1597,7 @@ impl EditorWindow {
 
         if let Some(m) = self.message.clone() {
             self.dismiss_later(cx);
-            stage = stage.child(
-                div().absolute().top(space::S4).left_0().right_0().flex().justify_center().child(
-                    widgets::floating(cx)
-                        .px(space::S4)
-                        .py(space::S2)
-                        .gap(space::S2)
-                        .text_size(text::LABEL)
-                        .child(widgets::icon(IconName::Info, t.muted_foreground))
-                        .child(m),
-                ),
-            );
+            stage = stage.child(div().absolute().top(space::S4).left_0().right_0().flex().justify_center().child(self.toast(m, cx)));
         }
         stage
     }
@@ -1419,12 +1637,34 @@ impl Render for EditorWindow {
             )
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
                 let (x, y) = this.to_image(ev.position, window);
+                // Redraw only when the outline or the cursor shape changes, not on every move.
+                let (_, _, z) = this.layout(window);
+                this.sync_reach(z);
+                let before = this.canvas_cursor(z);
+                this.pointer_at = Some((x, y));
+                if this.track_hover(x, y) || this.canvas_cursor(z) != before {
+                    cx.notify();
+                }
                 this.input(EditorInput::PointerMove { x, y, mods: mods(&ev.modifiers) }, window, cx);
             }))
             .capture_any_mouse_up(cx.listener(|this, ev: &MouseUpEvent, window, cx| {
+                if this.press_button.is_some_and(|p| p != ev.button) {
+                    return;
+                }
+                this.press_button = None;
                 if let Some(b) = button(ev.button) {
                     let (x, y) = this.to_image(ev.position, window);
                     this.input(EditorInput::PointerUp { x, y, button: b, mods: mods(&ev.modifiers) }, window, cx);
+                }
+                this.pressed = false;
+                // Space came up during the drag: the drawing tool comes back now it is over.
+                if let Some(t) = this.space.released(this.chrome.tool) {
+                    this.set_tool(t, window, cx);
+                }
+            }))
+            .on_key_up(cx.listener(|this, ev: &KeyUpEvent, window, cx| {
+                if ev.keystroke.key == "space" && this.space.is_lent() {
+                    this.return_select(window, cx);
                 }
             }))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
@@ -1436,8 +1676,21 @@ impl Render for EditorWindow {
                     this.input(EditorInput::Text(ch), window, cx);
                     return;
                 }
-                // Single-key tool shortcuts, when no text is being typed.
                 let key = ev.keystroke.key.as_str();
+                // Mid-drag only Esc acts (it drops the stroke or puts the mark back): a tool key
+                // would end the drag as another tool and lose what it was drawing.
+                if this.pressed && !this.chrome.editing_text {
+                    if key == "escape" {
+                        this.input(EditorInput::Key { key: EditorKey::Escape, mods: m }, window, cx);
+                    }
+                    return;
+                }
+                // Holding Space lends Select while a drawing tool is out (repeats keep it lent).
+                if key == "space" && !this.chrome.editing_text && !m.ctrl {
+                    this.borrow_select(window, cx);
+                    return;
+                }
+                // Single-key tool shortcuts, when no text is being typed.
                 if !this.chrome.editing_text
                     && !m.ctrl
                     && !m.alt

@@ -6,16 +6,20 @@ use std::sync::Arc;
 
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Bounds, Context, Div, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage, ScrollDelta,
-    ScrollEvent, Styled as _, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, img, point,
+    KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage,
+    ScrollDelta, ScrollEvent, Styled as _, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, img, point,
     prelude::FluentBuilder as _, px, size,
 };
 use laqta_domain::geometry::PhysRect;
-use laqta_domain::region::{Button, Handle, KeyMods, RegionInput, RegionKey, TargetKind};
+use laqta_domain::region::{Button, KeyMods, RegionInput, RegionKey, TargetKind};
 use laqta_domain::{Bitmap, Frame, PixelFormat};
 use laqta_editor::EditorInput;
 use laqta_ports::{InputCallback, RegionView};
 
+use crate::mark_chrome::pointer_style;
+use crate::presenters::capture_pointer::{self, Route};
+use crate::presenters::capture_toolbar as bar;
+use crate::presenters::mark_pointer::Pointer;
 use crate::runtime::UiState;
 
 #[derive(Default)]
@@ -58,10 +62,42 @@ pub(crate) struct OverlayModel {
     pub(crate) annot: Option<crate::overlay_tools::Annot>,
     /// The drawing tool in use; `None` is the region tool (adjust the selection).
     pub(crate) tool: Option<laqta_editor::Tool>,
+    /// The colour and size picked for each drawing tool (`Settings::capture_marks`).
+    pub(crate) marks: Vec<laqta_domain::capture::MarkStyle>,
+    /// `marks` changed since the overlay opened; they are saved when it closes.
+    pub(crate) marks_changed: bool,
+    /// The button that went down on a bar (toolbar, style strip, mode bar), so its release is the
+    /// bar's click and not the end of a drag on the canvas or the selection. Kept per button: a
+    /// bar press during another button's drag can't swallow that drag's release.
+    pub(crate) chrome_press: Option<MouseButton>,
     /// The mode bar's Text button is on: the next settled selection is read in place.
     pub(crate) text_mode: bool,
     /// The selection's text, read in place (`overlay_text`).
     pub(crate) text: Option<crate::overlay_text::TextUi>,
+    /// When Esc (or a close button) last warned that the marks would go (`capture_escape`).
+    pub(crate) discard_armed: Option<std::time::Instant>,
+    /// A mode-bar button that would leave the capture and drop the marks was clicked once: a
+    /// second click on it while this holds goes ahead.
+    pub(crate) leave_armed: Option<(crate::overlay_tools::Mode, std::time::Instant)>,
+    /// Who took the press under way (`capture_pointer::route`): its moves and release go there too,
+    /// on whichever monitor's window they reach.
+    pub(crate) pressed: Option<Route>,
+    /// The button that made `pressed`: another button's press and release during the drag are
+    /// ignored, so they can't take the route from it.
+    pub(crate) pressed_button: Option<MouseButton>,
+    /// How far a picked mark's handle reaches, in desktop pixels: `mark_pointer::GRAB` times the
+    /// scale of the monitor the pointer is on, so the grab square is the same size on every screen.
+    pub(crate) grab: f32,
+    /// The annotated crop is being exported for an action: the frame and the marks hold still until
+    /// it lands, so the picture sent is of the selection the session finishes with.
+    pub(crate) finishing: bool,
+    /// The last press on the selection held Alt: a move leaves the marks where they are on screen.
+    pub(crate) frame_only: bool,
+    /// The gesture settling now was a resize: its marks stay over their pixels, whatever size it
+    /// ends at.
+    pub(crate) resized: bool,
+    /// Holding Space lends the Pointer (`None`) while a drawing tool is out.
+    pub(crate) space: crate::presenters::space_lend::SpaceLend<Option<laqta_editor::Tool>>,
 }
 
 /// Converts each frame for GPUI, off the GPUI thread: `UiHandle::show` calls this on the caller's
@@ -128,7 +164,28 @@ pub(crate) fn show(frames: Vec<Frame>, images: Vec<Option<Arc<RenderImage>>>, vi
         .filter_map(|(f, image)| Some(MonitorImage { rect: f.monitor.rect, image: image?, bitmap: f.image.clone() }))
         .collect();
     let count = monitors.len();
-    let model = cx.new(|_| OverlayModel { monitors, view, on_input, annot: None, tool: None, text_mode: false, text: None });
+    let marks = cx.global::<UiState>().services.app.settings().capture_marks;
+    let model = cx.new(|_| OverlayModel {
+        monitors,
+        view,
+        on_input,
+        annot: None,
+        tool: None,
+        marks,
+        marks_changed: false,
+        chrome_press: None,
+        text_mode: false,
+        text: None,
+        discard_armed: None,
+        leave_armed: None,
+        pressed: None,
+        pressed_button: None,
+        frame_only: false,
+        resized: false,
+        grab: crate::presenters::mark_pointer::GRAB,
+        finishing: false,
+        space: crate::presenters::space_lend::SpaceLend::new(None),
+    });
     let mut windows = Vec::new();
     for index in 0..count {
         let bounds = display_bounds.get(index).copied().flatten();
@@ -191,6 +248,19 @@ fn open_window(
         .open_window(options, |window, cx| {
             crate::perf::first_frame("overlay", window);
             let view = cx.new(|cx| OverlayView::new(model, index, wanted_y, cx));
+            // Space let go in another window never comes back as a key-up here: losing activation
+            // gives the lent tool back.
+            view.update(cx, |_, cx| {
+                cx.observe_window_activation(window, |this, window, cx| {
+                    if !window.is_window_active() {
+                        this.model.update(cx, |m, cx| {
+                            m.space_lost(cx);
+                            m.press_lost(cx);
+                        });
+                    }
+                })
+                .detach();
+            });
             let focus = view.read(cx).focus.clone();
             window.focus(&focus, cx);
             view
@@ -241,8 +311,17 @@ pub(crate) fn update(view: RegionView, cx: &mut App) {
     let model = cx.global::<UiState>().overlay.model.clone();
     if let Some(model) = model {
         model.update(cx, |m, cx| {
+            // A resize keeps the marks over their pixels even when it ends at the old size.
+            if view.resizing.is_some() {
+                m.resized = true;
+            }
             m.view = view;
             m.sync_annot(cx);
+            // A resize that settled where it began brings no crop to consume the flag: drop it once
+            // the frame rests on the engine's rect.
+            if !m.view.gesture && m.annot.as_ref().is_some_and(|a| Some(a.rect) == m.view.selected) {
+                m.resized = false;
+            }
             m.sync_text();
             cx.notify();
         });
@@ -254,6 +333,17 @@ pub(crate) fn close(cx: &mut App) {
         return;
     }
     let windows = std::mem::take(&mut cx.global_mut::<UiState>().overlay);
+    // The colours and sizes picked this time, saved once rather than on every click.
+    if let Some(model) = &windows.model
+        && let (true, marks) = model.update(cx, |m, _| (std::mem::take(&mut m.marks_changed), m.marks.clone()))
+    {
+        let services = cx.global::<UiState>().services.clone();
+        let mut settings = services.app.settings();
+        settings.capture_marks = marks;
+        if let Err(e) = (services.save_settings)(settings) {
+            tracing::warn!("saving the capture toolbar's colours failed: {e}");
+        }
+    }
     for w in windows.windows {
         let _ = w.update(cx, |_, window, _| window.remove_window());
     }
@@ -284,6 +374,8 @@ struct OverlayView {
     /// Where the pointer last moved over this window, in desktop pixels. The hover cursor reads it
     /// here rather than waiting for the session to echo the move back.
     pointer: Option<(i32, i32)>,
+    /// Alt is held: the cursor shows the frame move an Alt press makes.
+    alt: bool,
 }
 
 /// Pixels of touchpad scrolling that count as one wheel notch.
@@ -310,7 +402,7 @@ fn color(rgb: u32, alpha: f32) -> Hsla {
 impl OverlayView {
     fn new(model: Entity<OverlayModel>, index: usize, wanted_y: Option<Pixels>, cx: &mut Context<Self>) -> Self {
         cx.observe(&model, |_, _, cx| cx.notify()).detach();
-        OverlayView { model, index, focus: cx.focus_handle(), wheel: 0.0, wanted_y, raised: false, pointer: None }
+        OverlayView { model, index, focus: cx.focus_handle(), wheel: 0.0, wanted_y, raised: false, pointer: None, alt: false }
     }
 
     fn send(&self, input: RegionInput, cx: &App) {
@@ -399,7 +491,7 @@ impl Render for OverlayView {
             .size_full()
             .relative()
             .overflow_hidden()
-            .cursor(pointer_style(self.cursor_handle(model)))
+            .cursor(pointer_style(self.pointer_shape(model), view.gesture))
             .child(img(mon.image.clone()).absolute().left_0().top_0().w(px(win_w)).h(px(win_h)));
 
         // Dim everything except the main selection (the rect being drawn, else the active region).
@@ -424,8 +516,9 @@ impl Render for OverlayView {
             None => root = root.child(div().absolute().left_0().top_0().size_full().bg(dim)),
         }
 
-        // Once a selection settles, window snapping and the magnifier step aside for the tools.
-        let settled = view.selected.is_some();
+        // Once a selection settles, window snapping and the magnifier step aside for the tools. While
+        // it is moved or resized the magnifier comes back, for precision.
+        let settled = view.selected.is_some() && !view.gesture;
         if view.drawing.is_none()
             && !settled
             && !view.pick_point
@@ -437,20 +530,29 @@ impl Render for OverlayView {
                 // nested regions are told apart by size. The wheel grows it to the enclosing one.
                 root = root.child(boxed(&l).border_1().border_color(color(HOVER, 0.95)).bg(color(HOVER, 0.08)));
                 let y = if l.y >= 30.0 { l.y - 28.0 } else { l.y + l.h + 4.0 };
-                let at = crate::presenters::capture_toolbar::Rect { x: l.x.max(4.0), y, w: 96.0, h: 24.0 };
-                root = root.child(crate::overlay_tools::size_badge(t.rect, at));
+                let text = bar::badge_text(t.rect, None);
+                let at = bar::Rect { x: l.x.max(4.0), y, w: crate::overlay_tools::badge_width(&text), h: crate::overlay_tools::BADGE_H };
+                root = root.child(crate::overlay_tools::size_badge(text, at));
             } else {
                 root = root.child(boxed(&l).border_2().border_color(color(HOVER, 1.0)).bg(color(HOVER, 0.12)));
             }
         }
-        // The annotation canvas sits under the selection's border and handles.
-        if view.selected.is_some()
+        // The annotation canvas sits under the selection's border and handles, clipped to the frame.
+        // While a move carries the marks along it steps aside: its pixels are the old crop's, and
+        // the marks come back on the new crop at release.
+        let carrying = view.gesture && view.resizing.is_none() && !model.frame_only;
+        if !carrying
+            && let Some(sel) = view.selected
             && let Some(a) = &model.annot
             && let Some(canvas) = crate::overlay_tools::canvas(
                 a,
                 |r| {
                     let l = local(r);
-                    crate::presenters::capture_toolbar::Rect { x: l.x, y: l.y, w: l.w, h: l.h }
+                    bar::Rect { x: l.x, y: l.y, w: l.w, h: l.h }
+                },
+                {
+                    let l = local(sel);
+                    bar::Rect { x: l.x, y: l.y, w: l.w, h: l.h }
                 },
                 s,
             )
@@ -474,23 +576,24 @@ impl Render for OverlayView {
                 window.request_animation_frame();
             }
         }
+        // Borders sit just outside the selection, so they never cover the pixels it captures.
         for (i, r) in view.regions.iter().enumerate() {
             let active = Some(i) == view.active;
-            root = root.child(boxed(&local(*r)).border_2().border_color(color(SELECTION, if active { 1.0 } else { 0.7 })));
+            root = root.child(boxed(&outset(local(*r), BORDER)).border_2().border_color(color(SELECTION, if active { 1.0 } else { 0.7 })));
         }
         if let Some(d) = view.drawing {
             let l = local(d);
-            root = root.child(boxed(&l).border_2().border_color(color(SELECTION, 1.0)));
+            root = root.child(boxed(&outset(local(d), BORDER)).border_2().border_color(color(SELECTION, 1.0)));
             // The size follows the rectangle while it is drawn.
             if d.width > 0 && d.height > 0 {
                 let y = if l.y >= 32.0 { l.y - 30.0 } else { l.y + l.h + 6.0 };
-                let at = crate::presenters::capture_toolbar::Rect { x: l.x.max(4.0), y, w: 96.0, h: 24.0 };
-                root = root.child(crate::overlay_tools::size_badge(d, at));
+                let text = bar::badge_text(d, None);
+                let at = bar::Rect { x: l.x.max(4.0), y, w: crate::overlay_tools::badge_width(&text), h: crate::overlay_tools::BADGE_H };
+                root = root.child(crate::overlay_tools::size_badge(text, at));
             }
         }
-        // A locked selection (annotations on it) can't be resized, so its handles go. Each dot fills
-        // the session's hit rect, so the pointer turns to a resize arrow exactly over the dot.
-        for (_, h) in view.handles.iter().filter(|_| !view.locked) {
+        // Each dot fills the session's hit rect; the grab area around it (`grab_at`) is wider.
+        for (_, h) in &view.handles {
             let l = local(*h);
             root = root.child(
                 div()
@@ -525,7 +628,7 @@ impl Render for OverlayView {
         if let Some(sel) = view.selected {
             let to_local = |r: PhysRect| {
                 let l = local(r);
-                crate::presenters::capture_toolbar::Rect { x: l.x, y: l.y, w: l.w, h: l.h }
+                bar::Rect { x: l.x, y: l.y, w: l.w, h: l.h }
             };
             let (cx_sel, cy_sel) = (sel.x + sel.width as i32 / 2, sel.y + sel.height as i32 / 2);
             let holds = cx_sel >= origin.x && cx_sel < origin.right() && cy_sel >= origin.y && cy_sel < origin.bottom();
@@ -533,17 +636,31 @@ impl Render for OverlayView {
                 let sel_l = to_local(sel);
                 let screen = (win_w, win_h);
                 // While the text shows, its bar takes the toolbar's place.
-                let bar = match &model.text {
+                let bar_size = match &model.text {
                     Some(text) => crate::overlay_text::bar_size(&text.notice(now), win_w),
                     None => (crate::overlay_tools::bar_width(), crate::overlay_tools::BAR_H),
                 };
-                let (at, side) = crate::presenters::capture_toolbar::place(sel_l, bar, screen);
-                let badge = crate::presenters::capture_toolbar::badge(sel_l, side, (96.0, 24.0), screen);
-                root = root.child(crate::overlay_tools::size_badge(sel, badge));
-                if model.text.is_some() {
+                let (at, side) = bar::place(sel_l, bar_size, screen);
+                // The size stays live while the selection is moved (with its position) or resized.
+                let moving = view.gesture && view.resizing.is_none();
+                let text = bar::badge_text(sel, moving.then(|| (sel.x - view.bounds.x, sel.y - view.bounds.y)));
+                let badge = bar::badge(sel_l, side, (crate::overlay_tools::badge_width(&text), crate::overlay_tools::BADGE_H), screen);
+                root = root.child(crate::overlay_tools::size_badge(text, badge));
+                // The bars wait for the gesture to end, so they never jump along with it.
+                if view.gesture {
+                } else if model.text.is_some() {
                     root = root.child(crate::overlay_text::bar(&self.model, at, now, still, cx));
                 } else if model.toolbar_shown() {
                     root = root.child(crate::overlay_tools::toolbar(&self.model, at, cx));
+                    if let Some(strip) = crate::overlay_tools::style_strip(&self.model, at, side, screen, cx) {
+                        root = root.child(strip);
+                    }
+                }
+                // Beside the toolbar, where the eye already is; the mode bar covers the screen's top.
+                if let Some(text) = model.discard_notice() {
+                    let (w, h) = (crate::overlay_tools::notice_width(&text), crate::overlay_tools::NOTICE_H);
+                    let spot = bar::strip(at, side, (w, h), screen, at.x + at.w / 2.0);
+                    root = root.child(crate::overlay_tools::notice(text, spot));
                 }
             }
         } else if view.pick_point {
@@ -574,65 +691,121 @@ impl Render for OverlayView {
             }
         }
 
+        // Every press goes where `capture_pointer::route` says, and its moves and release follow it.
         root.on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
             let (x, y) = this.to_phys(ev.position, window, cx);
-            let before = this.cursor_handle(this.model.read(cx));
+            this.model.update(cx, |m, _| m.set_grab_scale(window.scale_factor()));
+            let before = this.pointer_shape(this.model.read(cx));
+            this.alt = ev.modifiers.alt;
             this.pointer = Some((x, y));
-            if this.cursor_handle(this.model.read(cx)) != before {
+            if this.pointer_shape(this.model.read(cx)) != before {
                 cx.notify();
             }
             this.send(RegionInput::PointerMove { x, y }, cx);
+            if this.model.update(cx, |m, _| m.hover((x, y))) {
+                cx.notify();
+            }
             // A drag over the text picks words, wherever the pointer goes.
             if this.model.update(cx, |m, cx| m.text_drag(x, y, cx)) {
                 return;
             }
-            if let Some((ix, iy)) = this.drawing_at(x, y, cx) {
+            // The engine follows its own drags, and the hover while a tool is out.
+            let to_editor = match this.model.read(cx).pressed {
+                Some(route) => route == Route::Editor,
+                None => this.model.read(cx).tool.is_some(),
+            };
+            if to_editor && let Some((ix, iy)) = this.model.read(cx).canvas_point(x, y) {
                 let mods = crate::editor_window::mods(&ev.modifiers);
                 this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerMove { x: ix, y: iy, mods }, cx));
             }
         }))
         .on_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| {
             let (x, y) = this.to_phys(ev.position, window, cx);
-            // Inside a selection whose text shows, the left button picks words. The handles and
-            // everything outside still belong to the selection, and the other buttons to the session.
-            if ev.button == MouseButton::Left
-                && let Some(at) = this.model.read(cx).text_point(x, y)
-            {
-                let (extend, clicks) = (ev.modifiers.shift, ev.click_count);
-                this.model.update(cx, |m, cx| m.text_press(at, extend, clicks, cx));
+            let Some(pressed) = button(ev.button) else { return };
+            // Another button mid-drag keeps the drag's route. A selection drag still hands it to the
+            // session, where a right or middle click cancels the gesture. The same button again
+            // means its release was lost (outside the overlay), so this press starts afresh.
+            let m = this.model.read(cx);
+            if m.finishing {
                 return;
             }
-            if let Some((ix, iy)) = this.drawing_at(x, y, cx) {
-                // Drawing starts only on the canvas; a press outside it would add a mark nobody sees.
-                let inside = this.model.read(cx).annot.as_ref().is_some_and(|a| contains(a.rect, (x, y)));
-                if !inside {
-                    return;
-                }
-                if let Some(button) = crate::editor_window::button(ev.button) {
-                    let mods = crate::editor_window::mods(&ev.modifiers);
-                    this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerDown { x: ix, y: iy, button, mods }, cx));
+            if m.pressed_button.is_some_and(|b| b != ev.button) {
+                if m.pressed == Some(Route::Session) {
+                    this.send(RegionInput::PointerDown { x, y, button: pressed }, cx);
                 }
                 return;
             }
-            if let Some(button) = button(ev.button) {
-                this.send(RegionInput::PointerDown { x, y, button }, cx);
+            let mut scene = this.model.read(cx).pointer_scene((x, y), true);
+            scene.frame_only = ev.modifiers.alt;
+            let route = capture_pointer::route(&scene, (x, y), pressed);
+            // A press the overlay sees is not on a bar: a bar press whose release never came back
+            // can't swallow this one's release and leave the drag running.
+            this.model.update(cx, |m, _| {
+                m.pressed = Some(route);
+                m.pressed_button = Some(ev.button);
+                m.chrome_press = None;
+            });
+            match route {
+                Route::Text => {
+                    if let Some(at) = this.model.read(cx).text_point(x, y) {
+                        let (extend, clicks) = (ev.modifiers.shift, ev.click_count);
+                        this.model.update(cx, |m, cx| m.text_press(at, extend, clicks, cx));
+                    }
+                }
+                Route::Editor => {
+                    if let (Some((ix, iy)), Some(button)) =
+                        (this.model.read(cx).canvas_point(x, y), crate::editor_window::button(ev.button))
+                    {
+                        let mods = crate::editor_window::mods(&ev.modifiers);
+                        this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerDown { x: ix, y: iy, button, mods }, cx));
+                    }
+                }
+                Route::Session => {
+                    let alt = ev.modifiers.alt;
+                    this.model.update(cx, |m, cx| {
+                        m.frame_only = alt;
+                        m.let_go_of_mark(cx);
+                    });
+                    this.send(RegionInput::PointerDown { x, y, button: pressed }, cx);
+                }
+                Route::Ignore => {}
             }
         }))
         .capture_any_mouse_up(cx.listener(|this, ev: &MouseUpEvent, window, cx| {
+            if this.model.update(cx, |m, _| m.chrome_press.take_if(|b| *b == ev.button).is_some()) {
+                return;
+            }
+            if this.model.read(cx).pressed_button.is_some_and(|b| b != ev.button) {
+                return;
+            }
             let (x, y) = this.to_phys(ev.position, window, cx);
+            let route = this.model.update(cx, |m, _| {
+                m.pressed_button = None;
+                m.pressed.take()
+            });
             if ev.button == MouseButton::Left && this.model.update(cx, |m, cx| m.text_release(cx)) {
                 return;
             }
-            if let Some((ix, iy)) = this.drawing_at(x, y, cx) {
-                if let Some(button) = crate::editor_window::button(ev.button) {
-                    let mods = crate::editor_window::mods(&ev.modifiers);
-                    this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerUp { x: ix, y: iy, button, mods }, cx));
+            match route {
+                Some(Route::Editor) => {
+                    if let (Some((ix, iy)), Some(button)) =
+                        (this.model.read(cx).canvas_point(x, y), crate::editor_window::button(ev.button))
+                    {
+                        let mods = crate::editor_window::mods(&ev.modifiers);
+                        this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerUp { x: ix, y: iy, button, mods }, cx));
+                    }
                 }
-                return;
+                Some(Route::Ignore | Route::Text) => {}
+                // A release with no press seen (it began outside the overlay) still ends the gesture.
+                Some(Route::Session) | None => {
+                    if let Some(button) = button(ev.button) {
+                        this.send(RegionInput::PointerUp { x, y, button }, cx);
+                    }
+                }
             }
-            if let Some(button) = button(ev.button) {
-                this.send(RegionInput::PointerUp { x, y, button }, cx);
-            }
+            // Space came up during the drag: the drawing tool comes back now it is over.
+            this.model.update(cx, |m, cx| m.after_release(cx));
+            cx.notify();
         }))
         // Scrolling up grows the hover to the enclosing region, down shrinks it back.
         .on_scroll(cx.listener(|this, ev: &ScrollEvent, _, cx| {
@@ -646,6 +819,17 @@ impl Render for OverlayView {
             }
         }))
         .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| this.key(ev, cx)))
+        .on_modifiers_changed(cx.listener(|this, ev: &gpui::ModifiersChangedEvent, _, cx| {
+            if this.alt != ev.modifiers.alt {
+                this.alt = ev.modifiers.alt;
+                cx.notify();
+            }
+        }))
+        .on_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| {
+            if ev.keystroke.key == "space" {
+                this.model.update(cx, |m, cx| m.return_pointer(cx));
+            }
+        }))
     }
 }
 
@@ -653,35 +837,22 @@ fn contains(r: PhysRect, (x, y): (i32, i32)) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
 
-/// The pointer over the overlay: a resize arrow along the axis a handle drags, a crosshair elsewhere.
-fn pointer_style(handle: Option<Handle>) -> gpui::CursorStyle {
-    use gpui::CursorStyle;
-    match handle {
-        None => CursorStyle::Crosshair,
-        Some(Handle::N | Handle::S) => CursorStyle::ResizeUpDown,
-        Some(Handle::E | Handle::W) => CursorStyle::ResizeLeftRight,
-        Some(Handle::NW | Handle::SE) => CursorStyle::ResizeUpLeftDownRight,
-        Some(Handle::NE | Handle::SW) => CursorStyle::ResizeUpRightDownLeft,
-    }
+/// The width of the selection's border, drawn just outside it.
+const BORDER: f32 = 2.0;
+
+/// `l` grown by `by` on every side.
+fn outset(l: Local, by: f32) -> Local {
+    Local { x: l.x - by, y: l.y - by, w: l.w + 2.0 * by, h: l.h + 2.0 * by }
 }
 
 impl OverlayView {
-    /// The handle the pointer would show as a resize arrow: the one being dragged, which the session
-    /// reports to every monitor's window, else the one under this window's pointer. A drawing tool
-    /// takes every press, so it shows none.
-    fn cursor_handle(&self, model: &OverlayModel) -> Option<Handle> {
-        if model.tool.is_some() {
-            return None;
-        }
-        model.view.resizing.or_else(|| self.pointer.and_then(|at| model.view.handle_at(at)))
-    }
-
-    /// Canvas pixels for a desktop point while a drawing tool is out.
-    fn drawing_at(&self, x: i32, y: i32, cx: &App) -> Option<(f32, f32)> {
-        let m = self.model.read(cx);
-        m.tool?;
-        let a = m.annot.as_ref()?;
-        Some(((x - a.rect.x) as f32, (y - a.rect.y) as f32))
+    /// The pointer shape at this window's pointer, or at the session's cursor for a window the
+    /// pointer is not over (a resize shows its arrow on every monitor).
+    fn pointer_shape(&self, model: &OverlayModel) -> Pointer {
+        let at = self.pointer.unwrap_or(model.view.cursor);
+        let mut scene = model.pointer_scene(at, false);
+        scene.frame_only = self.alt;
+        capture_pointer::pointer(&scene, at)
     }
 
     /// Keys: the text read in place while it shows, typing into a text annotation, the toolbar's
@@ -689,6 +860,9 @@ impl OverlayView {
     fn key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         let key = ev.keystroke.key.as_str();
         let m = &ev.keystroke.modifiers;
+        if self.model.read(cx).finishing {
+            return;
+        }
         if self.model.read(cx).text.is_some() {
             let ctrl = ctrl(m);
             self.model.update(cx, |model, cx| model.text_key(key, ctrl, cx));
@@ -704,6 +878,13 @@ impl OverlayView {
                 model.toolbar_shown(),
             )
         };
+        // Mid-drag of the frame, Esc puts it back (the session cancels a gesture on a second
+        // button) before typing or the ladder can take it.
+        if key == "escape" && marks && self.model.read(cx).view.gesture {
+            let (x, y) = self.model.read(cx).view.cursor;
+            self.send(RegionInput::PointerDown { x, y, button: Button::Right }, cx);
+            return;
+        }
         let mods = crate::editor_window::mods(m);
         if editing {
             if !ctrl(m)
@@ -717,6 +898,35 @@ impl OverlayView {
                 return;
             }
         }
+        // Mid-press on the canvas only Esc acts, and it drops the stroke or puts the dragged mark
+        // back: Enter would finish without it, and putting the tool away would leave it to land on
+        // the release.
+        if self.model.read(cx).pressed == Some(Route::Editor) {
+            if key == "escape" {
+                self.model.update(cx, |model, cx| model.editor_input(EditorInput::Key { key: laqta_editor::EditorKey::Escape, mods }, cx));
+            }
+            return;
+        }
+        // Holding Space lends the Pointer while a drawing tool is out (repeats keep it lent).
+        if key == "space" && !ctrl(m) && (drawing || self.model.read(cx).space.is_lent()) {
+            self.model.update(cx, |model, cx| {
+                model.borrow_pointer();
+                cx.notify();
+            });
+            return;
+        }
+        // Number keys pick the drawing tool's colours. They never reach the engine, whose digits
+        // would switch its tool behind the toolbar's back.
+        if drawing && key.len() == 1 && key.chars().all(|c| c.is_ascii_digit()) && !ctrl(m) && !m.alt {
+            self.model.update(cx, |model, cx| {
+                if let Some(tool) = model.tool
+                    && let Some(color) = crate::presenters::capture_toolbar::color_key(key, tool)
+                {
+                    model.restyle(|st, t| crate::presenters::capture_toolbar::with_color(st, t, color), cx);
+                }
+            });
+            return;
+        }
         if shown
             && let Some(item) = crate::presenters::capture_toolbar::key_item(
                 key,
@@ -727,11 +937,8 @@ impl OverlayView {
             return;
         }
         match key {
-            "escape" if drawing => {
-                self.model.update(cx, |model, cx| {
-                    model.region_tool();
-                    cx.notify();
-                });
+            "escape" => {
+                self.model.update(cx, |model, cx| model.escape(cx));
                 return;
             }
             "enter" if marks => {
@@ -740,11 +947,28 @@ impl OverlayView {
             }
             _ => {}
         }
-        if drawing && let Some(k) = crate::editor_window::editor_key(key) {
+        // A picked mark takes the arrows and Delete under any tool; the selection under it does not.
+        // With nothing picked they nudge the frame, whatever tool is out, and other keys never
+        // reach the engine, whose letters would switch its tool behind the toolbar's back.
+        // Only mark edits: a bare letter is an engine tool shortcut, which would switch its tool
+        // behind the toolbar's back; Ctrl letters are commands (copy, duplicate).
+        let mark = self.model.read(cx).mark_selected();
+        let edit = |k: &laqta_editor::EditorKey| {
+            use laqta_editor::EditorKey as K;
+            matches!(k, K::Left | K::Right | K::Up | K::Down | K::Delete | K::Backspace) || (matches!(k, K::Char(_)) && mods.ctrl)
+        };
+        if mark && let Some(k) = crate::editor_window::editor_key(key).filter(edit) {
             self.model.update(cx, |model, cx| model.editor_input(EditorInput::Key { key: k, mods }, cx));
             return;
         }
+        // Delete would remove the selection, and every mark on it with no way back.
+        if marks && matches!(key, "delete" | "backspace") {
+            return;
+        }
         if let Some(key) = region_key(key) {
+            // A nudge carries the marks: an Alt press that never moved must not leave its
+            // frame-only mode behind for it.
+            self.model.update(cx, |m, _| m.frame_only = false);
             self.send(RegionInput::Key { key, mods: KeyMods { shift: m.shift, ctrl: ctrl(m), alt: m.alt } }, cx);
         }
     }
@@ -837,22 +1061,4 @@ fn sample(b: &Bitmap, x: i32, y: i32) -> u32 {
         PixelFormat::Bgra8 => (p[2], p[1], p[0]),
     };
     (r as u32) << 16 | (g as u32) << 8 | bl as u32
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn each_handle_shows_the_arrow_of_the_way_it_drags() {
-        assert_eq!(pointer_style(Some(Handle::W)), gpui::CursorStyle::ResizeLeftRight);
-        assert_eq!(pointer_style(Some(Handle::E)), gpui::CursorStyle::ResizeLeftRight);
-        assert_eq!(pointer_style(Some(Handle::N)), gpui::CursorStyle::ResizeUpDown);
-        assert_eq!(pointer_style(Some(Handle::S)), gpui::CursorStyle::ResizeUpDown);
-        assert_eq!(pointer_style(Some(Handle::NW)), gpui::CursorStyle::ResizeUpLeftDownRight);
-        assert_eq!(pointer_style(Some(Handle::SE)), gpui::CursorStyle::ResizeUpLeftDownRight);
-        assert_eq!(pointer_style(Some(Handle::NE)), gpui::CursorStyle::ResizeUpRightDownLeft);
-        assert_eq!(pointer_style(Some(Handle::SW)), gpui::CursorStyle::ResizeUpRightDownLeft);
-        assert_eq!(pointer_style(None), gpui::CursorStyle::Crosshair);
-    }
 }

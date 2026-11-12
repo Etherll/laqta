@@ -147,6 +147,7 @@ async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptio
         magnifier_pixels: options.magnifier_pixels,
         info_text: options.info_text.clone(),
         handle_size: handle_size(&frames),
+        grab_size: handle_size(&frames) * 2,
         right_click: options.right_click,
         middle_click: options.middle_click,
     });
@@ -199,7 +200,9 @@ async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptio
         let mut text: Option<TextLayer> = None;
         let paint = |state: &RegionState, text: &Option<TextLayer>, selection_image: Option<Arc<Bitmap>>| {
             let pixel = pixel_at(&composed, bounds, state.cursor());
-            ports.overlay.update(RegionView { selection_image, text: text.clone(), text_only, ..view(state, bounds, options, pixel) });
+            // The text sits on the settled selection's pixels, so it hides while a gesture moves them.
+            let text = if state.in_gesture() { None } else { text.clone() };
+            ports.overlay.update(RegionView { selection_image, text, text_only, ..view(state, bounds, options, pixel) });
         };
         loop {
             let input = match next(&mut inputs, reading.as_mut()).await {
@@ -283,11 +286,13 @@ async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptio
                     ..s
                 });
             }
-            // Crop on a change of the selection only: moving the pointer over it is not one.
+            // Crop on a change of the selection only: moving the pointer over it is not one. A move,
+            // resize or new draw crops once it ends, not on every step; a click that changes nothing
+            // keeps the crop, its annotations and its text.
             let mut selection_image = None;
             let selected = state.selected();
             let mut text_gone = false;
-            if selected != cropped {
+            if selected != cropped && !state.in_gesture() {
                 cropped = selected;
                 // An annotated crop belongs to the selection it was drawn on, and so does its text.
                 annotated = None;
@@ -394,6 +399,7 @@ pub(crate) fn view(state: &RegionState, bounds: PhysRect, options: &RegionCaptur
         hovered: state.hovered_target().cloned(),
         handles: state.handle_rects(),
         resizing: state.resizing(),
+        grab_size: state.grab_size(),
         gesture: state.in_gesture(),
         cursor: state.cursor(),
         magnifier: options.show_magnifier.then(|| state.magnifier_rect()),
@@ -404,7 +410,6 @@ pub(crate) fn view(state: &RegionState, bounds: PhysRect, options: &RegionCaptur
         selected: state.selected(),
         selection_image: None,
         tools_visible: state.tools_visible(),
-        locked: state.locked(),
         mode_bar: options.show_mode_bar,
         pick_point: state.picks_point(),
         text: None,

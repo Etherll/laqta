@@ -138,6 +138,16 @@ pub struct RegionCaptureOptions {
     pub middle_click: RegionMouseAction,
 }
 
+/// The colour and size last picked for one capture-toolbar drawing tool, kept between runs.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MarkStyle {
+    /// The editor tool's name (`Tool::name`), e.g. "Highlight".
+    pub tool: String,
+    pub color: crate::color::Rgba,
+    /// 0 small, 1 medium, 2 large.
+    pub size: u8,
+}
+
 impl Default for RegionCaptureOptions {
     fn default() -> Self {
         RegionCaptureOptions {

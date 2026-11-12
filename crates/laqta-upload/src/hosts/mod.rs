@@ -58,7 +58,7 @@ pub(crate) const PATH_SEGMENT: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove
 /// A transport failure. Network failures and timeouts are retried by the caller.
 pub(crate) fn http_error(error: HttpError) -> UploadError {
     match error {
-        HttpError::Network(message) | HttpError::Io(message) => UploadError::Network(message),
+        HttpError::Connect(message) | HttpError::Network(message) | HttpError::Io(message) => UploadError::Network(message),
         HttpError::Timeout => UploadError::Network("timed out".into()),
         HttpError::Cancelled => UploadError::Cancelled,
         other => UploadError::BadResponse(other.to_string()),

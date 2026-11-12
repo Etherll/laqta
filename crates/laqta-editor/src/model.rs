@@ -181,6 +181,8 @@ pub struct Style {
     pub blur_radius: u32,
     pub pixel_size: u32,
     pub highlight_color: Rgba,
+    /// The Highlight marker's stroke width.
+    pub highlight_size: f32,
     pub magnify_zoom: f32,
     pub spotlight_dim: u8,
     pub spotlight_blur: u32,
@@ -204,6 +206,7 @@ impl Default for Style {
             blur_radius: 15,
             pixel_size: 10,
             highlight_color: Rgba::rgb(0xff, 0xee, 0x00),
+            highlight_size: 20.0,
             magnify_zoom: 2.0,
             spotlight_dim: 140,
             spotlight_blur: 0,
@@ -279,8 +282,9 @@ pub enum AnnotationKind {
         pos: PointF,
         bitmap: Picture,
     },
+    /// A marker stroke: a wide, see-through freehand line.
     Highlight {
-        rect: RectF,
+        points: Vec<PointF>,
     },
     SmartEraser {
         rect: RectF,
@@ -339,7 +343,6 @@ impl AnnotationKind {
             | AnnotationKind::SpeechBalloon { rect, .. }
             | AnnotationKind::Image { rect, .. }
             | AnnotationKind::Emoji { rect, .. }
-            | AnnotationKind::Highlight { rect }
             | AnnotationKind::SmartEraser { rect, .. }
             | AnnotationKind::Blur { rect }
             | AnnotationKind::Pixelate { rect }
@@ -357,7 +360,6 @@ impl AnnotationKind {
             | AnnotationKind::SpeechBalloon { rect, .. }
             | AnnotationKind::Image { rect, .. }
             | AnnotationKind::Emoji { rect, .. }
-            | AnnotationKind::Highlight { rect }
             | AnnotationKind::SmartEraser { rect, .. }
             | AnnotationKind::Blur { rect }
             | AnnotationKind::Pixelate { rect }
@@ -377,7 +379,7 @@ impl AnnotationKind {
                 }
                 r
             }
-            AnnotationKind::Freehand { points } => points
+            AnnotationKind::Freehand { points } | AnnotationKind::Highlight { points } => points
                 .iter()
                 .fold(None::<RectF>, |acc, p| {
                     let pr = RectF::new(p.x, p.y, 0.0, 0.0);
@@ -402,7 +404,9 @@ impl AnnotationKind {
                     *c = c.offset(dx, dy);
                 }
             }
-            AnnotationKind::Freehand { points } => points.iter_mut().for_each(|p| *p = p.offset(dx, dy)),
+            AnnotationKind::Freehand { points } | AnnotationKind::Highlight { points } => {
+                points.iter_mut().for_each(|p| *p = p.offset(dx, dy));
+            }
             AnnotationKind::Step { center, .. } => *center = center.offset(dx, dy),
             AnnotationKind::Cursor { pos, .. } => *pos = pos.offset(dx, dy),
             AnnotationKind::SpeechBalloon { rect, tail, .. } => {
@@ -440,7 +444,7 @@ impl AnnotationKind {
                 *end = point(*end);
                 *curve = curve.map(point);
             }
-            AnnotationKind::Freehand { points } => points.iter_mut().for_each(|p| *p = point(*p)),
+            AnnotationKind::Freehand { points } | AnnotationKind::Highlight { points } => points.iter_mut().for_each(|p| *p = point(*p)),
             AnnotationKind::Step { center, .. } => *center = point(*center),
             // `pos` is the top-left corner of the cursor's bitmap: turn the bitmap's box.
             AnnotationKind::Cursor { pos, bitmap } => {
@@ -477,7 +481,10 @@ impl AnnotationKind {
             AnnotationKind::Line { start, end, .. } | AnnotationKind::Arrow { start, end, .. } => {
                 segment_distance(p, *start, *end) <= tolerance
             }
-            AnnotationKind::Freehand { points } => points.windows(2).any(|w| segment_distance(p, w[0], w[1]) <= tolerance),
+            AnnotationKind::Freehand { points } | AnnotationKind::Highlight { points } => match points.as_slice() {
+                [one] => one.distance(p) <= tolerance,
+                many => many.windows(2).any(|w| segment_distance(p, w[0], w[1]) <= tolerance),
+            },
             AnnotationKind::Step { center, radius, .. } => center.distance(p) <= radius + tolerance,
             _ => self.bounds().contains(p, tolerance),
         }
@@ -487,8 +494,7 @@ impl AnnotationKind {
     pub fn is_effect(&self) -> bool {
         matches!(
             self,
-            AnnotationKind::Highlight { .. }
-                | AnnotationKind::SmartEraser { .. }
+            AnnotationKind::SmartEraser { .. }
                 | AnnotationKind::Blur { .. }
                 | AnnotationKind::Pixelate { .. }
                 | AnnotationKind::Magnify { .. }
@@ -504,6 +510,7 @@ impl AnnotationKind {
                 vec![(Handle::Start, *start), (Handle::End, *end), (Handle::Control, c)]
             }
             AnnotationKind::Freehand { .. }
+            | AnnotationKind::Highlight { .. }
             | AnnotationKind::Step { .. }
             | AnnotationKind::Cursor { .. }
             | AnnotationKind::CloneStamp { .. } => Vec::new(),
@@ -570,9 +577,27 @@ impl AnnotationKind {
 }
 
 impl Annotation {
+    /// How wide the annotation's line is: the marker's for Highlight, else the border.
+    pub fn stroke_width(&self) -> f32 {
+        match self.kind {
+            AnnotationKind::Highlight { .. } => self.style.highlight_size,
+            _ => self.style.border_size,
+        }
+    }
+
+    /// The box a pick shows and drags by: a stroke's box takes in the line's width, so a straight
+    /// marker is as tall as it is drawn.
+    pub fn pick_box(&self) -> RectF {
+        let b = self.kind.bounds();
+        match self.kind {
+            AnnotationKind::Freehand { .. } | AnnotationKind::Highlight { .. } => b.inflate(self.stroke_width() / 2.0),
+            _ => b,
+        }
+    }
+
     /// Bounds including border and shadow: what repaints when it changes.
     pub fn paint_bounds(&self) -> RectF {
-        let mut b = self.kind.bounds().inflate(self.style.border_size + self.style.arrow_head_width.max(4.0) + 2.0);
+        let mut b = self.kind.bounds().inflate(self.stroke_width() + self.style.arrow_head_width.max(4.0) + 2.0);
         if self.style.shadow {
             b = b.union(b.offset(self.style.shadow_offset.0, self.style.shadow_offset.1));
         }

@@ -24,8 +24,16 @@ pub fn http() -> Transport {
     Arc::new(|request| Box::pin(laqta_http::send(request)))
 }
 
+/// A transport failure as the port's own kind, so the UI can say what happened without reading
+/// the HTTP library's text.
 fn net(e: laqta_http::HttpError) -> PortError {
-    PortError::Failed(e.to_string())
+    use laqta_http::HttpError;
+    match e {
+        HttpError::Connect(s) => PortError::Unreachable(s),
+        HttpError::Timeout => PortError::TimedOut,
+        HttpError::Cancelled => PortError::Cancelled,
+        other => PortError::Failed(other.to_string()),
+    }
 }
 
 /// The error text of a non-2xx reply: the service's message when it sent JSON with one.

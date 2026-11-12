@@ -19,6 +19,8 @@ pub struct Settings {
     pub effect_presets: Vec<crate::effects::Preset>,
     /// Editor tools hidden from the toolbar (tool names, e.g. "Spotlight"); their shortcuts still work.
     pub editor_hidden_tools: Vec<String>,
+    /// The colour and size picked for each drawing tool on the capture toolbar.
+    pub capture_marks: Vec<crate::capture::MarkStyle>,
     pub version: u32,
     pub screenshots_dir: PathBuf,
     pub defaults: TaskSettings,
@@ -200,6 +202,7 @@ impl Settings {
             actions: Vec::new(),
             effect_presets: Vec::new(),
             editor_hidden_tools: Vec::new(),
+            capture_marks: Vec::new(),
             version: SETTINGS_VERSION,
             screenshots_dir: pictures_dir.join("Laqta"),
             defaults: TaskSettings::default(),
