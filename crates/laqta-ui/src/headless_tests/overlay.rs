@@ -815,3 +815,21 @@ fn arrows_nudge_the_frame_under_a_drawing_tool(cx: &mut TestAppContext) {
     assert!(sent.lock().unwrap().iter().any(|i| matches!(i, RegionInput::Key { key: RegionKey::Left, .. })), "the session got the nudge");
     assert!(!cx.update(|cx| model.read(cx).frame_only), "the nudge carries the marks");
 }
+
+/// While the annotated crop is exported for an action, the toolbar and the frame hold still, so
+/// the picture sent is of the selection the session finishes with.
+#[gpui::test]
+fn the_frame_holds_still_while_the_marks_are_exported(cx: &mut TestAppContext) {
+    use laqta_domain::region::SelectionAction;
+    use laqta_editor::Tool;
+
+    use crate::presenters::capture_toolbar::Item;
+
+    let (model, _sent) = settled_overlay(cx, PhysRect { x: 100, y: 100, width: 200, height: 100 });
+    cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Rectangle), cx)));
+    draw(cx, &model, (10.0, 10.0), (50.0, 40.0));
+    cx.update(|cx| model.update(cx, |m, cx| m.finish(SelectionAction::Copy, cx)));
+    assert!(cx.update(|cx| model.read(cx).finishing));
+    cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Arrow), cx)));
+    assert_eq!(cx.update(|cx| model.read(cx).tool), Some(Tool::Rectangle), "no tool change mid-export");
+}

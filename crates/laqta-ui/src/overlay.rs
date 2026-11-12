@@ -82,6 +82,9 @@ pub(crate) struct OverlayModel {
     /// How far a picked mark's handle reaches, in desktop pixels: `mark_pointer::GRAB` times the
     /// scale of the monitor the pointer is on, so the grab square is the same size on every screen.
     pub(crate) grab: f32,
+    /// The annotated crop is being exported for an action: the frame and the marks hold still until
+    /// it lands, so the picture sent is of the selection the session finishes with.
+    pub(crate) finishing: bool,
     /// The last press on the selection held Alt: a move leaves the marks where they are on screen.
     pub(crate) frame_only: bool,
     /// Holding Space lends the Pointer (`None`) while a drawing tool is out.
@@ -168,6 +171,7 @@ pub(crate) fn show(frames: Vec<Frame>, images: Vec<Option<Arc<RenderImage>>>, vi
         pressed: None,
         frame_only: false,
         grab: crate::presenters::mark_pointer::GRAB,
+        finishing: false,
         space: crate::presenters::space_lend::SpaceLend::new(None),
     });
     let mut windows = Vec::new();
@@ -681,6 +685,9 @@ impl Render for OverlayView {
         .on_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| {
             let (x, y) = this.to_phys(ev.position, window, cx);
             let Some(pressed) = button(ev.button) else { return };
+            if this.model.read(cx).finishing {
+                return;
+            }
             let mut scene = this.model.read(cx).pointer_scene((x, y), true);
             scene.frame_only = ev.modifiers.alt;
             let route = capture_pointer::route(&scene, (x, y), pressed);
@@ -791,6 +798,9 @@ impl OverlayView {
     fn key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         let key = ev.keystroke.key.as_str();
         let m = &ev.keystroke.modifiers;
+        if self.model.read(cx).finishing {
+            return;
+        }
         if self.model.read(cx).text.is_some() {
             let ctrl = ctrl(m);
             self.model.update(cx, |model, cx| model.text_key(key, ctrl, cx));

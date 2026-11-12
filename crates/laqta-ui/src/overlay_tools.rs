@@ -388,6 +388,10 @@ impl OverlayModel {
 
     /// A toolbar button or its shortcut.
     pub(crate) fn pick(&mut self, item: Item, cx: &mut Context<Self>) {
+        // The export under way is of the marks as they are.
+        if self.finishing {
+            return;
+        }
         // A tool picked while Space is held is the one to keep.
         if matches!(item, Item::Pointer | Item::Tool(_)) {
             self.space.picked();
@@ -504,7 +508,7 @@ impl OverlayModel {
     /// crop would be of the old frame.
     pub(crate) fn finish(&mut self, action: SelectionAction, cx: &mut Context<Self>) {
         let stale = self.annot.as_ref().is_some_and(|a| Some(a.rect) != self.view.selected);
-        if self.view.gesture || stale {
+        if self.view.gesture || stale || self.finishing {
             return;
         }
         let finish = RegionInput::Command(RegionCommand::Finish(action));
@@ -515,7 +519,8 @@ impl OverlayModel {
         let editor = a.interaction.editor();
         let export = crate::presenters::render_gate::compute(&a.compute, move || editor.lock().unwrap_or_else(|p| p.into_inner()).export());
         let on_input = self.on_input.clone();
-        cx.spawn(async move |_, _| {
+        self.finishing = true;
+        cx.spawn(async move |this, cx| {
             // Without the edited crop the capture would silently lose the annotations, so the
             // overlay stays open and the user can try again or press Esc.
             match export.await {
@@ -523,7 +528,13 @@ impl OverlayModel {
                     on_input(RegionInput::Annotated(image));
                     on_input(finish);
                 }
-                None => tracing::error!("capture toolbar: exporting the annotations failed"),
+                None => {
+                    tracing::error!("capture toolbar: exporting the annotations failed");
+                    let _ = this.update(cx, |m, cx| {
+                        m.finishing = false;
+                        cx.notify();
+                    });
+                }
             }
         })
         .detach();
