@@ -413,8 +413,9 @@ impl OverlayModel {
         if self.finishing {
             return;
         }
-        // A tool picked while Space is held is the one to keep.
-        if matches!(item, Item::Pointer | Item::Tool(_)) {
+        // A tool picked while Space is held is the one to keep; reading the text puts the tools
+        // away, so Space's release must not bring one back over it.
+        if matches!(item, Item::Pointer | Item::Tool(_) | Item::CopyText) {
             self.space.picked();
         }
         match item {

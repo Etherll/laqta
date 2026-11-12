@@ -938,3 +938,19 @@ fn focus_loss_mid_stroke_drops_it_and_frees_the_press(cx: &mut TestAppContext) {
     let m = |cx: &mut TestAppContext| cx.update(|cx| (model.read(cx).pressed, model.read(cx).annot.as_ref().map(|a| a.mark_rects().len())));
     assert_eq!(m(cx), (None, Some(0)), "the stroke is dropped and the press forgotten");
 }
+
+/// Reading the text while Space lends the Pointer ends the lend: letting Space go brings no
+/// drawing tool back over the text.
+#[gpui::test]
+fn reading_text_ends_the_space_lend(cx: &mut TestAppContext) {
+    use laqta_editor::Tool;
+
+    use crate::presenters::capture_toolbar::Item;
+
+    let (model, _sent) = settled_overlay(cx, PhysRect { x: 100, y: 100, width: 200, height: 100 });
+    cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Arrow), cx)));
+    cx.update(|cx| model.update(cx, |m, _| m.borrow_pointer()));
+    cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::CopyText, cx)));
+    cx.update(|cx| model.update(cx, |m, cx| m.return_pointer(cx)));
+    assert_eq!(cx.update(|cx| model.read(cx).tool), None, "no tool comes back over the text");
+}
