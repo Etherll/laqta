@@ -1,10 +1,10 @@
-//! Verified fetch (ARCHITECTURE §6): download to `<dest>.part`, check SHA-256, then rename into
-//! place. A failed or unverified download leaves nothing at `<dest>.part`.
+//! Verified fetch (ARCHITECTURE §6): download to a partial file beside `dest`, check SHA-256, then
+//! rename into place. A failed or unverified download removes its own partial file.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use reqwest::Client;
@@ -57,9 +57,14 @@ async fn download(
         Err(err) => Err(err),
     };
     if result.is_err() {
-        let _ = tokio::fs::remove_file(&part).await;
+        discard(&part).await;
     }
     result
+}
+
+/// Removes a failed call's partial file. Each call has its own name, so this never touches another's.
+async fn discard(part: &Path) {
+    let _ = tokio::fs::remove_file(part).await;
 }
 
 /// Streams the body into `part` and returns its SHA-256 as lowercase hex.
@@ -107,9 +112,14 @@ async fn transfer(client: &Client, url: &str, part: &Path, progress: &Progress, 
     Ok(to_hex(hasher.finalize().as_slice()))
 }
 
+/// Counts the calls in this process, so concurrent downloads of one destination get different names.
+static PART_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A partial file for one call: `<dest>.<pid>-<n>.part`.
 fn part_path(dest: &Path) -> PathBuf {
+    let n = PART_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut name = dest.as_os_str().to_owned();
-    name.push(".part");
+    name.push(format!(".{}-{n}.part", std::process::id()));
     PathBuf::from(name)
 }
 
@@ -123,4 +133,35 @@ fn to_hex(bytes: &[u8]) -> String {
 
 fn io_error(err: std::io::Error) -> HttpError {
     HttpError::Io(err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn each_call_gets_its_own_part_file() {
+        let dest = Path::new("models/ort.so");
+        let (first, second) = (part_path(dest), part_path(dest));
+        assert_ne!(first, second);
+        for part in [&first, &second] {
+            assert_eq!(part.parent(), dest.parent());
+            let name = part.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(name.starts_with("ort.so.") && name.ends_with(".part"), "{name}");
+        }
+    }
+
+    #[test]
+    fn discarding_one_part_file_leaves_the_other_for_the_same_destination() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("ort.so");
+        let (mine, theirs) = (part_path(&dest), part_path(&dest));
+        fs::write(&mine, b"mine").unwrap();
+        fs::write(&theirs, b"theirs").unwrap();
+        tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(discard(&mine));
+        assert!(!mine.exists());
+        assert_eq!(fs::read(&theirs).unwrap(), b"theirs");
+    }
 }

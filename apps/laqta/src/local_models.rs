@@ -38,9 +38,13 @@ async fn prepare(
         if !ok {
             return Err(PortError::Cancelled);
         }
-        crate::models::ensure_onnxruntime(data, crate::models::toast_progress(notifier, what, "ONNX Runtime"))
-            .await
-            .map_err(PortError::Failed)?;
+        crate::models::ensure_onnxruntime(
+            data,
+            crate::models::toast_progress(notifier, what, "ONNX Runtime"),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .map_err(PortError::Failed)?;
         if let Some(e) = entry.filter(|_| !model_ok) {
             let progress = crate::models::toast_progress(notifier, what, &e.name);
             rt.install(e, progress, Arc::new(AtomicBool::new(false))).await.map_err(|e| PortError::Failed(e.to_string()))?;

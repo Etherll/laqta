@@ -86,6 +86,16 @@ pub enum ModelProvider {
     Gpu,
 }
 
+/// Which engine reads the text in OCR tasks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum OcrEngine {
+    /// Laqta's downloaded models (PP-OCR).
+    #[default]
+    Models,
+    /// The operating system's OCR (Windows.Media.Ocr); ignored where there is none.
+    System,
+}
+
 /// A model file the user added for a supported family.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CustomModel {
@@ -104,6 +114,8 @@ pub struct ModelOptions {
     pub provider: ModelProvider,
     pub ocr_det: Option<String>,
     pub ocr_rec: Option<String>,
+    /// The engine for text recognition. `System` is used where the OS has one.
+    pub ocr_engine: OcrEngine,
     pub background: Option<String>,
     pub custom: Vec<CustomModel>,
 }

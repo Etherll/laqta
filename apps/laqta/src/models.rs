@@ -12,7 +12,7 @@ use laqta_ml::families::Family;
 use laqta_ml::runtime::{ExecutionProvider, Runtime};
 use laqta_ml::{Task, catalog};
 use laqta_ports::{BoxFuture, Clock, Notifier, Spawner, Toast};
-use laqta_ui::{ModelProgress, ModelRow, ModelService};
+use laqta_ui::{ModelProgress, ModelRow, ModelService, OcrPresetRow};
 
 /// The settings' model choices, shared with the OCR adapter and updated on save.
 pub type SharedModelOptions = Arc<std::sync::RwLock<ModelOptions>>;
@@ -27,6 +27,21 @@ pub fn provider(p: ModelProvider) -> ExecutionProvider {
 
 pub fn models_dir(data: &Path) -> PathBuf {
     data.join("models")
+}
+
+/// The bytes of every file under `dir`, nested folders included; 0 when it is missing.
+fn dir_size(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => dir_size(&e.path()),
+            Ok(t) if t.is_file() => e.metadata().map_or(0, |m| m.len()),
+            _ => 0,
+        })
+        .sum()
 }
 
 /// A runtime over `<data>/models` with the chosen provider. ONNX Runtime may still be missing.
@@ -177,14 +192,14 @@ fn dictionary_beside(model: &Path) -> Option<PathBuf> {
     [format!("{stem}.dict.txt"), format!("{stem}.txt"), "dict.txt".to_owned()].into_iter().map(|name| dir.join(name)).find(|p| p.is_file())
 }
 
-/// Downloads ONNX Runtime when it is not there yet, reporting through `progress`.
-pub async fn ensure_onnxruntime(data: &Path, progress: laqta_ml::Progress) -> Result<(), String> {
+/// Downloads ONNX Runtime when it is not there yet, reporting through `progress`; stops early when `cancel` is set.
+pub async fn ensure_onnxruntime(data: &Path, progress: laqta_ml::Progress, cancel: Arc<AtomicBool>) -> Result<(), String> {
     let dir = models_dir(data);
     let ort = laqta_ml::install::ort_for_host().ok_or("no ONNX Runtime build for this platform")?;
     if laqta_ml::install::runtime_library(&dir, ort).exists() {
         return Ok(());
     }
-    laqta_ml::install::install_onnxruntime(&dir, progress, Arc::new(AtomicBool::new(false))).await.map(|_| ()).map_err(|e| e.to_string())
+    laqta_ml::install::install_onnxruntime(&dir, progress, cancel).await.map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// Downloads smaller than this are not reported: they are over before a notice could be read.
@@ -241,6 +256,8 @@ pub fn toast_progress(notifier: &Arc<dyn Notifier>, title: &str, what: &str) -> 
 pub struct Models {
     pub data: PathBuf,
     pub options: SharedModelOptions,
+    /// The name of the OS's own OCR engine, when the OS has one.
+    pub system_ocr: Option<String>,
 }
 
 impl Models {
@@ -267,6 +284,9 @@ impl ModelService for Models {
                 installed: rt.as_ref().is_some_and(|r| r.is_installed(e)),
                 custom: false,
                 available: !e.is_pending(),
+                default: e.default,
+                speed: e.speed.map(|s| s.as_str()).unwrap_or("").to_owned(),
+                languages: e.languages.clone(),
             })
             .collect();
         let dir = models_dir(&self.data);
@@ -281,6 +301,9 @@ impl ModelService for Models {
             installed: dir.join(format!("{}.onnx", c.id)).is_file(),
             custom: true,
             available: true,
+            default: false,
+            speed: String::new(),
+            languages: Vec::new(),
         }));
         rows
     }
@@ -289,15 +312,54 @@ impl ModelService for Models {
         Family::ALL.iter().map(|f| (f.task().as_str().to_owned(), f.name().to_owned())).collect()
     }
 
-    fn install(&self, id: String, progress: ModelProgress) -> BoxFuture<'static, Result<(), String>> {
+    fn install(&self, id: String, progress: ModelProgress, cancel: Arc<AtomicBool>) -> BoxFuture<'static, Result<(), String>> {
         let data = self.data.clone();
         let options = self.options();
         Box::pin(async move {
             let entry = catalog().model(&id).ok_or_else(|| format!("no model {id}"))?;
-            let rt = runtime(&data, &options).ok_or("no ONNX Runtime build for this platform")?;
             let p: laqta_ml::Progress = Arc::new(move |a, b| progress(a, b));
-            rt.install(entry, p, Arc::new(AtomicBool::new(false))).await.map_err(|e| e.to_string())
+            ensure_onnxruntime(&data, p.clone(), cancel.clone()).await?;
+            let rt = runtime(&data, &options).ok_or("no ONNX Runtime build for this platform")?;
+            if rt.is_installed(entry) {
+                return Ok(());
+            }
+            rt.install(entry, p, cancel).await.map_err(|e| e.to_string())
         })
+    }
+
+    fn ocr_presets(&self) -> Vec<OcrPresetRow> {
+        catalog()
+            .ocr_presets
+            .iter()
+            .map(|p| OcrPresetRow {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                description: p.description.clone(),
+                det: p.det.clone(),
+                rec: p.rec.clone(),
+                default: p.default,
+            })
+            .collect()
+    }
+
+    fn runtime_ready(&self) -> bool {
+        laqta_ml::install::ort_for_host().is_some_and(|ort| laqta_ml::install::runtime_library(&models_dir(&self.data), ort).exists())
+    }
+
+    fn runtime_size(&self) -> u64 {
+        laqta_ml::install::ort_for_host().map_or(0, |ort| ort.size_bytes)
+    }
+
+    fn disk_usage(&self) -> u64 {
+        dir_size(&models_dir(&self.data))
+    }
+
+    fn models_dir(&self) -> PathBuf {
+        models_dir(&self.data)
+    }
+
+    fn system_ocr(&self) -> Option<String> {
+        self.system_ocr.clone()
     }
 
     fn remove(&self, id: &str) -> Result<(), String> {
@@ -318,7 +380,7 @@ impl ModelService for Models {
         Box::pin(async move {
             let fam = Family::parse(&family).ok_or_else(|| format!("unknown family {family}"))?;
             // The model manager has no channel for this download (`add_custom` takes no progress).
-            ensure_onnxruntime(&data, Arc::new(|_, _| {})).await?;
+            ensure_onnxruntime(&data, Arc::new(|_, _| {}), Arc::new(AtomicBool::new(false))).await?;
             let rt = runtime(&data, &options).ok_or("no ONNX Runtime build for this platform")?;
             rt.ensure_ort().map_err(|e| e.to_string())?;
             laqta_ml::validate_custom(&path, &family).map_err(|e| e.to_string())?;
@@ -411,6 +473,19 @@ mod tests {
             ]
         );
         assert!(recorder.0.lock().expect("lock").iter().all(|t| t.title == "Background removal"));
+    }
+
+    #[test]
+    fn disk_usage_counts_the_nested_files_of_the_models_folder() {
+        let data = tempfile::tempdir().expect("tempdir");
+        let nested = data.path().join("models").join("nested");
+        std::fs::create_dir_all(&nested).expect("create");
+        std::fs::write(data.path().join("models").join("a.onnx"), [0u8; 10]).expect("write");
+        std::fs::write(nested.join("b.onnx"), [0u8; 25]).expect("write");
+        let models = Models { data: data.path().to_owned(), options: Arc::default(), system_ocr: None };
+        assert_eq!(models.disk_usage(), 35);
+        let absent = Models { data: data.path().join("absent"), options: Arc::default(), system_ocr: None };
+        assert_eq!(absent.disk_usage(), 0);
     }
 }
 

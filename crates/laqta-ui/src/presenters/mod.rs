@@ -1,6 +1,7 @@
 //! Presenters turn domain values into view models. GPUI-free (checked by `cargo xtask check-deps`).
 
 pub mod after_capture;
+pub mod ai_features;
 pub mod capture_toolbar;
 pub mod color;
 pub mod editor_interaction;

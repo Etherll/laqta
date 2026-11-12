@@ -97,6 +97,7 @@ oo7 = { version = "0.7.0", default-features = false, features = ["async-std", "n
 async-broadcast = "0.7.2"
 futures-channel = "0.3.34"
 futures-lite = "2.6.1"
+async-lock = "3.5.0"
 async-executor = "1.14.1"
 async-io = "2.6.0"
 blocking = "1.7.0"

@@ -15,6 +15,7 @@ mod assets;
 mod chrome;
 mod close_guard;
 mod color_window;
+mod dialog;
 mod editor_window;
 mod effects_window;
 mod gpu_image;
@@ -47,8 +48,8 @@ mod widgets;
 mod headless_tests;
 
 pub use runtime::{
-    HotkeyReport, LogicalRectHook, ModelProgress, ModelRow, ModelService, NativeWindow, PermissionHooks, UiHandle, UiReceiver, UiServices,
-    run,
+    HotkeyReport, LogicalRectHook, ModelProgress, ModelRow, ModelService, NativeWindow, OcrPresetRow, PermissionHooks, UiHandle,
+    UiReceiver, UiServices, run,
 };
 
 /// The OS this build runs on, for the parts of the core that differ by platform.

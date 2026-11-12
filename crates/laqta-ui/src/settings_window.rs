@@ -25,6 +25,8 @@ use crate::runtime::{UiState, activate};
 use crate::theme::{space, text};
 use crate::widgets::{self, Pill, Slot, Tone};
 
+mod ai;
+
 pub(crate) fn open(cx: &mut App) {
     if activate(cx.global::<UiState>().settings, cx) {
         return;
@@ -140,10 +142,7 @@ struct SettingsWindow {
     scroll: [Entity<InputState>; 6],
     /// Per watch folder: folder and filter inputs, parallel to `draft.watch_folders`.
     watch: Vec<(Entity<InputState>, Entity<InputState>)>,
-    model_rows: Vec<crate::runtime::ModelRow>,
-    /// Download progress or the last error, per model id.
-    model_status: std::collections::HashMap<String, String>,
-    custom_family: usize,
+    ai: ai::AiState,
     custom_name: Entity<InputState>,
     /// Analyzer base URL, model, prompt, key; remove.bg key (keys go to the secret store on save).
     cloud: [Entity<InputState>; 5],
@@ -195,7 +194,7 @@ impl SettingsWindow {
         let mut this = Self::build(draft, window, cx);
         // A window closed mid-recording must not leave the global shortcuts off.
         cx.on_release(|_, cx| (cx.global::<UiState>().services.hold_hotkeys)(false)).detach();
-        this.refresh_model_rows(cx);
+        this.refresh_models(cx);
         this.refresh_integration(cx);
         this
     }
@@ -261,10 +260,8 @@ impl SettingsWindow {
             auto_count,
             scroll,
             watch: Vec::new(),
-            // Filled by `refresh_model_rows`: building the rows parses the catalog and checks files.
-            model_rows: Vec::new(),
-            model_status: Default::default(),
-            custom_family: 0,
+            // Filled by `refresh_models`: building the rows parses the catalog and checks files.
+            ai: ai::AiState::default(),
             custom_name,
             cloud: {
                 let mut key = || cx.new(|cx| InputState::new(window, cx).placeholder("(stored in the system keyring; type to replace)"));
@@ -283,20 +280,6 @@ impl SettingsWindow {
         this.rebuild_host_inputs(window, cx);
         this.rebuild_watch_inputs(window, cx);
         this
-    }
-
-    /// Reloads the model rows on a background thread.
-    fn refresh_model_rows(&mut self, cx: &mut Context<Self>) {
-        let models = cx.global::<UiState>().services.models.clone();
-        let task = cx.background_spawn(async move { models.rows() });
-        cx.spawn(async move |this, cx| {
-            let rows = task.await;
-            let _ = this.update(cx, |this, cx| {
-                this.model_rows = rows;
-                cx.notify();
-            });
-        })
-        .detach();
     }
 
     /// Reads the run-at-login and file-manager menu state on a background thread: both read files.
@@ -498,9 +481,17 @@ impl SettingsWindow {
         }
         let message = if scope == Scope::All { "Reset all settings?" } else { "Reset this page?" };
         let what = if n == 1 { "1 setting goes".to_owned() } else { format!("{n} settings go") };
-        let detail = format!(
-            "{what} back to the default. Accounts, custom uploaders, effect presets, watch folders, history and the shortcuts and models you added stay. Nothing is saved until you press Save."
-        );
+        // A page reset touches only that page, so the list of what stays is only worth reading for "Reset all".
+        // Model choices save as they're picked (AI features), so their reset does too.
+        let detail = match scope {
+            Scope::All => format!(
+                "{what} back to the default. Anything you added stays: accounts, uploaders, effect presets, watch folders, shortcuts and models, plus your history. Model choices change now; the rest is saved when you press Save."
+            ),
+            Scope::Models => {
+                format!("{what} back to the default. Model choices change now; addresses and prompts are saved when you press Save.")
+            }
+            _ => format!("{what} back to the default. Nothing is saved until you press Save."),
+        };
         let answer = window.prompt(gpui::PromptLevel::Warning, message, Some(&detail), &["Reset", "Cancel"], cx);
         cx.spawn_in(window, async move |this, cx| {
             if answer.await != Ok(0) {
@@ -522,6 +513,16 @@ impl SettingsWindow {
     fn reset(&mut self, scope: Scope, window: &mut Window, cx: &mut Context<Self>) {
         let theme = self.draft.theme;
         settings_reset::reset(scope, &mut self.draft, &self.defaults);
+        if matches!(scope, Scope::Models | Scope::All) {
+            let (models, background) = (self.draft.models.clone(), self.draft.cloud.background);
+            self.apply_now(
+                move |s| {
+                    s.models.clone_from(&models);
+                    s.cloud.background = background;
+                },
+                cx,
+            );
+        }
         if self.draft.theme != theme {
             self.set_theme(self.draft.theme, cx);
         }
@@ -535,9 +536,7 @@ impl SettingsWindow {
         let mut fresh = Self::build(self.draft.clone(), window, cx);
         fresh.page = self.page;
         fresh.message = self.message.take();
-        fresh.model_rows = std::mem::take(&mut self.model_rows);
-        fresh.model_status = std::mem::take(&mut self.model_status);
-        fresh.custom_family = self.custom_family;
+        fresh.ai = std::mem::take(&mut self.ai);
         fresh.update = self.update.take();
         fresh.integration_status = self.integration_status.take();
         fresh.focus = self.focus.clone();
@@ -1541,242 +1540,6 @@ impl SettingsWindow {
             cx,
         )
     }
-    fn models_page(&self, cx: &mut Context<Self>) -> gpui::Div {
-        use laqta_domain::settings::{BackgroundProvider, ModelProvider};
-        let providers = [(ModelProvider::Auto, "Automatic"), (ModelProvider::Cpu, "CPU"), (ModelProvider::Gpu, "GPU")]
-            .into_iter()
-            .map(|(p, l)| self.opt(l, self.draft.models.provider == p, move |this| this.draft.models.provider = p, cx))
-            .collect();
-        let mut page = page().child(widgets::section("Processing", cx).child(widgets::row_with(
-            "Run models on",
-            Some("This build ships the CPU version of ONNX Runtime, so every model runs on the CPU for now."),
-            Slot::Hug,
-            widgets::choice("provider", providers, cx),
-            cx,
-        )));
-        for (task, label) in [
-            ("ocr-det", "Text detection"),
-            ("ocr-rec", "Text recognition"),
-            ("background", "Background removal"),
-            ("inpaint", "Object removal (photo editor)"),
-        ] {
-            let rows: Vec<_> = self.model_rows.iter().filter(|r| r.task == task).cloned().collect();
-            let mut section = widgets::section(label, cx);
-            if rows.is_empty() {
-                section = section.child(widgets::muted("No models for this in this build.", cx));
-            }
-            let chosen = match task {
-                "ocr-det" => self.draft.models.ocr_det.clone(),
-                "ocr-rec" => self.draft.models.ocr_rec.clone(),
-                "background" => self.draft.models.background.clone(),
-                _ => None,
-            };
-            let choosable = rows.len() > 1;
-            for (i, row) in rows.into_iter().enumerate() {
-                let id = row.id.clone();
-                let selected = chosen.as_deref() == Some(id.as_str()) || (chosen.is_none() && i == 0);
-                let size = crate::presenters::history::format_size(row.size_bytes);
-                let meta = format!(
-                    "{size}{}{}",
-                    if row.licence.is_empty() { String::new() } else { format!(" · {}", row.licence) },
-                    if row.commercial { "" } else { " · non-commercial" }
-                );
-                let mut controls = div().flex().items_center().gap(space::S2);
-                if let Some(st) = self.model_status.get(&id) {
-                    controls = controls.child(widgets::muted(st.clone(), cx));
-                }
-                if selected && choosable {
-                    controls = controls.child(widgets::badge("In use", Tone::Success, cx));
-                } else if choosable {
-                    controls = controls.child(widgets::pill(
-                        SharedString::from(format!("use-{id}")),
-                        "Use",
-                        Pill::Ghost,
-                        true,
-                        cx.listener({
-                            let id = id.clone();
-                            let task = task.to_owned();
-                            move |this, _, _, cx| {
-                                let slot = match task.as_str() {
-                                    "ocr-det" => &mut this.draft.models.ocr_det,
-                                    "ocr-rec" => &mut this.draft.models.ocr_rec,
-                                    "background" => &mut this.draft.models.background,
-                                    // One object-removal model: nothing to choose.
-                                    _ => return,
-                                };
-                                *slot = Some(id.clone());
-                                cx.notify();
-                            }
-                        }),
-                        cx,
-                    ));
-                }
-                // A custom model whose file is gone has nothing to download: it can only be removed.
-                controls = if row.installed || row.custom {
-                    controls.child(widgets::pill(
-                        SharedString::from(format!("rm-{id}")),
-                        "Remove",
-                        Pill::Default,
-                        true,
-                        cx.listener({
-                            let id = id.clone();
-                            move |this, _, _, cx| {
-                                let services = cx.global::<UiState>().services.clone();
-                                if let Err(e) = services.models.remove(&id) {
-                                    this.model_status.insert(id.clone(), e);
-                                }
-                                if row.custom {
-                                    this.draft.models.custom.retain(|c| c.id != id);
-                                }
-                                this.model_rows = services.models.rows();
-                                cx.notify();
-                            }
-                        }),
-                        cx,
-                    ))
-                } else if row.available {
-                    controls.child(widgets::pill(
-                        SharedString::from(format!("dl-{id}")),
-                        format!("Download ({size})"),
-                        Pill::Default,
-                        true,
-                        cx.listener({
-                            let id = id.clone();
-                            move |this, _, _, cx| this.download_model(id.clone(), cx)
-                        }),
-                        cx,
-                    ))
-                } else {
-                    controls.child(widgets::muted("Not available yet", cx))
-                };
-                section = section.child(widgets::row_with(row.name.clone(), Some(meta), Slot::Hug, controls, cx));
-            }
-            page = page.child(section);
-        }
-        let families = cx.global::<UiState>().services.models.families();
-        let fam = families
-            .iter()
-            .enumerate()
-            .map(|(i, (task, family))| {
-                self.opt(format!("{family} ({task})"), self.custom_family == i, move |this| this.custom_family = i, cx)
-            })
-            .collect();
-        let bg_opts = [(BackgroundProvider::Local, "On this computer"), (BackgroundProvider::RemoveBg, "remove.bg")];
-        let bg_reset =
-            self.value_reset("bg-provider-reset", &bg_opts, |s| s.cloud.background, |this, b, _| this.draft.cloud.background = b, cx);
-        let bg = bg_opts
-            .into_iter()
-            .map(|(b, l)| self.opt(l, self.draft.cloud.background == b, move |this| this.draft.cloud.background = b, cx))
-            .collect();
-        page.child(
-            widgets::section("Your own model", cx)
-                .child(widgets::muted("Add an ONNX file for a supported model family. Laqta checks its inputs and outputs before using it.", cx).pb(space::S2))
-                .child(widgets::row_with("Family", None::<&str>, Slot::Field, widgets::choice("family", fam, cx), cx))
-                .child(widgets::row_with("Name", None::<&str>, Slot::Field, Input::new(&self.custom_name), cx))
-                .child(widgets::action_row(
-                    "Model file",
-                    Some("Pick the .onnx file."),
-                    widgets::pill("custom-add", "Choose file…", Pill::Default, false, cx.listener(move |this, _, _, cx| this.add_custom_model(cx)), cx),
-                    cx,
-                )),
-        )
-        .child(
-            widgets::section("Background removal service", cx)
-                .child(widgets::row_full("Remove backgrounds", None::<&str>, Slot::Hug, bg_reset, widgets::choice("bg-provider", bg, cx), cx))
-                .child(widgets::row_with("remove.bg API key", Some("Only needed for remove.bg."), Slot::Field, Input::new(&self.cloud[4]), cx)),
-        )
-        .child(
-            widgets::section("Describe image with AI", cx)
-                .child(
-                    widgets::muted(
-                        "Sends the capture to an OpenAI-compatible service: OpenAI, Gemini, OpenRouter, or a local Ollama or LM Studio server.",
-                        cx,
-                    )
-                    .pb(space::S2),
-                )
-                .child(self.input_row("cloud-0-reset", "Service address", Some("The base URL, such as http://localhost:11434/v1."), Slot::Field, &self.cloud[0], |d| &d.cloud[0], cx))
-                .child(self.input_row("cloud-1-reset", "Model", None::<&str>, Slot::Field, &self.cloud[1], |d| &d.cloud[1], cx))
-                .child(self.input_row("cloud-2-reset", "Prompt", None::<&str>, Slot::Field, &self.cloud[2], |d| &d.cloud[2], cx))
-                .child(widgets::row_with("API key", Some("Leave empty for local servers."), Slot::Field, Input::new(&self.cloud[3]), cx)),
-        )
-    }
-
-    fn download_model(&mut self, id: String, cx: &mut Context<Self>) {
-        let services = cx.global::<UiState>().services.clone();
-        let (tx, mut rx) = futures_channel::mpsc::unbounded::<(u64, Option<u64>)>();
-        let progress: crate::runtime::ModelProgress = std::sync::Arc::new(move |a, b| {
-            let _ = tx.unbounded_send((a, b));
-        });
-        let task = services.models.install(id.clone(), progress);
-        self.model_status.insert(id.clone(), "Starting…".into());
-        cx.notify();
-        let pid = id.clone();
-        cx.spawn(async move |this, cx| {
-            use futures_lite::StreamExt as _;
-            while let Some((a, b)) = rx.next().await {
-                let msg = match b {
-                    Some(t) if t > 0 => format!("{}%", a * 100 / t),
-                    _ => crate::presenters::history::format_size(a),
-                };
-                if this
-                    .update(cx, |this, cx| {
-                        this.model_status.insert(pid.clone(), msg);
-                        cx.notify();
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
-        let bg = cx.background_spawn(task);
-        cx.spawn(async move |this, cx| {
-            let r = bg.await;
-            let _ = this.update(cx, |this, cx| {
-                match r {
-                    Ok(()) => {
-                        this.model_status.remove(&id);
-                    }
-                    Err(e) => {
-                        this.model_status.insert(id.clone(), format!("Failed: {e}"));
-                    }
-                }
-                this.model_rows = cx.global::<UiState>().services.models.rows();
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn add_custom_model(&mut self, cx: &mut Context<Self>) {
-        let services = cx.global::<UiState>().services.clone();
-        let families = services.models.families();
-        let Some((_, family)) = families.get(self.custom_family).cloned() else { return };
-        let name = Self::value(&self.custom_name, cx);
-        let task = cx.background_spawn(async move {
-            let Some(file) = rfd::AsyncFileDialog::new().add_filter("ONNX model", &["onnx"]).pick_file().await else { return Ok(None) };
-            services.models.add_custom(file.path().to_path_buf(), family, name).await.map(Some)
-        });
-        cx.spawn(async move |this, cx| {
-            let r = task.await;
-            let _ = this.update(cx, |this, cx| {
-                match r {
-                    Ok(Some(model)) => {
-                        this.draft.models.custom.retain(|c| c.id != model.id);
-                        this.draft.models.custom.push(model);
-                        this.report(Ok("Custom model added. Save to keep it.".into()), cx);
-                    }
-                    Ok(None) => {}
-                    Err(e) => this.report(Err(format!("Custom model rejected: {e}")), cx),
-                }
-                this.model_rows = cx.global::<UiState>().services.models.rows();
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     fn integration(&self, cx: &mut Context<Self>) -> gpui::Div {
         let Some((autostart, shell)) = self.integration_status.clone() else {
             return page().child(widgets::section("Startup", cx).child(widgets::row_with(

@@ -142,6 +142,25 @@ fn platform(_data: &std::path::Path) -> Result<Platform, String> {
     Err("this platform is not supported (ADR 001)".into())
 }
 
+/// The name of the OS's own OCR engine, on the platforms that have one.
+fn system_ocr_name() -> Option<&'static str> {
+    if cfg!(windows) {
+        Some("Windows OCR")
+    } else if cfg!(target_os = "macos") {
+        Some("macOS text recognition")
+    } else {
+        None
+    }
+}
+
+/// Whether the stored analyzer key may be sent to `requested`: only to the saved analyzer address,
+/// so an address typed in settings never receives it. Surrounding spaces and trailing slashes do
+/// not count.
+fn stored_key_allowed(requested: &str, saved: &str) -> bool {
+    let saved = saved.trim().trim_end_matches('/');
+    !saved.is_empty() && requested.trim().trim_end_matches('/') == saved
+}
+
 /// First-run settings, with the hotkeys this OS can type.
 fn default_settings() -> Settings {
     use laqta_domain::record::Os;
@@ -582,6 +601,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let cloud_options: crate::cloud::SharedCloudOptions = Arc::new(std::sync::RwLock::new(settings.cloud.clone()));
     let recorder_backend = Arc::new(std::sync::RwLock::new(settings.defaults.recording.backend));
     let model_options: crate::models::SharedModelOptions = Arc::new(std::sync::RwLock::new(settings.models.clone()));
+    let system_ocr = platform.os_ocr.as_ref().and(system_ocr_name()).map(str::to_owned);
     let ports = Ports {
         screen: platform.screen,
         clipboard: platform.clipboard,
@@ -611,6 +631,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             Arc::new(ui.clone()),
             model_options.clone(),
             platform.os_ocr.clone(),
+            system_ocr_name().unwrap_or_default(),
             releaser.clone(),
         )),
         window_ops: platform.window_ops.clone(),
@@ -1031,7 +1052,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                 let deps = host_deps.clone();
                 Arc::new(move || laqta_upload::remote_storages(&app.settings().hosts, &deps))
             },
-            models: Arc::new(crate::models::Models { data: data.clone(), options: model_options.clone() }),
+            models: Arc::new(crate::models::Models { data: data.clone(), options: model_options.clone(), system_ocr }),
             check_update: {
                 let last = last_release.clone();
                 Arc::new(move || {
@@ -1060,6 +1081,25 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                         laqta_http::run(crate::updates::install(release, data)).await?;
                         let _ = quit.send(());
                         Ok(())
+                    })
+                })
+            },
+            analyzer_models: {
+                let secrets = platform.secrets.clone();
+                let cloud_options = cloud_options.clone();
+                Arc::new(move |base_url: String, key: Option<String>| {
+                    let secrets = secrets.clone();
+                    let cloud_options = cloud_options.clone();
+                    Box::pin(async move {
+                        // The stored key goes only to the saved analyzer address, never to one typed here.
+                        let saved = cloud_options.read().map(|o| o.analyzer.base_url.clone()).unwrap_or_default();
+                        let key = key.or_else(|| {
+                            if stored_key_allowed(&base_url, &saved) { secrets.get(laqta_cloud::ANALYZER_KEY).ok().flatten() } else { None }
+                        });
+                        let transport = laqta_cloud::http();
+                        laqta_http::run(async move { laqta_cloud::list_models(&transport, &base_url, key.as_deref()).await })
+                            .await
+                            .map_err(|e| e.to_string())
                     })
                 })
             },
@@ -1291,5 +1331,17 @@ mod tests {
         release_for_recording(&mut current, &hotkeys);
         assert_eq!(hotkeys.released.load(Ordering::SeqCst), 1);
         assert!(current.is_none());
+    }
+
+    /// The stored analyzer key goes only to the saved address, however the address is typed.
+    #[test]
+    fn the_stored_analyzer_key_goes_only_to_the_saved_address() {
+        let saved = "https://api.example.com/v1";
+        assert!(stored_key_allowed("https://api.example.com/v1", saved));
+        assert!(stored_key_allowed("https://api.example.com/v1/", saved));
+        assert!(!stored_key_allowed("https://evil.example.com/v1", saved));
+        assert!(!stored_key_allowed("https://api.example.com.evil.net/v1", saved));
+        assert!(!stored_key_allowed("https://api.example.com/v1", ""));
+        assert!(!stored_key_allowed("", ""));
     }
 }

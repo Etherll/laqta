@@ -40,6 +40,26 @@ impl Task {
     }
 }
 
+/// How fast a model runs, shown as a label in settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Speed {
+    Fast,
+    Balanced,
+    Best,
+}
+
+impl Speed {
+    /// The name used in the catalog and in the settings presenter.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Speed::Fast => "fast",
+            Speed::Balanced => "balanced",
+            Speed::Best => "best",
+        }
+    }
+}
+
 /// One model in the catalog. `PartialEq` only: the matting parameters hold `f32` values.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ModelEntry {
@@ -48,6 +68,9 @@ pub struct ModelEntry {
     pub family: String,
     #[serde(default)]
     pub default: bool,
+    /// Set on every entry; `validate` refuses one without it.
+    #[serde(default)]
+    pub speed: Option<Speed>,
     pub name: String,
     pub description: String,
     pub url: String,
@@ -101,6 +124,19 @@ impl OrtArchive {
     }
 }
 
+/// A named OCR choice: one detector and one recogniser from the catalog. Settings offers these as
+/// presets.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct OcrPreset {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub det: String,
+    pub rec: String,
+    #[serde(default)]
+    pub default: bool,
+}
+
 /// The parsed catalog.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Catalog {
@@ -108,12 +144,15 @@ pub struct Catalog {
     pub models: Vec<ModelEntry>,
     #[serde(rename = "onnxruntime", default)]
     pub onnxruntime: Vec<OrtArchive>,
+    #[serde(rename = "ocr_preset", default)]
+    pub ocr_presets: Vec<OcrPreset>,
 }
 
 impl Catalog {
     /// Parses and checks a catalog. The checks are the ones the shipped file must pass: unique ids
     /// with file-safe characters, known families for the task, HTTPS URLs, valid hashes, dictionaries
-    /// on recognisers only, and one default per task.
+    /// on recognisers only, one default per task, a speed on every model, and OCR presets that name
+    /// a detector and a recogniser with one default.
     pub fn parse(text: &str) -> Result<Self, MlError> {
         let catalog: Catalog = toml::from_str(text).map_err(|error| MlError::Catalog(error.to_string()))?;
         catalog.validate()?;
@@ -159,6 +198,9 @@ impl Catalog {
             if model.size_bytes == 0 {
                 return Err(fail("size_bytes must be set".into()));
             }
+            if model.speed.is_none() {
+                return Err(fail("speed must be set".into()));
+            }
             match (family, &model.matting) {
                 (Family::MattingParametric, Some(params)) => params.check().map_err(fail)?,
                 (Family::MattingParametric, None) => return Err(fail("a matting family needs a [model.matting] table".into())),
@@ -195,6 +237,36 @@ impl Catalog {
             let defaults = entries.iter().filter(|model| model.default).count();
             if !entries.is_empty() && defaults != 1 {
                 return Err(MlError::Catalog(format!("task {} needs exactly one default, found {defaults}", task.as_str())));
+            }
+        }
+        let mut preset_ids = std::collections::HashSet::new();
+        for preset in &self.ocr_presets {
+            let fail = |detail: String| MlError::Catalog(format!("ocr preset `{}`: {detail}", preset.id));
+            if !is_file_safe_id(&preset.id) {
+                return Err(fail("the id may only use a-z, 0-9 and '-'".into()));
+            }
+            if !preset_ids.insert(preset.id.as_str()) {
+                return Err(fail("duplicate id".into()));
+            }
+            if !self.model(&preset.det).is_some_and(|model| model.task == Task::OcrDet) {
+                return Err(fail(format!("det `{}` is not an ocr-det model", preset.det)));
+            }
+            if !self.model(&preset.rec).is_some_and(|model| model.task == Task::OcrRec) {
+                return Err(fail(format!("rec `{}` is not an ocr-rec model", preset.rec)));
+            }
+        }
+        if !self.ocr_presets.is_empty() {
+            let defaults: Vec<&OcrPreset> = self.ocr_presets.iter().filter(|preset| preset.default).collect();
+            let [default] = defaults.as_slice() else {
+                return Err(MlError::Catalog(format!("ocr presets need exactly one default, found {}", defaults.len())));
+            };
+            let det = self.default_for(Task::OcrDet).map(|model| model.id.as_str());
+            let rec = self.default_for(Task::OcrRec).map(|model| model.id.as_str());
+            if det != Some(default.det.as_str()) || rec != Some(default.rec.as_str()) {
+                return Err(MlError::Catalog(format!(
+                    "the default ocr preset `{}` must use the default detector and recogniser",
+                    default.id
+                )));
             }
         }
         for archive in &self.onnxruntime {
@@ -439,6 +511,54 @@ mod tests {
     #[test]
     fn two_defaults_for_one_task_are_rejected() {
         let text = CATALOG_TOML.replacen("default = false", "default = true", 1);
+        assert!(matches!(Catalog::parse(&text), Err(MlError::Catalog(_))));
+    }
+
+    #[test]
+    fn every_model_has_a_speed() {
+        for model in &catalog().models {
+            assert!(model.speed.is_some(), "{} has no speed", model.id);
+        }
+        assert_eq!(catalog().model("u2netp").expect("entry").speed, Some(Speed::Fast));
+        assert_eq!(catalog().model("big-lama").expect("entry").speed, Some(Speed::Balanced));
+    }
+
+    #[test]
+    fn a_model_without_a_speed_is_rejected() {
+        let text = CATALOG_TOML.replacen("speed = \"fast\"\n", "", 1);
+        assert!(matches!(Catalog::parse(&text), Err(MlError::Catalog(_))));
+    }
+
+    #[test]
+    fn the_shipped_ocr_presets_have_accurate_as_the_default() {
+        let presets = &catalog().ocr_presets;
+        let ids: Vec<&str> = presets.iter().map(|preset| preset.id.as_str()).collect();
+        assert_eq!(ids, ["accurate", "fast", "latin"]);
+        let default = presets.iter().find(|preset| preset.default).expect("a default preset");
+        assert_eq!(default.id, "accurate");
+        assert_eq!(default.det, "ppocr-v6-medium-det");
+        assert_eq!(default.rec, "ppocr-v6-medium-rec");
+    }
+
+    #[test]
+    fn a_preset_naming_a_background_model_as_detector_is_rejected() {
+        let text = CATALOG_TOML.replacen("det = \"ppocr-v5-mobile-det\"", "det = \"birefnet-lite\"", 1);
+        assert!(matches!(Catalog::parse(&text), Err(MlError::Catalog(_))));
+    }
+
+    #[test]
+    fn a_second_default_preset_is_rejected() {
+        let text = CATALOG_TOML.replacen(
+            "rec = \"ppocr-v5-mobile-rec-multi\"\ndefault = false",
+            "rec = \"ppocr-v5-mobile-rec-multi\"\ndefault = true",
+            1,
+        );
+        assert!(matches!(Catalog::parse(&text), Err(MlError::Catalog(_))));
+    }
+
+    #[test]
+    fn a_default_preset_must_use_the_default_recogniser() {
+        let text = CATALOG_TOML.replacen("rec = \"ppocr-v6-medium-rec\"", "rec = \"ppocr-v5-mobile-rec-multi\"", 1);
         assert!(matches!(Catalog::parse(&text), Err(MlError::Catalog(_))));
     }
 }

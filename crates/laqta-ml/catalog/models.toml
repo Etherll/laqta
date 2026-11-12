@@ -4,13 +4,16 @@
 # Each [[model]] entry:
 #   id, task ("ocr-det" | "ocr-rec" | "background" | "inpaint"), family (a name from families/mod.rs),
 #   name, description, url, sha256 (64 lowercase hex, or "pending-owner"), size_bytes,
-#   licence, commercial, precisions, languages (rec: BCP-47 tags or script names).
+#   licence, commercial, precisions, languages (rec: BCP-47 tags or script names),
+#   speed ("fast" | "balanced" | "best"), shown in settings. Required on every entry.
 #   Rec entries also carry dict_url, dict_sha256 and dict_size_bytes: the character
 #   dictionary, one entry per line, without the CTC blank (the loader adds it).
 #   The matting-parametric family takes a [model.matting] table right after its entry:
 #   input_size, mean, std, output_index (negative counts from the end; -1 is the last output),
 #   and activation ("sigmoid" | "minmax" | "none"). No other family takes that table.
 #   default = true marks the one entry per task that is used when none is chosen.
+#   [[ocr_preset]] tables pair one ocr-det and one ocr-rec entry: id, name, description, det, rec,
+#   default. The default preset must use the default detector and recogniser.
 #
 # sha256 = "pending-owner" refuses the download with a named error, so an unverified file never
 # lands on disk. Every hash below was checked against the file it names.
@@ -22,6 +25,7 @@ id = "ppocr-v6-medium-det"
 task = "ocr-det"
 family = "o1-det"
 default = true
+speed = "best"
 name = "PP-OCRv6 medium text detection"
 description = "Finds text lines in an image (DBNet). Works for any script, and holds up on small screen text."
 url = "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx/resolve/61323801669c338b7891481ec7bac61ce31b576a/inference.onnx"
@@ -43,6 +47,7 @@ id = "ppocr-v6-medium-rec"
 task = "ocr-rec"
 family = "o1-rec"
 default = true
+speed = "best"
 name = "PP-OCRv6 medium recognition"
 description = "Reads text lines in Chinese, Japanese, English and other Latin-script languages, and Greek."
 url = "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/50c7eacafc52fa7bcf4194e8cd08e46f8558504b/inference.onnx"
@@ -61,6 +66,7 @@ id = "ppocr-v5-mobile-det"
 task = "ocr-det"
 family = "o1-det"
 default = false
+speed = "fast"
 name = "PP-OCRv5 mobile text detection"
 description = "Finds text lines in an image (DBNet). A smaller, faster download than PP-OCRv6."
 url = "https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx/resolve/e6f4fa85f00e168c862bc462aebca69eef9b3d3d/inference.onnx"
@@ -76,6 +82,7 @@ id = "ppocr-v5-mobile-rec-multi"
 task = "ocr-rec"
 family = "o1-rec"
 default = false
+speed = "fast"
 name = "PP-OCRv5 mobile recognition, Chinese, English, Japanese"
 description = "Reads text lines in Simplified and Traditional Chinese, English and Japanese."
 url = "https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_rec_onnx/resolve/ed152b8b495f84de93cda5709d768548a9127622/inference.onnx"
@@ -94,6 +101,7 @@ id = "ppocr-v5-mobile-rec-latin"
 task = "ocr-rec"
 family = "o1-rec"
 default = false
+speed = "fast"
 name = "PP-OCRv5 mobile recognition, Latin script"
 description = "Reads text lines in Latin-script languages. Smaller than the multilingual model."
 url = "https://huggingface.co/PaddlePaddle/latin_PP-OCRv5_mobile_rec_onnx/resolve/89d3a50e2c27e2e7cceeab0e944c25c807d5db4f/inference.onnx"
@@ -107,6 +115,30 @@ dict_url = "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/dab3fe35379
 dict_sha256 = "ccbcc45730b3fbbd9050c5bc74db6a99067141ef1035e3d14889a84a6b9b1aff"
 dict_size_bytes = 2616
 
+[[ocr_preset]]
+id = "accurate"
+name = "Accurate"
+description = "Best for small or mixed text. Chinese, English, Japanese, Greek and Latin script."
+det = "ppocr-v6-medium-det"
+rec = "ppocr-v6-medium-rec"
+default = true
+
+[[ocr_preset]]
+id = "fast"
+name = "Fast"
+description = "Quicker and smaller. Chinese, English and Japanese."
+det = "ppocr-v5-mobile-det"
+rec = "ppocr-v5-mobile-rec-multi"
+default = false
+
+[[ocr_preset]]
+id = "latin"
+name = "Latin only"
+description = "Smallest. English and other Latin-script languages."
+det = "ppocr-v5-mobile-det"
+rec = "ppocr-v5-mobile-rec-latin"
+default = false
+
 # Background removal (ADR 023). BiRefNet and BEN2 take 1024 px inputs, U²-Net-p 320 px.
 # BiRefNet exports several outputs and the last one is the finest, so it reads output -1.
 
@@ -115,6 +147,7 @@ id = "birefnet-lite"
 task = "background"
 family = "matting-parametric"
 default = false
+speed = "balanced"
 name = "BiRefNet lite, fp32"
 description = "Separates the main subject from its background. Full-precision weights: about twice the download of the fp16 model, for edges that can differ slightly."
 url = "https://huggingface.co/onnx-community/BiRefNet_lite-ONNX/resolve/de15b22ba131738a16dff04aab8bdf8dc32e3ac1/onnx/model.onnx"
@@ -136,6 +169,7 @@ id = "birefnet-lite-fp16"
 task = "background"
 family = "matting-parametric"
 default = true
+speed = "balanced"
 name = "BiRefNet lite, fp16"
 description = "Separates the main subject from its background. Half-precision weights, the default: about half the download of the fp32 model."
 url = "https://huggingface.co/onnx-community/BiRefNet_lite-ONNX/resolve/de15b22ba131738a16dff04aab8bdf8dc32e3ac1/onnx/model_fp16.onnx"
@@ -157,6 +191,7 @@ id = "ben2-base"
 task = "background"
 family = "matting-parametric"
 default = false
+speed = "best"
 name = "BEN2 base"
 description = "Background removal at 1024 px. MIT licence, commercial use allowed."
 url = "https://huggingface.co/PramaLLC/BEN2/resolve/e48a20765fb421d19dcdb0bf3cc61e802ca5ec8f/BEN2_Base.onnx"
@@ -178,6 +213,7 @@ id = "u2netp"
 task = "background"
 family = "matting-parametric"
 default = false
+speed = "fast"
 name = "U²-Net-p"
 description = "The small background removal model, about 4.6 MB. Works at 320 px, so fine edges are lost. Use it where size or speed matters most."
 url = "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx"
@@ -202,6 +238,7 @@ id = "big-lama"
 task = "inpaint"
 family = "lama"
 default = true
+speed = "balanced"
 name = "Big-LaMa inpainting, 512 px"
 description = "Fills the masked area with plausible content. Works on a 512 px crop around the mask, so large masks lose detail."
 url = "https://huggingface.co/Carve/LaMa-ONNX/resolve/c3c0c9e468934d62e79c329e35d82dd09ff8c444/lama_fp32.onnx"

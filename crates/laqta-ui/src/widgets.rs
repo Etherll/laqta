@@ -747,3 +747,77 @@ pub(crate) fn toggle_chip(
         .child(label);
     clickable(el, on_click, cx)
 }
+
+/// One option in a list where a single one is chosen (a model, a preset): a radio dot, the name,
+/// a muted detail line, and an optional control at the end. The radio carries the name and the
+/// detail for screen readers; the control sits beside it, not inside it. With no `on_pick` the
+/// row can't be chosen: no tab stop, pointer or hover, and its text is dimmed.
+pub(crate) fn option_row(
+    id: impl Into<ElementId>,
+    name: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+    selected: bool,
+    trailing: Option<AnyElement>,
+    on_pick: Option<OnClick>,
+    cx: &App,
+) -> Div {
+    use gpui::accesskit::{Role, Toggled};
+    let t = cx.theme();
+    let x = theme::extra(cx);
+    let (name, detail): (SharedString, SharedString) = (name.into(), detail.into());
+    let enabled = on_pick.is_some();
+    let dot = div()
+        .flex_none()
+        .size(px(16.))
+        .rounded(radius::PILL)
+        .border_1()
+        .border_color(if selected { t.primary } else { t.muted_foreground })
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(selected, |d| d.child(div().size(px(8.)).rounded(radius::PILL).bg(t.primary)));
+    let radio = div()
+        .id(id)
+        .role(Role::RadioButton)
+        .aria_label(name.clone())
+        .aria_description(detail.clone())
+        .aria_toggled(if selected { Toggled::True } else { Toggled::False })
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(space::S3)
+        .py(space::S2)
+        .rounded(radius::MD)
+        .border_1()
+        .border_color(gpui::transparent_black())
+        .when(!enabled, |d| d.opacity(0.6))
+        .child(dot)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(div().text_size(text::BODY).font_weight(FontWeight::MEDIUM).text_color(t.foreground).child(name))
+                .child(div().text_size(text::LABEL).text_color(t.muted_foreground).child(detail)),
+        );
+    let radio = match on_pick {
+        Some(on_pick) => clickable(radio, on_pick, cx).into_any_element(),
+        None => radio.into_any_element(),
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(space::S3)
+        .min_h(px(52.))
+        .px(space::S3)
+        .rounded(radius::MD)
+        .border_1()
+        .border_color(if selected { t.primary.opacity(0.5) } else { gpui::transparent_black() })
+        .when(selected, |d| d.bg(x.wash))
+        .when(enabled, |d| d.hover(|s| s.bg(x.wash)))
+        .child(radio)
+        .children(trailing.map(|c| div().flex_none().flex().items_center().gap(space::S2).child(c)))
+}

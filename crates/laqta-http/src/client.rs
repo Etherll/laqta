@@ -14,6 +14,7 @@ use crate::{Body, HttpError, Method, Part, Progress, Request, Response};
 const CHUNK: usize = 64 * 1024;
 
 pub(crate) async fn execute(client: &Client, request: Request, progress: Option<Progress>) -> Result<Response, HttpError> {
+    let request_limit = request.max_response_bytes.unwrap_or(u64::MAX);
     let url = checked_url(&request.url, &request.query)?;
     let mut builder = client.request(reqwest_method(request.method), url.as_str());
     if request.timeout_secs > 0 {
@@ -60,7 +61,7 @@ pub(crate) async fn execute(client: &Client, request: Request, progress: Option<
         }
     };
 
-    let response = builder.send().await.map_err(map_error)?;
+    let mut response = builder.send().await.map_err(map_error)?;
     if let (Some(report), Some(total)) = (&progress, completion) {
         report(total, Some(total));
     }
@@ -72,8 +73,34 @@ pub(crate) async fn execute(client: &Client, request: Request, progress: Option<
         .iter()
         .map(|(name, value)| (name.as_str().to_owned(), String::from_utf8_lossy(value.as_bytes()).into_owned()))
         .collect();
-    let body = response.bytes().await.map_err(map_error)?.to_vec();
+    let body = read_body(&mut response, request_limit).await?;
     Ok(Response { status, url, headers, body })
+}
+
+/// Reads a response body of at most `limit` bytes. A declared length over the limit fails before
+/// anything is read; a streamed body fails once it grows past the limit.
+async fn read_body(response: &mut reqwest::Response, limit: u64) -> Result<Vec<u8>, HttpError> {
+    if response.content_length().is_some_and(|declared| declared > limit) {
+        return Err(too_large(limit));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(map_error)? {
+        append_capped(&mut body, &chunk, limit)?;
+    }
+    Ok(body)
+}
+
+/// Appends `chunk` to `body`, failing when the body would pass `limit` bytes.
+fn append_capped(body: &mut Vec<u8>, chunk: &[u8], limit: u64) -> Result<(), HttpError> {
+    if body.len() as u64 + chunk.len() as u64 > limit {
+        return Err(too_large(limit));
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
+}
+
+fn too_large(limit: u64) -> HttpError {
+    HttpError::Network(format!("response body is larger than {limit} bytes"))
 }
 
 /// Maps a `reqwest` error: a timeout, an invalid request, or anything else as a network failure.
@@ -160,4 +187,84 @@ fn streamed(data: Vec<u8>, report: Progress) -> reqwest::Body {
         Some((Ok::<Vec<u8>, Infallible>(chunk), (data, end, report)))
     });
     reqwest::Body::wrap_stream(chunks)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    use super::*;
+
+    /// Serves `response` to the first connection on a loopback port and returns its URL.
+    fn serve(response: &'static [u8]) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else { return };
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buf[..n]),
+                }
+            }
+            let _ = stream.write_all(response);
+        });
+        url
+    }
+
+    fn client() -> Client {
+        Client::builder().no_proxy().build().unwrap()
+    }
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(future)
+    }
+
+    /// Fetches `url` and reads the body under `limit`, as `execute` does.
+    fn read_with_limit(url: &str, limit: u64) -> Result<Vec<u8>, HttpError> {
+        block_on(async {
+            let mut response = client().get(url).send().await.map_err(map_error)?;
+            read_body(&mut response, limit).await
+        })
+    }
+
+    #[test]
+    fn append_capped_accepts_up_to_the_limit() {
+        let mut body = Vec::new();
+        append_capped(&mut body, b"12", 4).unwrap();
+        append_capped(&mut body, b"34", 4).unwrap();
+        assert_eq!(body, b"1234");
+        assert_eq!(append_capped(&mut body, b"5", 4), Err(too_large(4)));
+        assert_eq!(body, b"1234");
+    }
+
+    #[test]
+    fn declared_length_over_the_limit_fails_before_reading() {
+        let url = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n");
+        assert_eq!(read_with_limit(&url, 10), Err(too_large(10)));
+    }
+
+    #[test]
+    fn streamed_body_over_the_limit_fails() {
+        let url = serve(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\nworld!\r\n0\r\n\r\n");
+        assert_eq!(read_with_limit(&url, 8), Err(too_large(8)));
+    }
+
+    #[test]
+    fn streamed_body_within_the_limit_is_read_whole() {
+        let url = serve(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\nworld!\r\n0\r\n\r\n");
+        assert_eq!(read_with_limit(&url, 11), Ok(b"helloworld!".to_vec()));
+    }
+
+    #[test]
+    fn execute_returns_the_body_of_a_small_response() {
+        let url = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
+        let response = block_on(execute(&client(), Request::new(Method::Get, url), None)).unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"hello");
+    }
 }
