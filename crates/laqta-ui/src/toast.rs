@@ -89,7 +89,9 @@ fn toast_kind(toast: &Toast) -> WindowKind {
             ToastPlacement::BottomRight => Anchor::BOTTOM | Anchor::RIGHT,
         };
         WindowKind::LayerShell(LayerShellOptions {
-            namespace: "laqta-toast".into(),
+            // The surface's purpose: KWin would otherwise zoom it in like a normal window, on top of
+            // the toast's own fade.
+            namespace: "notification".into(),
             layer: Layer::Overlay,
             anchor,
             margin: Some((px(MARGIN), px(MARGIN), px(MARGIN), px(MARGIN))),

@@ -212,7 +212,10 @@ fn overlay_kind() -> WindowKind {
     use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
     if is_wayland() && std::env::var_os("LAQTA_NO_LAYER_SHELL").is_none() {
         WindowKind::LayerShell(LayerShellOptions {
-            namespace: "laqta-overlay".into(),
+            // The namespace states the surface's purpose, and KWin animates by purpose: one it
+            // doesn't know opens like a normal window (zooming in over the frozen screen), and an
+            // on-screen display fades in. A utility surface appears at once.
+            namespace: "utility".into(),
             layer: Layer::Overlay,
             anchor: Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
             exclusive_zone: Some(px(-1.)),

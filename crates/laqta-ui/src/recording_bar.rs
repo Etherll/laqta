@@ -139,7 +139,8 @@ fn layer_kind(place: Place) -> WindowKind {
     // Exact placement measures from the screen edge, not from the panels.
     let exclusive_zone = matches!(place, Place::At(_)).then(|| px(-1.));
     WindowKind::LayerShell(LayerShellOptions {
-        namespace: "laqta-recording".into(),
+        // The surface's purpose: KWin would otherwise zoom it in like a normal window.
+        namespace: "utility".into(),
         layer: Layer::Overlay,
         anchor,
         exclusive_zone,
