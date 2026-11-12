@@ -66,7 +66,7 @@ pub fn hint(tool: Tool) -> &'static str {
         Tool::Clone => "Drag over an area to copy it, then place the copy.",
         Tool::Emoji => "Pick an emoji, then click to place it.",
         Tool::Cursor => "Click to place a mouse cursor.",
-        Tool::Highlight => "Drag over text to highlight it.",
+        Tool::Highlight => "Draw over text to highlight it, like a marker.",
         Tool::SmartEraser => "Drag to paint over with the colour around the area.",
         Tool::ObjectEraser => "Drag a box around an object to remove it and fill in the background.",
         Tool::Blur => "Drag over an area to blur it.",

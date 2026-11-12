@@ -41,6 +41,7 @@ pub fn changed(scope: Scope, draft: &Settings, defaults: &Settings) -> usize {
         return PAGES.iter().map(|s| changed(*s, draft, defaults)).sum::<usize>()
             + differ(&draft.tray_click, &defaults.tray_click)
             + differ(&draft.editor_hidden_tools, &defaults.editor_hidden_tools)
+            + differ(&draft.capture_marks, &defaults.capture_marks)
             + differ(&draft.history.max_items, &defaults.history.max_items)
             + differ(&draft.defaults.beautify, &defaults.defaults.beautify)
             + differ(&draft.defaults.effect_preset, &defaults.defaults.effect_preset)
@@ -117,6 +118,7 @@ pub fn reset(scope: Scope, draft: &mut Settings, defaults: &Settings) {
             d.screenshots_dir.clone_from(&f.screenshots_dir);
             draft.tray_click = defaults.tray_click;
             draft.editor_hidden_tools.clone_from(&defaults.editor_hidden_tools);
+            draft.capture_marks.clone_from(&defaults.capture_marks);
             draft.history.max_items = defaults.history.max_items;
             for workflow in &mut draft.workflows {
                 if let Some(default) = default_workflow(workflow, defaults) {

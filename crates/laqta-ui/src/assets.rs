@@ -72,7 +72,6 @@ gpui_kit_assets::icon_assets!(
         MousePointer,
         MousePointer2,
         MousePointerClick,
-        Move,
         MoveUpRight,
         PaintBucket,
         Pause,

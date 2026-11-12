@@ -21,6 +21,7 @@ mod effects_window;
 mod gpu_image;
 mod history_window;
 mod main_window;
+mod mark_chrome;
 mod overlay;
 mod overlay_text;
 mod overlay_tools;

@@ -17,6 +17,12 @@ pub enum AppError {
     Io(String),
     #[error("network: {0}")]
     Network(String),
+    /// The service couldn't be reached: nothing listening, no route, a name that doesn't resolve.
+    #[error("unreachable: {0}")]
+    Unreachable(String),
+    /// The service took too long to answer.
+    #[error("timed out")]
+    TimedOut,
     #[error("authentication: {0}")]
     Auth(String),
     #[error("quota: {0}")]
@@ -31,6 +37,8 @@ impl From<PortError> for AppError {
             PortError::Unsupported(s) => AppError::Unsupported(s),
             PortError::PermissionDenied => AppError::PermissionDenied,
             PortError::Cancelled => AppError::Cancelled,
+            PortError::Unreachable(s) => AppError::Unreachable(s),
+            PortError::TimedOut => AppError::TimedOut,
             PortError::Failed(s) => AppError::Io(s),
         }
     }

@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use gpui::accesskit::{Action as A11yAction, Role, Toggled};
 use gpui::{
     AnyElement, App, Context, Entity, FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, RenderImage,
     SharedString, StatefulInteractiveElement as _, Styled as _, div, img, prelude::FluentBuilder as _, px,
@@ -17,7 +18,7 @@ use laqta_domain::Bitmap;
 use laqta_domain::color::Rgba;
 use laqta_domain::geometry::PhysRect;
 use laqta_domain::region::{RegionCommand, RegionInput, SelectionAction};
-use laqta_editor::{Chrome, Command, Editor, EditorInput, Tool};
+use laqta_editor::{Chrome, Command, Editor, EditorInput, Style, Tool};
 
 use crate::assets::IconName;
 use crate::overlay::OverlayModel;
@@ -42,6 +43,8 @@ pub(crate) struct Annot {
     /// so the old picture stays where it was drawn until the new one lands.
     pub picture_rect: PhysRect,
     pub chrome: Chrome,
+    /// The box of the mark the Pointer hovers, outlined so the next click's target shows.
+    pub hover: Option<laqta_editor::RectF>,
 }
 
 impl Annot {
@@ -59,14 +62,28 @@ impl Annot {
     }
 }
 
-/// How far from a picked mark's handle, in canvas pixels, a press still takes it.
-const MARK_GRAB: f32 = 8.0;
-
 /// Button size and spacing on the toolbar.
 const BUTTON: f32 = 32.0;
 const PAD: f32 = 6.0;
 const DIVIDER: f32 = 13.0;
 pub(crate) const BAR_H: f32 = BUTTON + 2.0 * PAD;
+
+/// How far `item`'s button centre is from the toolbar's left edge.
+fn button_centre(item: Item) -> f32 {
+    let mut x = PAD;
+    for (g, group) in bar::groups().into_iter().enumerate() {
+        if g > 0 {
+            x += DIVIDER;
+        }
+        for i in group {
+            if i == item {
+                return x + BUTTON / 2.0;
+            }
+            x += BUTTON + 2.0;
+        }
+    }
+    bar_width() / 2.0
+}
 
 /// The toolbar's width for its groups.
 pub(crate) fn bar_width() -> f32 {
@@ -86,8 +103,7 @@ pub(crate) const ACCENT: u32 = 0x3d8bfd;
 
 fn icon(item: Item) -> IconName {
     match item {
-        Item::Move => IconName::Move,
-        Item::Tool(Tool::Select) => IconName::MousePointer2,
+        Item::Pointer => IconName::MousePointer2,
         Item::Tool(Tool::Rectangle) => IconName::Square,
         Item::Tool(Tool::Ellipse) => IconName::Circle,
         Item::Tool(Tool::Arrow) => IconName::MoveUpRight,
@@ -141,13 +157,18 @@ impl OverlayModel {
                     return;
                 }
                 let services = cx.global::<UiState>().services.clone();
-                let editor = Editor::new((*base).clone(), services.fonts.clone());
+                let mut editor = Editor::new((*base).clone(), services.fonts.clone());
+                // The canvas is in desktop pixels, so the reach is the grab size as drawn.
+                editor.set_handle_reach(crate::presenters::mark_pointer::GRAB);
                 let chrome = editor.chrome();
                 let compute = crate::editor_window::compute_fn(services.spawner.clone());
                 let interaction = EditorInteraction::new(editor, compute.clone());
-                self.annot = Some(Annot { rect, base, interaction, compute, picture: None, picture_rect: rect, chrome });
-                // The region tool is the engine's select tool: a press on a mark picks it.
-                self.command(Command::SetTool(self.tool.unwrap_or(Tool::Select)), cx);
+                self.annot = Some(Annot { rect, base, interaction, compute, picture: None, picture_rect: rect, chrome, hover: None });
+                // Under Move the engine idles on its select tool; a drawing tool comes with its style.
+                match self.tool {
+                    Some(tool) => self.use_tool(tool, cx),
+                    None => self.command(Command::SetTool(Tool::Select), cx),
+                }
                 // Text mode: the selection is the area to read, so ask for its text right away.
                 if self.text_mode {
                     self.read_text();
@@ -168,9 +189,7 @@ impl OverlayModel {
         // A handle of the picked mark under the pointer, which reaches past the mark's outline.
         let mark_grip = self.annot.as_ref().and_then(|a| {
             let (x, y) = ((at.0 - a.rect.x) as f32, (at.1 - a.rect.y) as f32);
-            let handles = &a.chrome.handles;
-            let (handle, _) = handles.iter().find(|(_, p)| (p.x - x).abs() <= MARK_GRAB && (p.y - y).abs() <= MARK_GRAB)?;
-            Some(crate::presenters::capture_pointer::grip(*handle, handles))
+            crate::presenters::mark_pointer::handle_under(&a.chrome.handles, (x, y), crate::presenters::mark_pointer::GRAB)
         });
         let over_mark = mark_grip.is_some()
             || self.annot.as_ref().is_some_and(|a| {
@@ -200,7 +219,54 @@ impl OverlayModel {
         }
     }
 
-    /// Lets the picked mark go: a Move press elsewhere on the selection is about the selection.
+    /// Follows the pointer at the desktop point `at` with the hover outline: only under the
+    /// Pointer with no press under way. Returns whether the outline changed.
+    pub(crate) fn hover(&mut self, at: (i32, i32)) -> bool {
+        let pointer = self.tool.is_none() && self.pressed.is_none() && !self.view.gesture;
+        let Some(a) = self.annot.as_mut() else { return false };
+        let next = if pointer {
+            let (x, y) = ((at.0 - a.rect.x) as f32, (at.1 - a.rect.y) as f32);
+            // A hover move can't wait on a render; it keeps the old outline until the lock frees.
+            match a.interaction.editor().try_lock() {
+                Ok(e) => e.hover_at(x, y),
+                Err(_) => return false,
+            }
+        } else {
+            None
+        };
+        std::mem::replace(&mut a.hover, next) != next
+    }
+
+    /// Holds Space: the Pointer stands in for the drawing tool until Space comes up.
+    pub(crate) fn borrow_pointer(&mut self) {
+        if self.space.space_down(self.tool).is_some() {
+            self.region_tool();
+        }
+    }
+
+    /// Space came up: the drawing tool comes back, once any drag under way has ended.
+    pub(crate) fn return_pointer(&mut self, cx: &mut Context<Self>) {
+        let back = self.space.space_up(self.pressed.is_some(), self.tool);
+        self.give_back(back, cx);
+    }
+
+    /// A press ended: the drawing tool comes back if Space came up during it.
+    pub(crate) fn after_release(&mut self, cx: &mut Context<Self>) {
+        let back = self.space.released(self.tool);
+        self.give_back(back, cx);
+    }
+
+    fn give_back(&mut self, back: Option<Option<Tool>>, cx: &mut Context<Self>) {
+        if let Some(Some(tool)) = back
+            && self.annot.is_some()
+        {
+            self.tool = Some(tool);
+            self.use_tool(tool, cx);
+            cx.notify();
+        }
+    }
+
+    /// Lets the picked mark go: a press on empty space is about the selection.
     pub(crate) fn let_go_of_mark(&mut self, cx: &mut Context<Self>) {
         if self.mark_selected() {
             self.command(Command::Deselect, cx);
@@ -272,9 +338,17 @@ impl OverlayModel {
 
     /// One pointer or key event for the engine, in canvas (selection) pixels.
     pub(crate) fn editor_input(&mut self, input: EditorInput, cx: &mut Context<Self>) {
+        let released = matches!(input, EditorInput::PointerUp { .. });
         let Some(a) = self.annot.as_mut() else { return };
         let step = a.interaction.input(input);
         self.apply(step, cx);
+        // The engine selects each new mark. Under a drawing tool a selected mark would only show a
+        // stray box and take the next colour picked on the strip, so it lets go. The Pointer keeps
+        // the mark it picked, and text being typed stays selected.
+        let drawing = self.tool.is_some();
+        if released && drawing && self.annot.as_ref().is_some_and(|a| a.chrome.selection.is_some() && !a.chrome.editing_text) {
+            self.command(Command::Deselect, cx);
+        }
     }
 
     /// Engine commands here are state math (tool, undo); rendering stays on the pool.
@@ -287,14 +361,18 @@ impl OverlayModel {
 
     /// A toolbar button or its shortcut.
     pub(crate) fn pick(&mut self, item: Item, cx: &mut Context<Self>) {
+        // A tool picked while Space is held is the one to keep.
+        if matches!(item, Item::Pointer | Item::Tool(_)) {
+            self.space.picked();
+        }
         match item {
-            Item::Move => self.region_tool(),
+            Item::Pointer => self.region_tool(),
             Item::Tool(tool) => {
                 if self.annot.is_none() {
                     return;
                 }
                 self.tool = Some(tool);
-                self.command(Command::SetTool(tool), cx);
+                self.use_tool(tool, cx);
             }
             Item::Undo => self.command(Command::Undo, cx),
             Item::Redo => self.command(Command::Redo, cx),
@@ -310,27 +388,31 @@ impl OverlayModel {
         cx.notify();
     }
 
-    /// Back to the Move tool: a drag inside moves the selection, and the engine idles on `Select`.
+    /// Puts `tool` in the engine's hand with the colour and size last picked for it. The tool
+    /// goes first: switching tools drops the engine's selection, so the style can't restyle an
+    /// earlier mark.
+    fn use_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
+        self.command(Command::SetTool(tool), cx);
+        self.command(Command::SetStyle(bar::style_for(tool, &self.marks)), cx);
+    }
+
+    /// A colour or size from the style strip or a number key: it styles the next marks, and the
+    /// text being typed.
+    pub(crate) fn restyle(&mut self, change: impl FnOnce(&Style, Tool) -> Style, cx: &mut Context<Self>) {
+        let (Some(tool), Some(a)) = (self.tool, self.annot.as_ref()) else { return };
+        let style = change(&a.chrome.style, tool);
+        bar::remember(&mut self.marks, tool, &style);
+        self.marks_changed = true;
+        self.command(Command::SetStyle(style), cx);
+    }
+
+    /// Back to the Pointer: the engine idles on `Select`, so a press on a mark picks it.
     pub(crate) fn region_tool(&mut self) {
         self.tool = None;
         if let Some(a) = self.annot.as_mut() {
             let out = a.interaction.editor().lock().unwrap_or_else(|p| p.into_inner()).execute(Command::SetTool(Tool::Select));
             a.chrome = a.interaction.after_output(out).chrome;
         }
-    }
-
-    /// The colour of the tool in use, from the style row.
-    fn set_color(&mut self, color: Rgba, cx: &mut Context<Self>) {
-        let (Some(tool), Some(a)) = (self.tool, self.annot.as_ref()) else { return };
-        let style = bar::with_color(&a.chrome.style, tool, color);
-        self.command(Command::SetStyle(style), cx);
-    }
-
-    /// The size of the tool in use, from the style row.
-    fn set_size(&mut self, index: usize, cx: &mut Context<Self>) {
-        let (Some(tool), Some(a)) = (self.tool, self.annot.as_ref()) else { return };
-        let style = bar::with_size(&a.chrome.style, tool, index);
-        self.command(Command::SetStyle(style), cx);
     }
 
     fn escape_scene(&self) -> EscapeScene {
@@ -438,8 +520,20 @@ pub(crate) fn canvas(a: &Annot, local: impl Fn(PhysRect) -> bar::Rect, frame: ba
                 .border_color(rgba(ACCENT, 1.0)),
         );
     }
+    if let Some(h) = a.hover {
+        el = el.child(
+            div()
+                .absolute()
+                .left(px(h.x / s - 2.0))
+                .top(px(h.y / s - 2.0))
+                .w(px(h.w / s + 4.0))
+                .h(px(h.h / s + 4.0))
+                .border_1()
+                .border_color(rgba(ACCENT, 0.7)),
+        );
+    }
     for (_, p) in &a.chrome.handles {
-        el = el.child(crate::editor_window::mark_handle(p.x / s, p.y / s, rgba(ACCENT, 1.0)));
+        el = el.child(crate::mark_chrome::mark_handle(p.x / s, p.y / s, rgba(ACCENT, 1.0)));
     }
     if let Some(c) = a.chrome.caret {
         let h = (a.chrome.style.font.size / s).max(12.0);
@@ -455,6 +549,8 @@ pub(crate) fn toolbar(model: &Entity<OverlayModel>, at: bar::Rect, cx: &App) -> 
     let chrome = m.annot.as_ref().map(|a| a.chrome.clone());
     let mut row = div()
         .id("capture-toolbar")
+        .role(Role::Toolbar)
+        .aria_label("Capture tools")
         .absolute()
         .left(px(at.x))
         .top(px(at.y))
@@ -470,7 +566,7 @@ pub(crate) fn toolbar(model: &Entity<OverlayModel>, at: bar::Rect, cx: &App) -> 
         .shadow_lg()
         .cursor_default()
         // Clicks on the bar never reach the selection or the canvas under it.
-        .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+        .on_any_mouse_down(crate::overlay_tools::press_on_bar(model.clone()))
         .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation());
     for (g, group) in bar::groups().into_iter().enumerate() {
         if g > 0 {
@@ -478,7 +574,7 @@ pub(crate) fn toolbar(model: &Entity<OverlayModel>, at: bar::Rect, cx: &App) -> 
         }
         for item in group {
             let active = match item {
-                Item::Move => m.tool.is_none(),
+                Item::Pointer => m.tool.is_none(),
                 Item::Tool(t) => m.tool == Some(t),
                 _ => false,
             };
@@ -500,10 +596,13 @@ fn button(model: Entity<OverlayModel>, item: Item, active: bool, enabled: bool) 
         Item::Cancel => (gpui::transparent_black(), rgba(0xff6b6b, 1.0), rgba(0xff6b6b, 0.16)),
         _ => (gpui::transparent_black(), rgba(0xffffff, 0.88), rgba(0xffffff, 0.12)),
     };
-    let tip = match bar::shortcut(item) {
-        Some(keys) => format!("{}  ·  {}", bar::label(item), crate::presenters::hotkeys::shortcut_text(keys, crate::host_os())),
+    let keys = bar::shortcut(item).map(|k| crate::presenters::hotkeys::shortcut_text(k, crate::host_os()));
+    let tip = match &keys {
+        Some(keys) => format!("{}  ·  {keys}", bar::label(item)),
         None => bar::label(item).to_owned(),
     };
+    let is_tool = matches!(item, Item::Pointer | Item::Tool(_));
+    let activate = model.clone();
     let id = match item {
         Item::Tool(t) => gpui::ElementId::Name(format!("tb-tool-{}", t.name()).into()),
         other => gpui::ElementId::Name(format!("tb-{other:?}").into()),
@@ -520,11 +619,18 @@ fn button(model: Entity<OverlayModel>, item: Item, active: bool, enabled: bool) 
         .when(enabled, |d| d.cursor_pointer().hover(move |s| s.bg(hover)))
         .when(!enabled, |d| d.opacity(0.35))
         .child(gpui_component::Icon::new(icon(item)).size(px(17.)).text_color(fg))
+        // Icon-only, so the name a screen reader announces comes from the tooltip's label.
+        .role(Role::Button)
+        .aria_label(bar::label(item))
+        .when_some(keys, |d, keys| d.aria_keyshortcuts(keys))
+        .when(is_tool, |d| d.aria_toggled(if active { Toggled::True } else { Toggled::False }))
+        .when(!enabled, |d| d.aria_description("Not available yet"))
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .when(enabled, |d| {
             d.on_click(move |_, _, cx| {
                 model.update(cx, |m, cx| m.pick(item, cx));
             })
+            .on_a11y_action(A11yAction::Click, move |_, _, cx| activate.update(cx, |m, cx| m.pick(item, cx)))
         })
         .into_any_element()
 }
@@ -537,93 +643,128 @@ pub(crate) fn badge_width(text: &str) -> f32 {
     16.0 + 7.5 * text.chars().count() as f32
 }
 
-/// The style row's height.
-pub(crate) const ROW_H: f32 = 36.0;
-const SWATCH: f32 = 20.0;
-const SIZE_BUTTON: f32 = 28.0;
-
-/// The style row's width for `row`.
-pub(crate) fn style_row_width(row: bar::StyleRow) -> f32 {
-    let colors = if row.colors { bar::PALETTE.len() as f32 * (SWATCH + 6.0) } else { 0.0 };
-    let sizes = if row.sizes { bar::SIZES as f32 * (SIZE_BUTTON + 6.0) } else { 0.0 };
-    let divider = if row.colors && row.sizes { DIVIDER } else { 0.0 };
-    colors + sizes + divider + 2.0 * PAD
+/// The mouse-down handler for a bar: the press stays on the bar, and its release is the bar's too
+/// (the overlay catches releases before any bar sees them).
+pub(crate) fn press_on_bar(model: Entity<OverlayModel>) -> impl Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut App) + 'static {
+    move |_, _, cx| {
+        cx.stop_propagation();
+        model.update(cx, |m, _| m.chrome_press = true);
+    }
 }
 
-fn hex(c: Rgba) -> u32 {
-    u32::from(c.r) << 16 | u32::from(c.g) << 8 | u32::from(c.b)
-}
+/// Swatch and size button size on the style strip.
+const SWATCH: f32 = 28.0;
+const STRIP_H: f32 = SWATCH + 2.0 * PAD;
 
-/// Colour swatches and stroke sizes for the drawing tool in use, at `at`. The picked swatch and size
-/// carry a ring, so the state never rests on colour alone.
-pub(crate) fn style_row(model: &Entity<OverlayModel>, row: bar::StyleRow, at: bar::Rect, cx: &App) -> Option<AnyElement> {
+/// The colours and sizes for the drawing tool in use, beside the toolbar. `None` without a
+/// drawing tool, or for one with nothing to style.
+pub(crate) fn style_strip(
+    model: &Entity<OverlayModel>,
+    bar_at: bar::Rect,
+    side: bar::Side,
+    screen: (f32, f32),
+    cx: &App,
+) -> Option<AnyElement> {
     let m = model.read(cx);
-    let tool = m.tool?;
-    let style = m.annot.as_ref()?.chrome.style.clone();
-    let current = bar::color_of(&style, tool);
-    let picked_size = bar::size_index(&style, tool);
-    let mut el = div()
-        .id("capture-style-row")
+    let tool = m.tool.filter(|t| bar::has_style(*t))?;
+    let style = &m.annot.as_ref()?.chrome.style;
+    let colors = bar::palette(tool);
+    let current = bar::color_of(style, tool);
+    let size = bar::size_of(style, tool);
+    let divider = if colors.is_empty() { 0.0 } else { DIVIDER };
+    let width = (colors.len() + bar::SIZES.len()) as f32 * (SWATCH + 2.0) + divider + 2.0 * PAD;
+    let at = bar::strip(bar_at, side, (width, STRIP_H), screen, bar_at.x + button_centre(Item::Tool(tool)));
+    let mut row = div()
+        .id("style-strip")
+        .role(Role::Toolbar)
+        .aria_label("Colour and size")
         .absolute()
         .left(px(at.x))
         .top(px(at.y))
-        .h(px(ROW_H))
+        .h(px(STRIP_H))
         .px(px(PAD))
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(px(2.))
         .rounded(radius::LG)
         .bg(rgba(0x1c1c1f, 0.97))
         .border_1()
         .border_color(rgba(0xffffff, 0.10))
         .shadow_lg()
         .cursor_default()
-        .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+        .on_any_mouse_down(crate::overlay_tools::press_on_bar(model.clone()))
         .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-    if row.colors {
-        for (i, &c) in bar::PALETTE.iter().enumerate() {
-            let picked = (c.r, c.g, c.b) == (current.r, current.g, current.b);
-            let entity = model.clone();
-            el = el.child(
-                div()
-                    .id(gpui::ElementId::Name(format!("style-color-{i}").into()))
-                    .size(px(SWATCH))
-                    .flex_none()
-                    .rounded(radius::PILL)
-                    .bg(gpui::rgb(hex(c)))
-                    .border_2()
-                    .border_color(if picked { rgba(0xffffff, 1.0) } else { rgba(0xffffff, 0.25) })
-                    .cursor_pointer()
-                    .on_click(move |_, _, cx| entity.update(cx, |m, cx| m.set_color(c, cx))),
-            );
-        }
+    for (i, &c) in colors.iter().enumerate() {
+        row = row.child(swatch(model.clone(), i, c, c == current));
     }
-    if row.colors && row.sizes {
-        el = el.child(div().mx(px(2.)).w(px(1.)).h(px(20.)).bg(rgba(0xffffff, 0.14)));
+    if !colors.is_empty() {
+        row = row.child(div().mx(px(5.)).w(px(1.)).h(px(18.)).bg(rgba(0xffffff, 0.14)));
     }
-    if row.sizes {
-        for i in 0..bar::SIZES {
-            let picked = picked_size == Some(i);
-            let dot = 4.0 + 3.0 * i as f32;
-            let entity = model.clone();
-            el = el.child(
-                div()
-                    .id(gpui::ElementId::Name(format!("style-size-{i}").into()))
-                    .size(px(SIZE_BUTTON))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(8.))
-                    .when(picked, |d| d.bg(rgba(0xffffff, 0.16)).border_1().border_color(rgba(0xffffff, 0.5)))
-                    .cursor_pointer()
-                    .hover(|d| d.bg(rgba(0xffffff, 0.12)))
-                    .child(div().size(px(dot)).rounded(radius::PILL).bg(rgba(0xffffff, 0.9)))
-                    .on_click(move |_, _, cx| entity.update(cx, |m, cx| m.set_size(i, cx))),
-            );
-        }
+    // Size dots take the tool's colour, so the strip previews the next mark.
+    let dot = if colors.is_empty() { rgba(0xffffff, 0.9) } else { hsla(current) };
+    for (i, s) in bar::SIZES.into_iter().enumerate() {
+        let entity = model.clone();
+        let picked = size == Some(s);
+        let d = 6.0 + 4.0 * i as f32;
+        row = row.child(
+            div()
+                .id(gpui::ElementId::Name(format!("strip-size-{i}").into()))
+                .size(px(SWATCH))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(7.))
+                .cursor_pointer()
+                .when(picked, |d| d.bg(rgba(0xffffff, 0.16)))
+                .hover(|d| d.bg(rgba(0xffffff, 0.12)))
+                .child(div().size(px(d)).rounded(radius::PILL).bg(dot).border_1().border_color(rgba(0x000000, 0.35)))
+                .role(Role::RadioButton)
+                .aria_label(s.label(tool))
+                .aria_toggled(if picked { Toggled::True } else { Toggled::False })
+                .tooltip(move |window, cx| Tooltip::new(s.label(tool)).build(window, cx))
+                .on_a11y_action(A11yAction::Click, {
+                    let entity = entity.clone();
+                    move |_, _, cx| entity.update(cx, |m, cx| m.restyle(|st, t| bar::with_size(st, t, s), cx))
+                })
+                .on_click(move |_, _, cx| entity.update(cx, |m, cx| m.restyle(|st, t| bar::with_size(st, t, s), cx))),
+        );
     }
-    Some(el.into_any_element())
+    Some(row.into_any_element())
+}
+
+fn hsla(c: Rgba) -> Hsla {
+    gpui::rgb((c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32).into()
+}
+
+fn swatch(model: Entity<OverlayModel>, index: usize, color: Rgba, picked: bool) -> AnyElement {
+    let name = bar::color_name(color);
+    let tip = format!("{name}  ·  {}", index + 1);
+    let activate = model.clone();
+    div()
+        .id(gpui::ElementId::Name(format!("strip-color-{index}").into()))
+        .size(px(SWATCH))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(radius::PILL)
+        .cursor_pointer()
+        // The picked colour wears a ring, so the choice never rests on the colour alone.
+        .border_2()
+        .border_color(if picked { rgba(0xffffff, 0.95) } else { gpui::transparent_black() })
+        .hover(move |d| if picked { d } else { d.border_color(rgba(0xffffff, 0.35)) })
+        .child(div().size(px(18.)).rounded(radius::PILL).bg(hsla(color)).border_1().border_color(rgba(0xffffff, 0.25)))
+        .role(Role::RadioButton)
+        .aria_label(name)
+        .aria_keyshortcuts((index + 1).to_string())
+        .aria_toggled(if picked { Toggled::True } else { Toggled::False })
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .on_a11y_action(A11yAction::Click, move |_, _, cx| {
+            activate.update(cx, |m, cx| m.restyle(|st, t| bar::with_color(st, t, color), cx))
+        })
+        .on_click(move |_, _, cx| model.update(cx, |m, cx| m.restyle(|st, t| bar::with_color(st, t, color), cx)))
+        .into_any_element()
 }
 
 /// The selection's size (`bar::badge_text`) above (or below) it.
@@ -813,6 +954,8 @@ pub(crate) fn mode_bar(model: &Entity<OverlayModel>, win_w: f32, cx: &App) -> An
     let m = model.read(cx);
     let mut row = div()
         .id("mode-bar")
+        .role(Role::Toolbar)
+        .aria_label("Capture mode")
         .absolute()
         .top(px(16.))
         .left(px((win_w - mode_bar_width()) / 2.0))
@@ -827,7 +970,7 @@ pub(crate) fn mode_bar(model: &Entity<OverlayModel>, win_w: f32, cx: &App) -> An
         .border_color(rgba(0xffffff, 0.10))
         .shadow_lg()
         .cursor_default()
-        .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+        .on_any_mouse_down(crate::overlay_tools::press_on_bar(model.clone()))
         .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation());
     for (g, group) in MODES.iter().enumerate() {
         if g > 0 {
@@ -868,7 +1011,17 @@ pub(crate) fn mode_bar(model: &Entity<OverlayModel>, win_w: f32, cx: &App) -> An
                                 .bg(rgba(ACCENT, 1.0)),
                         )
                     })
+                    .role(Role::Button)
+                    .aria_label(tip)
+                    // Only the modes that stay on are toggles; the rest act once.
+                    .when(matches!(mode, Mode::Screenshot | Mode::Region | Mode::EditAfter | Mode::Text), |d| {
+                        d.aria_toggled(if active { Toggled::True } else { Toggled::False })
+                    })
                     .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+                    .on_a11y_action(A11yAction::Click, {
+                        let entity = entity.clone();
+                        move |_, _, cx| entity.update(cx, |m, cx| m.mode(mode, cx))
+                    })
                     .on_click(move |_, _, cx| entity.update(cx, |m, cx| m.mode(mode, cx))),
             );
         }

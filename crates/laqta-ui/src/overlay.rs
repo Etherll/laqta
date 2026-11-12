@@ -6,18 +6,20 @@ use std::sync::Arc;
 
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Bounds, Context, Div, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage, ScrollDelta,
-    ScrollEvent, Styled as _, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, img, point,
+    KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage,
+    ScrollDelta, ScrollEvent, Styled as _, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, img, point,
     prelude::FluentBuilder as _, px, size,
 };
 use laqta_domain::geometry::PhysRect;
-use laqta_domain::region::{Button, Handle, KeyMods, RegionInput, RegionKey, TargetKind};
+use laqta_domain::region::{Button, KeyMods, RegionInput, RegionKey, TargetKind};
 use laqta_domain::{Bitmap, Frame, PixelFormat};
 use laqta_editor::EditorInput;
 use laqta_ports::{InputCallback, RegionView};
 
-use crate::presenters::capture_pointer::{self, Pointer, Route};
+use crate::mark_chrome::pointer_style;
+use crate::presenters::capture_pointer::{self, Route};
 use crate::presenters::capture_toolbar as bar;
+use crate::presenters::mark_pointer::Pointer;
 use crate::runtime::UiState;
 
 #[derive(Default)]
@@ -60,6 +62,13 @@ pub(crate) struct OverlayModel {
     pub(crate) annot: Option<crate::overlay_tools::Annot>,
     /// The drawing tool in use; `None` is the region tool (adjust the selection).
     pub(crate) tool: Option<laqta_editor::Tool>,
+    /// The colour and size picked for each drawing tool (`Settings::capture_marks`).
+    pub(crate) marks: Vec<laqta_domain::capture::MarkStyle>,
+    /// `marks` changed since the overlay opened; they are saved when it closes.
+    pub(crate) marks_changed: bool,
+    /// The left button went down on a bar (toolbar, style strip, mode bar), so its release is the
+    /// bar's click and not the end of a drag on the canvas or the selection.
+    pub(crate) chrome_press: bool,
     /// The mode bar's Text button is on: the next settled selection is read in place.
     pub(crate) text_mode: bool,
     /// The selection's text, read in place (`overlay_text`).
@@ -71,6 +80,8 @@ pub(crate) struct OverlayModel {
     pub(crate) pressed: Option<Route>,
     /// The last press on the selection held Alt: a move leaves the marks where they are on screen.
     pub(crate) frame_only: bool,
+    /// Holding Space lends the Pointer (`None`) while a drawing tool is out.
+    pub(crate) space: crate::presenters::space_lend::SpaceLend<Option<laqta_editor::Tool>>,
 }
 
 /// Converts each frame for GPUI, off the GPUI thread: `UiHandle::show` calls this on the caller's
@@ -137,17 +148,22 @@ pub(crate) fn show(frames: Vec<Frame>, images: Vec<Option<Arc<RenderImage>>>, vi
         .filter_map(|(f, image)| Some(MonitorImage { rect: f.monitor.rect, image: image?, bitmap: f.image.clone() }))
         .collect();
     let count = monitors.len();
+    let marks = cx.global::<UiState>().services.app.settings().capture_marks;
     let model = cx.new(|_| OverlayModel {
         monitors,
         view,
         on_input,
         annot: None,
         tool: None,
+        marks,
+        marks_changed: false,
+        chrome_press: false,
         text_mode: false,
         text: None,
         discard_armed: None,
         pressed: None,
         frame_only: false,
+        space: crate::presenters::space_lend::SpaceLend::new(None),
     });
     let mut windows = Vec::new();
     for index in 0..count {
@@ -274,6 +290,17 @@ pub(crate) fn close(cx: &mut App) {
         return;
     }
     let windows = std::mem::take(&mut cx.global_mut::<UiState>().overlay);
+    // The colours and sizes picked this time, saved once rather than on every click.
+    if let Some(model) = &windows.model
+        && let (true, marks) = model.update(cx, |m, _| (std::mem::take(&mut m.marks_changed), m.marks.clone()))
+    {
+        let services = cx.global::<UiState>().services.clone();
+        let mut settings = services.app.settings();
+        settings.capture_marks = marks;
+        if let Err(e) = (services.save_settings)(settings) {
+            tracing::warn!("saving the capture toolbar's colours failed: {e}");
+        }
+    }
     for w in windows.windows {
         let _ = w.update(cx, |_, window, _| window.remove_window());
     }
@@ -580,24 +607,15 @@ impl Render for OverlayView {
                     root = root.child(crate::overlay_text::bar(&self.model, at, now, still, cx));
                 } else if model.toolbar_shown() {
                     root = root.child(crate::overlay_tools::toolbar(&self.model, at, cx));
-                    if let Some(row) = bar::style_row(model.tool) {
-                        let w = crate::overlay_tools::style_row_width(row);
-                        let h = crate::overlay_tools::ROW_H;
-                        let below = at.y + at.h + 6.0;
-                        let y = if below + h + bar::GAP <= win_h { below } else { at.y - 6.0 - h };
-                        let x = (at.x + at.w - w).clamp(bar::GAP, (win_w - w - bar::GAP).max(bar::GAP));
-                        if let Some(el) = crate::overlay_tools::style_row(&self.model, row, bar::Rect { x, y, w, h }, cx) {
-                            root = root.child(el);
-                        }
+                    if let Some(strip) = crate::overlay_tools::style_strip(&self.model, at, side, screen, cx) {
+                        root = root.child(strip);
                     }
                 }
                 // Beside the toolbar, where the eye already is; the mode bar covers the screen's top.
                 if let Some(text) = model.discard_notice() {
                     let (w, h) = (crate::overlay_tools::notice_width(&text), crate::overlay_tools::NOTICE_H);
-                    let x = (at.x + (at.w - w) / 2.0).clamp(bar::GAP, (win_w - w - bar::GAP).max(bar::GAP));
-                    let below = at.y + at.h + 8.0;
-                    let y = if below + h + bar::GAP <= win_h { below } else { at.y - 8.0 - h };
-                    root = root.child(crate::overlay_tools::notice(text, bar::Rect { x, y, w, h }));
+                    let spot = bar::strip(at, side, (w, h), screen, at.x + at.w / 2.0);
+                    root = root.child(crate::overlay_tools::notice(text, spot));
                 }
             }
         } else if view.pick_point {
@@ -637,6 +655,9 @@ impl Render for OverlayView {
                 cx.notify();
             }
             this.send(RegionInput::PointerMove { x, y }, cx);
+            if this.model.update(cx, |m, _| m.hover((x, y))) {
+                cx.notify();
+            }
             // A drag over the text picks words, wherever the pointer goes.
             if this.model.update(cx, |m, cx| m.text_drag(x, y, cx)) {
                 return;
@@ -655,7 +676,12 @@ impl Render for OverlayView {
             let (x, y) = this.to_phys(ev.position, window, cx);
             let Some(pressed) = button(ev.button) else { return };
             let route = capture_pointer::route(&this.model.read(cx).pointer_scene((x, y), true), (x, y), pressed);
-            this.model.update(cx, |m, _| m.pressed = Some(route));
+            // A press the overlay sees is not on a bar: a bar press whose release never came back
+            // can't swallow this one's release and leave the drag running.
+            this.model.update(cx, |m, _| {
+                m.pressed = Some(route);
+                m.chrome_press = false;
+            });
             match route {
                 Route::Text => {
                     if let Some(at) = this.model.read(cx).text_point(x, y) {
@@ -683,6 +709,9 @@ impl Render for OverlayView {
             }
         }))
         .capture_any_mouse_up(cx.listener(|this, ev: &MouseUpEvent, window, cx| {
+            if this.model.update(cx, |m, _| std::mem::take(&mut m.chrome_press)) {
+                return;
+            }
             let (x, y) = this.to_phys(ev.position, window, cx);
             let route = this.model.update(cx, |m, _| m.pressed.take());
             if ev.button == MouseButton::Left && this.model.update(cx, |m, cx| m.text_release(cx)) {
@@ -705,6 +734,8 @@ impl Render for OverlayView {
                     }
                 }
             }
+            // Space came up during the drag: the drawing tool comes back now it is over.
+            this.model.update(cx, |m, cx| m.after_release(cx));
             cx.notify();
         }))
         // Scrolling up grows the hover to the enclosing region, down shrinks it back.
@@ -719,28 +750,16 @@ impl Render for OverlayView {
             }
         }))
         .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| this.key(ev, cx)))
+        .on_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| {
+            if ev.keystroke.key == "space" {
+                this.model.update(cx, |m, cx| m.return_pointer(cx));
+            }
+        }))
     }
 }
 
 fn contains(r: PhysRect, (x, y): (i32, i32)) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
-}
-
-/// The pointer shape for `capture_pointer`'s answer; a move under way shows a closed hand.
-fn pointer_style(pointer: Pointer, gesture: bool) -> gpui::CursorStyle {
-    use gpui::CursorStyle;
-    match pointer {
-        Pointer::Arrow => CursorStyle::Arrow,
-        Pointer::Crosshair | Pointer::Draw => CursorStyle::Crosshair,
-        Pointer::Move if gesture => CursorStyle::ClosedHand,
-        Pointer::Move => CursorStyle::OpenHand,
-        Pointer::Text => CursorStyle::IBeam,
-        Pointer::NotAllowed => CursorStyle::OperationNotAllowed,
-        Pointer::Resize(Handle::N | Handle::S) => CursorStyle::ResizeUpDown,
-        Pointer::Resize(Handle::E | Handle::W) => CursorStyle::ResizeLeftRight,
-        Pointer::Resize(Handle::NW | Handle::SE) => CursorStyle::ResizeUpLeftDownRight,
-        Pointer::Resize(Handle::NE | Handle::SW) => CursorStyle::ResizeUpRightDownLeft,
-    }
 }
 
 /// The width of the selection's border, drawn just outside it.
@@ -791,6 +810,26 @@ impl OverlayView {
                 self.model.update(cx, |model, cx| model.editor_input(EditorInput::Key { key: k, mods }, cx));
                 return;
             }
+        }
+        // Holding Space lends the Pointer while a drawing tool is out (repeats keep it lent).
+        if key == "space" && !ctrl(m) && (drawing || self.model.read(cx).space.is_lent()) {
+            self.model.update(cx, |model, cx| {
+                model.borrow_pointer();
+                cx.notify();
+            });
+            return;
+        }
+        // Number keys pick the drawing tool's colours. They never reach the engine, whose digits
+        // would switch its tool behind the toolbar's back.
+        if drawing && key.len() == 1 && key.chars().all(|c| c.is_ascii_digit()) && !ctrl(m) && !m.alt {
+            self.model.update(cx, |model, cx| {
+                if let Some(tool) = model.tool
+                    && let Some(color) = crate::presenters::capture_toolbar::color_key(key, tool)
+                {
+                    model.restyle(|st, t| crate::presenters::capture_toolbar::with_color(st, t, color), cx);
+                }
+            });
+            return;
         }
         if shown
             && let Some(item) = crate::presenters::capture_toolbar::key_item(
@@ -917,30 +956,4 @@ fn sample(b: &Bitmap, x: i32, y: i32) -> u32 {
         PixelFormat::Bgra8 => (p[2], p[1], p[0]),
     };
     (r as u32) << 16 | (g as u32) << 8 | bl as u32
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn each_handle_shows_the_arrow_of_the_way_it_drags() {
-        let style = |h| pointer_style(Pointer::Resize(h), false);
-        assert_eq!(style(Handle::W), gpui::CursorStyle::ResizeLeftRight);
-        assert_eq!(style(Handle::E), gpui::CursorStyle::ResizeLeftRight);
-        assert_eq!(style(Handle::N), gpui::CursorStyle::ResizeUpDown);
-        assert_eq!(style(Handle::S), gpui::CursorStyle::ResizeUpDown);
-        assert_eq!(style(Handle::NW), gpui::CursorStyle::ResizeUpLeftDownRight);
-        assert_eq!(style(Handle::SE), gpui::CursorStyle::ResizeUpLeftDownRight);
-        assert_eq!(style(Handle::NE), gpui::CursorStyle::ResizeUpRightDownLeft);
-        assert_eq!(style(Handle::SW), gpui::CursorStyle::ResizeUpRightDownLeft);
-    }
-
-    #[test]
-    fn a_move_shows_a_hand_that_closes_while_it_drags() {
-        assert_eq!(pointer_style(Pointer::Move, false), gpui::CursorStyle::OpenHand);
-        assert_eq!(pointer_style(Pointer::Move, true), gpui::CursorStyle::ClosedHand);
-        assert_eq!(pointer_style(Pointer::NotAllowed, false), gpui::CursorStyle::OperationNotAllowed);
-        assert_eq!(pointer_style(Pointer::Crosshair, false), gpui::CursorStyle::Crosshair);
-    }
 }

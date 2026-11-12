@@ -3,6 +3,7 @@
 //!
 //! The drawing tools are the editor engine's, so the overlay and the editor share one tool set.
 
+use laqta_domain::capture::MarkStyle;
 use laqta_domain::color::Rgba;
 use laqta_domain::geometry::PhysRect;
 use laqta_editor::{Style, Tool};
@@ -10,8 +11,9 @@ use laqta_editor::{Style, Tool};
 /// One button on the capture toolbar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
-    /// Move the selection, its marks with it (no editor tool). Alt leaves the marks in place.
-    Move,
+    /// The Pointer (no drawing tool): a press on a mark picks, moves or resizes it, and a press on
+    /// empty space moves the selection with its marks (Alt leaves the marks in place).
+    Pointer,
     Tool(Tool),
     Undo,
     Redo,
@@ -35,7 +37,7 @@ pub const TOOLS: [Tool; 9] =
 /// The bar's groups, left to right; the view draws a divider between groups.
 pub fn groups() -> Vec<Vec<Item>> {
     vec![
-        [Item::Move, Item::Tool(Tool::Select)].into_iter().chain(TOOLS.iter().map(|t| Item::Tool(*t))).collect(),
+        [Item::Pointer].into_iter().chain(TOOLS.iter().map(|t| Item::Tool(*t))).collect(),
         vec![Item::Undo, Item::Redo],
         vec![Item::CopyText],
         vec![Item::Pin, Item::Edit, Item::Upload, Item::Save, Item::Copy],
@@ -46,8 +48,7 @@ pub fn groups() -> Vec<Vec<Item>> {
 /// The tooltip text.
 pub fn label(item: Item) -> &'static str {
     match item {
-        Item::Move => "Move the selection with its marks (hold Alt to leave the marks)",
-        Item::Tool(Tool::Select) => "Select, move and resize marks",
+        Item::Pointer => "Pointer: move and resize marks, or drag empty space to move the selection (hold Space while drawing)",
         Item::Tool(t) => super::editor_toolbar::label(t),
         Item::Undo => "Undo",
         Item::Redo => "Redo",
@@ -65,8 +66,7 @@ pub fn label(item: Item) -> &'static str {
 /// The shortcut shown next to the tooltip, if any.
 pub fn shortcut(item: Item) -> Option<&'static str> {
     Some(match item {
-        Item::Move => "M",
-        Item::Tool(Tool::Select) => "V",
+        Item::Pointer => "V",
         Item::Tool(Tool::Rectangle) => "R",
         Item::Tool(Tool::Ellipse) => "E",
         Item::Tool(Tool::Arrow) => "A",
@@ -121,8 +121,7 @@ pub fn key_item(key: &str, mods: Mods) -> Option<Item> {
         return (key == "c").then_some(Item::CopyText);
     }
     Some(match key {
-        "m" => Item::Move,
-        "v" => Item::Tool(Tool::Select),
+        "v" | "m" => Item::Pointer,
         "r" => Item::Tool(Tool::Rectangle),
         "e" => Item::Tool(Tool::Ellipse),
         "a" => Item::Tool(Tool::Arrow),
@@ -198,51 +197,98 @@ pub fn badge(selection: Rect, side: Side, badge: (f32, f32), screen: (f32, f32))
     Rect { x, y, w, h }
 }
 
-/// The colour swatches, in order.
-pub const PALETTE: [Rgba; 7] = [
-    Rgba::rgb(0xff, 0x3b, 0x30),
-    Rgba::rgb(0xff, 0x95, 0x00),
-    Rgba::rgb(0xff, 0xcc, 0x00),
-    Rgba::rgb(0x34, 0xc7, 0x59),
-    Rgba::rgb(0x3d, 0x8b, 0xfd),
+/// A stroke or text size on the style strip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Size {
+    Small,
+    Medium,
+    Large,
+}
+
+pub const SIZES: [Size; 3] = [Size::Small, Size::Medium, Size::Large];
+
+impl Size {
+    fn pick<T>(self, [s, m, l]: [T; 3]) -> T {
+        match self {
+            Size::Small => s,
+            Size::Medium => m,
+            Size::Large => l,
+        }
+    }
+
+    pub fn index(self) -> u8 {
+        match self {
+            Size::Small => 0,
+            Size::Medium => 1,
+            Size::Large => 2,
+        }
+    }
+
+    pub fn from_index(i: u8) -> Size {
+        match i {
+            0 => Size::Small,
+            1 => Size::Medium,
+            _ => Size::Large,
+        }
+    }
+
+    /// The tooltip: blur and pixelate sizes are how strong the effect is.
+    pub fn label(self, tool: Tool) -> &'static str {
+        let strength = matches!(tool, Tool::Blur | Tool::Pixelate);
+        match self {
+            Size::Small if strength => "Light",
+            Size::Large if strength => "Strong",
+            Size::Small => "Small",
+            Size::Medium => "Medium",
+            Size::Large => "Large",
+        }
+    }
+}
+
+/// Ink colours for the pen and shapes.
+const INK: [Rgba; 8] = [
+    Rgba::rgb(0xef, 0x44, 0x44),
+    Rgba::rgb(0xf9, 0x73, 0x16),
+    Rgba::rgb(0xfa, 0xcc, 0x15),
+    Rgba::rgb(0x22, 0xc5, 0x5e),
+    Rgba::rgb(0x3b, 0x82, 0xf6),
+    Rgba::rgb(0xa8, 0x55, 0xf7),
+    Rgba::rgb(0x11, 0x11, 0x11),
     Rgba::rgb(0xff, 0xff, 0xff),
-    Rgba::rgb(0x00, 0x00, 0x00),
 ];
 
-/// The style controls a tool shows under the bar.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StyleRow {
-    pub colors: bool,
-    pub sizes: bool,
-}
+/// Marker colours: bright ones, which read through the see-through marker on light and dark
+/// pictures (black would hide the text).
+const MARKER: [Rgba; 5] = [
+    Rgba::rgb(0xff, 0xee, 0x00),
+    Rgba::rgb(0x9b, 0xf0, 0x6e),
+    Rgba::rgb(0x7f, 0xd3, 0xff),
+    Rgba::rgb(0xff, 0x9e, 0xcb),
+    Rgba::rgb(0xff, 0xb8, 0x6b),
+];
 
-/// The style row for `tool`, or `None` when there is no tool or the bar does not offer it.
-/// Blur and Pixelate have sizes only; Highlight has colours only.
-pub fn style_row(tool: Option<Tool>) -> Option<StyleRow> {
-    let tool = tool?;
-    if !TOOLS.contains(&tool) {
-        return None;
-    }
-    Some(match tool {
-        Tool::Blur | Tool::Pixelate => StyleRow { colors: false, sizes: true },
-        Tool::Highlight => StyleRow { colors: true, sizes: false },
-        _ => StyleRow { colors: true, sizes: true },
-    })
-}
-
-/// `style` with the tool's colour set to `c`. Highlight keeps its alpha, Text sets the font
-/// colour, and the other tools set the border colour.
-pub fn with_color(style: &Style, tool: Tool, c: Rgba) -> Style {
-    let mut out = style.clone();
+/// The colours the style strip offers for `tool`; empty when colour means nothing to it.
+pub fn palette(tool: Tool) -> &'static [Rgba] {
     match tool {
-        Tool::Highlight => out.highlight_color = Rgba { a: style.highlight_color.a, ..c },
-        Tool::Text => out.font.color = c,
-        _ => out.border_color = c,
+        Tool::Highlight => &MARKER,
+        Tool::Rectangle | Tool::Ellipse | Tool::Arrow | Tool::Line | Tool::Freehand | Tool::Text | Tool::Step => &INK,
+        _ => &[],
     }
-    out
 }
 
-/// The colour the tool reads, from the same field `with_color` writes.
+/// The name a swatch's tooltip shows.
+pub fn color_name(c: Rgba) -> &'static str {
+    const NAMES: [&str; 8] = ["Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Black", "White"];
+    const MARKER_NAMES: [&str; 5] = ["Yellow", "Green", "Blue", "Pink", "Orange"];
+    INK.iter().zip(NAMES).chain(MARKER.iter().zip(MARKER_NAMES)).find(|(k, _)| **k == c).map_or("Colour", |(_, n)| n)
+}
+
+/// Whether the style strip has anything for `tool`.
+pub fn has_style(tool: Tool) -> bool {
+    !palette(tool).is_empty() || matches!(tool, Tool::Blur | Tool::Pixelate)
+}
+
+/// The colour `tool` draws with in `style`.
 pub fn color_of(style: &Style, tool: Tool) -> Rgba {
     match tool {
         Tool::Highlight => style.highlight_color,
@@ -251,31 +297,122 @@ pub fn color_of(style: &Style, tool: Tool) -> Rgba {
     }
 }
 
-/// How many size steps the bar offers.
-pub const SIZES: usize = 3;
-
-/// `style` with the tool's size set to step `index`, where 0 is the smallest. An index past the
-/// last step takes the last one.
-pub fn with_size(style: &Style, tool: Tool, index: usize) -> Style {
-    let i = index.min(SIZES - 1);
-    let mut out = style.clone();
+/// `style` with `tool`'s colour set to `color`. Text keeps its box's border colour: the strip
+/// colours the letters.
+pub fn with_color(style: &Style, tool: Tool, color: Rgba) -> Style {
+    let mut s = style.clone();
     match tool {
-        Tool::Blur => out.blur_radius = [4, 8, 16][i],
-        Tool::Pixelate => out.pixel_size = [6, 10, 16][i],
-        Tool::Text => out.font.size = [16.0, 24.0, 36.0][i],
-        _ => out.border_size = [2.0, 4.0, 8.0][i],
+        Tool::Highlight => s.highlight_color = color,
+        Tool::Text => s.font.color = color,
+        _ => s.border_color = color,
     }
-    out
+    s
 }
 
-/// The size step `style` holds for the tool, if it is one of the steps.
-pub fn size_index(style: &Style, tool: Tool) -> Option<usize> {
+/// The small, medium and large values of the style field a size sets for `tool`.
+fn size_values(tool: Tool) -> Option<[f32; 3]> {
+    Some(match tool {
+        Tool::Highlight => [12.0, 20.0, 32.0],
+        Tool::Text | Tool::Step => [16.0, 24.0, 36.0],
+        Tool::Blur => [8.0, 15.0, 30.0],
+        Tool::Pixelate => [6.0, 10.0, 18.0],
+        Tool::Rectangle | Tool::Ellipse | Tool::Arrow | Tool::Line | Tool::Freehand => [2.0, 4.0, 8.0],
+        _ => return None,
+    })
+}
+
+/// The style value a size sets for `tool`.
+fn size_value(style: &Style, tool: Tool) -> f32 {
     match tool {
-        Tool::Blur => [4, 8, 16].iter().position(|&v| v == style.blur_radius),
-        Tool::Pixelate => [6, 10, 16].iter().position(|&v| v == style.pixel_size),
-        Tool::Text => [16.0, 24.0, 36.0].iter().position(|&v| v == style.font.size),
-        _ => [2.0, 4.0, 8.0].iter().position(|&v| v == style.border_size),
+        Tool::Highlight => style.highlight_size,
+        Tool::Text | Tool::Step => style.font.size,
+        Tool::Blur => style.blur_radius as f32,
+        Tool::Pixelate => style.pixel_size as f32,
+        _ => style.border_size,
     }
+}
+
+/// The size `tool` uses in `style`, when it is one the strip offers.
+pub fn size_of(style: &Style, tool: Tool) -> Option<Size> {
+    let values = size_values(tool)?;
+    let now = size_value(style, tool);
+    SIZES.into_iter().find(|size| size.pick(values) == now)
+}
+
+/// `style` with `tool`'s size set to `size`.
+pub fn with_size(style: &Style, tool: Tool, size: Size) -> Style {
+    let mut s = style.clone();
+    let Some(values) = size_values(tool) else { return s };
+    let v = size.pick(values);
+    match tool {
+        Tool::Highlight => s.highlight_size = v,
+        Tool::Text | Tool::Step => s.font.size = v,
+        Tool::Blur => s.blur_radius = v as u32,
+        Tool::Pixelate => s.pixel_size = v as u32,
+        _ => s.border_size = v,
+    }
+    s
+}
+
+/// The style a tool starts with on the capture toolbar. Text gets letters in the first ink colour
+/// and no box around them, which reads on light and dark pictures alike; the editor's default
+/// (white letters in a red box) vanishes on a light page.
+pub fn base_style(tool: Tool) -> Style {
+    let mut s = Style::default();
+    if tool == Tool::Text {
+        s.border_size = 0.0;
+        s.font.color = INK[0];
+        s.font.bold = true;
+        s.font.size = Size::Medium.pick([16.0, 24.0, 36.0]);
+    }
+    s
+}
+
+/// The style `tool` draws with: its starting style with the colour and size last picked for it.
+pub fn style_for(tool: Tool, marks: &[MarkStyle]) -> Style {
+    let base = base_style(tool);
+    match marks.iter().find(|m| m.tool == tool.name()) {
+        Some(m) => with_size(&with_color(&base, tool, m.color), tool, Size::from_index(m.size)),
+        None => base,
+    }
+}
+
+/// Records `style` as `tool`'s picked colour and size.
+pub fn remember(marks: &mut Vec<MarkStyle>, tool: Tool, style: &Style) {
+    let mark = MarkStyle {
+        tool: tool.name().to_owned(),
+        color: color_of(style, tool),
+        size: size_of(style, tool).unwrap_or(Size::Medium).index(),
+    };
+    match marks.iter_mut().find(|m| m.tool == mark.tool) {
+        Some(m) => *m = mark,
+        None => marks.push(mark),
+    }
+}
+
+/// The colour a number key picks for `tool`: 1 is the first swatch.
+pub fn color_key(key: &str, tool: Tool) -> Option<Rgba> {
+    let n: usize = key.parse().ok()?;
+    palette(tool).get(n.checked_sub(1)?).copied()
+}
+
+/// Where the style strip goes: on the side of the toolbar away from the selection (the other side
+/// when that one has no room), centred under the chosen tool's button at `anchor_x`, and kept on
+/// screen.
+pub fn strip(bar: Rect, side: Side, strip: (f32, f32), screen: (f32, f32), anchor_x: f32) -> Rect {
+    let (w, h) = strip;
+    let below = bar.bottom() + GAP / 2.0;
+    let above = bar.y - GAP / 2.0 - h;
+    let fits_below = below + h + GAP <= screen.1;
+    let fits_above = above >= GAP;
+    let y = match side {
+        Side::Below if fits_below || !fits_above => below,
+        Side::Below => above,
+        Side::Above | Side::Inside if fits_above || !fits_below => above,
+        _ => below,
+    };
+    let x = (anchor_x - w / 2.0).clamp(GAP, (screen.0 - w - GAP).max(GAP));
+    Rect { x, y, w, h }
 }
 
 /// The size badge's text: the selection's size, then its origin when given.
@@ -290,6 +427,73 @@ pub fn badge_text(rect: PhysRect, origin: Option<(i32, i32)>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_strip_sets_each_tools_own_colour_and_size() {
+        let base = Style::default();
+        let red = Rgba::rgb(0xef, 0x44, 0x44);
+        let yellow = MARKER[0];
+        assert_eq!(with_color(&base, Tool::Highlight, yellow).highlight_color, yellow);
+        assert_eq!(with_color(&base, Tool::Text, red).font.color, red);
+        assert_eq!(with_color(&base, Tool::Text, red).border_color, base.border_color, "text keeps its box");
+        assert_eq!(color_of(&with_color(&base, Tool::Arrow, INK[4]), Tool::Arrow), INK[4]);
+
+        assert_eq!(size_of(&base, Tool::Rectangle), Some(Size::Medium), "the default border is medium");
+        assert_eq!(size_of(&base, Tool::Highlight), Some(Size::Medium));
+        let big = with_size(&base, Tool::Freehand, Size::Large);
+        assert_eq!(big.border_size, 8.0);
+        assert_eq!(size_of(&big, Tool::Freehand), Some(Size::Large));
+        assert_eq!(with_size(&base, Tool::Pixelate, Size::Small).pixel_size, 6);
+        assert_eq!(size_of(&with_size(&base, Tool::Blur, Size::Large), Tool::Blur), Some(Size::Large));
+        assert_eq!(color_name(INK[4]), "Blue");
+        assert_eq!(color_name(MARKER[3]), "Pink");
+        assert_eq!(Size::Large.label(Tool::Blur), "Strong");
+        assert_eq!(Size::Large.label(Tool::Freehand), "Large");
+        assert!(!has_style(Tool::Select) && has_style(Tool::Blur) && palette(Tool::Blur).is_empty());
+    }
+
+    #[test]
+    fn picks_are_remembered_per_tool_and_text_starts_readable() {
+        let text = base_style(Tool::Text);
+        assert_eq!((text.border_size, text.font.color), (0.0, INK[0]), "no box, red letters");
+        assert_eq!(size_of(&text, Tool::Text), Some(Size::Medium));
+
+        let mut marks = Vec::new();
+        remember(
+            &mut marks,
+            Tool::Freehand,
+            &with_size(&with_color(&base_style(Tool::Freehand), Tool::Freehand, INK[4]), Tool::Freehand, Size::Large),
+        );
+        remember(&mut marks, Tool::Highlight, &with_color(&base_style(Tool::Highlight), Tool::Highlight, MARKER[2]));
+        remember(&mut marks, Tool::Freehand, &with_color(&base_style(Tool::Freehand), Tool::Freehand, INK[3]));
+        assert_eq!(marks.len(), 2, "one entry per tool");
+        let pen = style_for(Tool::Freehand, &marks);
+        assert_eq!((pen.border_color, size_of(&pen, Tool::Freehand)), (INK[3], Some(Size::Medium)));
+        assert_eq!(style_for(Tool::Highlight, &marks).highlight_color, MARKER[2]);
+        assert_eq!(style_for(Tool::Rectangle, &marks), base_style(Tool::Rectangle), "an unpicked tool keeps its start");
+    }
+
+    #[test]
+    fn number_keys_pick_swatches() {
+        assert_eq!(color_key("1", Tool::Arrow), Some(INK[0]));
+        assert_eq!(color_key("8", Tool::Arrow), Some(INK[7]));
+        assert_eq!(color_key("6", Tool::Highlight), None, "the marker has five");
+        assert_eq!(color_key("0", Tool::Arrow), None);
+        assert_eq!(color_key("2", Tool::Blur), None);
+    }
+
+    #[test]
+    fn the_strip_opens_under_the_chosen_tool_on_the_side_with_room() {
+        let bar = rect(600.0, 608.0, 600.0, 44.0);
+        let s = strip(bar, Side::Below, (300.0, 40.0), SCREEN, 700.0);
+        assert!(s.y >= bar.bottom(), "below the bar");
+        assert_eq!(s.x + s.w / 2.0, 700.0, "centred on the tool");
+        assert!(strip(bar, Side::Above, (300.0, 40.0), SCREEN, 700.0).bottom() <= bar.y);
+        let low = rect(600.0, 1080.0 - 52.0, 600.0, 44.0);
+        assert!(strip(low, Side::Below, (300.0, 40.0), SCREEN, 700.0).bottom() <= low.y, "no room below: above the bar");
+        let s = strip(rect(0.0, 100.0, 600.0, 44.0), Side::Below, (300.0, 40.0), SCREEN, 20.0);
+        assert_eq!(s.x, GAP, "kept on screen near the left edge");
+    }
 
     const SCREEN: (f32, f32) = (1920.0, 1080.0);
     const BAR: (f32, f32) = (600.0, 44.0);
@@ -350,67 +554,6 @@ mod tests {
             }
             assert_eq!(key_item(&key, mods), Some(item), "{s} for {item:?}");
         }
-    }
-
-    #[test]
-    fn the_palette_is_seven_opaque_colours_from_red_to_black() {
-        assert_eq!(PALETTE.len(), 7);
-        assert_eq!(PALETTE[0], Rgba::rgb(0xff, 0x3b, 0x30));
-        assert_eq!(PALETTE[6], Rgba::rgb(0, 0, 0));
-        assert!(PALETTE.iter().all(|c| c.a == 255));
-    }
-
-    #[test]
-    fn the_style_row_depends_on_the_tool() {
-        let both = Some(StyleRow { colors: true, sizes: true });
-        assert_eq!(style_row(None), None);
-        assert_eq!(style_row(Some(Tool::Select)), None, "not on the bar");
-        assert_eq!(style_row(Some(Tool::Rectangle)), both);
-        assert_eq!(style_row(Some(Tool::Text)), both);
-        assert_eq!(style_row(Some(Tool::Blur)), Some(StyleRow { colors: false, sizes: true }));
-        assert_eq!(style_row(Some(Tool::Pixelate)), Some(StyleRow { colors: false, sizes: true }));
-        assert_eq!(style_row(Some(Tool::Highlight)), Some(StyleRow { colors: true, sizes: false }));
-    }
-
-    #[test]
-    fn a_colour_lands_in_the_field_the_tool_draws_with() {
-        let style = Style::default();
-        let red = PALETTE[0];
-        assert_eq!(with_color(&style, Tool::Rectangle, red).border_color, red);
-        assert_eq!(with_color(&style, Tool::Text, red).font.color, red);
-        assert_eq!(with_color(&style, Tool::Text, red).border_color, style.border_color);
-        let kept = Style { highlight_color: Rgba { a: 128, ..Rgba::BLACK }, ..Style::default() };
-        assert_eq!(with_color(&kept, Tool::Highlight, red).highlight_color, Rgba { a: 128, ..red });
-    }
-
-    #[test]
-    fn a_colour_reads_back_from_the_field_it_was_written_to() {
-        let style = Style { highlight_color: Rgba::rgb(0xff, 0xee, 0x00), ..Style::default() };
-        for tool in TOOLS {
-            assert_eq!(color_of(&with_color(&style, tool, PALETTE[2]), tool), PALETTE[2], "{tool:?}");
-        }
-    }
-
-    #[test]
-    fn sizes_step_through_the_tools_own_fields() {
-        let style = Style::default();
-        assert_eq!(with_size(&style, Tool::Blur, 2).blur_radius, 16);
-        assert_eq!(with_size(&style, Tool::Pixelate, 0).pixel_size, 6);
-        assert_eq!(with_size(&style, Tool::Text, 1).font.size, 24.0);
-        assert_eq!(with_size(&style, Tool::Rectangle, 2).border_size, 8.0);
-        assert_eq!(with_size(&style, Tool::Rectangle, 9).border_size, 8.0, "past the last step takes the last");
-    }
-
-    #[test]
-    fn a_size_index_reads_back_its_step_and_is_none_off_the_steps() {
-        let style = Style::default();
-        for tool in TOOLS {
-            for i in 0..SIZES {
-                assert_eq!(size_index(&with_size(&style, tool, i), tool), Some(i), "{tool:?} step {i}");
-            }
-        }
-        assert_eq!(size_index(&style, Tool::Blur), None, "the default radius 15 is not a step");
-        assert_eq!(size_index(&style, Tool::Text), None, "the default font size 20 is not a step");
     }
 
     #[test]

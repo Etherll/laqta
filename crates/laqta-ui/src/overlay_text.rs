@@ -439,7 +439,7 @@ pub(crate) fn bar(model: &Entity<OverlayModel>, at: bar::Rect, now: Instant, sti
         .cursor_default()
         .opacity(enter)
         // Clicks on the bar never reach the words or the selection under it.
-        .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+        .on_any_mouse_down(crate::overlay_tools::press_on_bar(model.clone()))
         .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(div().flex_none().opacity(breath).child(gpui_component::Icon::new(icon).size(px(16.)).text_color(rgba(tint, 1.0))))
         .child(said);

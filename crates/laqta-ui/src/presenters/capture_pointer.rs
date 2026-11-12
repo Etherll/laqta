@@ -3,7 +3,9 @@
 
 use laqta_domain::geometry::PhysRect;
 use laqta_domain::region::{Button, Handle};
-use laqta_editor::{Handle as MarkHandle, PointF, Tool};
+use laqta_editor::Tool;
+
+use super::mark_pointer::{Grip, Pointer};
 
 /// What the pointer is over, read from the region and editor state.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -16,8 +18,8 @@ pub struct PointerScene {
     pub resizing: Option<Handle>,
     /// A region gesture is in progress.
     pub gesture: bool,
-    /// The editor tool: `Tool::Select` picks marks, the others draw. `None` is the Move tool,
-    /// which moves the selection.
+    /// The drawing tool out. `None` is the Pointer: a press on a mark picks and drags it, and a
+    /// press on empty space moves the selection.
     pub tool: Option<Tool>,
     /// The pointer is over an annotation.
     pub over_mark: bool,
@@ -29,49 +31,6 @@ pub struct PointerScene {
     pub marks: bool,
     /// A handle of the picked annotation under the pointer, as the way it drags (`grip`).
     pub mark_grip: Option<Grip>,
-}
-
-/// The way a picked annotation's handle drags, for its cursor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Grip {
-    /// Along one axis, shown as the selection handle that drags the same way.
-    Axis(Handle),
-    /// Any way at once (a curve point).
-    Free,
-}
-
-/// The way the picked annotation's `handle` drags. `handles` is the annotation's handle list
-/// (`Chrome::handles`): a line's or arrow's end drags along the line, so it reads the other end.
-pub fn grip(handle: MarkHandle, handles: &[(MarkHandle, PointF)]) -> Grip {
-    let point = |h: MarkHandle| handles.iter().find(|(k, _)| *k == h).map(|(_, p)| *p);
-    match handle {
-        MarkHandle::N | MarkHandle::S => Grip::Axis(Handle::N),
-        MarkHandle::E | MarkHandle::W => Grip::Axis(Handle::E),
-        MarkHandle::NW | MarkHandle::SE => Grip::Axis(Handle::NW),
-        MarkHandle::NE | MarkHandle::SW => Grip::Axis(Handle::NE),
-        MarkHandle::Start | MarkHandle::End => {
-            let other = if handle == MarkHandle::Start { MarkHandle::End } else { MarkHandle::Start };
-            match (point(handle), point(other)) {
-                (Some(a), Some(b)) => line_grip(b.x - a.x, b.y - a.y),
-                _ => Grip::Free,
-            }
-        }
-        MarkHandle::Control => Grip::Free,
-    }
-}
-
-/// The axis nearest a line running (`dx`, `dy`), y pointing down.
-fn line_grip(dx: f32, dy: f32) -> Grip {
-    if dx == 0.0 && dy == 0.0 {
-        return Grip::Free;
-    }
-    let angle = dy.atan2(dx).to_degrees().rem_euclid(180.0);
-    Grip::Axis(match angle {
-        a if !(22.5..157.5).contains(&a) => Handle::E,
-        a if a < 67.5 => Handle::NW,
-        a if a < 112.5 => Handle::N,
-        _ => Handle::NE,
-    })
 }
 
 /// The layer that takes a press.
@@ -87,29 +46,23 @@ pub enum Route {
     Ignore,
 }
 
-/// The cursor to show.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Pointer {
-    /// The plain arrow: the Select tool over nothing it can take.
-    Arrow,
-    Crosshair,
-    Move,
-    Resize(Handle),
-    Draw,
-    NotAllowed,
-    Text,
-}
-
 /// Whether `at` is inside `frame`. The left and top edges count; the right and bottom do not.
 fn inside(frame: PhysRect, at: (i32, i32)) -> bool {
     (frame.x..frame.right()).contains(&at.0) && (frame.y..frame.bottom()).contains(&at.1)
 }
 
+/// Whether the Pointer is out: no drawing tool. The engine's own select tool counts as one.
+fn pointer_tool(s: &PointerScene) -> bool {
+    matches!(s.tool, None | Some(Tool::Select))
+}
+
 /// The layer that takes a press at `at`. Buttons other than left go to the session, or are
 /// dropped when there are annotations. A left press on text goes to the text; otherwise an
-/// ongoing gesture or a handle keeps it in the session. Inside the selection the editor takes it
-/// when a tool is picked or the pointer is over an annotation. Outside, only the region tool
-/// starts a selection, and only when there are no annotations.
+/// ongoing gesture keeps it in the session. With a selection the first match wins: a handle of
+/// the picked annotation, then the selection's handles and edges, then (under the Pointer) an
+/// annotation or the picked one's box, then the inside of the selection, which a drawing tool
+/// draws on and the Pointer moves. Outside, only the Pointer starts a selection, and only when
+/// there are no annotations.
 pub fn route(s: &PointerScene, at: (i32, i32), button: Button) -> Route {
     if button != Button::Left {
         return if s.marks { Route::Ignore } else { Route::Session };
@@ -128,13 +81,11 @@ pub fn route(s: &PointerScene, at: (i32, i32), button: Button) -> Route {
     if s.grab.is_some() {
         return Route::Session;
     }
-    // Inside, the Move tool moves the selection and every editor tool (Select included) works on
-    // the marks; a Select click on nothing lets the picked mark go.
     if inside(frame, at) {
-        // The picked annotation's box drags it, even under Move.
-        return if s.tool.is_some() || s.over_picked { Route::Editor } else { Route::Session };
+        let on_mark = s.over_mark || s.over_picked;
+        return if !pointer_tool(s) || on_mark { Route::Editor } else { Route::Session };
     }
-    if s.tool.is_none() && !s.marks { Route::Session } else { Route::Ignore }
+    if pointer_tool(s) && !s.marks { Route::Session } else { Route::Ignore }
 }
 
 /// The cursor at `at`. A handle being dragged keeps its cursor, a gesture moves the selection or
@@ -162,12 +113,7 @@ pub fn pointer(s: &PointerScene, at: (i32, i32)) -> Pointer {
         return Pointer::Resize(h);
     }
     if inside(frame, at) {
-        return match s.tool {
-            None => Pointer::Move,
-            Some(Tool::Select) if s.over_mark || s.over_picked => Pointer::Move,
-            Some(Tool::Select) => Pointer::Arrow,
-            Some(_) => Pointer::Draw,
-        };
+        return if pointer_tool(s) { Pointer::Move } else { Pointer::Draw };
     }
     if route(s, at, Button::Left) == Route::Session { Pointer::Crosshair } else { Pointer::NotAllowed }
 }
@@ -185,18 +131,22 @@ mod tests {
     }
 
     #[test]
-    fn inside_the_selection_move_moves_it_and_every_editor_tool_works_on_the_marks() {
+    fn inside_the_selection_the_pointer_takes_marks_and_moves_the_rest() {
         let s = framed();
-        assert_eq!(route(&s, INSIDE, Button::Left), Route::Session);
-        assert_eq!(route(&PointerScene { over_mark: true, ..s }, INSIDE, Button::Left), Route::Session, "Move moves, even over a mark");
+        assert_eq!(route(&s, INSIDE, Button::Left), Route::Session, "empty space moves the selection");
+        assert_eq!(route(&PointerScene { over_mark: true, ..s }, INSIDE, Button::Left), Route::Editor, "a mark is picked");
+        assert_eq!(route(&PointerScene { over_picked: true, ..s }, INSIDE, Button::Left), Route::Editor, "the picked mark's box drags it");
         assert_eq!(route(&PointerScene { tool: Some(Tool::Rectangle), ..s }, INSIDE, Button::Left), Route::Editor);
-        let select = PointerScene { tool: Some(Tool::Select), ..s };
-        assert_eq!(route(&select, INSIDE, Button::Left), Route::Editor, "a click on nothing lets the picked mark go");
-        assert_eq!(pointer(&select, INSIDE), Pointer::Arrow);
-        assert_eq!(pointer(&PointerScene { over_mark: true, ..select }, INSIDE), Pointer::Move);
+        assert_eq!(route(&PointerScene { tool: Some(Tool::Rectangle), over_mark: true, ..s }, INSIDE, Button::Left), Route::Editor);
         assert_eq!(pointer(&s, INSIDE), Pointer::Move);
-        let picked = PointerScene { over_picked: true, ..s };
-        assert_eq!(route(&picked, INSIDE, Button::Left), Route::Editor, "inside the picked mark's box, Move drags the mark");
+        assert_eq!(pointer(&PointerScene { over_mark: true, ..s }, INSIDE), Pointer::Move);
+    }
+
+    #[test]
+    fn the_selection_s_edges_beat_a_mark_under_them() {
+        let s = PointerScene { grab: Some(Handle::E), over_mark: true, ..framed() };
+        assert_eq!(route(&s, INSIDE, Button::Left), Route::Session);
+        assert_eq!(pointer(&s, INSIDE), Pointer::Resize(Handle::E));
     }
 
     #[test]
@@ -280,31 +230,14 @@ mod tests {
     #[test]
     fn a_picked_mark_s_handle_takes_the_press_and_shows_its_axis() {
         let frame = PhysRect { x: 0, y: 0, width: 100, height: 100 };
-        let s = PointerScene {
-            frame: Some(frame),
-            grab: Some(Handle::NW),
-            mark_grip: Some(Grip::Axis(Handle::NW)),
-            tool: Some(Tool::Select),
-            ..PointerScene::default()
-        };
+        let s =
+            PointerScene { frame: Some(frame), grab: Some(Handle::NW), mark_grip: Some(Grip::Axis(Handle::NW)), ..PointerScene::default() };
         assert_eq!(route(&s, (1, 1), Button::Left), Route::Editor, "the mark's handle beats the frame's corner");
-        let moving = PointerScene { tool: None, ..s };
-        assert_eq!(route(&moving, (1, 1), Button::Left), Route::Editor, "under Move too");
-        assert_eq!(route(&PointerScene { mark_grip: None, ..moving }, (1, 1), Button::Left), Route::Session, "else the corner resizes");
+        let drawing = PointerScene { tool: Some(Tool::Arrow), ..s };
+        assert_eq!(route(&drawing, (1, 1), Button::Left), Route::Editor, "with a drawing tool out too");
+        assert_eq!(route(&PointerScene { mark_grip: None, ..s }, (1, 1), Button::Left), Route::Session, "else the corner resizes");
         assert_eq!(pointer(&s, (1, 1)), Pointer::Resize(Handle::NW));
         let free = PointerScene { mark_grip: Some(Grip::Free), ..s };
         assert_eq!(pointer(&free, (1, 1)), Pointer::Move);
-    }
-
-    #[test]
-    fn an_arrow_end_drags_along_the_arrow() {
-        let p = |x, y| PointF::new(x, y);
-        let arrow = |end: PointF| [(MarkHandle::Start, p(0.0, 0.0)), (MarkHandle::End, end), (MarkHandle::Control, p(1.0, 1.0))];
-        assert_eq!(grip(MarkHandle::Start, &arrow(p(100.0, 3.0))), Grip::Axis(Handle::E));
-        assert_eq!(grip(MarkHandle::End, &arrow(p(2.0, 100.0))), Grip::Axis(Handle::N));
-        assert_eq!(grip(MarkHandle::Start, &arrow(p(100.0, 100.0))), Grip::Axis(Handle::NW), "down and right");
-        assert_eq!(grip(MarkHandle::End, &arrow(p(-100.0, 100.0))), Grip::Axis(Handle::NE), "down and left");
-        assert_eq!(grip(MarkHandle::Control, &arrow(p(100.0, 100.0))), Grip::Free);
-        assert_eq!(grip(MarkHandle::SW, &[]), Grip::Axis(Handle::NE));
     }
 }

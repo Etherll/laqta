@@ -208,12 +208,14 @@ pub struct EditorOutput {
 enum Gesture {
     Idle,
     Drawing { start: PointF, current: PointF, shift: bool },
-    Freehand { points: Vec<PointF> },
+    Freehand { points: Vec<PointF>, marker: bool },
     Moving { id: u64, last: PointF, before: Box<Annotation> },
     Resizing { id: u64, handle: Handle, before: Box<Annotation> },
 }
 
-const HANDLE_RADIUS: f32 = 6.0;
+/// How far from a handle, along each axis, a press still takes it, in canvas pixels, until the
+/// host sets its own reach (`set_handle_reach`).
+const HANDLE_REACH: f32 = 6.0;
 
 /// Everything one render needs, copied out of the engine so it can run on another thread
 /// with no engine borrow or lock held. Made by `Editor::render_job`.
@@ -275,6 +277,8 @@ pub struct Editor {
     clipboard: Option<Annotation>,
     modified: bool,
     cache: Arc<Mutex<EffectCache>>,
+    /// How far from a handle a press still takes it (`set_handle_reach`).
+    handle_reach: f32,
 }
 
 impl std::fmt::Debug for Editor {
@@ -305,6 +309,7 @@ impl Editor {
             clipboard: None,
             modified: false,
             cache: Arc::new(Mutex::new(EffectCache::default())),
+            handle_reach: HANDLE_REACH,
         }
     }
 
@@ -319,6 +324,20 @@ impl Editor {
     /// Whether a mark is under the canvas point `(x, y)`, with the same tolerance a click uses.
     pub fn annotation_at(&self, x: f32, y: f32) -> bool {
         self.hit(PointF::new(x, y)).is_some()
+    }
+
+    /// Sets how far from a handle, along each axis, a press still takes it, in canvas pixels. The
+    /// host passes its on-screen grab size divided by its zoom, so the area a press takes is the
+    /// area its resize cursor shows.
+    pub fn set_handle_reach(&mut self, reach: f32) {
+        self.handle_reach = reach.max(1.0);
+    }
+
+    /// The box of the mark under the canvas point `(x, y)` that a click would pick, for a hover
+    /// outline; `None` over nothing or over the mark already picked.
+    pub fn hover_at(&self, x: f32, y: f32) -> Option<RectF> {
+        let id = self.hit(PointF::new(x, y)).filter(|id| Some(*id) != self.selected)?;
+        self.find(id).map(|a| a.kind.bounds())
     }
 
     /// Whether the canvas point `(x, y)` is inside the picked mark's box, where a `Select` press
@@ -896,13 +915,13 @@ impl Editor {
         a.kind
             .handles()
             .into_iter()
-            .filter(|(_, hp)| hp.distance(p) <= HANDLE_RADIUS)
+            .filter(|(_, hp)| (hp.x - p.x).abs() <= self.handle_reach && (hp.y - p.y).abs() <= self.handle_reach)
             .min_by(|x, y| x.1.distance(p).total_cmp(&y.1.distance(p)))
             .map(|(h, _)| (a.id, h))
     }
 
     fn hit(&self, p: PointF) -> Option<u64> {
-        self.annotations.iter().rev().find(|a| a.kind.hit(p, (a.style.border_size / 2.0 + 3.0).max(4.0))).map(|a| a.id)
+        self.annotations.iter().rev().find(|a| a.kind.hit(p, (a.stroke_width() / 2.0 + 3.0).max(4.0))).map(|a| a.id)
     }
 
     fn pointer_down(&mut self, p: PointF, button: PointerButton, mods: Mods) {
@@ -942,7 +961,10 @@ impl Editor {
                     None => self.selected = None,
                 }
             }
-            Tool::Freehand => self.gesture = Gesture::Freehand { points: vec![p] },
+            Tool::Freehand | Tool::Highlight => {
+                self.selected = None;
+                self.gesture = Gesture::Freehand { points: vec![p], marker: self.tool == Tool::Highlight };
+            }
             Tool::Step => {
                 let n = self.next_step_number();
                 let radius = (self.style.font.size * 0.8).max(10.0);
@@ -974,8 +996,14 @@ impl Editor {
                 *current = p;
                 *shift = mods.shift;
             }
-            Gesture::Freehand { points } => {
-                if points.last().is_none_or(|l| l.distance(p) >= 1.0) {
+            Gesture::Freehand { points, .. } => {
+                // Shift draws a straight stroke from where it started (snapped to 45°), for a neat
+                // line under or over text.
+                if mods.shift
+                    && let Some(&first) = points.first()
+                {
+                    *points = vec![first, geom::snap_45(first, p)];
+                } else if points.last().is_none_or(|l| l.distance(p) >= 1.0) {
                     points.push(p);
                 }
             }
@@ -1004,8 +1032,8 @@ impl Editor {
         self.pointer_move(p, mods);
         match std::mem::replace(&mut self.gesture, Gesture::Idle) {
             Gesture::Drawing { start, current, shift } => return self.finish_drawing(start, current, shift),
-            Gesture::Freehand { points } => {
-                self.add(AnnotationKind::Freehand { points });
+            Gesture::Freehand { points, marker } => {
+                self.add(stroke_kind(points, marker));
             }
             Gesture::Moving { id, before, .. } | Gesture::Resizing { id, before, .. } => {
                 if let Some(i) = self.index_of(id) {
@@ -1044,7 +1072,6 @@ impl Editor {
             Tool::SpeechBalloon => {
                 AnnotationKind::SpeechBalloon { rect: r, tail: PointF::new(r.x + r.w * 0.3, r.bottom() + 30.0), text: String::new() }
             }
-            Tool::Highlight => AnnotationKind::Highlight { rect: r },
             Tool::SmartEraser => {
                 let c = self.base.get(start.x as i32, start.y as i32);
                 AnnotationKind::SmartEraser { rect: r, color: Rgba { r: c[0], g: c[1], b: c[2], a: c[3] } }
@@ -1069,8 +1096,8 @@ impl Editor {
                 let kind = self.kind_for(*start, end)?;
                 Some(Annotation { id: 0, kind, style: self.style.clone() })
             }
-            Gesture::Freehand { points } => {
-                Some(Annotation { id: 0, kind: AnnotationKind::Freehand { points: points.clone() }, style: self.style.clone() })
+            Gesture::Freehand { points, marker } => {
+                Some(Annotation { id: 0, kind: stroke_kind(points.clone(), *marker), style: self.style.clone() })
             }
             _ => None,
         }
@@ -1282,6 +1309,12 @@ impl Editor {
     }
 }
 
+/// The annotation a finished freehand gesture leaves: a pen line, or a marker stroke (`marker`,
+/// the Highlight tool).
+fn stroke_kind(points: Vec<PointF>, marker: bool) -> AnnotationKind {
+    if marker { AnnotationKind::Highlight { points } } else { AnnotationKind::Freehand { points } }
+}
+
 #[cfg(test)]
 mod tests {
     use laqta_domain::PixelFormat;
@@ -1396,5 +1429,18 @@ mod tests {
         // Outside the box a press lets it go.
         drag(&mut e, (60.0, 45.0), (60.0, 45.0));
         assert!(!e.in_picked(35.0, 15.0));
+    }
+
+    #[test]
+    fn a_press_within_the_handle_reach_resizes_the_picked_mark() {
+        let mut e = editor();
+        draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
+        e.execute(Command::SetTool(Tool::Select));
+        e.execute(Command::SelectAll);
+        e.set_handle_reach(10.0);
+        // 9 px above and to the left of the top-left corner: past the old 6 px radius.
+        draw_rect(&mut e, (1.0, 1.0), (5.0, 5.0));
+        assert_eq!(rect_of(&e, 0), RectF::new(5.0, 5.0, 25.0, 20.0), "the corner moved; no new mark");
+        assert_eq!(e.annotations().len(), 1);
     }
 }

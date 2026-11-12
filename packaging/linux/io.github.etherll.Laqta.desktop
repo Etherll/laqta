@@ -9,3 +9,5 @@ Terminal=false
 Categories=Graphics;Utility;
 Keywords=screenshot;screen recording;capture;annotate;upload;
 StartupWMClass=io.github.etherll.Laqta
+# Lets KWin hand over screenshots without the pointer drawn in (Plasma's portal always draws it).
+X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2
