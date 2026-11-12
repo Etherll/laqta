@@ -52,15 +52,18 @@ pub fn runtime(data: &Path, options: &ModelOptions) -> Option<Arc<Runtime>> {
 }
 
 /// How long a loaded model may sit unused before its sessions are released (ARCHITECTURE §1.4).
-const MODEL_RELEASE: Duration = Duration::from_secs(60);
+const MODEL_RELEASE: Duration = Duration::from_secs(10);
+/// How often the release timer looks, while any session is loaded. A look is a lock and a few
+/// timestamp comparisons, so a short tick costs nothing and keeps the memory from lingering.
+const RELEASE_TICK: Duration = Duration::from_secs(1);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Releases the ONNX Runtime sessions (the model, its working memory and its threads) of every
-/// watched runtime once they go unused for 60 s. One timer runs while any session is loaded, and
-/// none when nothing is (ARCHITECTURE §1.4). It ticks every 60 s, so a session goes 60 to 120 s
+/// watched runtime once they go unused for 10 s. One timer runs while any session is loaded, and
+/// none when nothing is (ARCHITECTURE §1.4). It ticks every second, so a session goes 10 to 11 s
 /// after its last use. The ONNX Runtime library itself stays loaded.
 pub struct ModelReleaser {
     clock: Arc<dyn Clock>,
@@ -102,7 +105,7 @@ impl ModelReleaser {
         self.spawner.spawn(Box::pin(async move {
             loop {
                 let seen = state.uses.load(Ordering::SeqCst);
-                clock.sleep(MODEL_RELEASE).await;
+                clock.sleep(RELEASE_TICK).await;
                 let runtimes: Vec<Arc<Runtime>> = lock(&state.runtimes).iter().filter_map(Weak::upgrade).collect();
                 let loaded = Arc::new(AtomicBool::new(false));
                 let any = loaded.clone();

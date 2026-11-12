@@ -58,14 +58,15 @@ internal panel and one 4K external monitor.
   are downloaded on first use through `laqta-http`'s verified fetch. The first-use model and
   onnxruntime downloads report their progress as toasts.
 - **Release timers.** Each owner of a lazy resource arms one one-shot release timer while it
-  holds the resource (60 s after the last use). With nothing held, no timer exists and the
+  holds the resource (60 s after the last use; 10 s for the loaded models, which are the largest
+  and so are held the shortest). With nothing held, no timer exists and the
   process has no wakeups. Built so far:
   - the compute pool and the SQLite connection (`History::release_when_idle`) time themselves
     with the `Clock` port;
   - the HTTP runtime stops itself after 60 s with no job, on its own thread's timer, because
     `laqta-http` has no `Clock`;
   - the loaded models: `main`'s `ModelReleaser` (`apps/laqta/src/models.rs`) drops the ONNX
-    Runtime sessions of OCR, background removal and inpainting, with their threads, after 60 s
+    Runtime sessions of OCR, background removal and inpainting, with their threads, after 10 s
     unused, then calls glibc's `malloc_trim` on Linux.
 
   Not built yet: nothing releases the font database or the onnxruntime library (its environment
