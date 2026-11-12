@@ -525,8 +525,15 @@ impl OverlayModel {
     /// The warning Esc armed, while it holds.
     pub(crate) fn discard_notice(&self) -> Option<String> {
         let armed = self.discard_armed.is_some_and(|at| at.elapsed() < capture_escape::DISARM_AFTER);
+        let leaving = self.leave_armed.is_some_and(|(_, at)| at.elapsed() < capture_escape::DISARM_AFTER);
         let marks = self.annot.as_ref().map_or(0, |a| a.chrome.annotation_count);
-        (armed && marks > 0).then(|| capture_escape::discard_notice(marks))
+        if marks == 0 {
+            return None;
+        }
+        if leaving {
+            return Some(capture_escape::leave_notice(marks));
+        }
+        armed.then(|| capture_escape::discard_notice(marks))
     }
 
     /// Ends the session with `action`: with annotations, the edited crop goes first.
@@ -968,7 +975,37 @@ pub(crate) fn mode_bar_width() -> f32 {
 impl OverlayModel {
     /// A mode bar button.
     pub(crate) fn mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        // The export under way sends its action; nothing may end the capture before it.
+        if self.finishing {
+            return;
+        }
+        // Leaving the capture drops the marks: the first click warns, a second one goes ahead.
+        let leaves = matches!(mode, Mode::FullScreen | Mode::Monitor | Mode::Video | Mode::ColorPicker);
+        let marks = self.annot.as_ref().map_or(0, |a| a.chrome.annotation_count);
+        if leaves && marks > 0 {
+            let armed = self.leave_armed.is_some_and(|(m, at)| m == mode && at.elapsed() < capture_escape::DISARM_AFTER);
+            if !armed {
+                let at = std::time::Instant::now();
+                self.leave_armed = Some((mode, at));
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(capture_escape::DISARM_AFTER).await;
+                    let _ = this.update(cx, |m, cx| {
+                        if m.leave_armed.is_some_and(|(_, a)| a == at) {
+                            m.leave_armed = None;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+                cx.notify();
+                return;
+            }
+        }
+        self.leave_armed = None;
         match mode {
+            // Back to the selection: an open text layer closes, so the toolbar and the frame are
+            // the selection's again.
+            Mode::Screenshot | Mode::Region if self.text.is_some() => self.close_text(),
             Mode::Screenshot | Mode::Region => {
                 self.text_mode = false;
             }

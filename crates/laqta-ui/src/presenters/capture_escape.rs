@@ -61,6 +61,12 @@ pub fn discard_notice(marks: usize) -> String {
     format!("Press Esc again to discard {marks} {noun}")
 }
 
+/// The warning a mode-bar button that leaves the capture shows before it drops the marks.
+pub fn leave_notice(marks: usize) -> String {
+    let noun = if marks == 1 { "annotation" } else { "annotations" };
+    format!("Click again to discard {marks} {noun}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

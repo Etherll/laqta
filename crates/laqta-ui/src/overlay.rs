@@ -76,6 +76,9 @@ pub(crate) struct OverlayModel {
     pub(crate) text: Option<crate::overlay_text::TextUi>,
     /// When Esc (or a close button) last warned that the marks would go (`capture_escape`).
     pub(crate) discard_armed: Option<std::time::Instant>,
+    /// A mode-bar button that would leave the capture and drop the marks was clicked once: a
+    /// second click on it while this holds goes ahead.
+    pub(crate) leave_armed: Option<(crate::overlay_tools::Mode, std::time::Instant)>,
     /// Who took the press under way (`capture_pointer::route`): its moves and release go there too,
     /// on whichever monitor's window they reach.
     pub(crate) pressed: Option<Route>,
@@ -174,6 +177,7 @@ pub(crate) fn show(frames: Vec<Frame>, images: Vec<Option<Arc<RenderImage>>>, vi
         text_mode: false,
         text: None,
         discard_armed: None,
+        leave_armed: None,
         pressed: None,
         pressed_button: None,
         frame_only: false,
@@ -874,6 +878,13 @@ impl OverlayView {
                 model.toolbar_shown(),
             )
         };
+        // Mid-drag of the frame, Esc puts it back (the session cancels a gesture on a second
+        // button) before typing or the ladder can take it.
+        if key == "escape" && marks && self.model.read(cx).view.gesture {
+            let (x, y) = self.model.read(cx).view.cursor;
+            self.send(RegionInput::PointerDown { x, y, button: Button::Right }, cx);
+            return;
+        }
         let mods = crate::editor_window::mods(m);
         if editing {
             if !ctrl(m)
@@ -926,13 +937,6 @@ impl OverlayView {
             return;
         }
         match key {
-            // Mid-drag of the frame, Esc puts it back (the session cancels a gesture on a second
-            // button) before the ladder can step towards discarding the marks.
-            "escape" if marks && self.model.read(cx).view.gesture => {
-                let (x, y) = self.model.read(cx).view.cursor;
-                self.send(RegionInput::PointerDown { x, y, button: Button::Right }, cx);
-                return;
-            }
             "escape" => {
                 self.model.update(cx, |model, cx| model.escape(cx));
                 return;

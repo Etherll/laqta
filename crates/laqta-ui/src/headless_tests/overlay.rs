@@ -954,3 +954,38 @@ fn reading_text_ends_the_space_lend(cx: &mut TestAppContext) {
     cx.update(|cx| model.update(cx, |m, cx| m.return_pointer(cx)));
     assert_eq!(cx.update(|cx| model.read(cx).tool), None, "no tool comes back over the text");
 }
+
+/// With marks drawn, a mode-bar button that leaves the capture warns first and goes ahead on a
+/// second click; while the marks export, it does nothing.
+#[gpui::test]
+fn leaving_the_capture_warns_before_dropping_the_marks(cx: &mut TestAppContext) {
+    use laqta_domain::region::{RegionCommand, RegionInput, SelectionAction};
+    use laqta_editor::Tool;
+
+    use crate::overlay_tools::Mode;
+    use crate::presenters::capture_toolbar::Item;
+
+    let (model, sent) = settled_overlay(cx, PhysRect { x: 100, y: 100, width: 200, height: 100 });
+    cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Rectangle), cx)));
+    draw(cx, &model, (10.0, 10.0), (50.0, 40.0));
+    let full = |sent: &std::sync::Mutex<Vec<RegionInput>>| {
+        sent.lock().unwrap().iter().filter(|i| matches!(i, RegionInput::Command(RegionCommand::Fullscreen))).count()
+    };
+    cx.update(|cx| model.update(cx, |m, cx| m.mode(Mode::FullScreen, cx)));
+    assert_eq!(full(&sent), 0, "the first click warns");
+    assert!(cx.update(|cx| model.read(cx).discard_notice()).is_some_and(|n| n.starts_with("Click again")));
+    cx.update(|cx| model.update(cx, |m, cx| m.mode(Mode::FullScreen, cx)));
+    assert_eq!(full(&sent), 1, "the second goes ahead");
+
+    let (model, sent) = settled_overlay(cx, PhysRect { x: 100, y: 100, width: 200, height: 100 });
+    cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Rectangle), cx)));
+    draw(cx, &model, (10.0, 10.0), (50.0, 40.0));
+    cx.update(|cx| model.update(cx, |m, cx| m.finish(SelectionAction::Copy, cx)));
+    for _ in 0..2 {
+        cx.update(|cx| model.update(cx, |m, cx| m.mode(Mode::Monitor, cx)));
+    }
+    assert!(
+        !sent.lock().unwrap().iter().any(|i| matches!(i, RegionInput::Command(RegionCommand::ActiveMonitor))),
+        "nothing leaves while the marks export"
+    );
+}
