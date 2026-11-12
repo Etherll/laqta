@@ -55,23 +55,20 @@ Download the latest build for your system:
 
 Every file has a `.sha256` next to it on the [Releases](../../releases) page.
 
-- **Windows:** the installer sets Laqta up for your account, adds Start menu and desktop
-  shortcuts, and keeps it updated. The portable `.exe` runs from any folder, a USB stick
-  included, and keeps its settings in a `LaqtaData` folder beside it.
-- **Linux:** make the AppImage executable (`chmod +x laqta-linux-x86_64.AppImage`) and run it. On
-  Debian or Ubuntu you can instead install the package with
-  `sudo apt install ./laqta-linux-amd64.deb`. The archive holds the plain binaries, or you can
+- **Windows:** the installer adds shortcuts and updates itself. The portable `.exe` runs from
+  anywhere (a USB stick too) and keeps its settings in a `LaqtaData` folder next to it.
+- **Linux:** `chmod +x laqta-linux-x86_64.AppImage` and run it, or on Debian/Ubuntu
+  `sudo apt install ./laqta-linux-amd64.deb`. The archive has the plain binaries, or you can
   [build from source](#%EF%B8%8F-build-from-source).
-- **macOS (preview):** open the `.dmg` and drag Laqta into Applications. The build isn't
-  notarized by Apple yet, so the first time you open it macOS blocks it: go to
-  **System Settings → Privacy & Security** and click **Open Anyway**. Laqta then asks for the
-  Screen Recording and Accessibility permissions. Recording uses FFmpeg from Homebrew
-  (`brew install ffmpeg`). The macOS build passes CI but hasn't been tested on a real Mac yet,
-  so please [report](../../issues) anything that doesn't work.
-- **NixOS / Nix:** try it with `nix run github:Etherll/laqta`, or install it from the flake
-  (below). The Nix package brings its own FFmpeg and ONNX Runtime from Nixpkgs instead of
-  downloading them on first use. Text recognition and the local models need ONNX Runtime (about 240 MiB); leave it out
-  with `laqta.override { withOnnxruntime = false; }`.
+- **macOS (preview):** drag Laqta from the `.dmg` into Applications. It isn't notarized yet, so
+  the first launch gets blocked: click **Open Anyway** in **System Settings → Privacy & Security**,
+  then grant Screen Recording and Accessibility. Recording needs `brew install ffmpeg`. It passes
+  CI but nobody has tried it on a real Mac yet, so please [report](../../issues) what breaks.
+- **NixOS / Nix:** `nix run github:Etherll/laqta`, or add the flake (below). FFmpeg and ONNX
+  Runtime come from Nixpkgs instead of being downloaded on first run.
+
+  <details>
+  <summary>Flake setup</summary>
 
   ```nix
   # flake.nix of your system: add the input, then the package
@@ -86,20 +83,21 @@ Every file has a `.sha256` next to it on the [Releases](../../releases) page.
   };
   ```
 
-  The cache holds builds made with the flake's own Nixpkgs. Adding
-  `inputs.laqta.inputs.nixpkgs.follows = "nixpkgs";` builds Laqta with your Nixpkgs instead, which
-  avoids a second copy of the libraries it shares with your system but compiles it on your machine.
+  - Text recognition and local models need ONNX Runtime (~240 MiB). Skip it with
+    `laqta.override { withOnnxruntime = false; }`.
+  - The cache only covers the flake's own Nixpkgs. With
+    `inputs.laqta.inputs.nixpkgs.follows = "nixpkgs";` you share libraries with your system
+    but compile Laqta yourself.
+  - On Wayland, capture and global shortcuts go through the desktop portal: keep
+    `xdg.portal.enable = true`. GNOME and KDE handle this; on Hyprland or Sway add
+    `xdg-desktop-portal-hyprland` or `xdg-desktop-portal-wlr`.
 
-  On Wayland, screen capture and global shortcuts go through the desktop portal, so keep
-  `xdg.portal.enable = true` with your desktop's portal (GNOME and KDE set this up themselves;
-  on Hyprland or Sway add `xdg-desktop-portal-hyprland` or `xdg-desktop-portal-wlr`).
+  </details>
 
-Laqta lives in the tray (the menu bar on macOS). Press <kbd>Ctrl</kbd>+<kbd>PrtSc</kbd> to
-capture a region, <kbd>PrtSc</kbd> for the whole screen, or set your own shortcuts in
-**Settings → Shortcuts**. Macs have no Print Screen key and keep
-<kbd>⌘</kbd>+<kbd>⇧</kbd>+<kbd>3</kbd>/<kbd>4</kbd>/<kbd>5</kbd> for their own screenshots, so
-there the defaults are <kbd>⌃</kbd>+<kbd>⌥</kbd>+<kbd>2</kbd> for a region and
-<kbd>⌃</kbd>+<kbd>⌥</kbd>+<kbd>1</kbd> for the whole screen.
+Laqta sits in the tray (menu bar on macOS). <kbd>Ctrl</kbd>+<kbd>PrtSc</kbd> captures a region,
+<kbd>PrtSc</kbd> the whole screen; change them in **Settings → Shortcuts**. On a Mac the defaults
+are <kbd>⌃</kbd>+<kbd>⌥</kbd>+<kbd>2</kbd> (region) and <kbd>⌃</kbd>+<kbd>⌥</kbd>+<kbd>1</kbd>
+(screen), since there's no Print Screen key and <kbd>⌘</kbd>+<kbd>⇧</kbd>+<kbd>3</kbd>/<kbd>4</kbd>/<kbd>5</kbd> are taken.
 
 ## ⭐ Features
 
@@ -131,8 +129,8 @@ there the defaults are <kbd>⌃</kbd>+<kbd>⌥</kbd>+<kbd>2</kbd> for a region a
 ### ✨ AI tools
 * **Text recognition (OCR)** for a region or an image. It runs offline, and on a region it
   highlights the words in place so you can pick the ones to copy.
-* **Background removal** and an **object eraser** with local ONNX models, on the GPU where
-  available (DirectML on Windows, CUDA on Linux).
+* **Background removal** and an **object eraser** with local ONNX models. They run on the CPU
+  for now; GPU support is coming.
 * **Image analysis** through any OpenAI-compatible provider, such as OpenAI, Gemini or
   OpenRouter, or a local Ollama or LM Studio server.
 
