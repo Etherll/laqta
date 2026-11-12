@@ -913,3 +913,28 @@ fn focus_loss_ends_the_space_lend_and_an_export_freezes_the_strip(cx: &mut TestA
     cx.update(|cx| model.update(cx, |m, cx| m.restyle(|st, t| bar::with_color(st, t, blue), cx)));
     assert_eq!(cx.update(|cx| model.read(cx).annot.as_ref().unwrap().chrome.style.clone()), before, "no restyle mid-export");
 }
+
+/// Losing activation mid-stroke drops the stroke and forgets the press, so the next click and
+/// Done are not held up by a release that never comes.
+#[gpui::test]
+fn focus_loss_mid_stroke_drops_it_and_frees_the_press(cx: &mut TestAppContext) {
+    use laqta_editor::{EditorInput, Mods, PointerButton, Tool};
+
+    use crate::presenters::capture_pointer::Route;
+    use crate::presenters::capture_toolbar::Item;
+
+    let (model, _sent) = settled_overlay(cx, PhysRect { x: 100, y: 100, width: 200, height: 100 });
+    cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Rectangle), cx)));
+    let mods = Mods::default();
+    cx.update(|cx| {
+        model.update(cx, |m, cx| {
+            m.pressed = Some(Route::Editor);
+            m.pressed_button = Some(gpui::MouseButton::Left);
+            m.editor_input(EditorInput::PointerDown { x: 10.0, y: 10.0, button: PointerButton::Left, mods }, cx);
+            m.editor_input(EditorInput::PointerMove { x: 50.0, y: 40.0, mods }, cx);
+            m.press_lost(cx);
+        })
+    });
+    let m = |cx: &mut TestAppContext| cx.update(|cx| (model.read(cx).pressed, model.read(cx).annot.as_ref().map(|a| a.mark_rects().len())));
+    assert_eq!(m(cx), (None, Some(0)), "the stroke is dropped and the press forgotten");
+}

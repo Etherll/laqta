@@ -119,7 +119,11 @@ pub fn pointer(s: &PointerScene, at: (i32, i32)) -> Pointer {
         return Pointer::Resize(h);
     }
     if inside(frame, at) {
-        return if pointer_tool(s) { Pointer::Move } else { Pointer::Draw };
+        return match s.tool {
+            _ if pointer_tool(s) => Pointer::Move,
+            Some(Tool::Text) => Pointer::Text,
+            _ => Pointer::Draw,
+        };
     }
     if route(s, at, Button::Left) == Route::Session { Pointer::Crosshair } else { Pointer::NotAllowed }
 }

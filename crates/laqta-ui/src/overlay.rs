@@ -249,7 +249,10 @@ fn open_window(
             view.update(cx, |_, cx| {
                 cx.observe_window_activation(window, |this, window, cx| {
                     if !window.is_window_active() {
-                        this.model.update(cx, |m, cx| m.space_lost(cx));
+                        this.model.update(cx, |m, cx| {
+                            m.space_lost(cx);
+                            m.press_lost(cx);
+                        });
                     }
                 })
                 .detach();
@@ -923,6 +926,13 @@ impl OverlayView {
             return;
         }
         match key {
+            // Mid-drag of the frame, Esc puts it back (the session cancels a gesture on a second
+            // button) before the ladder can step towards discarding the marks.
+            "escape" if marks && self.model.read(cx).view.gesture => {
+                let (x, y) = self.model.read(cx).view.cursor;
+                self.send(RegionInput::PointerDown { x, y, button: Button::Right }, cx);
+                return;
+            }
             "escape" => {
                 self.model.update(cx, |model, cx| model.escape(cx));
                 return;

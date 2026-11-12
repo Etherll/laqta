@@ -283,6 +283,17 @@ impl OverlayModel {
         self.give_back(back, cx);
     }
 
+    /// The overlay lost activation mid-press, so the release may never come: a stroke is dropped
+    /// and a dragged mark put back, as Esc does, and the press is forgotten.
+    pub(crate) fn press_lost(&mut self, cx: &mut Context<Self>) {
+        if self.pressed == Some(crate::presenters::capture_pointer::Route::Editor) {
+            let key = EditorInput::Key { key: laqta_editor::EditorKey::Escape, mods: laqta_editor::Mods::default() };
+            self.editor_input(key, cx);
+            self.pressed = None;
+            self.pressed_button = None;
+        }
+    }
+
     /// A press ended: the drawing tool comes back if Space came up during it.
     pub(crate) fn after_release(&mut self, cx: &mut Context<Self>) {
         let back = self.space.released(self.tool);
