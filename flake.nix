@@ -60,7 +60,9 @@
             # The package's build-time paths (nix/package.nix), so `cargo run` behaves like it.
             inherit (laqta) LAQTA_TOOLS_PATH LAQTA_ONNXRUNTIME;
             # `cargo run` binaries have no patched RUNPATH, so the dlopen'd libraries come from here.
-            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath laqta.buildInputs;
+            # Not from `laqta.buildInputs`: the derivation holds their `dev` outputs, without the
+            # shared libraries.
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath laqta.dlopenLibs;
           };
         }
       );
