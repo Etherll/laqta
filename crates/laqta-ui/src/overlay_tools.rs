@@ -273,6 +273,13 @@ impl OverlayModel {
         self.give_back(back, cx);
     }
 
+    /// The overlay lost activation with Space perhaps still down: the lent tool comes back.
+    pub(crate) fn space_lost(&mut self, cx: &mut Context<Self>) {
+        let back = self.space.space_up(false, self.tool);
+        self.space.picked();
+        self.give_back(back, cx);
+    }
+
     /// A press ended: the drawing tool comes back if Space came up during it.
     pub(crate) fn after_release(&mut self, cx: &mut Context<Self>) {
         let back = self.space.released(self.tool);
@@ -433,6 +440,10 @@ impl OverlayModel {
     /// A colour or size from the style strip or a number key: it styles the next marks, and the
     /// text being typed.
     pub(crate) fn restyle(&mut self, change: impl FnOnce(&Style, Tool) -> Style, cx: &mut Context<Self>) {
+        // The export under way is of the marks as they are.
+        if self.finishing {
+            return;
+        }
         let (Some(tool), Some(a)) = (self.tool, self.annot.as_ref()) else { return };
         let style = change(&a.chrome.style, tool);
         bar::remember(&mut self.marks, tool, &style);

@@ -240,6 +240,16 @@ fn open_window(
         .open_window(options, |window, cx| {
             crate::perf::first_frame("overlay", window);
             let view = cx.new(|cx| OverlayView::new(model, index, wanted_y, cx));
+            // Space let go in another window never comes back as a key-up here: losing activation
+            // gives the lent tool back.
+            view.update(cx, |_, cx| {
+                cx.observe_window_activation(window, |this, window, cx| {
+                    if !window.is_window_active() {
+                        this.model.update(cx, |m, cx| m.space_lost(cx));
+                    }
+                })
+                .detach();
+            });
             let focus = view.read(cx).focus.clone();
             window.focus(&focus, cx);
             view

@@ -79,7 +79,9 @@ pub fn route(s: &PointerScene, at: (i32, i32), button: Button) -> Route {
     let Some(frame) = s.frame else { return Route::Session };
     // A picked annotation's handle wins over the selection's grab area, with any tool.
     // Only inside the frame: the canvas is clipped to it, so a handle beyond it can't be seen.
-    if s.mark_grip.is_some() && inside(frame, at) {
+    // Alt under the Pointer moves the frame alone, over a handle too.
+    let alt_frame = s.frame_only && pointer_tool(s);
+    if s.mark_grip.is_some() && inside(frame, at) && !alt_frame {
         return Route::Editor;
     }
     if s.grab.is_some() {
@@ -152,6 +154,8 @@ mod tests {
         assert_eq!(route(&s, INSIDE, Button::Left), Route::Session, "a mark covering the selection can't pin it");
         let drawing = PointerScene { tool: Some(Tool::Rectangle), ..s };
         assert_eq!(route(&drawing, INSIDE, Button::Left), Route::Editor, "a drawing tool still draws");
+        let handle = PointerScene { mark_grip: Some(Grip::Axis(Handle::E)), ..s };
+        assert_eq!(route(&handle, INSIDE, Button::Left), Route::Session, "over a picked mark's handle too");
     }
 
     #[test]

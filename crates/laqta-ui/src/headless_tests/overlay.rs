@@ -868,3 +868,27 @@ fn keys_mid_stroke_never_lose_or_leak_the_stroke(cx: &mut TestAppContext) {
     let count = cx.update(|cx| model.read(cx).annot.as_ref().map_or(0, |a| a.chrome.annotation_count));
     assert_eq!(count, 0, "the stroke Esc dropped doesn't land on the release");
 }
+
+/// Losing activation with Space held gives the drawing tool back, and the style strip holds still
+/// while the marks are exported.
+#[gpui::test]
+fn focus_loss_ends_the_space_lend_and_an_export_freezes_the_strip(cx: &mut TestAppContext) {
+    use laqta_domain::region::SelectionAction;
+    use laqta_editor::Tool;
+
+    use crate::presenters::capture_toolbar::{self as bar, Item};
+
+    let (model, _sent) = settled_overlay(cx, PhysRect { x: 100, y: 100, width: 200, height: 100 });
+    cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Arrow), cx)));
+    cx.update(|cx| model.update(cx, |m, _| m.borrow_pointer()));
+    assert_eq!(cx.update(|cx| model.read(cx).tool), None);
+    cx.update(|cx| model.update(cx, |m, cx| m.space_lost(cx)));
+    assert_eq!(cx.update(|cx| model.read(cx).tool), Some(Tool::Arrow), "the arrow is back");
+
+    draw(cx, &model, (10.0, 10.0), (50.0, 40.0));
+    cx.update(|cx| model.update(cx, |m, cx| m.finish(SelectionAction::Copy, cx)));
+    let before = cx.update(|cx| model.read(cx).annot.as_ref().unwrap().chrome.style.clone());
+    let blue = bar::palette(Tool::Arrow)[4];
+    cx.update(|cx| model.update(cx, |m, cx| m.restyle(|st, t| bar::with_color(st, t, blue), cx)));
+    assert_eq!(cx.update(|cx| model.read(cx).annot.as_ref().unwrap().chrome.style.clone()), before, "no restyle mid-export");
+}
