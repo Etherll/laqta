@@ -38,22 +38,33 @@ fn in_pool<R: Send>(body: impl FnOnce() -> R + Send) -> R {
 }
 
 fn frame(x: i32, bgra: [u8; 4]) -> Frame {
-    let pixels: Vec<u8> = std::iter::repeat_n(bgra, 16).flatten().collect();
+    frame_sized(x, 4, bgra)
+}
+
+/// A square monitor `side` px wide at `x`, all one pixel.
+fn frame_sized(x: i32, side: u32, bgra: [u8; 4]) -> Frame {
+    let pixels: Vec<u8> = std::iter::repeat_n(bgra, (side * side) as usize).flatten().collect();
     Frame {
         monitor: Monitor {
             id: MonitorId(format!("monitor-{x}")),
             name: format!("Monitor {x}"),
-            rect: PhysRect { x, y: 0, width: 4, height: 4 },
+            rect: PhysRect { x, y: 0, width: side, height: side },
             scale: 1.0,
             primary: x == 0,
         },
-        image: Bitmap::new(4, 4, PixelFormat::Bgra8, pixels.into()).unwrap(),
+        image: Bitmap::new(side, side, PixelFormat::Bgra8, pixels.into()).unwrap(),
     }
 }
 
 /// Two 4x4 monitors side by side: an 8x4 desktop.
 fn two_frames() -> Vec<Frame> {
     vec![frame(0, LEFT_BGRA), frame(4, RIGHT_BGRA)]
+}
+
+/// Two 20x20 monitors side by side: a 40x20 desktop. A held selection's handles reach 8 px past its
+/// edges, so a test that presses twice on the desktop needs more room than `two_frames` gives.
+fn big_frames() -> Vec<Frame> {
+    vec![frame_sized(0, 20, LEFT_BGRA), frame_sized(20, 20, RIGHT_BGRA)]
 }
 
 fn options() -> RegionCaptureOptions {
@@ -216,25 +227,25 @@ fn multi_region_enter_keeps_both_rects_with_a_transparent_gap() {
         let overlay = Arc::new(FakeOverlay::default());
         let ports = test_ports(overlay.clone(), Arc::new(FakeHoverSource::unsupported()));
         let options = RegionCaptureOptions { multi_region: true, ..options() };
-        let mut session = pin!(select(&ports, two_frames(), &options));
+        let mut session = pin!(select(&ports, big_frames(), &options));
         assert!(step(session.as_mut()).is_none());
 
-        // The first region's handles reach x 5 at most, so the second press at x 6 draws a new one.
+        // The first region's handles reach x 8 at most, so the second press at x 22 draws a new one.
         drag(&overlay, (0, 0), (1, 3));
-        drag(&overlay, (6, 0), (7, 3));
+        drag(&overlay, (22, 0), (23, 3));
         assert!(step(session.as_mut()).is_none());
         press(&overlay, RegionKey::Enter);
         let selection = step(session.as_mut()).expect("Enter confirms").unwrap();
 
-        assert_eq!(selection.rects, vec![PhysRect { x: 0, y: 0, width: 2, height: 4 }, PhysRect { x: 6, y: 0, width: 2, height: 4 }]);
+        assert_eq!(selection.rects, vec![PhysRect { x: 0, y: 0, width: 2, height: 4 }, PhysRect { x: 22, y: 0, width: 2, height: 4 }]);
         assert_eq!(selection.target, None);
-        assert_eq!((selection.image.width(), selection.image.height()), (8, 4));
+        assert_eq!((selection.image.width(), selection.image.height()), (24, 4));
         assert_eq!(pixel(&selection.image, 0, 0), LEFT);
         assert_eq!(pixel(&selection.image, 1, 3), LEFT);
         assert_eq!(pixel(&selection.image, 2, 0), CLEAR);
-        assert_eq!(pixel(&selection.image, 5, 3), CLEAR);
-        assert_eq!(pixel(&selection.image, 6, 0), RIGHT);
-        assert_eq!(pixel(&selection.image, 7, 3), RIGHT);
+        assert_eq!(pixel(&selection.image, 21, 3), CLEAR);
+        assert_eq!(pixel(&selection.image, 22, 0), RIGHT);
+        assert_eq!(pixel(&selection.image, 23, 3), RIGHT);
     });
 }
 
@@ -343,6 +354,7 @@ fn view_carries_the_magnifier_and_info_text_only_when_enabled() {
         magnifier_pixels: 3,
         info_text: options().info_text,
         handle_size: laqta_domain::region::HANDLE_SIZE,
+        grab_size: laqta_domain::region::HANDLE_SIZE * 2,
         right_click: RegionMouseAction::RemoveShapeOrCancel,
         middle_click: RegionMouseAction::CancelCapture,
     });
@@ -491,7 +503,6 @@ fn a_dragged_region_stays_selected_until_finish_and_carries_the_action() {
         let shown = overlay.last_view().unwrap();
         assert_eq!(shown.selected, Some(PhysRect { x: 5, y: 1, width: 2, height: 2 }));
         assert!(shown.tools_visible);
-        assert!(!shown.locked);
         let image = shown.selection_image.expect("the overlay gets the selection's pixels");
         assert_eq!((image.width(), image.height()), (2, 2));
         assert_eq!(pixels(&image), vec![RIGHT; 4]);
@@ -551,7 +562,6 @@ fn an_annotated_crop_replaces_the_plain_crop() {
         assert!(step(session.as_mut()).is_none());
 
         drag(&overlay, (5, 1), (6, 2));
-        overlay.send(RegionInput::Command(RegionCommand::Lock));
         assert!(step(session.as_mut()).is_none());
         let views_before = overlay.views.lock().unwrap().len();
         overlay.send(RegionInput::Annotated(annotated_crop()));
@@ -631,25 +641,23 @@ fn the_selection_image_is_sent_once_per_distinct_selected_rect() {
         let overlay = Arc::new(FakeOverlay::default());
         let ports = test_ports(overlay.clone(), Arc::new(FakeHoverSource::unsupported()));
         let opts = selecting();
-        let mut session = pin!(select(&ports, two_frames(), &opts));
+        let mut session = pin!(select(&ports, big_frames(), &opts));
         assert!(step(session.as_mut()).is_none());
         assert_eq!(views_with_an_image(&overlay), 0, "nothing is selected yet");
 
         // The press and the drag move are mid-gesture; the release selects.
-        drag(&overlay, (4, 1), (5, 2));
+        drag(&overlay, (24, 1), (25, 2));
         assert!(step(session.as_mut()).is_none());
         assert_eq!(views_with_an_image(&overlay), 1);
 
-        // Moving the pointer, toggling the tools and locking change the view but not the selection.
-        overlay.send(RegionInput::PointerMove { x: 4, y: 1 });
+        // Moving the pointer and toggling the tools change the view but not the selection.
+        overlay.send(RegionInput::PointerMove { x: 24, y: 1 });
         press(&overlay, RegionKey::Space);
-        overlay.send(RegionInput::Command(RegionCommand::Lock));
-        overlay.send(RegionInput::Command(RegionCommand::Unlock));
-        overlay.send(RegionInput::PointerMove { x: 5, y: 2 });
+        overlay.send(RegionInput::PointerMove { x: 25, y: 2 });
         assert!(step(session.as_mut()).is_none());
         assert_eq!(views_with_an_image(&overlay), 1, "the overlay keeps the image it was given");
         let quiet = overlay.last_view().unwrap();
-        assert_eq!(quiet.selected, Some(PhysRect { x: 4, y: 1, width: 2, height: 2 }));
+        assert_eq!(quiet.selected, Some(PhysRect { x: 24, y: 1, width: 2, height: 2 }));
         assert!(quiet.selection_image.is_none());
         assert!(!quiet.tools_visible);
 
@@ -658,19 +666,77 @@ fn the_selection_image_is_sent_once_per_distinct_selected_rect() {
         assert!(step(session.as_mut()).is_none());
         assert_eq!(views_with_an_image(&overlay), 2);
         let moved = overlay.last_view().unwrap();
-        assert_eq!(moved.selected, Some(PhysRect { x: 5, y: 1, width: 2, height: 2 }));
+        assert_eq!(moved.selected, Some(PhysRect { x: 25, y: 1, width: 2, height: 2 }));
         assert_eq!(pixels(&moved.selection_image.expect("a new rect gets a new image")), vec![RIGHT; 4]);
 
-        // Drawing a new region: no image mid-gesture, one when it is released.
-        overlay.send(RegionInput::PointerDown { x: 0, y: 0, button: Button::Left });
-        overlay.send(RegionInput::PointerMove { x: 1, y: 1 });
+        // Drawing a new region on the other monitor: no image mid-gesture, one when it is released.
+        overlay.send(RegionInput::PointerDown { x: 0, y: 15, button: Button::Left });
+        overlay.send(RegionInput::PointerMove { x: 1, y: 16 });
         assert!(step(session.as_mut()).is_none());
         assert_eq!(views_with_an_image(&overlay), 2);
         assert_eq!(overlay.last_view().unwrap().selected, None, "the selection is not held while drawing");
-        overlay.send(RegionInput::PointerUp { x: 1, y: 1, button: Button::Left });
+        overlay.send(RegionInput::PointerUp { x: 1, y: 16, button: Button::Left });
         assert!(step(session.as_mut()).is_none());
         assert_eq!(views_with_an_image(&overlay), 3);
         assert_eq!(pixels(&overlay.last_view().unwrap().selection_image.unwrap()), vec![LEFT; 4]);
+
+        press(&overlay, RegionKey::Escape);
+        assert!(matches!(step(session.as_mut()), Some(Err(AppError::Cancelled))));
+    });
+}
+
+#[test]
+fn a_move_of_the_held_selection_sends_one_image_after_release() {
+    in_pool(|| {
+        let overlay = Arc::new(FakeOverlay::default());
+        let ports = test_ports(overlay.clone(), Arc::new(FakeHoverSource::unsupported()));
+        let opts = selecting();
+        let mut session = pin!(select(&ports, big_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+
+        drag(&overlay, (0, 0), (19, 19));
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(views_with_an_image(&overlay), 1);
+
+        // The press is inside the selection, clear of its handles, so it moves the selection.
+        overlay.send(RegionInput::PointerDown { x: 9, y: 9, button: Button::Left });
+        overlay.send(RegionInput::PointerMove { x: 12, y: 9 });
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(views_with_an_image(&overlay), 1, "no image while the selection moves");
+
+        overlay.send(RegionInput::PointerUp { x: 12, y: 9, button: Button::Left });
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(views_with_an_image(&overlay), 2, "one image for the rect the move ended on");
+        let moved = overlay.last_view().unwrap();
+        assert_eq!(moved.selected, Some(PhysRect { x: 3, y: 0, width: 20, height: 20 }));
+        let image = moved.selection_image.expect("the moved rect gets its image");
+        assert_eq!((image.width(), image.height()), (20, 20));
+        assert_eq!(pixel(&image, 0, 0), LEFT);
+        assert_eq!(pixel(&image, 19, 19), RIGHT);
+
+        press(&overlay, RegionKey::Escape);
+        assert!(matches!(step(session.as_mut()), Some(Err(AppError::Cancelled))));
+    });
+}
+
+#[test]
+fn a_click_outside_a_held_selection_keeps_it_and_sends_no_crop() {
+    in_pool(|| {
+        let overlay = Arc::new(FakeOverlay::default());
+        let ports = test_ports(overlay.clone(), Arc::new(FakeHoverSource::unsupported()));
+        let opts = selecting();
+        let mut session = pin!(select(&ports, big_frames(), &opts));
+        assert!(step(session.as_mut()).is_none());
+
+        drag(&overlay, (0, 0), (19, 19));
+        assert!(step(session.as_mut()).is_none());
+        let images = views_with_an_image(&overlay);
+
+        // Clear of the held selection's handles, so the click draws nothing and the selection stays.
+        click(&overlay, (30, 15));
+        assert!(step(session.as_mut()).is_none());
+        assert_eq!(views_with_an_image(&overlay), images, "no crop for the click");
+        assert_eq!(overlay.last_view().unwrap().selected, Some(PhysRect { x: 0, y: 0, width: 20, height: 20 }));
 
         press(&overlay, RegionKey::Escape);
         assert!(matches!(step(session.as_mut()), Some(Err(AppError::Cancelled))));
@@ -698,7 +764,7 @@ fn a_session_that_confirms_on_select_never_sends_a_selection_image() {
 }
 
 #[test]
-fn view_carries_the_selection_the_tools_and_the_lock() {
+fn view_carries_the_selection_and_the_tools() {
     let bounds = PhysRect { x: 0, y: 0, width: 8, height: 4 };
     let mut state = RegionState::new(RegionConfig {
         bounds,
@@ -710,6 +776,7 @@ fn view_carries_the_selection_the_tools_and_the_lock() {
         magnifier_pixels: 3,
         info_text: options().info_text,
         handle_size: laqta_domain::region::HANDLE_SIZE,
+        grab_size: laqta_domain::region::HANDLE_SIZE * 2,
         right_click: RegionMouseAction::RemoveShapeOrCancel,
         middle_click: RegionMouseAction::CancelCapture,
     });
@@ -717,18 +784,15 @@ fn view_carries_the_selection_the_tools_and_the_lock() {
     let idle = view(&state, bounds, &selecting(), [0; 3]);
     assert_eq!(idle.selected, None);
     assert!(idle.tools_visible, "the tools start shown");
-    assert!(!idle.locked);
 
     state.handle(RegionInput::PointerDown { x: 1, y: 1, button: Button::Left });
     state.handle(RegionInput::PointerMove { x: 2, y: 2 });
     state.handle(RegionInput::PointerUp { x: 2, y: 2, button: Button::Left });
     state.handle(RegionInput::Key { key: RegionKey::Space, mods: KeyMods::default() });
-    state.handle(RegionInput::Command(RegionCommand::Lock));
 
     let held = view(&state, bounds, &selecting(), [0; 3]);
     assert_eq!(held.selected, Some(PhysRect { x: 1, y: 1, width: 2, height: 2 }));
     assert!(!held.tools_visible);
-    assert!(held.locked);
     assert!(held.selection_image.is_none(), "the session adds the crop, not the view builder");
 }
 
@@ -919,19 +983,20 @@ fn the_text_follows_the_selection() {
     in_pool(|| {
         let rig = text_rig();
         let opts = selecting();
-        let mut session = pin!(select(&rig.ports, two_frames(), &opts));
+        let mut session = pin!(select(&rig.ports, big_frames(), &opts));
         assert!(step(session.as_mut()).is_none());
         drag(&rig.overlay, (5, 1), (6, 2));
         ask(&rig.overlay, TextCommand::Read);
         assert!(step(session.as_mut()).is_none());
 
-        // While the new region is drawn there is no selection, so the old text goes with it.
-        rig.overlay.send(RegionInput::PointerDown { x: 0, y: 0, button: Button::Left });
-        rig.overlay.send(RegionInput::PointerMove { x: 2, y: 3 });
+        // While the new region is drawn there is no selection, so the old text goes with it. The press
+        // is clear of the held selection's handles.
+        rig.overlay.send(RegionInput::PointerDown { x: 30, y: 15, button: Button::Left });
+        rig.overlay.send(RegionInput::PointerMove { x: 32, y: 18 });
         assert!(step(session.as_mut()).is_none());
         assert!(rig.overlay.last_view().unwrap().text.is_none());
 
-        rig.overlay.send(RegionInput::PointerUp { x: 2, y: 3, button: Button::Left });
+        rig.overlay.send(RegionInput::PointerUp { x: 32, y: 18, button: Button::Left });
         assert!(step(session.as_mut()).is_none());
         assert_eq!(shown_text(&rig.overlay), Some(("hello\nworld".to_owned(), true)));
         assert_eq!(rig.ocr.seen.lock().unwrap().as_slice(), &[(2, 2), (3, 4)], "the new selection was read");

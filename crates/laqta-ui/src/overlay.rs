@@ -16,6 +16,8 @@ use laqta_domain::{Bitmap, Frame, PixelFormat};
 use laqta_editor::EditorInput;
 use laqta_ports::{InputCallback, RegionView};
 
+use crate::presenters::capture_pointer::{self, Pointer, Route};
+use crate::presenters::capture_toolbar as bar;
 use crate::runtime::UiState;
 
 #[derive(Default)]
@@ -62,6 +64,11 @@ pub(crate) struct OverlayModel {
     pub(crate) text_mode: bool,
     /// The selection's text, read in place (`overlay_text`).
     pub(crate) text: Option<crate::overlay_text::TextUi>,
+    /// When Esc (or a close button) last warned that the marks would go (`capture_escape`).
+    pub(crate) discard_armed: Option<std::time::Instant>,
+    /// Who took the press under way (`capture_pointer::route`): its moves and release go there too,
+    /// on whichever monitor's window they reach.
+    pub(crate) pressed: Option<Route>,
 }
 
 /// Converts each frame for GPUI, off the GPUI thread: `UiHandle::show` calls this on the caller's
@@ -128,7 +135,17 @@ pub(crate) fn show(frames: Vec<Frame>, images: Vec<Option<Arc<RenderImage>>>, vi
         .filter_map(|(f, image)| Some(MonitorImage { rect: f.monitor.rect, image: image?, bitmap: f.image.clone() }))
         .collect();
     let count = monitors.len();
-    let model = cx.new(|_| OverlayModel { monitors, view, on_input, annot: None, tool: None, text_mode: false, text: None });
+    let model = cx.new(|_| OverlayModel {
+        monitors,
+        view,
+        on_input,
+        annot: None,
+        tool: None,
+        text_mode: false,
+        text: None,
+        discard_armed: None,
+        pressed: None,
+    });
     let mut windows = Vec::new();
     for index in 0..count {
         let bounds = display_bounds.get(index).copied().flatten();
@@ -399,7 +416,7 @@ impl Render for OverlayView {
             .size_full()
             .relative()
             .overflow_hidden()
-            .cursor(pointer_style(self.cursor_handle(model)))
+            .cursor(pointer_style(self.pointer_shape(model), view.gesture))
             .child(img(mon.image.clone()).absolute().left_0().top_0().w(px(win_w)).h(px(win_h)));
 
         // Dim everything except the main selection (the rect being drawn, else the active region).
@@ -424,8 +441,9 @@ impl Render for OverlayView {
             None => root = root.child(div().absolute().left_0().top_0().size_full().bg(dim)),
         }
 
-        // Once a selection settles, window snapping and the magnifier step aside for the tools.
-        let settled = view.selected.is_some();
+        // Once a selection settles, window snapping and the magnifier step aside for the tools. While
+        // it is moved or resized the magnifier comes back, for precision.
+        let settled = view.selected.is_some() && !view.gesture;
         if view.drawing.is_none()
             && !settled
             && !view.pick_point
@@ -437,20 +455,25 @@ impl Render for OverlayView {
                 // nested regions are told apart by size. The wheel grows it to the enclosing one.
                 root = root.child(boxed(&l).border_1().border_color(color(HOVER, 0.95)).bg(color(HOVER, 0.08)));
                 let y = if l.y >= 30.0 { l.y - 28.0 } else { l.y + l.h + 4.0 };
-                let at = crate::presenters::capture_toolbar::Rect { x: l.x.max(4.0), y, w: 96.0, h: 24.0 };
-                root = root.child(crate::overlay_tools::size_badge(t.rect, at));
+                let text = bar::badge_text(t.rect, None);
+                let at = bar::Rect { x: l.x.max(4.0), y, w: crate::overlay_tools::badge_width(&text), h: crate::overlay_tools::BADGE_H };
+                root = root.child(crate::overlay_tools::size_badge(text, at));
             } else {
                 root = root.child(boxed(&l).border_2().border_color(color(HOVER, 1.0)).bg(color(HOVER, 0.12)));
             }
         }
-        // The annotation canvas sits under the selection's border and handles.
-        if view.selected.is_some()
+        // The annotation canvas sits under the selection's border and handles, clipped to the frame.
+        if let Some(sel) = view.selected
             && let Some(a) = &model.annot
             && let Some(canvas) = crate::overlay_tools::canvas(
                 a,
                 |r| {
                     let l = local(r);
-                    crate::presenters::capture_toolbar::Rect { x: l.x, y: l.y, w: l.w, h: l.h }
+                    bar::Rect { x: l.x, y: l.y, w: l.w, h: l.h }
+                },
+                {
+                    let l = local(sel);
+                    bar::Rect { x: l.x, y: l.y, w: l.w, h: l.h }
                 },
                 s,
             )
@@ -474,23 +497,24 @@ impl Render for OverlayView {
                 window.request_animation_frame();
             }
         }
+        // Borders sit just outside the selection, so they never cover the pixels it captures.
         for (i, r) in view.regions.iter().enumerate() {
             let active = Some(i) == view.active;
-            root = root.child(boxed(&local(*r)).border_2().border_color(color(SELECTION, if active { 1.0 } else { 0.7 })));
+            root = root.child(boxed(&outset(local(*r), BORDER)).border_2().border_color(color(SELECTION, if active { 1.0 } else { 0.7 })));
         }
         if let Some(d) = view.drawing {
             let l = local(d);
-            root = root.child(boxed(&l).border_2().border_color(color(SELECTION, 1.0)));
+            root = root.child(boxed(&outset(local(d), BORDER)).border_2().border_color(color(SELECTION, 1.0)));
             // The size follows the rectangle while it is drawn.
             if d.width > 0 && d.height > 0 {
                 let y = if l.y >= 32.0 { l.y - 30.0 } else { l.y + l.h + 6.0 };
-                let at = crate::presenters::capture_toolbar::Rect { x: l.x.max(4.0), y, w: 96.0, h: 24.0 };
-                root = root.child(crate::overlay_tools::size_badge(d, at));
+                let text = bar::badge_text(d, None);
+                let at = bar::Rect { x: l.x.max(4.0), y, w: crate::overlay_tools::badge_width(&text), h: crate::overlay_tools::BADGE_H };
+                root = root.child(crate::overlay_tools::size_badge(text, at));
             }
         }
-        // A locked selection (annotations on it) can't be resized, so its handles go. Each dot fills
-        // the session's hit rect, so the pointer turns to a resize arrow exactly over the dot.
-        for (_, h) in view.handles.iter().filter(|_| !view.locked) {
+        // Each dot fills the session's hit rect; the grab area around it (`grab_at`) is wider.
+        for (_, h) in &view.handles {
             let l = local(*h);
             root = root.child(
                 div()
@@ -525,7 +549,7 @@ impl Render for OverlayView {
         if let Some(sel) = view.selected {
             let to_local = |r: PhysRect| {
                 let l = local(r);
-                crate::presenters::capture_toolbar::Rect { x: l.x, y: l.y, w: l.w, h: l.h }
+                bar::Rect { x: l.x, y: l.y, w: l.w, h: l.h }
             };
             let (cx_sel, cy_sel) = (sel.x + sel.width as i32 / 2, sel.y + sel.height as i32 / 2);
             let holds = cx_sel >= origin.x && cx_sel < origin.right() && cy_sel >= origin.y && cy_sel < origin.bottom();
@@ -533,17 +557,35 @@ impl Render for OverlayView {
                 let sel_l = to_local(sel);
                 let screen = (win_w, win_h);
                 // While the text shows, its bar takes the toolbar's place.
-                let bar = match &model.text {
+                let bar_size = match &model.text {
                     Some(text) => crate::overlay_text::bar_size(&text.notice(now), win_w),
                     None => (crate::overlay_tools::bar_width(), crate::overlay_tools::BAR_H),
                 };
-                let (at, side) = crate::presenters::capture_toolbar::place(sel_l, bar, screen);
-                let badge = crate::presenters::capture_toolbar::badge(sel_l, side, (96.0, 24.0), screen);
-                root = root.child(crate::overlay_tools::size_badge(sel, badge));
-                if model.text.is_some() {
+                let (at, side) = bar::place(sel_l, bar_size, screen);
+                // The size stays live while the selection is moved (with its position) or resized.
+                let moving = view.gesture && view.resizing.is_none();
+                let text = bar::badge_text(sel, moving.then(|| (sel.x - view.bounds.x, sel.y - view.bounds.y)));
+                let badge = bar::badge(sel_l, side, (crate::overlay_tools::badge_width(&text), crate::overlay_tools::BADGE_H), screen);
+                root = root.child(crate::overlay_tools::size_badge(text, badge));
+                // The bars wait for the gesture to end, so they never jump along with it.
+                if view.gesture {
+                } else if model.text.is_some() {
                     root = root.child(crate::overlay_text::bar(&self.model, at, now, still, cx));
                 } else if model.toolbar_shown() {
                     root = root.child(crate::overlay_tools::toolbar(&self.model, at, cx));
+                    if let Some(row) = bar::style_row(model.tool) {
+                        let w = crate::overlay_tools::style_row_width(row);
+                        let h = crate::overlay_tools::ROW_H;
+                        let below = at.y + at.h + 6.0;
+                        let y = if below + h + bar::GAP <= win_h { below } else { at.y - 6.0 - h };
+                        let x = (at.x + at.w - w).clamp(bar::GAP, (win_w - w - bar::GAP).max(bar::GAP));
+                        if let Some(el) = crate::overlay_tools::style_row(&self.model, row, bar::Rect { x, y, w, h }, cx) {
+                            root = root.child(el);
+                        }
+                    }
+                }
+                if let Some(notice) = model.discard_notice() {
+                    root = root.child(crate::overlay_tools::hint(win_w, notice));
                 }
             }
         } else if view.pick_point {
@@ -574,11 +616,12 @@ impl Render for OverlayView {
             }
         }
 
+        // Every press goes where `capture_pointer::route` says, and its moves and release follow it.
         root.on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
             let (x, y) = this.to_phys(ev.position, window, cx);
-            let before = this.cursor_handle(this.model.read(cx));
+            let before = this.pointer_shape(this.model.read(cx));
             this.pointer = Some((x, y));
-            if this.cursor_handle(this.model.read(cx)) != before {
+            if this.pointer_shape(this.model.read(cx)) != before {
                 cx.notify();
             }
             this.send(RegionInput::PointerMove { x, y }, cx);
@@ -586,53 +629,64 @@ impl Render for OverlayView {
             if this.model.update(cx, |m, cx| m.text_drag(x, y, cx)) {
                 return;
             }
-            if let Some((ix, iy)) = this.drawing_at(x, y, cx) {
+            // The engine follows its own drags, and the hover while a tool is out.
+            let to_editor = match this.model.read(cx).pressed {
+                Some(route) => route == Route::Editor,
+                None => this.model.read(cx).tool.is_some(),
+            };
+            if to_editor && let Some((ix, iy)) = this.model.read(cx).canvas_point(x, y) {
                 let mods = crate::editor_window::mods(&ev.modifiers);
                 this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerMove { x: ix, y: iy, mods }, cx));
             }
         }))
         .on_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| {
             let (x, y) = this.to_phys(ev.position, window, cx);
-            // Inside a selection whose text shows, the left button picks words. The handles and
-            // everything outside still belong to the selection, and the other buttons to the session.
-            if ev.button == MouseButton::Left
-                && let Some(at) = this.model.read(cx).text_point(x, y)
-            {
-                let (extend, clicks) = (ev.modifiers.shift, ev.click_count);
-                this.model.update(cx, |m, cx| m.text_press(at, extend, clicks, cx));
-                return;
-            }
-            if let Some((ix, iy)) = this.drawing_at(x, y, cx) {
-                // Drawing starts only on the canvas; a press outside it would add a mark nobody sees.
-                let inside = this.model.read(cx).annot.as_ref().is_some_and(|a| contains(a.rect, (x, y)));
-                if !inside {
-                    return;
+            let Some(pressed) = button(ev.button) else { return };
+            let route = capture_pointer::route(&this.model.read(cx).pointer_scene((x, y), true), (x, y), pressed);
+            this.model.update(cx, |m, _| m.pressed = Some(route));
+            match route {
+                Route::Text => {
+                    if let Some(at) = this.model.read(cx).text_point(x, y) {
+                        let (extend, clicks) = (ev.modifiers.shift, ev.click_count);
+                        this.model.update(cx, |m, cx| m.text_press(at, extend, clicks, cx));
+                    }
                 }
-                if let Some(button) = crate::editor_window::button(ev.button) {
-                    let mods = crate::editor_window::mods(&ev.modifiers);
-                    this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerDown { x: ix, y: iy, button, mods }, cx));
+                Route::Editor => {
+                    if let (Some((ix, iy)), Some(button)) =
+                        (this.model.read(cx).canvas_point(x, y), crate::editor_window::button(ev.button))
+                    {
+                        let mods = crate::editor_window::mods(&ev.modifiers);
+                        this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerDown { x: ix, y: iy, button, mods }, cx));
+                    }
                 }
-                return;
-            }
-            if let Some(button) = button(ev.button) {
-                this.send(RegionInput::PointerDown { x, y, button }, cx);
+                Route::Session => this.send(RegionInput::PointerDown { x, y, button: pressed }, cx),
+                Route::Ignore => {}
             }
         }))
         .capture_any_mouse_up(cx.listener(|this, ev: &MouseUpEvent, window, cx| {
             let (x, y) = this.to_phys(ev.position, window, cx);
+            let route = this.model.update(cx, |m, _| m.pressed.take());
             if ev.button == MouseButton::Left && this.model.update(cx, |m, cx| m.text_release(cx)) {
                 return;
             }
-            if let Some((ix, iy)) = this.drawing_at(x, y, cx) {
-                if let Some(button) = crate::editor_window::button(ev.button) {
-                    let mods = crate::editor_window::mods(&ev.modifiers);
-                    this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerUp { x: ix, y: iy, button, mods }, cx));
+            match route {
+                Some(Route::Editor) => {
+                    if let (Some((ix, iy)), Some(button)) =
+                        (this.model.read(cx).canvas_point(x, y), crate::editor_window::button(ev.button))
+                    {
+                        let mods = crate::editor_window::mods(&ev.modifiers);
+                        this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerUp { x: ix, y: iy, button, mods }, cx));
+                    }
                 }
-                return;
+                Some(Route::Ignore | Route::Text) => {}
+                // A release with no press seen (it began outside the overlay) still ends the gesture.
+                Some(Route::Session) | None => {
+                    if let Some(button) = button(ev.button) {
+                        this.send(RegionInput::PointerUp { x, y, button }, cx);
+                    }
+                }
             }
-            if let Some(button) = button(ev.button) {
-                this.send(RegionInput::PointerUp { x, y, button }, cx);
-            }
+            cx.notify();
         }))
         // Scrolling up grows the hover to the enclosing region, down shrinks it back.
         .on_scroll(cx.listener(|this, ev: &ScrollEvent, _, cx| {
@@ -653,35 +707,36 @@ fn contains(r: PhysRect, (x, y): (i32, i32)) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
 
-/// The pointer over the overlay: a resize arrow along the axis a handle drags, a crosshair elsewhere.
-fn pointer_style(handle: Option<Handle>) -> gpui::CursorStyle {
+/// The pointer shape for `capture_pointer`'s answer; a move under way shows a closed hand.
+fn pointer_style(pointer: Pointer, gesture: bool) -> gpui::CursorStyle {
     use gpui::CursorStyle;
-    match handle {
-        None => CursorStyle::Crosshair,
-        Some(Handle::N | Handle::S) => CursorStyle::ResizeUpDown,
-        Some(Handle::E | Handle::W) => CursorStyle::ResizeLeftRight,
-        Some(Handle::NW | Handle::SE) => CursorStyle::ResizeUpLeftDownRight,
-        Some(Handle::NE | Handle::SW) => CursorStyle::ResizeUpRightDownLeft,
+    match pointer {
+        Pointer::Crosshair | Pointer::Draw => CursorStyle::Crosshair,
+        Pointer::Move if gesture => CursorStyle::ClosedHand,
+        Pointer::Move => CursorStyle::OpenHand,
+        Pointer::Text => CursorStyle::IBeam,
+        Pointer::NotAllowed => CursorStyle::OperationNotAllowed,
+        Pointer::Resize(Handle::N | Handle::S) => CursorStyle::ResizeUpDown,
+        Pointer::Resize(Handle::E | Handle::W) => CursorStyle::ResizeLeftRight,
+        Pointer::Resize(Handle::NW | Handle::SE) => CursorStyle::ResizeUpLeftDownRight,
+        Pointer::Resize(Handle::NE | Handle::SW) => CursorStyle::ResizeUpRightDownLeft,
     }
 }
 
-impl OverlayView {
-    /// The handle the pointer would show as a resize arrow: the one being dragged, which the session
-    /// reports to every monitor's window, else the one under this window's pointer. A drawing tool
-    /// takes every press, so it shows none.
-    fn cursor_handle(&self, model: &OverlayModel) -> Option<Handle> {
-        if model.tool.is_some() {
-            return None;
-        }
-        model.view.resizing.or_else(|| self.pointer.and_then(|at| model.view.handle_at(at)))
-    }
+/// The width of the selection's border, drawn just outside it.
+const BORDER: f32 = 2.0;
 
-    /// Canvas pixels for a desktop point while a drawing tool is out.
-    fn drawing_at(&self, x: i32, y: i32, cx: &App) -> Option<(f32, f32)> {
-        let m = self.model.read(cx);
-        m.tool?;
-        let a = m.annot.as_ref()?;
-        Some(((x - a.rect.x) as f32, (y - a.rect.y) as f32))
+/// `l` grown by `by` on every side.
+fn outset(l: Local, by: f32) -> Local {
+    Local { x: l.x - by, y: l.y - by, w: l.w + 2.0 * by, h: l.h + 2.0 * by }
+}
+
+impl OverlayView {
+    /// The pointer shape at this window's pointer, or at the session's cursor for a window the
+    /// pointer is not over (a resize shows its arrow on every monitor).
+    fn pointer_shape(&self, model: &OverlayModel) -> Pointer {
+        let at = self.pointer.unwrap_or(model.view.cursor);
+        capture_pointer::pointer(&model.pointer_scene(at, false), at)
     }
 
     /// Keys: the text read in place while it shows, typing into a text annotation, the toolbar's
@@ -727,11 +782,8 @@ impl OverlayView {
             return;
         }
         match key {
-            "escape" if drawing => {
-                self.model.update(cx, |model, cx| {
-                    model.region_tool();
-                    cx.notify();
-                });
+            "escape" => {
+                self.model.update(cx, |model, cx| model.escape(cx));
                 return;
             }
             "enter" if marks => {
@@ -740,8 +792,16 @@ impl OverlayView {
             }
             _ => {}
         }
-        if drawing && let Some(k) = crate::editor_window::editor_key(key) {
+        // A picked mark takes the arrows and Delete under any tool; the selection under it does not.
+        let mark = self.model.read(cx).mark_selected();
+        if (drawing || mark)
+            && let Some(k) = crate::editor_window::editor_key(key)
+        {
             self.model.update(cx, |model, cx| model.editor_input(EditorInput::Key { key: k, mods }, cx));
+            return;
+        }
+        // Delete would remove the selection, and every mark on it with no way back.
+        if marks && matches!(key, "delete" | "backspace") {
             return;
         }
         if let Some(key) = region_key(key) {
@@ -845,14 +905,22 @@ mod tests {
 
     #[test]
     fn each_handle_shows_the_arrow_of_the_way_it_drags() {
-        assert_eq!(pointer_style(Some(Handle::W)), gpui::CursorStyle::ResizeLeftRight);
-        assert_eq!(pointer_style(Some(Handle::E)), gpui::CursorStyle::ResizeLeftRight);
-        assert_eq!(pointer_style(Some(Handle::N)), gpui::CursorStyle::ResizeUpDown);
-        assert_eq!(pointer_style(Some(Handle::S)), gpui::CursorStyle::ResizeUpDown);
-        assert_eq!(pointer_style(Some(Handle::NW)), gpui::CursorStyle::ResizeUpLeftDownRight);
-        assert_eq!(pointer_style(Some(Handle::SE)), gpui::CursorStyle::ResizeUpLeftDownRight);
-        assert_eq!(pointer_style(Some(Handle::NE)), gpui::CursorStyle::ResizeUpRightDownLeft);
-        assert_eq!(pointer_style(Some(Handle::SW)), gpui::CursorStyle::ResizeUpRightDownLeft);
-        assert_eq!(pointer_style(None), gpui::CursorStyle::Crosshair);
+        let style = |h| pointer_style(Pointer::Resize(h), false);
+        assert_eq!(style(Handle::W), gpui::CursorStyle::ResizeLeftRight);
+        assert_eq!(style(Handle::E), gpui::CursorStyle::ResizeLeftRight);
+        assert_eq!(style(Handle::N), gpui::CursorStyle::ResizeUpDown);
+        assert_eq!(style(Handle::S), gpui::CursorStyle::ResizeUpDown);
+        assert_eq!(style(Handle::NW), gpui::CursorStyle::ResizeUpLeftDownRight);
+        assert_eq!(style(Handle::SE), gpui::CursorStyle::ResizeUpLeftDownRight);
+        assert_eq!(style(Handle::NE), gpui::CursorStyle::ResizeUpRightDownLeft);
+        assert_eq!(style(Handle::SW), gpui::CursorStyle::ResizeUpRightDownLeft);
+    }
+
+    #[test]
+    fn a_move_shows_a_hand_that_closes_while_it_drags() {
+        assert_eq!(pointer_style(Pointer::Move, false), gpui::CursorStyle::OpenHand);
+        assert_eq!(pointer_style(Pointer::Move, true), gpui::CursorStyle::ClosedHand);
+        assert_eq!(pointer_style(Pointer::NotAllowed, false), gpui::CursorStyle::OperationNotAllowed);
+        assert_eq!(pointer_style(Pointer::Crosshair, false), gpui::CursorStyle::Crosshair);
     }
 }

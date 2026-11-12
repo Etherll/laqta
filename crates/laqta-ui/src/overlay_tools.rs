@@ -2,23 +2,27 @@
 //!
 //! The editor engine runs here on the selection's pixels, the same way the editor window hosts it
 //! for `EditorHost`, so the overlay and the editor share one tool set. The Region session still
-//! owns the selection and the outcome: this module only locks the selection while there are
-//! annotations, and sends the edited crop (`RegionInput::Annotated`) before `Finish(action)`.
+//! owns the selection and the outcome: this module keeps the marks over the same desktop pixels when
+//! the selection moves (`Command::Reframe`, ADR 032), and sends the edited crop
+//! (`RegionInput::Annotated`) before `Finish(action)`.
 
 use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, Context, Entity, FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, RenderImage,
-    StatefulInteractiveElement as _, Styled as _, div, img, prelude::FluentBuilder as _, px,
+    SharedString, StatefulInteractiveElement as _, Styled as _, div, img, prelude::FluentBuilder as _, px,
 };
 use gpui_component::tooltip::Tooltip;
 use laqta_domain::Bitmap;
+use laqta_domain::color::Rgba;
 use laqta_domain::geometry::PhysRect;
 use laqta_domain::region::{RegionCommand, RegionInput, SelectionAction};
 use laqta_editor::{Chrome, Command, Editor, EditorInput, Tool};
 
 use crate::assets::IconName;
 use crate::overlay::OverlayModel;
+use crate::presenters::capture_escape::{self, EscapeScene, EscapeStep};
+use crate::presenters::capture_pointer::PointerScene;
 use crate::presenters::capture_toolbar::{self as bar, Item};
 use crate::presenters::editor_interaction::EditorInteraction;
 use crate::presenters::render_gate::ComputeFn;
@@ -34,6 +38,9 @@ pub(crate) struct Annot {
     interaction: EditorInteraction,
     compute: ComputeFn,
     pub picture: Option<Arc<RenderImage>>,
+    /// The selection `picture` was rendered for. It trails `rect` for a frame or two after a reframe,
+    /// so the old picture stays where it was drawn until the new one lands.
+    pub picture_rect: PhysRect,
     pub chrome: Chrome,
 }
 
@@ -42,7 +49,18 @@ impl Annot {
     pub fn has_marks(&self) -> bool {
         self.chrome.annotation_count > 0 || self.chrome.can_undo
     }
+
+    /// Where each mark sits on the canvas, for tests.
+    #[cfg(test)]
+    pub(crate) fn mark_rects(&self) -> Vec<laqta_editor::RectF> {
+        let editor = self.interaction.editor();
+        let editor = editor.lock().unwrap_or_else(|p| p.into_inner());
+        editor.annotations().iter().filter_map(|a| a.kind.rect()).collect()
+    }
 }
+
+/// How far from a picked mark's handle, in canvas pixels, a press still takes it.
+const MARK_GRAB: f32 = 8.0;
 
 /// Button size and spacing on the toolbar.
 const BUTTON: f32 = 32.0;
@@ -93,38 +111,85 @@ fn icon(item: Item) -> IconName {
 }
 
 impl OverlayModel {
-    /// Builds, keeps or drops the engine after a new view: a new selection crop starts a fresh
-    /// canvas unless the selection is locked (annotations exist).
+    /// Builds, moves or drops the engine after a new view. A new crop of the same selection session
+    /// reframes the engine, so its marks stay over the same desktop pixels (ADR 032); the first crop
+    /// builds it. The engine survives a gesture (a click outside, a draw that may come to nothing)
+    /// and goes once no selection is held.
     pub(crate) fn sync_annot(&mut self, cx: &mut Context<Self>) {
         let view = &self.view;
-        // The app sends a crop once per new selection; later views carry `None` and the engine
+        // The app sends a crop once per settled selection; later views carry `None` and the engine
         // stays as it is.
         match (view.selected, view.selection_image.clone()) {
             (Some(_), None) => {}
             (Some(rect), Some(base)) => {
-                let same = self.annot.as_ref().is_some_and(|a| Arc::ptr_eq(&a.base, &base) || view.locked);
-                if !same {
-                    let services = cx.global::<UiState>().services.clone();
-                    let editor = Editor::new((*base).clone(), services.fonts.clone());
-                    let chrome = editor.chrome();
-                    let compute = crate::editor_window::compute_fn(services.spawner.clone());
-                    let interaction = EditorInteraction::new(editor, compute.clone());
-                    self.annot = Some(Annot { rect, base, interaction, compute, picture: None, chrome });
-                    if let Some(tool) = self.tool {
-                        self.command(Command::SetTool(tool), cx);
+                if let Some(a) = self.annot.as_mut() {
+                    if Arc::ptr_eq(&a.base, &base) {
+                        return;
                     }
-                    // Text mode: the selection is the area to read, so ask for its text right away.
-                    if self.text_mode {
-                        self.read_text();
-                    }
+                    let (dx, dy) = ((a.rect.x - rect.x) as f32, (a.rect.y - rect.y) as f32);
+                    a.rect = rect;
+                    a.base = base.clone();
+                    self.command(Command::Reframe { image: (*base).clone(), dx, dy }, cx);
+                    return;
+                }
+                let services = cx.global::<UiState>().services.clone();
+                let editor = Editor::new((*base).clone(), services.fonts.clone());
+                let chrome = editor.chrome();
+                let compute = crate::editor_window::compute_fn(services.spawner.clone());
+                let interaction = EditorInteraction::new(editor, compute.clone());
+                self.annot = Some(Annot { rect, base, interaction, compute, picture: None, picture_rect: rect, chrome });
+                // The region tool is the engine's select tool: a press on a mark picks it.
+                self.command(Command::SetTool(self.tool.unwrap_or(Tool::Select)), cx);
+                // Text mode: the selection is the area to read, so ask for its text right away.
+                if self.text_mode {
+                    self.read_text();
                 }
             }
-            _ if !view.locked => {
+            (None, _) if !view.gesture => {
                 self.annot = None;
                 self.tool = None;
             }
-            _ => {}
+            (None, _) => {}
         }
+    }
+
+    /// What the pointer at the desktop point `at` is over, for `capture_pointer`. `wait` takes the
+    /// engine's lock even while a render holds it: a press needs the true answer, a hover move can
+    /// make do without the mark test.
+    pub(crate) fn pointer_scene(&self, at: (i32, i32), wait: bool) -> PointerScene {
+        let over_mark = self.annot.as_ref().is_some_and(|a| {
+            let (x, y) = ((at.0 - a.rect.x) as f32, (at.1 - a.rect.y) as f32);
+            // The picked mark's handles reach past its outline.
+            if a.chrome.handles.iter().any(|(_, p)| (p.x - x).abs() <= MARK_GRAB && (p.y - y).abs() <= MARK_GRAB) {
+                return true;
+            }
+            let editor = a.interaction.editor();
+            let hit = |e: &Editor| e.annotation_at(x, y);
+            if wait { hit(&editor.lock().unwrap_or_else(|p| p.into_inner())) } else { editor.try_lock().is_ok_and(|e| hit(&e)) }
+        });
+        // A multi-region session holds no selection; its active region moves and resizes the same way.
+        let active = self.view.active.and_then(|i| self.view.regions.get(i).copied());
+        PointerScene {
+            frame: self.view.selected.or(active.filter(|_| !self.view.gesture)),
+            grab: self.view.handle_at(at),
+            resizing: self.view.resizing,
+            gesture: self.view.gesture,
+            tool: self.tool,
+            over_mark,
+            over_text: self.text_point(at.0, at.1).is_some(),
+            marks: self.annot.as_ref().is_some_and(Annot::has_marks),
+        }
+    }
+
+    /// Whether a mark is picked: the arrows and Delete are then the mark's, not the selection's.
+    pub(crate) fn mark_selected(&self) -> bool {
+        self.annot.as_ref().is_some_and(|a| a.chrome.selection.is_some())
+    }
+
+    /// The desktop point (`x`, `y`) in the engine's canvas pixels.
+    pub(crate) fn canvas_point(&self, x: i32, y: i32) -> Option<(f32, f32)> {
+        let a = self.annot.as_ref()?;
+        Some(((x - a.rect.x) as f32, (y - a.rect.y) as f32))
     }
 
     /// The toolbar shows for a settled selection while the user hasn't hidden it (Space). The
@@ -141,6 +206,7 @@ impl OverlayModel {
         let Some(a) = self.annot.as_mut() else { return };
         let render = a.interaction.render();
         let compute = a.compute.clone();
+        let rect = a.rect;
         cx.spawn(async move |this, cx| {
             let picture = match render.await {
                 Some(b) => crate::editor_window::compute_picture(&compute, b).await,
@@ -151,6 +217,7 @@ impl OverlayModel {
                 if let Some(a) = m.annot.as_mut() {
                     if picture.is_some() {
                         a.picture = picture;
+                        a.picture_rect = rect;
                     }
                     again = a.interaction.render_finished();
                 }
@@ -165,6 +232,10 @@ impl OverlayModel {
 
     fn apply(&mut self, step: crate::presenters::editor_interaction::Step, cx: &mut Context<Self>) {
         if let Some(a) = self.annot.as_mut() {
+            // A warning about discarding marks is about the marks it counted.
+            if a.chrome.annotation_count != step.chrome.annotation_count {
+                self.discard_armed = None;
+            }
             a.chrome = step.chrome;
         }
         if step.render_now {
@@ -198,8 +269,6 @@ impl OverlayModel {
                 }
                 self.tool = Some(tool);
                 self.command(Command::SetTool(tool), cx);
-                // While a drawing tool is out, drags draw instead of moving the selection.
-                self.send(RegionInput::Command(RegionCommand::Lock));
             }
             Item::Undo => self.command(Command::Undo, cx),
             Item::Redo => self.command(Command::Redo, cx),
@@ -209,23 +278,97 @@ impl OverlayModel {
             Item::Upload => self.finish(SelectionAction::Upload, cx),
             Item::Save => self.finish(SelectionAction::Save, cx),
             Item::Copy => self.finish(SelectionAction::Copy, cx),
-            Item::Cancel => self.send(RegionInput::Command(RegionCommand::Cancel)),
+            Item::Cancel => self.cancel(cx),
             Item::Confirm => self.finish(SelectionAction::Default, cx),
         }
         cx.notify();
     }
 
-    /// Back to adjusting the selection. It stays locked while annotations exist, so they keep
-    /// lining up with the pixels under them.
+    /// Back to the region tool: presses move and resize the selection, or pick a mark.
     pub(crate) fn region_tool(&mut self) {
         self.tool = None;
-        if !self.annot.as_ref().is_some_and(Annot::has_marks) {
-            self.send(RegionInput::Command(RegionCommand::Unlock));
+        if let Some(a) = self.annot.as_mut() {
+            let out = a.interaction.editor().lock().unwrap_or_else(|p| p.into_inner()).execute(Command::SetTool(Tool::Select));
+            a.chrome = a.interaction.after_output(out).chrome;
         }
     }
 
+    /// The colour of the tool in use, from the style row.
+    fn set_color(&mut self, color: Rgba, cx: &mut Context<Self>) {
+        let (Some(tool), Some(a)) = (self.tool, self.annot.as_ref()) else { return };
+        let style = bar::with_color(&a.chrome.style, tool, color);
+        self.command(Command::SetStyle(style), cx);
+    }
+
+    /// The size of the tool in use, from the style row.
+    fn set_size(&mut self, index: usize, cx: &mut Context<Self>) {
+        let (Some(tool), Some(a)) = (self.tool, self.annot.as_ref()) else { return };
+        let style = bar::with_size(&a.chrome.style, tool, index);
+        self.command(Command::SetStyle(style), cx);
+    }
+
+    fn escape_scene(&self) -> EscapeScene {
+        let chrome = self.annot.as_ref().map(|a| &a.chrome);
+        EscapeScene {
+            typing: chrome.is_some_and(|c| c.editing_text),
+            mark_selected: chrome.is_some_and(|c| c.selection.is_some()),
+            tool_out: self.tool.is_some(),
+            marks: chrome.map_or(0, |c| c.annotation_count),
+            armed: self.discard_armed.is_some_and(|at| at.elapsed() < capture_escape::DISARM_AFTER),
+        }
+    }
+
+    /// Esc: one layer back (typing, the picked mark, the drawing tool), then a warning before the
+    /// marks are thrown away, then the capture ends.
+    pub(crate) fn escape(&mut self, cx: &mut Context<Self>) {
+        let step = capture_escape::escape(&self.escape_scene());
+        self.escape_step(step, cx);
+    }
+
+    /// The toolbar's and the mode bar's close buttons: the same warning before the marks go.
+    pub(crate) fn cancel(&mut self, cx: &mut Context<Self>) {
+        let step = capture_escape::cancel_button(&self.escape_scene());
+        self.escape_step(step, cx);
+    }
+
+    fn escape_step(&mut self, step: EscapeStep, cx: &mut Context<Self>) {
+        match step {
+            EscapeStep::StopTyping | EscapeStep::Deselect => self.command(Command::Deselect, cx),
+            EscapeStep::PutToolAway => self.region_tool(),
+            EscapeStep::ArmDiscard => {
+                let at = std::time::Instant::now();
+                self.discard_armed = Some(at);
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(capture_escape::DISARM_AFTER).await;
+                    let _ = this.update(cx, |m, cx| {
+                        if m.discard_armed == Some(at) {
+                            m.discard_armed = None;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
+            EscapeStep::Cancel => self.send(RegionInput::Command(RegionCommand::Cancel)),
+        }
+        cx.notify();
+    }
+
+    /// The warning Esc armed, while it holds.
+    pub(crate) fn discard_notice(&self) -> Option<String> {
+        let armed = self.discard_armed.is_some_and(|at| at.elapsed() < capture_escape::DISARM_AFTER);
+        let marks = self.annot.as_ref().map_or(0, |a| a.chrome.annotation_count);
+        (armed && marks > 0).then(|| capture_escape::discard_notice(marks))
+    }
+
     /// Ends the session with `action`: with annotations, the edited crop goes first.
+    /// Not while the selection is dragged, or before its new crop reached the engine: the edited
+    /// crop would be of the old frame.
     pub(crate) fn finish(&mut self, action: SelectionAction, cx: &mut Context<Self>) {
+        let stale = self.annot.as_ref().is_some_and(|a| Some(a.rect) != self.view.selected);
+        if self.view.gesture || stale {
+            return;
+        }
         let finish = RegionInput::Command(RegionCommand::Finish(action));
         let Some(a) = self.annot.as_ref().filter(|a| a.has_marks()) else {
             self.send(finish);
@@ -249,29 +392,35 @@ impl OverlayModel {
     }
 }
 
-/// The annotation canvas and its chrome (selected annotation, text caret) over the selection.
-/// `local` maps a desktop rect into this window; `s` is the window's scale.
-pub(crate) fn canvas(a: &Annot, local: impl Fn(PhysRect) -> bar::Rect, s: f32) -> Option<AnyElement> {
+/// The annotation canvas and its chrome (picked mark and its handles, text caret), clipped to
+/// `frame`, the selection in this window. The engine's canvas sits at `local(a.rect)`: the last
+/// settled selection, which differs from `frame` while the selection is dragged.
+pub(crate) fn canvas(a: &Annot, local: impl Fn(PhysRect) -> bar::Rect, frame: bar::Rect, s: f32) -> Option<AnyElement> {
     let picture = a.picture.clone()?;
-    let r = local(a.rect);
-    let mut el = div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).child(img(picture).size_full());
+    let at = |r: bar::Rect| div().absolute().left(px(r.x - frame.x)).top(px(r.y - frame.y)).w(px(r.w)).h(px(r.h));
+    let shown = at(local(a.picture_rect)).child(img(picture).size_full());
+    let mut el = at(local(a.rect));
     if let Some(sel) = a.chrome.selection {
         el = el.child(
             div()
                 .absolute()
-                .left(px(sel.x / s))
-                .top(px(sel.y / s))
-                .w(px(sel.w / s))
-                .h(px(sel.h / s))
-                .border_1()
+                .left(px(sel.x / s - 1.0))
+                .top(px(sel.y / s - 1.0))
+                .w(px(sel.w / s + 2.0))
+                .h(px(sel.h / s + 2.0))
+                .border_2()
                 .border_color(rgba(ACCENT, 1.0)),
         );
+    }
+    for (_, p) in &a.chrome.handles {
+        el = el.child(crate::editor_window::mark_handle(p.x / s, p.y / s, rgba(ACCENT, 1.0)));
     }
     if let Some(c) = a.chrome.caret {
         let h = (a.chrome.style.font.size / s).max(12.0);
         el = el.child(div().absolute().left(px(c.x / s)).top(px(c.y / s)).w(px(2.)).h(px(h)).bg(rgba(ACCENT, 1.0)));
     }
-    Some(el.into_any_element())
+    let clip = div().absolute().left(px(frame.x)).top(px(frame.y)).w(px(frame.w)).h(px(frame.h)).overflow_hidden().child(shown).child(el);
+    Some(clip.into_any_element())
 }
 
 /// The floating toolbar at `at`, built from the presenter's groups.
@@ -354,8 +503,105 @@ fn button(model: Entity<OverlayModel>, item: Item, active: bool, enabled: bool) 
         .into_any_element()
 }
 
-/// "1280 × 720" above (or below) the selection.
-pub(crate) fn size_badge(rect: PhysRect, at: bar::Rect) -> AnyElement {
+/// The size badge's height.
+pub(crate) const BADGE_H: f32 = 24.0;
+
+/// The size badge's width for `text` ("1280 × 720", with the position while moving).
+pub(crate) fn badge_width(text: &str) -> f32 {
+    16.0 + 7.5 * text.chars().count() as f32
+}
+
+/// The style row's height.
+pub(crate) const ROW_H: f32 = 36.0;
+const SWATCH: f32 = 20.0;
+const SIZE_BUTTON: f32 = 28.0;
+
+/// The style row's width for `row`.
+pub(crate) fn style_row_width(row: bar::StyleRow) -> f32 {
+    let colors = if row.colors { bar::PALETTE.len() as f32 * (SWATCH + 6.0) } else { 0.0 };
+    let sizes = if row.sizes { bar::SIZES as f32 * (SIZE_BUTTON + 6.0) } else { 0.0 };
+    let divider = if row.colors && row.sizes { DIVIDER } else { 0.0 };
+    colors + sizes + divider + 2.0 * PAD
+}
+
+fn hex(c: Rgba) -> u32 {
+    u32::from(c.r) << 16 | u32::from(c.g) << 8 | u32::from(c.b)
+}
+
+/// Colour swatches and stroke sizes for the drawing tool in use, at `at`. The picked swatch and size
+/// carry a ring, so the state never rests on colour alone.
+pub(crate) fn style_row(model: &Entity<OverlayModel>, row: bar::StyleRow, at: bar::Rect, cx: &App) -> Option<AnyElement> {
+    let m = model.read(cx);
+    let tool = m.tool?;
+    let style = m.annot.as_ref()?.chrome.style.clone();
+    let current = bar::color_of(&style, tool);
+    let picked_size = bar::size_index(&style, tool);
+    let mut el = div()
+        .id("capture-style-row")
+        .absolute()
+        .left(px(at.x))
+        .top(px(at.y))
+        .h(px(ROW_H))
+        .px(px(PAD))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .rounded(radius::LG)
+        .bg(rgba(0x1c1c1f, 0.97))
+        .border_1()
+        .border_color(rgba(0xffffff, 0.10))
+        .shadow_lg()
+        .cursor_default()
+        .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    if row.colors {
+        for (i, &c) in bar::PALETTE.iter().enumerate() {
+            let picked = (c.r, c.g, c.b) == (current.r, current.g, current.b);
+            let entity = model.clone();
+            el = el.child(
+                div()
+                    .id(gpui::ElementId::Name(format!("style-color-{i}").into()))
+                    .size(px(SWATCH))
+                    .flex_none()
+                    .rounded(radius::PILL)
+                    .bg(gpui::rgb(hex(c)))
+                    .border_2()
+                    .border_color(if picked { rgba(0xffffff, 1.0) } else { rgba(0xffffff, 0.25) })
+                    .cursor_pointer()
+                    .on_click(move |_, _, cx| entity.update(cx, |m, cx| m.set_color(c, cx))),
+            );
+        }
+    }
+    if row.colors && row.sizes {
+        el = el.child(div().mx(px(2.)).w(px(1.)).h(px(20.)).bg(rgba(0xffffff, 0.14)));
+    }
+    if row.sizes {
+        for i in 0..bar::SIZES {
+            let picked = picked_size == Some(i);
+            let dot = 4.0 + 3.0 * i as f32;
+            let entity = model.clone();
+            el = el.child(
+                div()
+                    .id(gpui::ElementId::Name(format!("style-size-{i}").into()))
+                    .size(px(SIZE_BUTTON))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(8.))
+                    .when(picked, |d| d.bg(rgba(0xffffff, 0.16)).border_1().border_color(rgba(0xffffff, 0.5)))
+                    .cursor_pointer()
+                    .hover(|d| d.bg(rgba(0xffffff, 0.12)))
+                    .child(div().size(px(dot)).rounded(radius::PILL).bg(rgba(0xffffff, 0.9)))
+                    .on_click(move |_, _, cx| entity.update(cx, |m, cx| m.set_size(i, cx))),
+            );
+        }
+    }
+    Some(el.into_any_element())
+}
+
+/// The selection's size (`bar::badge_text`) above (or below) it.
+pub(crate) fn size_badge(text: String, at: bar::Rect) -> AnyElement {
     div()
         .absolute()
         .left(px(at.x))
@@ -369,12 +615,12 @@ pub(crate) fn size_badge(rect: PhysRect, at: bar::Rect) -> AnyElement {
         .text_color(rgba(0xffffff, 0.92))
         .text_size(px(12.))
         .font_weight(FontWeight::MEDIUM)
-        .child(format!("{} × {}", rect.width, rect.height))
+        .child(text)
         .into_any_element()
 }
 
 /// A short line at the top of the screen before anything is selected.
-pub(crate) fn hint(win_w: f32, text: &'static str) -> AnyElement {
+pub(crate) fn hint(win_w: f32, text: impl Into<SharedString>) -> AnyElement {
     div()
         .absolute()
         .top(px(16.))
@@ -390,7 +636,7 @@ pub(crate) fn hint(win_w: f32, text: &'static str) -> AnyElement {
                 .bg(rgba(0x1c1c1f, 0.9))
                 .text_color(rgba(0xffffff, 0.9))
                 .text_size(px(12.5))
-                .child(text),
+                .child(text.into()),
         )
         .into_any_element()
 }
@@ -479,7 +725,7 @@ impl OverlayModel {
             }
             Mode::Video => self.switch_to(laqta_domain::Action::ScreenRecorder, cx),
             Mode::ColorPicker => self.switch_to(laqta_domain::Action::ScreenColorPicker, cx),
-            Mode::Close => self.send(RegionInput::Command(RegionCommand::Cancel)),
+            Mode::Close => self.cancel(cx),
         }
         cx.notify();
     }

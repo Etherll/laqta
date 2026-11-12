@@ -849,6 +849,12 @@ fn rgba(c: Rgba) -> gpui::Hsla {
     h
 }
 
+/// A handle of the picked mark, centred on (`x`, `y`) in the parent's pixels. The editor window and
+/// the capture overlay draw the same one.
+pub(crate) fn mark_handle(x: f32, y: f32, accent: gpui::Hsla) -> Div {
+    abs(x - 4.5, y - 4.5, 9.0, 9.0).rounded(px(2.)).bg(gpui::white()).border_1().border_color(accent)
+}
+
 fn abs(x: f32, y: f32, w: f32, h: f32) -> Div {
     div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h))
 }
@@ -1251,8 +1257,7 @@ impl EditorWindow {
                 canvas.child(abs(r.x * z, r.y * z, r.w * z, r.h * z).border_1().border_color(sel).bg(theme::extra(cx).info.opacity(0.16)));
         }
         for (_, p) in &chrome.handles {
-            canvas =
-                canvas.child(abs(p.x * z - 4.5, p.y * z - 4.5, 9.0, 9.0).rounded(px(2.)).bg(gpui::white()).border_1().border_color(sel));
+            canvas = canvas.child(mark_handle(p.x * z, p.y * z, sel));
         }
         if let Some(c) = chrome.caret {
             canvas = canvas.child(abs(c.x * z, c.y * z, 2.0, chrome.style.font.size * z).bg(t.foreground));

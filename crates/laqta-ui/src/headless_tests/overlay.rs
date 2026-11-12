@@ -42,10 +42,10 @@ fn overlay_covers_the_monitor_at_125_percent(cx: &mut TestAppContext) {
     assert_eq!(vcx.update(|window, _| window.bounds().size), requested, "no resize loop");
 }
 
-/// A settled selection gets the engine and the toolbar; a drawing tool locks the
-/// selection, and an action without annotations finishes straight away.
+/// A settled selection gets the engine and the toolbar; a drawing tool and the region tool switch
+/// without touching the session, and an action without annotations finishes straight away.
 #[gpui::test]
-fn the_capture_toolbar_locks_for_drawing_and_finishes_with_its_action(cx: &mut TestAppContext) {
+fn the_capture_toolbar_switches_tools_and_finishes_with_its_action(cx: &mut TestAppContext) {
     use laqta_domain::region::{RegionCommand, RegionInput, SelectionAction, TextCommand};
     use laqta_editor::Tool;
     use std::sync::Mutex;
@@ -86,13 +86,10 @@ fn the_capture_toolbar_locks_for_drawing_and_finishes_with_its_action(cx: &mut T
     assert!(cx.update(|cx| model.read(cx).toolbar_shown()), "the toolbar shows for a settled selection");
 
     cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Rectangle), cx)));
-    assert!(sent.lock().unwrap().iter().any(|i| matches!(i, RegionInput::Command(RegionCommand::Lock))));
-
+    assert_eq!(cx.update(|cx| model.read(cx).tool), Some(Tool::Rectangle));
     cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Region, cx)));
-    assert!(
-        sent.lock().unwrap().iter().any(|i| matches!(i, RegionInput::Command(RegionCommand::Unlock))),
-        "no marks: the selection unlocks"
-    );
+    assert_eq!(cx.update(|cx| model.read(cx).tool), None, "back to the region tool");
+    assert!(sent.lock().unwrap().is_empty(), "switching tools is the overlay's own business");
 
     cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Copy, cx)));
     assert!(matches!(sent.lock().unwrap().last(), Some(RegionInput::Command(RegionCommand::Finish(SelectionAction::Copy)))));
@@ -288,13 +285,11 @@ fn text_read_in_place_is_picked_with_the_pointer_and_copied_through_the_session(
     assert!(sent.lock().unwrap()[before..].iter().all(|i| matches!(i, RegionInput::PointerMove { .. })));
     assert_eq!(notice(&mut vcx), Some(Notice::Picked(3)));
 
-    // A handle takes the pointer only while it shows: a selection locked by its marks hides them.
-    let corner = PhysRect { x: 96, y: 96, width: 8, height: 8 };
-    let handled = RegionView { handles: vec![(laqta_domain::region::Handle::NW, corner)], ..read.clone() };
-    vcx.update(|_, cx| crate::overlay::update(handled.clone(), cx));
-    assert_eq!(vcx.update(|_, cx| model.read(cx).text_point(101, 101)), None, "the shown handle resizes");
-    vcx.update(|_, cx| crate::overlay::update(RegionView { locked: true, ..handled }, cx));
-    assert_eq!(vcx.update(|_, cx| model.read(cx).text_point(101, 101)), Some((1.0, 1.0)), "under a hidden handle are words");
+    // The grab area along the selection's edges resizes it; inside it are words.
+    let grabbing = RegionView { grab_size: 8, ..read.clone() };
+    vcx.update(|_, cx| crate::overlay::update(grabbing, cx));
+    assert_eq!(vcx.update(|_, cx| model.read(cx).text_point(101, 101)), None, "the corner resizes");
+    assert_eq!(vcx.update(|_, cx| model.read(cx).text_point(150, 150)), Some((50.0, 50.0)), "inside are words");
     vcx.update(|_, cx| crate::overlay::update(read.clone(), cx));
     assert_eq!(picked(&mut vcx).as_deref(), Some("big world\nsecond"));
 
@@ -488,4 +483,156 @@ fn enter_while_reading_leaves_once_the_text_is_read(cx: &mut TestAppContext) {
     let copied = RegionView { text: Some(TextLayer::Read { result: Arc::new(refused), copied: true, copy_failed: false }), ..view };
     vcx.update(|_, cx| crate::overlay::update(copied, cx));
     assert_eq!(sent.lock().unwrap().last(), Some(&RegionInput::Text(TextCommand::Close)));
+}
+
+/// A one-monitor overlay over an 800×600 frame, logging what it sends to the session.
+fn settled_overlay(
+    cx: &mut TestAppContext,
+    sel: PhysRect,
+) -> (gpui::Entity<crate::overlay::OverlayModel>, Arc<std::sync::Mutex<Vec<laqta_domain::region::RegionInput>>>) {
+    // SAFETY: tests in this binary don't read this variable concurrently with writing it.
+    unsafe { std::env::set_var("LAQTA_NO_LAYER_SHELL", "1") };
+    let dir = tempfile::tempdir().unwrap();
+    install(cx, services(QueuedSpawner::default(), dir.path()));
+    let (w, h) = (800u32, 600u32);
+    let frame = Frame {
+        monitor: Monitor {
+            id: MonitorId("m0".into()),
+            name: "m0".into(),
+            rect: PhysRect { x: 0, y: 0, width: w, height: h },
+            scale: 1.0,
+            primary: true,
+        },
+        image: Bitmap::new(w, h, PixelFormat::Bgra8, vec![0u8; (w * h * 4) as usize].into()).unwrap(),
+    };
+    let sent: Arc<std::sync::Mutex<Vec<laqta_domain::region::RegionInput>>> = Arc::default();
+    let log = sent.clone();
+    let images = crate::overlay::render_images(std::slice::from_ref(&frame));
+    cx.update(|cx| crate::overlay::show(vec![frame], images, RegionView::default(), Arc::new(move |i| log.lock().unwrap().push(i)), cx));
+    cx.update(|cx| crate::overlay::update(settled_view(sel), cx));
+    let model = cx.update(|cx| cx.global::<crate::runtime::UiState>().overlay.model()).expect("an overlay model");
+    (model, sent)
+}
+
+/// The view of a settled selection `sel` with a fresh crop of it.
+fn settled_view(sel: PhysRect) -> RegionView {
+    let crop = Bitmap::new(sel.width, sel.height, PixelFormat::Rgba8, vec![255u8; (sel.width * sel.height * 4) as usize].into()).unwrap();
+    RegionView {
+        regions: vec![sel],
+        active: Some(0),
+        selected: Some(sel),
+        selection_image: Some(Arc::new(crop)),
+        tools_visible: true,
+        ..RegionView::default()
+    }
+}
+
+/// Drags a mark from `from` to `to` in canvas pixels with the tool in use.
+fn draw(cx: &mut impl gpui::AppContext, model: &gpui::Entity<crate::overlay::OverlayModel>, from: (f32, f32), to: (f32, f32)) {
+    use laqta_editor::{EditorInput, Mods, PointerButton};
+    let mods = Mods::default();
+    model.update(cx, |m, cx| {
+        m.editor_input(EditorInput::PointerDown { x: from.0, y: from.1, button: PointerButton::Left, mods }, cx);
+        m.editor_input(EditorInput::PointerMove { x: to.0, y: to.1, mods }, cx);
+        m.editor_input(EditorInput::PointerUp { x: to.0, y: to.1, button: PointerButton::Left, mods }, cx);
+    });
+}
+
+/// Moving the selection after drawing keeps the mark over the same desktop pixels (ADR 032), and
+/// the tool and the marks carry over to the new crop.
+#[gpui::test]
+fn a_moved_selection_keeps_its_marks_over_the_same_pixels(cx: &mut TestAppContext) {
+    use laqta_editor::{RectF, Tool};
+
+    use crate::presenters::capture_toolbar::Item;
+
+    let sel = PhysRect { x: 100, y: 100, width: 200, height: 100 };
+    let (model, sent) = settled_overlay(cx, sel);
+    cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Rectangle), cx)));
+    draw(cx, &model, (10.0, 10.0), (50.0, 40.0));
+    let marks = |cx: &mut TestAppContext| cx.update(|cx| model.read(cx).annot.as_ref().map(|a| a.mark_rects()).unwrap_or_default());
+    assert_eq!(marks(cx), vec![RectF::new(10.0, 10.0, 40.0, 30.0)]);
+
+    // The session moved the selection 20 px right and 10 px down, then sent the new crop.
+    let moved = PhysRect { x: 120, y: 110, ..sel };
+    cx.update(|cx| crate::overlay::update(settled_view(moved), cx));
+    assert_eq!(cx.update(|cx| model.read(cx).annot.as_ref().map(|a| a.rect)), Some(moved));
+    assert_eq!(marks(cx), vec![RectF::new(-10.0, 0.0, 40.0, 30.0)], "the mark stays put on the desktop");
+    assert_eq!(cx.update(|cx| model.read(cx).tool), Some(Tool::Rectangle));
+    assert!(sent.lock().unwrap().is_empty());
+}
+
+/// Esc steps back one layer at a time and warns once before the marks are thrown away.
+#[gpui::test]
+fn escape_steps_back_and_warns_before_discarding_marks(cx: &mut TestAppContext) {
+    use laqta_domain::region::{RegionCommand, RegionInput};
+    use laqta_editor::Tool;
+
+    use crate::presenters::capture_toolbar::Item;
+
+    let (model, sent) = settled_overlay(cx, PhysRect { x: 100, y: 100, width: 200, height: 100 });
+    cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Rectangle), cx)));
+    draw(cx, &model, (10.0, 10.0), (50.0, 40.0));
+    let cancelled = |sent: &std::sync::Mutex<Vec<RegionInput>>| {
+        sent.lock().unwrap().iter().any(|i| matches!(i, RegionInput::Command(RegionCommand::Cancel)))
+    };
+    let escape = |cx: &mut TestAppContext| cx.update(|cx| model.update(cx, |m, cx| m.escape(cx)));
+
+    // The new mark is picked: the first Esc lets it go, the next puts the tool away.
+    if cx.update(|cx| model.read(cx).annot.as_ref().is_some_and(|a| a.chrome.selection.is_some())) {
+        escape(cx);
+        assert!(cx.update(|cx| model.read(cx).annot.as_ref().is_some_and(|a| a.chrome.selection.is_none())));
+    }
+    escape(cx);
+    assert_eq!(cx.update(|cx| model.read(cx).tool), None, "the tool is put away");
+    escape(cx);
+    assert_eq!(cx.update(|cx| model.read(cx).discard_notice()).as_deref(), Some("Press Esc again to discard 1 annotation"));
+    assert!(!cancelled(&sent), "the first Esc over marks only warns");
+    escape(cx);
+    assert!(cancelled(&sent), "the second one ends the capture");
+}
+
+/// Without marks the toolbar's close button ends the capture at once.
+#[gpui::test]
+fn the_close_button_cancels_at_once_without_marks(cx: &mut TestAppContext) {
+    use laqta_domain::region::{RegionCommand, RegionInput};
+
+    use crate::presenters::capture_toolbar::Item;
+
+    let (model, sent) = settled_overlay(cx, PhysRect { x: 100, y: 100, width: 200, height: 100 });
+    cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Cancel, cx)));
+    assert!(matches!(sent.lock().unwrap().last(), Some(RegionInput::Command(RegionCommand::Cancel))));
+}
+
+/// Delete removes the picked mark, never the selection with its marks; an action waits while the
+/// selection is dragged, since the edited crop would be of the old frame.
+#[gpui::test]
+fn delete_and_actions_never_lose_the_marks(cx: &mut TestAppContext) {
+    use laqta_domain::region::{RegionInput, RegionKey, SelectionAction};
+    use laqta_editor::Tool;
+
+    use crate::presenters::capture_toolbar::Item;
+
+    let sel = PhysRect { x: 100, y: 100, width: 200, height: 100 };
+    let (model, sent) = settled_overlay(cx, sel);
+    let window = *cx.windows().last().expect("the overlay window");
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    vcx.update(|_, cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Rectangle), cx)));
+    draw(&mut vcx, &model, (10.0, 10.0), (50.0, 40.0));
+    vcx.update(|_, cx| model.update(cx, |m, cx| m.pick(Item::Region, cx)));
+    let count = |vcx: &mut VisualTestContext| vcx.update(|_, cx| model.read(cx).annot.as_ref().map_or(0, |a| a.chrome.annotation_count));
+
+    let picked = vcx.update(|_, cx| model.read(cx).mark_selected());
+    vcx.simulate_keystrokes("delete");
+    if picked {
+        assert_eq!(count(&mut vcx), 0, "Delete removed the picked mark");
+    }
+    vcx.simulate_keystrokes("delete");
+    let deletes = sent.lock().unwrap().iter().filter(|i| matches!(i, RegionInput::Key { key: RegionKey::Delete, .. })).count();
+    assert_eq!(deletes, 0, "the session never saw a Delete while marks (or their undo) exist");
+
+    vcx.update(|_, cx| crate::overlay::update(RegionView { gesture: true, ..settled_view(sel) }, cx));
+    let before = sent.lock().unwrap().len();
+    vcx.update(|_, cx| model.update(cx, |m, cx| m.finish(SelectionAction::Copy, cx)));
+    assert_eq!(sent.lock().unwrap().len(), before, "no action mid-drag");
 }

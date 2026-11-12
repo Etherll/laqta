@@ -3,7 +3,9 @@
 //!
 //! The drawing tools are the editor engine's, so the overlay and the editor share one tool set.
 
-use laqta_editor::Tool;
+use laqta_domain::color::Rgba;
+use laqta_domain::geometry::PhysRect;
+use laqta_editor::{Style, Tool};
 
 /// One button on the capture toolbar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,6 +195,95 @@ pub fn badge(selection: Rect, side: Side, badge: (f32, f32), screen: (f32, f32))
     Rect { x, y, w, h }
 }
 
+/// The colour swatches, in order.
+pub const PALETTE: [Rgba; 7] = [
+    Rgba::rgb(0xff, 0x3b, 0x30),
+    Rgba::rgb(0xff, 0x95, 0x00),
+    Rgba::rgb(0xff, 0xcc, 0x00),
+    Rgba::rgb(0x34, 0xc7, 0x59),
+    Rgba::rgb(0x3d, 0x8b, 0xfd),
+    Rgba::rgb(0xff, 0xff, 0xff),
+    Rgba::rgb(0x00, 0x00, 0x00),
+];
+
+/// The style controls a tool shows under the bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StyleRow {
+    pub colors: bool,
+    pub sizes: bool,
+}
+
+/// The style row for `tool`, or `None` when there is no tool or the bar does not offer it.
+/// Blur and Pixelate have sizes only; Highlight has colours only.
+pub fn style_row(tool: Option<Tool>) -> Option<StyleRow> {
+    let tool = tool?;
+    if !TOOLS.contains(&tool) {
+        return None;
+    }
+    Some(match tool {
+        Tool::Blur | Tool::Pixelate => StyleRow { colors: false, sizes: true },
+        Tool::Highlight => StyleRow { colors: true, sizes: false },
+        _ => StyleRow { colors: true, sizes: true },
+    })
+}
+
+/// `style` with the tool's colour set to `c`. Highlight keeps its alpha, Text sets the font
+/// colour, and the other tools set the border colour.
+pub fn with_color(style: &Style, tool: Tool, c: Rgba) -> Style {
+    let mut out = style.clone();
+    match tool {
+        Tool::Highlight => out.highlight_color = Rgba { a: style.highlight_color.a, ..c },
+        Tool::Text => out.font.color = c,
+        _ => out.border_color = c,
+    }
+    out
+}
+
+/// The colour the tool reads, from the same field `with_color` writes.
+pub fn color_of(style: &Style, tool: Tool) -> Rgba {
+    match tool {
+        Tool::Highlight => style.highlight_color,
+        Tool::Text => style.font.color,
+        _ => style.border_color,
+    }
+}
+
+/// How many size steps the bar offers.
+pub const SIZES: usize = 3;
+
+/// `style` with the tool's size set to step `index`, where 0 is the smallest. An index past the
+/// last step takes the last one.
+pub fn with_size(style: &Style, tool: Tool, index: usize) -> Style {
+    let i = index.min(SIZES - 1);
+    let mut out = style.clone();
+    match tool {
+        Tool::Blur => out.blur_radius = [4, 8, 16][i],
+        Tool::Pixelate => out.pixel_size = [6, 10, 16][i],
+        Tool::Text => out.font.size = [16.0, 24.0, 36.0][i],
+        _ => out.border_size = [2.0, 4.0, 8.0][i],
+    }
+    out
+}
+
+/// The size step `style` holds for the tool, if it is one of the steps.
+pub fn size_index(style: &Style, tool: Tool) -> Option<usize> {
+    match tool {
+        Tool::Blur => [4, 8, 16].iter().position(|&v| v == style.blur_radius),
+        Tool::Pixelate => [6, 10, 16].iter().position(|&v| v == style.pixel_size),
+        Tool::Text => [16.0, 24.0, 36.0].iter().position(|&v| v == style.font.size),
+        _ => [2.0, 4.0, 8.0].iter().position(|&v| v == style.border_size),
+    }
+}
+
+/// The size badge's text: the selection's size, then its origin when given.
+pub fn badge_text(rect: PhysRect, origin: Option<(i32, i32)>) -> String {
+    let size = format!("{} × {}", rect.width, rect.height);
+    match origin {
+        Some((x, y)) => format!("{size}  ·  {x}, {y}"),
+        None => size,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +347,73 @@ mod tests {
             }
             assert_eq!(key_item(&key, mods), Some(item), "{s} for {item:?}");
         }
+    }
+
+    #[test]
+    fn the_palette_is_seven_opaque_colours_from_red_to_black() {
+        assert_eq!(PALETTE.len(), 7);
+        assert_eq!(PALETTE[0], Rgba::rgb(0xff, 0x3b, 0x30));
+        assert_eq!(PALETTE[6], Rgba::rgb(0, 0, 0));
+        assert!(PALETTE.iter().all(|c| c.a == 255));
+    }
+
+    #[test]
+    fn the_style_row_depends_on_the_tool() {
+        let both = Some(StyleRow { colors: true, sizes: true });
+        assert_eq!(style_row(None), None);
+        assert_eq!(style_row(Some(Tool::Select)), None, "not on the bar");
+        assert_eq!(style_row(Some(Tool::Rectangle)), both);
+        assert_eq!(style_row(Some(Tool::Text)), both);
+        assert_eq!(style_row(Some(Tool::Blur)), Some(StyleRow { colors: false, sizes: true }));
+        assert_eq!(style_row(Some(Tool::Pixelate)), Some(StyleRow { colors: false, sizes: true }));
+        assert_eq!(style_row(Some(Tool::Highlight)), Some(StyleRow { colors: true, sizes: false }));
+    }
+
+    #[test]
+    fn a_colour_lands_in_the_field_the_tool_draws_with() {
+        let style = Style::default();
+        let red = PALETTE[0];
+        assert_eq!(with_color(&style, Tool::Rectangle, red).border_color, red);
+        assert_eq!(with_color(&style, Tool::Text, red).font.color, red);
+        assert_eq!(with_color(&style, Tool::Text, red).border_color, style.border_color);
+        let kept = Style { highlight_color: Rgba { a: 128, ..Rgba::BLACK }, ..Style::default() };
+        assert_eq!(with_color(&kept, Tool::Highlight, red).highlight_color, Rgba { a: 128, ..red });
+    }
+
+    #[test]
+    fn a_colour_reads_back_from_the_field_it_was_written_to() {
+        let style = Style { highlight_color: Rgba::rgb(0xff, 0xee, 0x00), ..Style::default() };
+        for tool in TOOLS {
+            assert_eq!(color_of(&with_color(&style, tool, PALETTE[2]), tool), PALETTE[2], "{tool:?}");
+        }
+    }
+
+    #[test]
+    fn sizes_step_through_the_tools_own_fields() {
+        let style = Style::default();
+        assert_eq!(with_size(&style, Tool::Blur, 2).blur_radius, 16);
+        assert_eq!(with_size(&style, Tool::Pixelate, 0).pixel_size, 6);
+        assert_eq!(with_size(&style, Tool::Text, 1).font.size, 24.0);
+        assert_eq!(with_size(&style, Tool::Rectangle, 2).border_size, 8.0);
+        assert_eq!(with_size(&style, Tool::Rectangle, 9).border_size, 8.0, "past the last step takes the last");
+    }
+
+    #[test]
+    fn a_size_index_reads_back_its_step_and_is_none_off_the_steps() {
+        let style = Style::default();
+        for tool in TOOLS {
+            for i in 0..SIZES {
+                assert_eq!(size_index(&with_size(&style, tool, i), tool), Some(i), "{tool:?} step {i}");
+            }
+        }
+        assert_eq!(size_index(&style, Tool::Blur), None, "the default radius 15 is not a step");
+        assert_eq!(size_index(&style, Tool::Text), None, "the default font size 20 is not a step");
+    }
+
+    #[test]
+    fn the_badge_gives_the_size_and_the_origin_when_asked() {
+        let phys = PhysRect { x: 40, y: 60, width: 1280, height: 720 };
+        assert_eq!(badge_text(phys, None), "1280 × 720");
+        assert_eq!(badge_text(phys, Some((40, 60))), "1280 × 720  ·  40, 60");
     }
 }

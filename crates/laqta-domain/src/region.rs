@@ -39,9 +39,12 @@ pub struct RegionConfig {
     pub min_size: u32,
     pub magnifier_pixels: u32,
     pub info_text: String,
-    /// What a right press does while idle.
-    /// The side of a handle's hit rect, in physical pixels (`HANDLE_SIZE` at the display scale).
+    /// The side of a handle's drawn dot, in physical pixels (`HANDLE_SIZE` at the display scale).
     pub handle_size: u32,
+    /// The side of a handle's grab square and the width of an edge's grab strip, in physical
+    /// pixels. At least `handle_size`.
+    pub grab_size: u32,
+    /// What a right press does while idle.
     pub right_click: RegionMouseAction,
     /// What a middle press does while idle.
     pub middle_click: RegionMouseAction,
@@ -175,10 +178,6 @@ pub enum RegionCommand {
     /// Confirm the active region (every region in multi-region mode) with an action. Does nothing
     /// while no region is drawn.
     Finish(SelectionAction),
-    /// Freeze the selection: pointer and arrow-key edits are ignored until `Unlock`. The overlay
-    /// locks once annotations exist on the selection, since moving it would leave them behind.
-    Lock,
-    Unlock,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -226,6 +225,43 @@ pub fn handle_at(handles: &[(Handle, PhysRect)], at: (i32, i32)) -> Option<Handl
     handles.iter().find(|(_, rect)| contains(*rect, at)).map(|(handle, _)| *handle)
 }
 
+/// The handle a press at `at` grabs on `rect`, for a grab size of `grab` pixels. First a square of
+/// side `grab` centred on each corner, then on each edge midpoint; failing that, a strip `grab`
+/// wide centred on each edge line and reaching `grab / 2` past both ends of the edge. `None` if
+/// the press misses both.
+pub fn grab_at(rect: PhysRect, at: (i32, i32), grab: u32) -> Option<Handle> {
+    let side = grab.max(1);
+    let half_px = side / 2;
+    let half = to_i32(half_px);
+    let left = rect.x;
+    let right = rect.right().saturating_sub(1);
+    let top = rect.y;
+    let bottom = rect.bottom().saturating_sub(1);
+    let centre_x = rect.x.saturating_add_unsigned(rect.width / 2);
+    let centre_y = rect.y.saturating_add_unsigned(rect.height / 2);
+    let square = |x: i32, y: i32| PhysRect { x: x.saturating_sub(half), y: y.saturating_sub(half), width: side, height: side };
+    let points = [
+        (Handle::NW, square(left, top)),
+        (Handle::NE, square(right, top)),
+        (Handle::SE, square(right, bottom)),
+        (Handle::SW, square(left, bottom)),
+        (Handle::N, square(centre_x, top)),
+        (Handle::E, square(right, centre_y)),
+        (Handle::S, square(centre_x, bottom)),
+        (Handle::W, square(left, centre_y)),
+    ];
+    let pad = half_px.saturating_mul(2);
+    let across_x = rect.width.saturating_add(pad);
+    let across_y = rect.height.saturating_add(pad);
+    let strips = [
+        (Handle::W, PhysRect { x: left.saturating_sub(half), y: rect.y.saturating_sub(half), width: side, height: across_y }),
+        (Handle::E, PhysRect { x: right.saturating_sub(half), y: rect.y.saturating_sub(half), width: side, height: across_y }),
+        (Handle::N, PhysRect { x: rect.x.saturating_sub(half), y: top.saturating_sub(half), width: across_x, height: side }),
+        (Handle::S, PhysRect { x: rect.x.saturating_sub(half), y: bottom.saturating_sub(half), width: across_x, height: side }),
+    ];
+    handle_at(&points, at).or_else(|| handle_at(&strips, at))
+}
+
 /// The region state machine. Feed it input with [`RegionState::handle`]; it reports when the
 /// overlay must repaint and the outcome once the session ends.
 #[derive(Debug)]
@@ -245,8 +281,6 @@ pub struct RegionState {
     annotate: bool,
     /// Whether the capture tools are shown; Space toggles it.
     tools_visible: bool,
-    /// Set by `Lock`: the selection can no longer be moved, resized or removed.
-    locked: bool,
     active: Option<usize>,
     /// Index into `targets` of the target under the cursor.
     hover: Option<usize>,
@@ -263,7 +297,6 @@ struct View {
     active: Option<usize>,
     hover: Option<usize>,
     tools_visible: bool,
-    locked: bool,
 }
 
 impl RegionState {
@@ -277,16 +310,19 @@ impl RegionState {
         self.tools_visible
     }
 
-    /// Whether the selection is frozen by `Lock`.
-    pub fn locked(&self) -> bool {
-        self.locked
+    /// The region held as the adjustable selection: the active region of a single-region session
+    /// that does not end on select. It stays held while it is moved or resized, but not while a
+    /// new region is drawn.
+    pub fn selected(&self) -> Option<PhysRect> {
+        let single = !self.config.confirm_on_select && !self.config.multi_region;
+        let settled = matches!(self.phase, Phase::Idle | Phase::Moving { .. } | Phase::Resizing { .. });
+        self.active_region().filter(|_| single && settled)
     }
 
-    /// The region held as the adjustable selection: the active region of a single-region session
-    /// that does not end on select, once no gesture is under way.
-    pub fn selected(&self) -> Option<PhysRect> {
-        let waiting = !self.config.confirm_on_select && !self.config.multi_region && matches!(self.phase, Phase::Idle);
-        self.active_region().filter(|_| waiting)
+    /// Whether a single selection is held: it does not end on select and the session takes one
+    /// region. Hover is then off, so a stray click leaves the selection as it is.
+    fn holds_selection(&self) -> bool {
+        !self.config.confirm_on_select && !self.config.multi_region && !self.regions.is_empty()
     }
 
     pub fn new(config: RegionConfig) -> Self {
@@ -300,7 +336,6 @@ impl RegionState {
             region_targets: Vec::new(),
             annotate: false,
             tools_visible: true,
-            locked: false,
             active: None,
             hover: None,
             cursor,
@@ -355,7 +390,13 @@ impl RegionState {
         }
     }
 
+    /// The target under the cursor, while idle.
     pub fn hovered_target(&self) -> Option<&HoverTarget> {
+        if matches!(self.phase, Phase::Idle) { self.hover_target() } else { None }
+    }
+
+    /// The target the hover shows, whatever the phase: a click takes the one under the press.
+    fn hover_target(&self) -> Option<&HoverTarget> {
         self.hover.and_then(|i| self.targets.get(i))
     }
 
@@ -374,6 +415,11 @@ impl RegionState {
 
     pub fn cursor(&self) -> (i32, i32) {
         self.cursor
+    }
+
+    /// The side of the grab square at each corner and edge midpoint (`RegionConfig::grab_size`).
+    pub fn grab_size(&self) -> u32 {
+        self.config.grab_size
     }
 
     /// The eight handles of the active region, centred on its corners and edge midpoints.
@@ -466,7 +512,6 @@ impl RegionState {
             active: self.active,
             hover: self.hover,
             tools_visible: self.tools_visible,
-            locked: self.locked,
         }
     }
 
@@ -493,8 +538,6 @@ impl RegionState {
             RegionInput::Command(RegionCommand::Finish(action)) => {
                 self.confirm_regions(action);
             }
-            RegionInput::Command(RegionCommand::Lock) => self.lock(),
-            RegionInput::Command(RegionCommand::Unlock) => self.locked = false,
             RegionInput::Command(RegionCommand::Cancel) => self.finish(RegionOutcome::Cancelled),
             RegionInput::Command(RegionCommand::Fullscreen) => self.finish(RegionOutcome::Fullscreen),
             RegionInput::Command(RegionCommand::ActiveMonitor) => self.finish(RegionOutcome::ActiveMonitor),
@@ -546,6 +589,12 @@ impl RegionState {
     /// Picks the hover at the current wheel level. The level resets when the smallest target
     /// under the cursor changes, so moving onto another element starts from the smallest again.
     fn update_hover(&mut self) {
+        if self.holds_selection() {
+            self.base = None;
+            self.level = 0;
+            self.hover = None;
+            return;
+        }
         let chain = self.chain();
         if chain.first().copied() != self.base {
             self.base = chain.first().copied();
@@ -555,7 +604,7 @@ impl RegionState {
     }
 
     fn wheel(&mut self, steps: i32) {
-        if !matches!(self.phase, Phase::Idle) {
+        if !matches!(self.phase, Phase::Idle) || self.holds_selection() {
             return;
         }
         let chain = self.chain();
@@ -594,17 +643,8 @@ impl RegionState {
         self.update_hover();
     }
 
-    /// Freezes the selection. A gesture under way is dropped first, as a right press would.
-    fn lock(&mut self) {
-        self.cancel_gesture();
-        self.locked = true;
-    }
-
     fn pointer_move(&mut self, at: (i32, i32)) {
         self.set_cursor(at);
-        if self.locked {
-            return;
-        }
         match self.phase {
             Phase::Moving { grab, original } => {
                 let dx = self.cursor.0.saturating_sub(grab.0);
@@ -625,10 +665,6 @@ impl RegionState {
             self.pick_point();
             return;
         }
-        // The pointer belongs to the annotation tools now; every button is theirs, not the session's.
-        if self.locked {
-            return;
-        }
         match button {
             Button::Left if matches!(self.phase, Phase::Idle) => self.start_gesture(),
             Button::Left => {}
@@ -640,21 +676,26 @@ impl RegionState {
         }
     }
 
-    /// Left press in Idle: resize a handle of the active region, move a region, or draw.
+    /// Left press in Idle: resize a handle or edge of the active region, move a region, or draw.
+    /// A move or resize clears the hover, so the overlay shows no target while it is under way.
     fn start_gesture(&mut self) {
         let c = self.cursor;
+        let grab = self.config.grab_size;
         if let Some(i) = self.active {
             let original = self.regions[i];
-            if let Some(handle) = self.handle_at(c) {
+            if let Some(handle) = grab_at(original, c, grab) {
+                self.hover = None;
                 self.phase = Phase::Resizing { handle, original };
                 return;
             }
             if contains(original, c) {
+                self.hover = None;
                 self.phase = Phase::Moving { grab: c, original };
                 return;
             }
         }
         if let Some(i) = self.regions.iter().rposition(|r| contains(*r, c)) {
+            self.hover = None;
             self.active = Some(i);
             self.phase = Phase::Moving { grab: c, original: self.regions[i] };
             return;
@@ -662,13 +703,9 @@ impl RegionState {
         self.phase = Phase::Drawing { anchor: c };
     }
 
-    fn handle_at(&self, at: (i32, i32)) -> Option<Handle> {
-        handle_at(&self.handle_rects(), at)
-    }
-
     fn pointer_up(&mut self, at: (i32, i32), button: Button) {
         self.set_cursor(at);
-        if self.locked || button != Button::Left {
+        if button != Button::Left {
             return;
         }
         match self.phase {
@@ -683,7 +720,7 @@ impl RegionState {
         let drawn = rect_from_points(anchor, self.cursor);
         if drawn.width < self.config.min_size && drawn.height < self.config.min_size {
             // A click: take the target under the press, if there is one.
-            match self.hovered_target().cloned() {
+            match self.hover_target().cloned() {
                 Some(target) => self.add_region(clamp_rect(target.rect, bounds), Some(target)),
                 None => self.enter_idle(),
             }
@@ -750,6 +787,7 @@ impl RegionState {
             Some(a) if a > i => Some(a - 1),
             other => other,
         };
+        self.update_hover();
     }
 
     fn key(&mut self, key: RegionKey, mods: KeyMods) {
@@ -758,7 +796,6 @@ impl RegionState {
             RegionKey::Enter if self.config.pick_point => self.pick_point(),
             RegionKey::Enter => self.confirm(),
             RegionKey::Space => self.tools_visible = !self.tools_visible,
-            _ if self.locked => {}
             _ if matches!(self.phase, Phase::Idle) => self.idle_key(key, mods),
             _ => {}
         }
@@ -933,6 +970,7 @@ mod tests {
             magnifier_pixels: 5,
             info_text: String::new(),
             handle_size: HANDLE_SIZE,
+            grab_size: HANDLE_SIZE * 2,
             right_click: RegionMouseAction::RemoveShapeOrCancel,
             middle_click: RegionMouseAction::CancelCapture,
         }
@@ -1675,15 +1713,16 @@ mod tests {
     }
 
     #[test]
-    fn space_works_with_a_selection_while_drawing_and_while_locked() {
+    fn space_works_with_a_selection_while_moving_and_while_drawing() {
         let mut state = selected_state();
         state.handle(tap(RegionKey::Space));
         assert!(!state.tools_visible());
         assert_eq!(state.selected(), Some(SELECTED), "toggling the tools leaves the selection alone");
 
-        state.handle(RegionInput::Command(RegionCommand::Lock));
+        state.handle(press(150, 150));
         state.handle(tap(RegionKey::Space));
-        assert!(state.tools_visible(), "a locked selection can still hide or show the tools");
+        assert!(state.tools_visible(), "the tools can be hidden or shown during a move");
+        assert!(matches!(state.phase(), Phase::Moving { .. }), "the move carries on");
 
         let mut drawing = RegionState::new(selecting());
         drawing.handle(press(10, 10));
@@ -1760,112 +1799,70 @@ mod tests {
     }
 
     #[test]
-    fn lock_freezes_the_selection_against_pointer_input() {
-        let mut state = selected_state();
-        assert!(!state.locked());
-        assert!(state.handle(RegionInput::Command(RegionCommand::Lock)), "the overlay repaints to show the lock");
-        assert!(state.locked());
+    fn a_held_selection_hides_the_hover_and_a_stray_click_leaves_it() {
+        let mut state = RegionState::new(selecting());
+        state.handle(RegionInput::TargetsLoaded(vec![window("Browser", rect(0, 0, 1000, 800))]));
+        drag(&mut state, (100, 100), (300, 200));
+        assert_eq!(state.hovered_target(), None, "no target is offered while a selection is held");
 
-        // Pressing inside, on a handle and outside start nothing, and dragging changes nothing.
-        for start in [(150, 150), (300, 200), (500, 400)] {
-            state.handle(press(start.0, start.1));
-            assert_eq!(state.phase(), &Phase::Idle, "press at {start:?}");
-            state.handle(move_to(start.0 + 40, start.1 + 30));
-            state.handle(release(start.0 + 40, start.1 + 30));
-            assert_eq!(state.regions(), &[SELECTED], "press at {start:?}");
-            assert_eq!(state.phase(), &Phase::Idle);
-        }
-        assert_eq!(state.outcome(), None);
-        assert_eq!(state.cursor(), (540, 430), "the cursor still follows the pointer");
-
-        // The right and middle buttons belong to the annotation tools too.
-        state.handle(right_press(150, 150));
-        state.handle(middle_press(150, 150));
+        state.handle(move_to(500, 400));
+        assert_eq!(state.hovered_target(), None);
+        state.handle(press(500, 400));
+        state.handle(release(500, 400));
         assert_eq!(state.outcome(), None);
         assert_eq!(state.regions(), &[SELECTED]);
+        assert_eq!(state.selected(), Some(SELECTED));
     }
 
     #[test]
-    fn lock_ignores_delete_arrows_and_tab() {
-        let mut state = RegionState::new(RegionConfig { multi_region: true, ..selecting() });
-        drag(&mut state, (10, 10), (60, 60));
-        drag(&mut state, (100, 100), (150, 150));
-        let active = state.active_region();
-        state.handle(RegionInput::Command(RegionCommand::Lock));
-
-        for key in [RegionKey::Delete, RegionKey::Left, RegionKey::Right, RegionKey::Up, RegionKey::Down, RegionKey::Tab] {
-            state.handle(tap(key));
-            state.handle(tap_with(key, true, true));
-        }
-        assert_eq!(state.regions(), &[rect(10, 10, 51, 51), rect(100, 100, 51, 51)]);
-        assert_eq!(state.active_region(), active);
-        assert_eq!(state.outcome(), None);
+    fn a_selection_stays_held_during_a_move() {
+        let mut state = selected_state();
+        state.handle(press(150, 150));
+        state.handle(move_to(170, 160));
+        assert!(matches!(state.phase(), Phase::Moving { .. }));
+        assert_eq!(state.selected(), Some(rect(120, 110, 201, 101)));
+        state.handle(release(170, 160));
+        assert_eq!(state.selected(), Some(rect(120, 110, 201, 101)));
     }
 
     #[test]
-    fn enter_while_locked_finishes_with_the_default_action_and_escape_cancels() {
-        let mut state = selected_state();
-        state.handle(RegionInput::Command(RegionCommand::Lock));
-        state.handle(tap(RegionKey::Enter));
-        assert_eq!(state.outcome(), Some(&confirmed(vec![SELECTED], None, SelectionAction::Default)));
-
-        let mut state = selected_state();
-        state.handle(RegionInput::Command(RegionCommand::Lock));
-        state.handle(tap(RegionKey::Escape));
-        assert_eq!(state.outcome(), Some(&RegionOutcome::Cancelled));
-    }
-
-    #[test]
-    fn finish_and_the_other_commands_work_while_locked() {
-        let mut state = selected_state();
-        state.handle(RegionInput::Command(RegionCommand::Lock));
-        state.handle(RegionInput::Command(RegionCommand::Finish(SelectionAction::Edit)));
-        assert_eq!(state.outcome(), Some(&confirmed(vec![SELECTED], None, SelectionAction::Edit)));
-
-        let mut state = selected_state();
-        state.handle(RegionInput::Command(RegionCommand::Lock));
-        state.handle(RegionInput::Command(RegionCommand::Cancel));
-        assert_eq!(state.outcome(), Some(&RegionOutcome::Cancelled));
-    }
-
-    #[test]
-    fn unlock_gives_the_selection_back() {
-        let mut state = selected_state();
-        state.handle(RegionInput::Command(RegionCommand::Lock));
-        assert!(state.handle(RegionInput::Command(RegionCommand::Unlock)));
-        assert!(!state.locked());
+    fn hover_is_off_during_a_move_and_back_after_it() {
+        let mut state = RegionState::new(multi());
+        state.handle(RegionInput::TargetsLoaded(vec![window("Browser", rect(0, 0, 1000, 800))]));
+        drag(&mut state, (100, 100), (300, 200));
+        state.handle(move_to(150, 150));
+        assert!(state.hover_target().is_some(), "a target shows while idle");
 
         state.handle(press(150, 150));
         assert!(matches!(state.phase(), Phase::Moving { .. }));
+        assert!(state.hover_target().is_none(), "no target shows during a move");
         state.handle(move_to(160, 150));
         state.handle(release(160, 150));
-        assert_eq!(state.selected(), Some(rect(110, 100, 201, 101)));
-        state.handle(tap(RegionKey::Delete));
-        assert!(state.regions().is_empty());
+        assert!(state.hover_target().is_some(), "the target shows again once idle");
     }
 
     #[test]
-    fn locking_mid_gesture_puts_the_region_back_and_ends_the_gesture() {
-        let mut state = selected_state();
-        state.handle(press(150, 150));
-        state.handle(move_to(200, 180));
-        assert_eq!(state.active_region(), Some(rect(150, 130, 201, 101)));
-
-        state.handle(RegionInput::Command(RegionCommand::Lock));
-        assert_eq!(state.phase(), &Phase::Idle);
-        assert_eq!(state.selected(), Some(SELECTED));
-        state.handle(move_to(250, 220));
-        state.handle(release(250, 220));
-        assert_eq!(state.selected(), Some(SELECTED));
+    fn a_corner_square_beats_an_edge_square_on_a_small_rect() {
+        let small = rect(100, 100, 6, 6);
+        assert_eq!(grab_at(small, (103, 100), 8), Some(Handle::NW), "the top middle is inside the corner squares");
     }
 
     #[test]
-    fn a_locked_state_reports_a_change_only_once() {
+    fn a_press_beside_an_edge_dot_grabs_the_edge() {
+        let state = selected_state();
+        // The east dot covers x 296..304 and y 146..154; the grab reaches y 142..158.
+        assert_eq!(handle_at(&state.handle_rects(), (300, 156)), None);
+        assert_eq!(grab_at(SELECTED, (300, 156), 16), Some(Handle::E));
+    }
+
+    #[test]
+    fn a_press_on_an_edge_strip_resizes_from_that_edge() {
         let mut state = selected_state();
-        assert!(state.handle(RegionInput::Command(RegionCommand::Lock)));
-        assert!(!state.handle(RegionInput::Command(RegionCommand::Lock)), "locking twice changes nothing");
-        assert!(state.handle(RegionInput::Command(RegionCommand::Unlock)));
-        assert!(!state.handle(RegionInput::Command(RegionCommand::Unlock)));
+        state.handle(press(300, 130));
+        assert!(matches!(state.phase(), Phase::Resizing { handle: Handle::E, .. }), "{:?}", state.phase());
+        state.handle(move_to(360, 130));
+        state.handle(release(360, 130));
+        assert_eq!(state.selected(), Some(rect(100, 100, 261, 101)));
     }
 
     fn crop(shade: u8) -> Bitmap {
@@ -1911,6 +1908,7 @@ mod command_tests {
             magnifier_pixels: 5,
             info_text: String::new(),
             handle_size: HANDLE_SIZE,
+            grab_size: HANDLE_SIZE * 2,
             right_click: Default::default(),
             middle_click: Default::default(),
         })

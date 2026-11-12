@@ -251,8 +251,7 @@ impl OverlayModel {
     }
 
     /// The desktop point (`x`, `y`) in the selection's pixels, when the text takes the pointer
-    /// there: inside the selection and off its handles, which still resize it. A locked selection
-    /// hides its handles and cannot be resized, so there the words reach its edges.
+    /// there: inside the selection and off its grab area, which still resizes it.
     pub(crate) fn text_point(&self, x: i32, y: i32) -> Option<(f32, f32)> {
         self.text.as_ref()?;
         let sel = self.view.selected?;

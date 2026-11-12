@@ -2,6 +2,8 @@
 
 pub mod after_capture;
 pub mod ai_features;
+pub mod capture_escape;
+pub mod capture_pointer;
 pub mod capture_toolbar;
 pub mod color;
 pub mod editor_interaction;
