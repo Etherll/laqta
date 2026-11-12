@@ -78,7 +78,8 @@ pub fn route(s: &PointerScene, at: (i32, i32), button: Button) -> Route {
     }
     let Some(frame) = s.frame else { return Route::Session };
     // A picked annotation's handle wins over the selection's grab area, with any tool.
-    if s.mark_grip.is_some() {
+    // Only inside the frame: the canvas is clipped to it, so a handle beyond it can't be seen.
+    if s.mark_grip.is_some() && inside(frame, at) {
         return Route::Editor;
     }
     if s.grab.is_some() {
@@ -107,7 +108,7 @@ pub fn pointer(s: &PointerScene, at: (i32, i32)) -> Pointer {
         return Pointer::Text;
     }
     let Some(frame) = s.frame else { return Pointer::Crosshair };
-    match s.mark_grip {
+    match s.mark_grip.filter(|_| inside(frame, at)) {
         Some(Grip::Axis(h)) => return Pointer::Resize(h),
         Some(Grip::Free) => return Pointer::Move,
         None => {}
@@ -248,6 +249,8 @@ mod tests {
         assert_eq!(route(&drawing, (1, 1), Button::Left), Route::Editor, "with a drawing tool out too");
         assert_eq!(route(&PointerScene { mark_grip: None, ..s }, (1, 1), Button::Left), Route::Session, "else the corner resizes");
         assert_eq!(pointer(&s, (1, 1)), Pointer::Resize(Handle::NW));
+        let outside = PointerScene { grab: None, marks: true, ..s };
+        assert_eq!(route(&outside, (-5, 50), Button::Left), Route::Ignore, "a handle beyond the clipped canvas is out of reach");
         let free = PointerScene { mark_grip: Some(Grip::Free), ..s };
         assert_eq!(pointer(&free, (1, 1)), Pointer::Move);
     }

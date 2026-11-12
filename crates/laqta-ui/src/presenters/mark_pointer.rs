@@ -13,7 +13,13 @@ pub const GRAB: f32 = 10.0;
 /// The picked annotation's handle within `reach` of (`x`, `y`), as the way it drags. `handles` is
 /// `Chrome::handles`, in the same pixels as the point and the reach.
 pub fn handle_under(handles: &[(MarkHandle, PointF)], (x, y): (f32, f32), reach: f32) -> Option<Grip> {
-    let (handle, _) = handles.iter().find(|(_, p)| (p.x - x).abs() <= reach && (p.y - y).abs() <= reach)?;
+    // The nearest in reach, as the engine's `hit_handle` takes, so the cursor shows the handle a
+    // press drags when the squares of a small mark overlap.
+    let near = |p: &PointF| (p.x - x).hypot(p.y - y);
+    let (handle, _) = handles
+        .iter()
+        .filter(|(_, p)| (p.x - x).abs() <= reach && (p.y - y).abs() <= reach)
+        .min_by(|a, b| near(&a.1).total_cmp(&near(&b.1)))?;
     Some(grip(*handle, handles))
 }
 
@@ -118,5 +124,9 @@ mod tests {
         let handles = [(MarkHandle::NW, PointF::new(10.0, 10.0))];
         assert_eq!(handle_under(&handles, (1.0, 1.0), GRAB), Some(Grip::Axis(Handle::NW)), "the corner of the square");
         assert_eq!(handle_under(&handles, (-1.0, 10.0), GRAB), None, "past it");
+        let small = [(MarkHandle::NW, PointF::new(0.0, 0.0)), (MarkHandle::SE, PointF::new(10.0, 10.0))];
+        assert_eq!(handle_under(&small, (9.0, 9.0), GRAB), Some(Grip::Axis(Handle::NW)), "SE drags the NW axis too");
+        let tall = [(MarkHandle::N, PointF::new(5.0, 0.0)), (MarkHandle::E, PointF::new(10.0, 5.0))];
+        assert_eq!(handle_under(&tall, (9.0, 5.0), GRAB), Some(Grip::Axis(Handle::E)), "the nearest, not the first");
     }
 }

@@ -968,7 +968,7 @@ impl Editor {
             // A mark under the pointer is picked and dragged. Inside the picked mark's box counts as
             // on it, so a thin arrow or line moves by its inside and not only by its stroke.
             Tool::Select => {
-                match self.hit(p).or_else(|| self.selected.filter(|id| self.find(*id).is_some_and(|a| a.kind.bounds().contains(p, 0.0)))) {
+                match self.hit(p).or_else(|| self.selected.filter(|id| self.find(*id).is_some_and(|a| a.pick_box().contains(p, 0.0)))) {
                     Some(id) => {
                         self.selected = Some(id);
                         if let Some(a) = self.find(id).cloned() {
@@ -1464,6 +1464,11 @@ mod tests {
         assert!(hover.h >= 20.0, "the box is as tall as the stroke: {hover:?}");
         e.execute(Command::SelectAll);
         assert!(e.in_picked(30.0, 38.0));
+        // A press in the box's corner, off the stroke, drags the marker rather than letting it go.
+        // (0.5, 39.5) is 13.4 px from the stroke's end, past the 13 px stroke hit.
+        draw_rect(&mut e, (0.5, 39.5), (4.5, 39.5));
+        assert!(e.chrome().selection.is_some(), "still picked");
+        assert_eq!(e.annotations()[0].kind.bounds().x, 14.0, "moved by the drag");
     }
 
     #[test]
