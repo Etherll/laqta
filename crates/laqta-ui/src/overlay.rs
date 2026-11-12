@@ -79,6 +79,9 @@ pub(crate) struct OverlayModel {
     /// Who took the press under way (`capture_pointer::route`): its moves and release go there too,
     /// on whichever monitor's window they reach.
     pub(crate) pressed: Option<Route>,
+    /// The button that made `pressed`: another button's press and release during the drag are
+    /// ignored, so they can't take the route from it.
+    pub(crate) pressed_button: Option<MouseButton>,
     /// How far a picked mark's handle reaches, in desktop pixels: `mark_pointer::GRAB` times the
     /// scale of the monitor the pointer is on, so the grab square is the same size on every screen.
     pub(crate) grab: f32,
@@ -169,6 +172,7 @@ pub(crate) fn show(frames: Vec<Frame>, images: Vec<Option<Arc<RenderImage>>>, vi
         text: None,
         discard_armed: None,
         pressed: None,
+        pressed_button: None,
         frame_only: false,
         grab: crate::presenters::mark_pointer::GRAB,
         finishing: false,
@@ -685,7 +689,10 @@ impl Render for OverlayView {
         .on_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| {
             let (x, y) = this.to_phys(ev.position, window, cx);
             let Some(pressed) = button(ev.button) else { return };
-            if this.model.read(cx).finishing {
+            // Another button mid-drag is ignored. The same button again means its release was lost
+            // (outside the overlay), so this press starts afresh.
+            let m = this.model.read(cx);
+            if m.finishing || m.pressed_button.is_some_and(|b| b != ev.button) {
                 return;
             }
             let mut scene = this.model.read(cx).pointer_scene((x, y), true);
@@ -695,6 +702,7 @@ impl Render for OverlayView {
             // can't swallow this one's release and leave the drag running.
             this.model.update(cx, |m, _| {
                 m.pressed = Some(route);
+                m.pressed_button = Some(ev.button);
                 m.chrome_press = None;
             });
             match route {
@@ -727,8 +735,14 @@ impl Render for OverlayView {
             if this.model.update(cx, |m, _| m.chrome_press.take_if(|b| *b == ev.button).is_some()) {
                 return;
             }
+            if this.model.read(cx).pressed_button.is_some_and(|b| b != ev.button) {
+                return;
+            }
             let (x, y) = this.to_phys(ev.position, window, cx);
-            let route = this.model.update(cx, |m, _| m.pressed.take());
+            let route = this.model.update(cx, |m, _| {
+                m.pressed_button = None;
+                m.pressed.take()
+            });
             if ev.button == MouseButton::Left && this.model.update(cx, |m, cx| m.text_release(cx)) {
                 return;
             }

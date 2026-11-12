@@ -173,6 +173,9 @@ struct EditorWindow {
     hover: Option<laqta_editor::RectF>,
     /// A button is down on the canvas.
     pressed: bool,
+    /// The button that made `pressed`: another button's press and release during the drag are
+    /// ignored, so they can't end it.
+    press_button: Option<MouseButton>,
     /// Holding Space lends Select while a drawing tool is out.
     space: SpaceLend<Tool>,
     /// The handle reach last given to the engine, in image pixels (`sync_reach`).
@@ -274,6 +277,7 @@ impl EditorWindow {
             pointer_at: None,
             hover: None,
             pressed: false,
+            press_button: None,
             space: SpaceLend::new(Tool::Select),
             reach: 0.0,
             detail_copied: false,
@@ -291,6 +295,7 @@ impl EditorWindow {
                     this.input(up, window, cx);
                 }
                 this.pressed = false;
+                this.press_button = None;
                 if this.space.is_lent() {
                     this.return_select(window, cx);
                 }
@@ -1533,8 +1538,13 @@ impl EditorWindow {
             .cursor(self.canvas_cursor(z))
             .on_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                 if let Some(b) = button(ev.button) {
+                    // Another button mid-drag is ignored; the same one again means its release was lost.
+                    if this.press_button.is_some_and(|p| p != ev.button) {
+                        return;
+                    }
                     window.focus(&this.focus, cx);
                     this.pressed = true;
+                    this.press_button = Some(ev.button);
                     this.hover = None;
                     let (_, _, z) = this.layout(window);
                     this.sync_reach(z);
@@ -1638,6 +1648,10 @@ impl Render for EditorWindow {
                 this.input(EditorInput::PointerMove { x, y, mods: mods(&ev.modifiers) }, window, cx);
             }))
             .capture_any_mouse_up(cx.listener(|this, ev: &MouseUpEvent, window, cx| {
+                if this.press_button.is_some_and(|p| p != ev.button) {
+                    return;
+                }
+                this.press_button = None;
                 if let Some(b) = button(ev.button) {
                     let (x, y) = this.to_image(ev.position, window);
                     this.input(EditorInput::PointerUp { x, y, button: b, mods: mods(&ev.modifiers) }, window, cx);
