@@ -143,9 +143,11 @@ pub fn languages(codes: &[String]) -> String {
     }
 }
 
-/// The question before removing a model.
-pub fn remove_question(name: &str, in_use: bool) -> String {
-    if in_use {
+/// The question before removing a model. A model the user added can't be downloaded again.
+pub fn remove_question(name: &str, in_use: bool, custom: bool) -> String {
+    if custom {
+        format!("Remove {name}? Laqta deletes its file; to use it again, add the .onnx file again under Advanced.")
+    } else if in_use {
         format!("Remove {name}? It's in use, so Laqta asks to download it again the next time you use this feature.")
     } else {
         format!("Remove {name}? It can be downloaded again later.")
@@ -250,6 +252,13 @@ mod tests {
         assert_eq!(service_for("http://localhost:11434/v1/"), Some(3));
         assert_eq!(service_for(" https://API.openai.com/v1"), Some(0));
         assert_eq!(service_for("http://my-box:8080/v1"), None);
+    }
+
+    #[test]
+    fn removing_your_own_model_says_it_cannot_come_back() {
+        assert!(remove_question("Mine", true, true).contains("add the .onnx file again"));
+        assert!(remove_question("BEN2", false, false).contains("downloaded again"));
+        assert!(remove_question("BEN2", true, false).contains("in use"));
     }
 
     #[test]

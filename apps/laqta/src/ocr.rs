@@ -46,11 +46,13 @@ struct Plan {
     runtime: Arc<Runtime>,
     /// Catalog entries to download; custom models are already on disk.
     wanted: Vec<&'static laqta_ml::catalog::ModelEntry>,
+    /// A chosen custom model whose file is gone: nothing can download it.
+    custom_missing: bool,
 }
 
 impl Plan {
     fn complete(&self) -> bool {
-        self.lib.exists() && self.wanted.is_empty()
+        self.lib.exists() && self.wanted.is_empty() && !self.custom_missing
     }
 }
 
@@ -115,7 +117,9 @@ impl LazyOcr {
         let runtime = Arc::new(Runtime::new(lib.clone(), dir.clone(), crate::models::provider(options.provider)));
         let wanted: Vec<_> =
             [&det_id, &rec_id].into_iter().filter_map(|id| catalog().model(id)).filter(|e| !runtime.is_installed(e)).collect();
-        Ok(Plan { key, dir, lib, ort, runtime, wanted })
+        let custom_missing =
+            [&det_id, &rec_id].into_iter().any(|id| catalog().model(id).is_none() && !dir.join(format!("{id}.onnx")).is_file());
+        Ok(Plan { key, dir, lib, ort, runtime, wanted, custom_missing })
     }
 
     async fn get(&self) -> Result<Arc<ModelOcr>, PortError> {
@@ -123,7 +127,7 @@ impl LazyOcr {
         if self.uses_fallback() {
             return Err(PortError::Cancelled);
         }
-        let Plan { key, dir, lib, ort: ort_entry, runtime, wanted } = self.plan()?;
+        let Plan { key, dir, lib, ort: ort_entry, runtime, wanted, .. } = self.plan()?;
         if let Some(o) = self.ready.get(&key) {
             return Ok(o);
         }

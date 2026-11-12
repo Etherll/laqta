@@ -352,7 +352,7 @@ impl SettingsWindow {
             Pill::Ghost,
             true,
             cx.listener(move |_, _, window, cx| {
-                let question = present::remove_question(&name, in_use);
+                let question = present::remove_question(&name, in_use, custom);
                 let answer = window.prompt(gpui::PromptLevel::Warning, &question, None, &["Remove", "Cancel"], cx);
                 let id = id.clone();
                 cx.spawn_in(window, async move |this, cx| {
@@ -671,13 +671,15 @@ impl SettingsWindow {
             None => (None, Vec::new()),
             Some(Err(e)) => (Some((false, e.clone())), Vec::new()),
             Some(Ok(list)) => {
-                let known = model.is_empty() || list.contains(&model);
-                let note = match (list.len(), known) {
-                    (0, _) => "Connected. The service lists no models.".to_owned(),
-                    (n, true) => format!("Connected. {n} models available."),
-                    (n, false) => format!("Connected, but it has no model named \"{model}\" ({n} others)."),
+                // A blank model (Ollama, LM Studio) needs one picked from the list too.
+                let known = !model.is_empty() && list.contains(&model);
+                let note = match (list.len(), known, model.is_empty()) {
+                    (0, _, _) => "Connected. The service lists no models.".to_owned(),
+                    (n, true, _) => format!("Connected. {n} models available."),
+                    (n, false, true) => format!("Connected. Pick one of its {n} models below, or type a name."),
+                    (n, false, false) => format!("Connected, but it has no model named \"{model}\" ({n} others)."),
                 };
-                // An unknown name: offer the closest ones the service has.
+                // An unknown or blank name: offer the closest ones the service has.
                 let q = model.to_lowercase();
                 let picks =
                     if known { Vec::new() } else { list.iter().filter(|m| m.to_lowercase().contains(&q)).take(6).cloned().collect() };
