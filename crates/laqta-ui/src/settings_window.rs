@@ -482,12 +482,15 @@ impl SettingsWindow {
         let message = if scope == Scope::All { "Reset all settings?" } else { "Reset this page?" };
         let what = if n == 1 { "1 setting goes".to_owned() } else { format!("{n} settings go") };
         // A page reset touches only that page, so the list of what stays is only worth reading for "Reset all".
-        let detail = if scope == Scope::All {
-            format!(
-                "{what} back to the default. Anything you added stays: accounts, uploaders, effect presets, watch folders, shortcuts and models, plus your history. Nothing is saved until you press Save."
-            )
-        } else {
-            format!("{what} back to the default. Nothing is saved until you press Save.")
+        // Model choices save as they're picked (AI features), so their reset does too.
+        let detail = match scope {
+            Scope::All => format!(
+                "{what} back to the default. Anything you added stays: accounts, uploaders, effect presets, watch folders, shortcuts and models, plus your history. Model choices change now; the rest is saved when you press Save."
+            ),
+            Scope::Models => {
+                format!("{what} back to the default. Model choices change now; addresses and prompts are saved when you press Save.")
+            }
+            _ => format!("{what} back to the default. Nothing is saved until you press Save."),
         };
         let answer = window.prompt(gpui::PromptLevel::Warning, message, Some(&detail), &["Reset", "Cancel"], cx);
         cx.spawn_in(window, async move |this, cx| {
@@ -510,6 +513,16 @@ impl SettingsWindow {
     fn reset(&mut self, scope: Scope, window: &mut Window, cx: &mut Context<Self>) {
         let theme = self.draft.theme;
         settings_reset::reset(scope, &mut self.draft, &self.defaults);
+        if matches!(scope, Scope::Models | Scope::All) {
+            let (models, background) = (self.draft.models.clone(), self.draft.cloud.background);
+            self.apply_now(
+                move |s| {
+                    s.models.clone_from(&models);
+                    s.cloud.background = background;
+                },
+                cx,
+            );
+        }
         if self.draft.theme != theme {
             self.set_theme(self.draft.theme, cx);
         }

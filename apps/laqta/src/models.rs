@@ -256,7 +256,8 @@ pub fn toast_progress(notifier: &Arc<dyn Notifier>, title: &str, what: &str) -> 
 pub struct Models {
     pub data: PathBuf,
     pub options: SharedModelOptions,
-    pub system_ocr: bool,
+    /// The name of the OS's own OCR engine, when the OS has one.
+    pub system_ocr: Option<String>,
 }
 
 impl Models {
@@ -357,8 +358,8 @@ impl ModelService for Models {
         models_dir(&self.data)
     }
 
-    fn system_ocr(&self) -> bool {
-        self.system_ocr
+    fn system_ocr(&self) -> Option<String> {
+        self.system_ocr.clone()
     }
 
     fn remove(&self, id: &str) -> Result<(), String> {
@@ -481,9 +482,9 @@ mod tests {
         std::fs::create_dir_all(&nested).expect("create");
         std::fs::write(data.path().join("models").join("a.onnx"), [0u8; 10]).expect("write");
         std::fs::write(nested.join("b.onnx"), [0u8; 25]).expect("write");
-        let models = Models { data: data.path().to_owned(), options: Arc::default(), system_ocr: false };
+        let models = Models { data: data.path().to_owned(), options: Arc::default(), system_ocr: None };
         assert_eq!(models.disk_usage(), 35);
-        let absent = Models { data: data.path().join("absent"), options: Arc::default(), system_ocr: false };
+        let absent = Models { data: data.path().join("absent"), options: Arc::default(), system_ocr: None };
         assert_eq!(absent.disk_usage(), 0);
     }
 }

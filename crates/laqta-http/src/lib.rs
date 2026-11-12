@@ -61,11 +61,22 @@ pub struct Request {
     pub body: Body,
     /// Overall timeout in seconds (0 = the client default, 120 s).
     pub timeout_secs: u64,
+    /// The largest response body read into memory; a bigger one fails the request. `None` reads any
+    /// size (downloads, images); set it for small answers from addresses the user typed.
+    pub max_response_bytes: Option<u64>,
 }
 
 impl Request {
     pub fn new(method: Method, url: impl Into<String>) -> Self {
-        Request { method, url: url.into(), query: Vec::new(), headers: Vec::new(), body: Body::Empty, timeout_secs: 0 }
+        Request {
+            method,
+            url: url.into(),
+            query: Vec::new(),
+            headers: Vec::new(),
+            body: Body::Empty,
+            timeout_secs: 0,
+            max_response_bytes: None,
+        }
     }
 }
 

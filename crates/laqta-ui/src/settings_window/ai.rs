@@ -4,6 +4,7 @@
 //! keys) still waits for Save, as everywhere else in the window.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -27,9 +28,15 @@ enum Card {
     Inpaint,
 }
 
+/// A settings change a download puts in use when it finishes.
+type Apply = Rc<dyn Fn(&mut Settings)>;
+
 struct Job {
     download: Download,
     cancel: Arc<AtomicBool>,
+    /// What it downloads and what it puts in use after, so Try again repeats the same pick.
+    ids: Vec<String>,
+    apply: Option<Apply>,
 }
 
 /// The page's state that isn't a setting: what the model service reported, and running downloads.
@@ -40,13 +47,16 @@ pub(super) struct AiState {
     runtime_ready: bool,
     runtime_size: u64,
     disk: u64,
-    system_ocr: bool,
+    /// The OS text recognition engine's name, where there is one.
+    system_ocr: Option<String>,
     jobs: HashMap<Card, Job>,
     advanced: bool,
     custom_family: usize,
     /// The analyzer service's model list, or why it couldn't be read.
     service_models: Option<Result<Vec<String>, String>>,
     testing: bool,
+    /// Bumped by each test and each change of service, so a slow older answer is dropped.
+    test_seq: u64,
 }
 
 impl Drop for AiState {
@@ -78,7 +88,7 @@ impl SettingsWindow {
     }
 
     /// Changes the draft and the saved settings at once.
-    fn apply_now(&mut self, change: impl Fn(&mut Settings), cx: &mut Context<Self>) {
+    pub(super) fn apply_now(&mut self, change: impl Fn(&mut Settings), cx: &mut Context<Self>) {
         change(&mut self.draft);
         let services = cx.global::<UiState>().services.clone();
         let mut saved = services.app.settings();
@@ -104,10 +114,11 @@ impl SettingsWindow {
     }
 
     fn need(&self, id: &str) -> Need {
-        self.row(id).map_or(Need { installed: false, available: false, size_bytes: 0 }, |r| Need {
+        self.row(id).map_or(Need { installed: false, available: false, size_bytes: 0, custom: false }, |r| Need {
             installed: r.installed,
             available: r.available,
             size_bytes: r.size_bytes,
+            custom: r.custom,
         })
     }
 
@@ -121,9 +132,9 @@ impl SettingsWindow {
         present::status(&needs, self.ai.runtime_ready, self.ai.runtime_size, &download)
     }
 
-    /// Downloads `ids` (and ONNX Runtime) for `card`, then runs `then`. A newer download for the
-    /// same card cancels this one.
-    fn fetch(&mut self, card: Card, ids: Vec<String>, then: impl FnOnce(&mut Self, &mut Context<Self>) + 'static, cx: &mut Context<Self>) {
+    /// Downloads `ids` (and ONNX Runtime) for `card`, then puts `apply` in use. A newer download
+    /// for the same card cancels this one.
+    fn fetch(&mut self, card: Card, ids: Vec<String>, apply: Option<Apply>, cx: &mut Context<Self>) {
         // ONNX Runtime is shared: two downloads at once would both fetch it into the same place.
         let other = self.ai.jobs.iter().any(|(c, j)| *c != card && matches!(j.download, Download::Running { .. }));
         if other && !self.ai.runtime_ready {
@@ -135,7 +146,10 @@ impl SettingsWindow {
             old.cancel.store(true, Ordering::Relaxed);
         }
         let cancel = Arc::new(AtomicBool::new(false));
-        self.ai.jobs.insert(card, Job { download: Download::Running { done: 0, total: None }, cancel: cancel.clone() });
+        self.ai.jobs.insert(
+            card,
+            Job { download: Download::Running { done: 0, total: None }, cancel: cancel.clone(), ids: ids.clone(), apply: apply.clone() },
+        );
         cx.notify();
         let models = cx.global::<UiState>().services.models.clone();
         let (tx, mut rx) = futures_channel::mpsc::unbounded::<(u64, Option<u64>)>();
@@ -177,7 +191,9 @@ impl SettingsWindow {
                         }
                         Ok(()) => {
                             this.ai.jobs.remove(&card);
-                            then(this, cx);
+                            if let Some(apply) = apply {
+                                this.apply_now(move |s| apply(s), cx);
+                            }
                         }
                         Err(_) if cancel.load(Ordering::Relaxed) => {
                             this.ai.jobs.remove(&card);
@@ -197,14 +213,14 @@ impl SettingsWindow {
     }
 
     /// Puts `ids` in use with `apply`, downloading first when something is missing.
-    fn pick(&mut self, card: Card, ids: Vec<String>, apply: impl Fn(&mut Settings) + 'static, cx: &mut Context<Self>) {
+    fn pick(&mut self, card: Card, ids: Vec<String>, apply: Apply, cx: &mut Context<Self>) {
         if self.ready(&ids) {
             if let Some(job) = self.ai.jobs.remove(&card) {
                 job.cancel.store(true, Ordering::Relaxed);
             }
-            self.apply_now(apply, cx);
+            self.apply_now(move |s| apply(s), cx);
         } else {
-            self.fetch(card, ids, move |this, cx| this.apply_now(apply, cx), cx);
+            self.fetch(card, ids, Some(apply), cx);
         }
     }
 
@@ -225,7 +241,7 @@ impl SettingsWindow {
                     format!("Download {}", format_size(*bytes)),
                     Pill::Primary,
                     true,
-                    cx.listener(move |this, _, _, cx| this.fetch(card, ids.clone(), |_, _| {}, cx)),
+                    cx.listener(move |this, _, _, cx| this.fetch(card, ids.clone(), None, cx)),
                     cx,
                 )
                 .into_any_element(),
@@ -252,7 +268,12 @@ impl SettingsWindow {
                     "Try again",
                     Pill::Default,
                     true,
-                    cx.listener(move |this, _, _, cx| this.fetch(card, ids.clone(), |_, _| {}, cx)),
+                    // The failed job's own pick, not the models in use.
+                    cx.listener(move |this, _, _, cx| {
+                        let (ids, apply) =
+                            this.ai.jobs.get(&card).map_or_else(|| (ids.clone(), None), |j| (j.ids.clone(), j.apply.clone()));
+                        this.fetch(card, ids, apply, cx);
+                    }),
                     cx,
                 )
                 .into_any_element(),
@@ -261,6 +282,7 @@ impl SettingsWindow {
         };
         let detail = match &status {
             Status::Failed(e) => Some(e.clone()),
+            Status::FileMissing => Some("Remove it, or add the file again under Advanced.".into()),
             Status::Missing { .. } if !self.ai.runtime_ready => Some("Includes ONNX Runtime, which every local model uses.".into()),
             _ => None,
         };
@@ -298,14 +320,7 @@ impl SettingsWindow {
 
     /// One model to choose: picking it puts it in use (downloading first). Downloaded models get a
     /// Remove button.
-    fn model_option(
-        &self,
-        card: Card,
-        row: &ModelRow,
-        selected: bool,
-        apply: impl Fn(&mut Settings) + Clone + 'static,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn model_option(&self, card: Card, row: &ModelRow, selected: bool, apply: Apply, cx: &mut Context<Self>) -> AnyElement {
         let id = row.id.clone();
         // A pending catalog entry or a custom model whose file is gone has nothing to download.
         let usable = row.installed || (row.available && !row.custom);
@@ -321,10 +336,8 @@ impl SettingsWindow {
             detail,
             selected,
             trailing,
-            cx.listener(move |this, _, _, cx| {
-                if usable {
-                    this.pick(card, vec![id.clone()], apply.clone(), cx);
-                }
+            usable.then(|| -> widgets::OnClick {
+                Box::new(cx.listener(move |this, _, _, cx| this.pick(card, vec![id.clone()], apply.clone(), cx)))
             }),
             cx,
         )
@@ -388,9 +401,10 @@ impl SettingsWindow {
     fn ocr_section(&self, cx: &mut Context<Self>) -> gpui::Div {
         let m = &self.draft.models;
         let mut section = widgets::section("Text recognition (OCR)", cx);
-        let system = self.ai.system_ocr && m.ocr_engine == OcrEngine::System;
-        if self.ai.system_ocr {
-            let engines = [(OcrEngine::Models, "Laqta models"), (OcrEngine::System, "Windows OCR")]
+        let os_name = self.ai.system_ocr.clone();
+        let system = os_name.is_some() && m.ocr_engine == OcrEngine::System;
+        if let Some(os_name) = &os_name {
+            let engines = [(OcrEngine::Models, "Laqta models".to_owned()), (OcrEngine::System, os_name.clone())]
                 .into_iter()
                 .map(|(e, label)| {
                     widgets::Choice::new(
@@ -402,14 +416,19 @@ impl SettingsWindow {
                 .collect();
             section = section.child(widgets::row_with(
                 "Engine",
-                Some("Windows OCR needs no download. Laqta's models read small and mixed text better."),
+                Some(format!("{os_name} needs no download. Laqta's models read small and mixed text better.")),
                 Slot::Hug,
                 widgets::choice("ocr-engine", engines, cx),
                 cx,
             ));
         }
         if system {
-            return section.child(self.status_row(Card::Ocr, Status::Elsewhere("Using Windows OCR"), Vec::new(), cx));
+            return section.child(self.status_row(
+                Card::Ocr,
+                Status::Elsewhere(format!("Using {}", os_name.unwrap_or_default())),
+                Vec::new(),
+                cx,
+            ));
         }
         let (Some(det), Some(rec)) = (self.in_use("ocr-det", m.ocr_det.as_deref()), self.in_use("ocr-rec", m.ocr_rec.as_deref())) else {
             return section.child(widgets::muted("No text models in this build.", cx));
@@ -433,19 +452,19 @@ impl SettingsWindow {
                 detail,
                 active.as_deref() == Some(p.id.as_str()),
                 None,
-                cx.listener(move |this, _, _, cx| {
+                Some(Box::new(cx.listener(move |this, _, _, cx| {
                     let (d, r) = (d.clone(), r.clone());
                     let ids = vec![d.clone(), r.clone()];
                     this.pick(
                         Card::Ocr,
                         ids,
-                        move |s| {
+                        Rc::new(move |s: &mut Settings| {
                             s.models.ocr_det = Some(d.clone());
                             s.models.ocr_rec = Some(r.clone());
-                        },
+                        }),
                         cx,
                     );
-                }),
+                }))),
                 cx,
             ));
         }
@@ -457,7 +476,7 @@ impl SettingsWindow {
                 format!("{} with {}. Change it under Advanced.", name(&det), name(&rec)),
                 true,
                 None,
-                |_, _, _| {},
+                None,
                 cx,
             ));
         }
@@ -483,10 +502,10 @@ impl SettingsWindow {
             let mut group = div().flex().flex_col().gap(gpui::px(2.)).child(widgets::muted(title, cx).pb(space::S1));
             for row in self.rows_for(task) {
                 let id = row.id.clone();
-                let apply = move |s: &mut Settings| {
+                let apply: Apply = Rc::new(move |s: &mut Settings| {
                     let slot = if task == "ocr-det" { &mut s.models.ocr_det } else { &mut s.models.ocr_rec };
                     *slot = Some(id.clone());
-                };
+                });
                 group = group.child(self.model_option(Card::Ocr, row, row.id == chosen, apply, cx));
             }
             list = list.child(group);
@@ -559,7 +578,7 @@ impl SettingsWindow {
             cx,
         ));
         if provider == BackgroundProvider::RemoveBg {
-            return section.child(self.status_row(Card::Background, Status::Elsewhere("Uses remove.bg"), Vec::new(), cx)).child(
+            return section.child(self.status_row(Card::Background, Status::Elsewhere("Uses remove.bg".into()), Vec::new(), cx)).child(
                 widgets::row_with(
                     "remove.bg API key",
                     Some("From remove.bg → Dashboard → API keys. Kept when you press Save."),
@@ -581,7 +600,7 @@ impl SettingsWindow {
                 Card::Background,
                 row,
                 row.id == current,
-                move |s| s.models.background = Some(id.clone()),
+                Rc::new(move |s: &mut Settings| s.models.background = Some(id.clone())),
                 cx,
             ));
         }
@@ -620,6 +639,8 @@ impl SettingsWindow {
                             this.cloud[1].update(cx, |input, cx| input.set_value(s.model, window, cx));
                         }
                         this.ai.service_models = None;
+                        this.ai.testing = false;
+                        this.ai.test_seq += 1;
                         cx.notify();
                     }),
                 )
@@ -631,6 +652,8 @@ impl SettingsWindow {
             cx.listener(|this, _, window, cx| {
                 this.cloud[0].update(cx, |input, cx| input.set_value("", window, cx));
                 this.ai.service_models = None;
+                this.ai.testing = false;
+                this.ai.test_seq += 1;
                 cx.notify();
             }),
         ));
@@ -717,11 +740,17 @@ impl SettingsWindow {
         let key = (!typed.is_empty()).then_some(typed);
         self.ai.testing = true;
         self.ai.service_models = None;
+        self.ai.test_seq += 1;
+        let seq = self.ai.test_seq;
         cx.notify();
         let task = cx.background_spawn((services.analyzer_models)(url, key));
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
+                // A newer test or another service since: this answer is for an old address.
+                if this.ai.test_seq != seq {
+                    return;
+                }
                 this.ai.testing = false;
                 this.ai.service_models = Some(result);
                 cx.notify();

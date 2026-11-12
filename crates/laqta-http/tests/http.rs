@@ -54,10 +54,14 @@ fn sha256_hex(data: &[u8]) -> String {
     hex(Sha256::digest(data).as_slice())
 }
 
-fn part_file(dest: &std::path::Path) -> std::path::PathBuf {
-    let mut name = dest.as_os_str().to_owned();
-    name.push(".part");
-    name.into()
+/// True while any `<dest name>.….part` file is left beside `dest` (each download names its own).
+fn part_left(dest: &std::path::Path) -> bool {
+    let (Some(dir), Some(name)) = (dest.parent(), dest.file_name().and_then(|n| n.to_str())) else { return false };
+    std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| {
+        let file = e.file_name();
+        let file = file.to_string_lossy();
+        file.starts_with(name) && file.ends_with(".part")
+    })
 }
 
 #[test]
@@ -191,7 +195,7 @@ fn fetch_verified_writes_the_file_and_removes_the_part() {
 
     result.expect("the download verifies");
     assert_eq!(std::fs::read(&dest).expect("downloaded file"), body);
-    assert!(!part_file(&dest).exists());
+    assert!(!part_left(&dest));
 }
 
 #[test]
@@ -209,7 +213,7 @@ fn fetch_verified_rejects_a_checksum_mismatch() {
 
     assert_eq!(err, HttpError::Checksum { expected, actual: sha256_hex(&body) });
     assert!(!dest.exists());
-    assert!(!part_file(&dest).exists());
+    assert!(!part_left(&dest));
 }
 
 #[test]
@@ -231,7 +235,7 @@ fn fetch_verified_stops_when_cancelled() {
     assert_eq!(err, HttpError::Cancelled);
     assert!(cancel.load(Ordering::Relaxed));
     assert!(!dest.exists());
-    assert!(!part_file(&dest).exists());
+    assert!(!part_left(&dest));
 }
 
 #[test]

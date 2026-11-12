@@ -101,6 +101,9 @@ pub async fn install_onnxruntime(
     install_entry(dir, entry, progress, cancel).await
 }
 
+/// Callers share one archive path, so installs take turns; a later caller finds the library already there.
+static INSTALL: async_lock::Mutex<()> = async_lock::Mutex::new(());
+
 async fn install_entry(
     dir: &Path,
     entry: &OrtArchive,
@@ -111,6 +114,10 @@ async fn install_entry(
         return Err(MlError::PendingHash(format!("onnxruntime-{}-{}", entry.os, entry.arch)));
     }
     let lib = library_path(dir, entry);
+    if lib.exists() {
+        return Ok(lib);
+    }
+    let _turn = INSTALL.lock().await;
     if lib.exists() {
         return Ok(lib);
     }
@@ -207,6 +214,22 @@ mod tests {
         fs::create_dir(&target).unwrap();
         assert!(extract_library(&archive, &entry, &out).is_err());
         assert!(!part_path(&target).exists());
+    }
+
+    #[test]
+    fn a_caller_that_waited_returns_the_library_another_caller_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = sample_entry();
+        let lib = library_path(tmp.path(), &entry);
+        let holder = INSTALL.lock_blocking();
+        let progress: Arc<dyn Fn(u64, Option<u64>) + Send + Sync> = Arc::new(|_, _| {});
+        let mut install = pin!(install_entry(tmp.path(), &entry, progress, Arc::new(AtomicBool::new(false))));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(install.as_mut().poll(&mut context).is_pending());
+        // Another caller finishes the install while this one waits for its turn.
+        fs::write(&lib, b"ELF").unwrap();
+        drop(holder);
+        assert_eq!(block_on(install).unwrap(), lib);
     }
 
     #[test]

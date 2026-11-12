@@ -113,8 +113,8 @@ impl ModelService for NoModels {
     fn models_dir(&self) -> PathBuf {
         PathBuf::new()
     }
-    fn system_ocr(&self) -> bool {
-        false
+    fn system_ocr(&self) -> Option<String> {
+        None
     }
     fn remove(&self, _: &str) -> Result<(), String> {
         Err("no models in tests".into())

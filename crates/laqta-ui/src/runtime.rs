@@ -399,8 +399,9 @@ pub trait ModelService: Send + Sync {
     fn disk_usage(&self) -> u64;
     /// The folder the models are stored in.
     fn models_dir(&self) -> PathBuf;
-    /// True when the OS provides its own OCR, so the OCR models are not needed for it.
-    fn system_ocr(&self) -> bool;
+    /// The name of the OS's own OCR engine, when the OS has one, so the OCR models are not needed
+    /// for it.
+    fn system_ocr(&self) -> Option<String>;
     fn remove(&self, id: &str) -> Result<(), String>;
     /// Checks the file against the family and copies it into the models folder.
     fn add_custom(

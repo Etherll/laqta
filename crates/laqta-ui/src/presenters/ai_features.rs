@@ -10,6 +10,8 @@ pub struct Need {
     /// False while the catalog has no pinned hash, so it can't be downloaded.
     pub available: bool,
     pub size_bytes: u64,
+    /// A model the user added: when its file is gone there is nothing to download.
+    pub custom: bool,
 }
 
 /// A download the page started for a card.
@@ -37,8 +39,10 @@ pub enum Status {
     Failed(String),
     /// A model it needs has no pinned download yet.
     Unavailable,
+    /// The file of a model the user added is gone: only removing or re-adding it helps.
+    FileMissing,
     /// The work goes to a service (remove.bg) or the system (Windows OCR): nothing to download.
-    Elsewhere(&'static str),
+    Elsewhere(String),
 }
 
 /// How a badge reads; the view maps it to its own tones.
@@ -57,6 +61,9 @@ pub fn status(needs: &[Need], runtime_ready: bool, runtime_size: u64, download: 
         Download::Idle => {}
     }
     let missing: Vec<_> = needs.iter().filter(|n| !n.installed).collect();
+    if missing.iter().any(|n| n.custom) {
+        return Status::FileMissing;
+    }
     if missing.iter().any(|n| !n.available) {
         return Status::Unavailable;
     }
@@ -76,7 +83,8 @@ pub fn badge(status: &Status) -> (String, Tone) {
         Status::Downloading(p) => (format!("Downloading · {p}"), Tone::Busy),
         Status::Failed(_) => ("Download failed".into(), Tone::Bad),
         Status::Unavailable => ("Not available yet".into(), Tone::Neutral),
-        Status::Elsewhere(what) => ((*what).into(), Tone::Good),
+        Status::FileMissing => ("Model file missing".into(), Tone::Bad),
+        Status::Elsewhere(what) => (what.clone(), Tone::Good),
     }
 }
 
@@ -188,8 +196,8 @@ pub fn service_for(base_url: &str) -> Option<usize> {
 mod tests {
     use super::*;
 
-    const HAVE: Need = Need { installed: true, available: true, size_bytes: 10 };
-    const LACK: Need = Need { installed: false, available: true, size_bytes: 10 };
+    const HAVE: Need = Need { installed: true, available: true, size_bytes: 10, custom: false };
+    const LACK: Need = Need { installed: false, available: true, size_bytes: 10, custom: false };
 
     #[test]
     fn a_card_is_ready_only_with_its_models_and_the_runtime() {
@@ -199,6 +207,8 @@ mod tests {
         assert_eq!(status(&[LACK], false, 30, &Download::Idle), Status::Missing { bytes: 40 });
         let pending = Need { available: false, ..LACK };
         assert_eq!(status(&[pending], true, 0, &Download::Idle), Status::Unavailable);
+        let gone = Need { custom: true, size_bytes: 0, ..LACK };
+        assert_eq!(status(&[HAVE, gone], true, 0, &Download::Idle), Status::FileMissing, "nothing to download for a lost file");
         assert_eq!(status(&[], false, 30, &Download::Idle), Status::Ready, "nothing to run, nothing to fetch");
     }
 

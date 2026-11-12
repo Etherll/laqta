@@ -28,6 +28,8 @@ pub struct LazyOcr {
     notifier: Arc<dyn Notifier>,
     /// The OS engine (Windows.Media.Ocr) used when the models are declined.
     fallback: Option<Arc<dyn Ocr>>,
+    /// The OS engine's name, as the download question names it.
+    system_name: &'static str,
     /// The engine and the (det, rec, provider) it was built for.
     ready: ModelSlot<EngineKey, ModelOcr>,
     /// The user turned the download down and the OS engine reads instead. Not asked again until
@@ -74,6 +76,7 @@ impl LazyOcr {
         ui: Arc<U>,
         options: crate::models::SharedModelOptions,
         fallback: Option<Arc<dyn Ocr>>,
+        system_name: &'static str,
         releaser: Arc<ModelReleaser>,
     ) -> Self {
         LazyOcr {
@@ -82,6 +85,7 @@ impl LazyOcr {
             options,
             notifier: ui,
             fallback,
+            system_name,
             ready: ModelSlot::new(releaser),
             declined: AtomicBool::new(false),
         }
@@ -131,7 +135,7 @@ impl LazyOcr {
                 .confirm(
                     TITLE,
                     &if self.fallback.is_some() {
-                        format!("Download ONNX Runtime and the text models (about {mb} MB) for better accuracy? Choose No to use Windows' built-in OCR. You can change this in Settings → AI features.")
+                        format!("Download ONNX Runtime and the text models (about {mb} MB) for better accuracy? Choose No to use {} instead. You can change this in Settings → AI features.", self.system_name)
                     } else {
                         format!("Text recognition needs ONNX Runtime and its models (about {mb} MB). Download them now?")
                     },

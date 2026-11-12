@@ -193,6 +193,8 @@ pub async fn list_models(transport: &Transport, base_url: &str, key: Option<&str
         request.headers.push(("Authorization".into(), format!("Bearer {key}")));
     }
     request.timeout_secs = 15;
+    // A model list is a few kilobytes; the address is whatever the user typed.
+    request.max_response_bytes = Some(4 * 1024 * 1024);
     let reply = transport(request).await.map_err(net)?;
     if !(200..300).contains(&reply.status) {
         return Err(status_error("The service", &reply));

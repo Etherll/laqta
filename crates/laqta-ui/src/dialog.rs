@@ -1,7 +1,10 @@
 //! The in-window question dialog behind `window.prompt` on Linux, where GPUI has no native one and
 //! falls back to an unthemed white box that clips its text. This one uses the theme tokens and the
 //! shared pill buttons: the first answer is the main action and sits on the right, a "Cancel"
-//! answer sits furthest left, Enter picks the main action and Escape cancels.
+//! answer sits furthest left. Escape gives the Cancel answer; a question without one stays until a
+//! button is clicked or chosen with Tab and Enter. Enter on a focused button clicks it; elsewhere it
+//! gives the default answer, which is Cancel for warnings (reset, remove, discard) so a stray Enter
+//! loses nothing, and the main action otherwise.
 
 use gpui::accesskit::Role;
 use gpui::{
@@ -45,6 +48,14 @@ fn build(
 /// The answer Escape gives: a Cancel button, else one labelled "Cancel", else none.
 fn cancel_index(answers: &[PromptButton]) -> Option<usize> {
     answers.iter().position(PromptButton::is_cancel).or_else(|| answers.iter().position(|a| a.label().eq_ignore_ascii_case("cancel")))
+}
+
+/// The answer Enter gives when no button has focus: Cancel for warnings, the main action otherwise.
+fn enter_answer(level: PromptLevel, cancel: Option<usize>) -> usize {
+    match (level, cancel) {
+        (PromptLevel::Info, _) | (_, None) => 0,
+        (_, Some(c)) => c,
+    }
 }
 
 pub(crate) struct Dialog {
@@ -120,6 +131,7 @@ impl Render for Dialog {
             )
             .child(buttons);
         let cancel = self.cancel;
+        let default = enter_answer(self.level, self.cancel);
         div()
             .track_focus(&self.focus)
             .key_context("Prompt")
@@ -130,9 +142,10 @@ impl Render for Dialog {
                     }
                     cx.stop_propagation();
                 }
-                // Enter on a focused button clicks that button; elsewhere it gives the main answer.
+                // Enter on a focused button clicks that button (GPUI's keyboard click); elsewhere
+                // it gives the default answer.
                 "enter" if !this.focus.contains_focused(window, cx) || this.focus.is_focused(window) => {
-                    cx.emit(PromptResponse(0));
+                    cx.emit(PromptResponse(default));
                     cx.stop_propagation();
                 }
                 "tab" => {
@@ -167,5 +180,13 @@ mod tests {
         assert_eq!(cancel_index(&[PromptButton::new("Reset"), PromptButton::new("Cancel")]), Some(1));
         assert_eq!(cancel_index(&[PromptButton::cancel("Not now"), PromptButton::new("Go")]), Some(0));
         assert_eq!(cancel_index(&[PromptButton::new("Keep"), PromptButton::new("Discard")]), None);
+    }
+
+    #[test]
+    fn enter_is_safe_on_warnings() {
+        assert_eq!(enter_answer(PromptLevel::Warning, Some(1)), 1, "Remove/Reset: Enter cancels");
+        assert_eq!(enter_answer(PromptLevel::Critical, Some(2)), 2);
+        assert_eq!(enter_answer(PromptLevel::Info, Some(1)), 0, "a plain question: Enter accepts");
+        assert_eq!(enter_answer(PromptLevel::Warning, None), 0, "nothing safer to give");
     }
 }
