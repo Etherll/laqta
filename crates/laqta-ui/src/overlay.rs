@@ -11,7 +11,7 @@ use gpui::{
     prelude::FluentBuilder as _, px, size,
 };
 use laqta_domain::geometry::PhysRect;
-use laqta_domain::region::{Button, KeyMods, RegionInput, RegionKey, TargetKind};
+use laqta_domain::region::{Button, Handle, KeyMods, RegionInput, RegionKey, TargetKind};
 use laqta_domain::{Bitmap, Frame, PixelFormat};
 use laqta_editor::EditorInput;
 use laqta_ports::{InputCallback, RegionView};
@@ -278,6 +278,9 @@ struct OverlayView {
     wanted_y: Option<Pixels>,
     /// Whether the window was brought to the front after it opened.
     raised: bool,
+    /// Where the pointer last moved over this window, in desktop pixels. The hover cursor reads it
+    /// here rather than waiting for the session to echo the move back.
+    pointer: Option<(i32, i32)>,
 }
 
 /// Pixels of touchpad scrolling that count as one wheel notch.
@@ -304,7 +307,7 @@ fn color(rgb: u32, alpha: f32) -> Hsla {
 impl OverlayView {
     fn new(model: Entity<OverlayModel>, index: usize, wanted_y: Option<Pixels>, cx: &mut Context<Self>) -> Self {
         cx.observe(&model, |_, _, cx| cx.notify()).detach();
-        OverlayView { model, index, focus: cx.focus_handle(), wheel: 0.0, wanted_y, raised: false }
+        OverlayView { model, index, focus: cx.focus_handle(), wheel: 0.0, wanted_y, raised: false, pointer: None }
     }
 
     fn send(&self, input: RegionInput, cx: &App) {
@@ -393,7 +396,7 @@ impl Render for OverlayView {
             .size_full()
             .relative()
             .overflow_hidden()
-            .cursor_crosshair()
+            .cursor(pointer_style(self.cursor_handle(model)))
             .child(img(mon.image.clone()).absolute().left_0().top_0().w(px(win_w)).h(px(win_h)));
 
         // Dim everything except the main selection (the rect being drawn, else the active region).
@@ -482,17 +485,17 @@ impl Render for OverlayView {
                 root = root.child(crate::overlay_tools::size_badge(d, at));
             }
         }
-        // A locked selection (annotations on it) can't be resized, so its handles go. Handles are
-        // drawn as 10px dots centred on the session's (smaller) hit rects, easy to see and grab.
+        // A locked selection (annotations on it) can't be resized, so its handles go. Each dot fills
+        // the session's hit rect, so the pointer turns to a resize arrow exactly over the dot.
         for (_, h) in view.handles.iter().filter(|_| !view.locked) {
             let l = local(*h);
-            let (cx_l, cy_l) = (l.x + l.w / 2.0, l.y + l.h / 2.0);
             root = root.child(
                 div()
                     .absolute()
-                    .left(px(cx_l - 5.0))
-                    .top(px(cy_l - 5.0))
-                    .size(px(10.))
+                    .left(px(l.x))
+                    .top(px(l.y))
+                    .w(px(l.w))
+                    .h(px(l.h))
                     .rounded(crate::theme::radius::PILL)
                     .bg(gpui::white())
                     .border_2()
@@ -570,6 +573,11 @@ impl Render for OverlayView {
 
         root.on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
             let (x, y) = this.to_phys(ev.position, window, cx);
+            let before = this.cursor_handle(this.model.read(cx));
+            this.pointer = Some((x, y));
+            if this.cursor_handle(this.model.read(cx)) != before {
+                cx.notify();
+            }
             this.send(RegionInput::PointerMove { x, y }, cx);
             // A drag over the text picks words, wherever the pointer goes.
             if this.model.update(cx, |m, cx| m.text_drag(x, y, cx)) {
@@ -642,7 +650,29 @@ fn contains(r: PhysRect, (x, y): (i32, i32)) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
 
+/// The pointer over the overlay: a resize arrow along the axis a handle drags, a crosshair elsewhere.
+fn pointer_style(handle: Option<Handle>) -> gpui::CursorStyle {
+    use gpui::CursorStyle;
+    match handle {
+        None => CursorStyle::Crosshair,
+        Some(Handle::N | Handle::S) => CursorStyle::ResizeUpDown,
+        Some(Handle::E | Handle::W) => CursorStyle::ResizeLeftRight,
+        Some(Handle::NW | Handle::SE) => CursorStyle::ResizeUpLeftDownRight,
+        Some(Handle::NE | Handle::SW) => CursorStyle::ResizeUpRightDownLeft,
+    }
+}
+
 impl OverlayView {
+    /// The handle the pointer would show as a resize arrow: the one being dragged, which the session
+    /// reports to every monitor's window, else the one under this window's pointer. A drawing tool
+    /// takes every press, so it shows none.
+    fn cursor_handle(&self, model: &OverlayModel) -> Option<Handle> {
+        if model.tool.is_some() {
+            return None;
+        }
+        model.view.resizing.or_else(|| self.pointer.and_then(|at| model.view.handle_at(at)))
+    }
+
     /// Canvas pixels for a desktop point while a drawing tool is out.
     fn drawing_at(&self, x: i32, y: i32, cx: &App) -> Option<(f32, f32)> {
         let m = self.model.read(cx);
@@ -804,4 +834,22 @@ fn sample(b: &Bitmap, x: i32, y: i32) -> u32 {
         PixelFormat::Bgra8 => (p[2], p[1], p[0]),
     };
     (r as u32) << 16 | (g as u32) << 8 | bl as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_handle_shows_the_arrow_of_the_way_it_drags() {
+        assert_eq!(pointer_style(Some(Handle::W)), gpui::CursorStyle::ResizeLeftRight);
+        assert_eq!(pointer_style(Some(Handle::E)), gpui::CursorStyle::ResizeLeftRight);
+        assert_eq!(pointer_style(Some(Handle::N)), gpui::CursorStyle::ResizeUpDown);
+        assert_eq!(pointer_style(Some(Handle::S)), gpui::CursorStyle::ResizeUpDown);
+        assert_eq!(pointer_style(Some(Handle::NW)), gpui::CursorStyle::ResizeUpLeftDownRight);
+        assert_eq!(pointer_style(Some(Handle::SE)), gpui::CursorStyle::ResizeUpLeftDownRight);
+        assert_eq!(pointer_style(Some(Handle::NE)), gpui::CursorStyle::ResizeUpRightDownLeft);
+        assert_eq!(pointer_style(Some(Handle::SW)), gpui::CursorStyle::ResizeUpRightDownLeft);
+        assert_eq!(pointer_style(None), gpui::CursorStyle::Crosshair);
+    }
 }

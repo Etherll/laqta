@@ -320,6 +320,17 @@ fn moves_repaint_the_overlay() {
 }
 
 #[test]
+fn handles_grow_with_the_largest_display_scale() {
+    let mut frames = two_frames();
+    assert_eq!(super::handle_size(&frames), 8);
+    frames[1].monitor.scale = 1.5;
+    assert_eq!(super::handle_size(&frames), 12);
+    frames[0].monitor.scale = 0.5;
+    frames[1].monitor.scale = 0.75;
+    assert_eq!(super::handle_size(&frames), 8, "never smaller than at scale 1");
+}
+
+#[test]
 fn view_carries_the_magnifier_and_info_text_only_when_enabled() {
     let bounds = PhysRect { x: 0, y: 0, width: 8, height: 4 };
     let state = RegionState::new(RegionConfig {
@@ -331,6 +342,7 @@ fn view_carries_the_magnifier_and_info_text_only_when_enabled() {
         min_size: 2,
         magnifier_pixels: 3,
         info_text: options().info_text,
+        handle_size: laqta_domain::region::HANDLE_SIZE,
         right_click: RegionMouseAction::RemoveShapeOrCancel,
         middle_click: RegionMouseAction::CancelCapture,
     });
@@ -697,6 +709,7 @@ fn view_carries_the_selection_the_tools_and_the_lock() {
         min_size: 2,
         magnifier_pixels: 3,
         info_text: options().info_text,
+        handle_size: laqta_domain::region::HANDLE_SIZE,
         right_click: RegionMouseAction::RemoveShapeOrCancel,
         middle_click: RegionMouseAction::CancelCapture,
     });

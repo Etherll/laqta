@@ -256,9 +256,8 @@ impl OverlayModel {
     pub(crate) fn text_point(&self, x: i32, y: i32) -> Option<(f32, f32)> {
         self.text.as_ref()?;
         let sel = self.view.selected?;
-        let within = |r: laqta_domain::geometry::PhysRect| x >= r.x && x < r.right() && y >= r.y && y < r.bottom();
-        (within(sel) && (self.view.locked || !self.view.handles.iter().any(|(_, handle)| within(*handle))))
-            .then(|| ((x - sel.x) as f32, (y - sel.y) as f32))
+        let within = x >= sel.x && x < sel.right() && y >= sel.y && y < sel.bottom();
+        (within && self.view.handle_at((x, y)).is_none()).then(|| ((x - sel.x) as f32, (y - sel.y) as f32))
     }
 
     /// A left press on the text at `at` (`text_point`).
