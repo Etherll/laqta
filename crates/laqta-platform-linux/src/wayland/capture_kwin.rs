@@ -66,14 +66,15 @@ async fn capture() -> Result<Vec<Frame>, PortError> {
     let bytes = pixels.map_err(fail)?;
     let get = |key: &str| results.get(key).and_then(|v| u32::try_from(v).ok()).ok_or_else(|| fail(format!("no {key} in the reply")));
     let (w, h, stride, format) = (get("width")?, get("height")?, get("stride")?, get("format")?);
-    let rgba = to_rgba(format, w, h, stride, &bytes).ok_or_else(|| fail(format!("unsupported image format {format}")))?;
+    let rgba = to_rgba(format, w, h, stride, bytes).ok_or_else(|| fail(format!("unsupported image format {format}")))?;
     let layout = blocking::unblock(capture_wayshot::layout).await.unwrap_or_default();
     Ok(capture_portal::split(w, h, rgba, &layout))
 }
 
-/// Tightly packed, opaque RGBA from KWin's raw `QImage` bytes. `format` is the `QImage::Format`
-/// number; the 32-bit formats KWin uses are handled, anything else is `None`.
-fn to_rgba(format: u32, w: u32, h: u32, stride: u32, bytes: &[u8]) -> Option<Vec<u8>> {
+/// Tightly packed, opaque RGBA from KWin's raw `QImage` bytes, converted in place so a workspace
+/// of several 4K outputs is never held twice. `format` is the `QImage::Format` number; the 32-bit
+/// formats KWin uses are handled, anything else is `None`.
+fn to_rgba(format: u32, w: u32, h: u32, stride: u32, mut bytes: Vec<u8>) -> Option<Vec<u8>> {
     // RGB32, ARGB32 and ARGB32_Premultiplied are 0xAARRGGBB words: B, G, R, A in memory on the
     // little-endian machines Plasma runs on. RGBX8888, RGBA8888 and its premultiplied form are
     // R, G, B, A bytes. A screenshot is opaque, so alpha is set rather than unpremultiplied.
@@ -86,13 +87,20 @@ fn to_rgba(format: u32, w: u32, h: u32, stride: u32, bytes: &[u8]) -> Option<Vec
     if w == 0 || h == 0 || stride < w * 4 || bytes.len() < stride * h.saturating_sub(1) + w * 4 {
         return None;
     }
-    let mut out = Vec::with_capacity(w * h * 4);
-    for row in bytes.chunks(stride).take(h) {
-        for p in row[..w * 4].as_chunks::<4>().0 {
-            out.extend_from_slice(&if bgra { [p[2], p[1], p[0], 255] } else { [p[0], p[1], p[2], 255] });
-        }
+    // Rows move forward only (a packed row never starts past its padded one), so each copy is safe.
+    let packed = w * 4;
+    for row in 1..h {
+        bytes.copy_within(row * stride..row * stride + packed, row * packed);
     }
-    Some(out)
+    bytes.truncate(packed * h);
+    for p in bytes.as_chunks_mut::<4>().0 {
+        if bgra {
+            p.swap(0, 2);
+        }
+        p[3] = 255;
+    }
+    bytes.shrink_to_fit();
+    Some(bytes)
 }
 
 #[cfg(test)]
@@ -103,11 +111,11 @@ mod tests {
     fn raw_rows_become_packed_opaque_rgba() {
         // 2x2 with a 12-byte stride (4 bytes of padding per row).
         let rgbx = [1, 2, 3, 0, 4, 5, 6, 0, 9, 9, 9, 9, 7, 8, 9, 0, 10, 11, 12, 0, 9, 9, 9, 9];
-        assert_eq!(to_rgba(16, 2, 2, 12, &rgbx), Some(vec![1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]));
+        assert_eq!(to_rgba(16, 2, 2, 12, rgbx.to_vec()), Some(vec![1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]));
         let bgra = [3, 2, 1, 128];
-        assert_eq!(to_rgba(6, 1, 1, 4, &bgra), Some(vec![1, 2, 3, 255]));
-        assert_eq!(to_rgba(13, 1, 1, 4, &bgra), None, "RGB888 is not handled");
-        assert_eq!(to_rgba(16, 2, 2, 12, &rgbx[..16]), None, "short data");
-        assert_eq!(to_rgba(16, 0, 0, 0, &[]), None, "an empty picture, not a panic");
+        assert_eq!(to_rgba(6, 1, 1, 4, bgra.to_vec()), Some(vec![1, 2, 3, 255]));
+        assert_eq!(to_rgba(13, 1, 1, 4, bgra.to_vec()), None, "RGB888 is not handled");
+        assert_eq!(to_rgba(16, 2, 2, 12, rgbx[..16].to_vec()), None, "short data");
+        assert_eq!(to_rgba(16, 0, 0, 0, Vec::new()), None, "an empty picture, not a panic");
     }
 }

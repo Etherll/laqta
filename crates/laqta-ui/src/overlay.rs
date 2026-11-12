@@ -367,6 +367,8 @@ struct OverlayView {
     /// Where the pointer last moved over this window, in desktop pixels. The hover cursor reads it
     /// here rather than waiting for the session to echo the move back.
     pointer: Option<(i32, i32)>,
+    /// Alt is held: the cursor shows the frame move an Alt press makes.
+    alt: bool,
 }
 
 /// Pixels of touchpad scrolling that count as one wheel notch.
@@ -393,7 +395,7 @@ fn color(rgb: u32, alpha: f32) -> Hsla {
 impl OverlayView {
     fn new(model: Entity<OverlayModel>, index: usize, wanted_y: Option<Pixels>, cx: &mut Context<Self>) -> Self {
         cx.observe(&model, |_, _, cx| cx.notify()).detach();
-        OverlayView { model, index, focus: cx.focus_handle(), wheel: 0.0, wanted_y, raised: false, pointer: None }
+        OverlayView { model, index, focus: cx.focus_handle(), wheel: 0.0, wanted_y, raised: false, pointer: None, alt: false }
     }
 
     fn send(&self, input: RegionInput, cx: &App) {
@@ -687,6 +689,7 @@ impl Render for OverlayView {
             let (x, y) = this.to_phys(ev.position, window, cx);
             this.model.update(cx, |m, _| m.set_grab_scale(window.scale_factor()));
             let before = this.pointer_shape(this.model.read(cx));
+            this.alt = ev.modifiers.alt;
             this.pointer = Some((x, y));
             if this.pointer_shape(this.model.read(cx)) != before {
                 cx.notify();
@@ -809,6 +812,12 @@ impl Render for OverlayView {
             }
         }))
         .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| this.key(ev, cx)))
+        .on_modifiers_changed(cx.listener(|this, ev: &gpui::ModifiersChangedEvent, _, cx| {
+            if this.alt != ev.modifiers.alt {
+                this.alt = ev.modifiers.alt;
+                cx.notify();
+            }
+        }))
         .on_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| {
             if ev.keystroke.key == "space" {
                 this.model.update(cx, |m, cx| m.return_pointer(cx));
@@ -834,7 +843,9 @@ impl OverlayView {
     /// pointer is not over (a resize shows its arrow on every monitor).
     fn pointer_shape(&self, model: &OverlayModel) -> Pointer {
         let at = self.pointer.unwrap_or(model.view.cursor);
-        capture_pointer::pointer(&model.pointer_scene(at, false), at)
+        let mut scene = model.pointer_scene(at, false);
+        scene.frame_only = self.alt;
+        capture_pointer::pointer(&scene, at)
     }
 
     /// Keys: the text read in place while it shows, typing into a text annotation, the toolbar's

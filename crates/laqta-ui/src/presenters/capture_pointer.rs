@@ -110,7 +110,7 @@ pub fn pointer(s: &PointerScene, at: (i32, i32)) -> Pointer {
         return Pointer::Text;
     }
     let Some(frame) = s.frame else { return Pointer::Crosshair };
-    match s.mark_grip.filter(|_| inside(frame, at)) {
+    match s.mark_grip.filter(|_| inside(frame, at) && !(s.frame_only && pointer_tool(s))) {
         Some(Grip::Axis(h)) => return Pointer::Resize(h),
         Some(Grip::Free) => return Pointer::Move,
         None => {}
@@ -156,6 +156,7 @@ mod tests {
         assert_eq!(route(&drawing, INSIDE, Button::Left), Route::Editor, "a drawing tool still draws");
         let handle = PointerScene { mark_grip: Some(Grip::Axis(Handle::E)), ..s };
         assert_eq!(route(&handle, INSIDE, Button::Left), Route::Session, "over a picked mark's handle too");
+        assert_eq!(pointer(&handle, INSIDE), Pointer::Move, "and the cursor says so");
     }
 
     #[test]
