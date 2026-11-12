@@ -150,6 +150,16 @@ pub enum Command {
     /// flattened away like any destructive operation; one undo restores the old image and them.
     /// Used when the host edited the pixels elsewhere (AI erase, background removal).
     ReplaceImage(Bitmap),
+    /// Swaps the base image for the same scene seen through a moved frame, and moves every
+    /// annotation by `(dx, dy)` so each stays over the same scene pixels. The overlay sends it when
+    /// the selection moves or resizes. Not undoable: the undo and redo entries move with the
+    /// annotations. Refused (no change) while the history holds a destructive entry, whose pixel
+    /// snapshot cannot move.
+    Reframe {
+        image: Bitmap,
+        dx: f32,
+        dy: f32,
+    },
 }
 
 /// Something the UI should do (save, copy, close) after a keyboard shortcut.
@@ -304,6 +314,11 @@ impl Editor {
 
     pub fn annotations(&self) -> &[Annotation] {
         &self.annotations
+    }
+
+    /// Whether a mark is under the canvas point `(x, y)`, with the same tolerance a click uses.
+    pub fn annotation_at(&self, x: f32, y: f32) -> bool {
+        self.hit(PointF::new(x, y)).is_some()
     }
 
     pub fn can_undo(&self) -> bool {
@@ -586,7 +601,31 @@ impl Editor {
                 self.finish_editing();
                 self.commit_base(Img::from_bitmap(&bitmap), Vec::new());
             }
+            Command::Reframe { image, dx, dy } => self.reframe(&image, dx, dy),
         }
+    }
+
+    /// Moves the frame: see `Command::Reframe`. The text being typed is ended first, so its saved
+    /// state is in the undo history and moves with the rest.
+    fn reframe(&mut self, image: &Bitmap, dx: f32, dy: f32) {
+        if self.history.has_destructive() || image.width() == 0 || image.height() == 0 {
+            return;
+        }
+        self.finish_editing();
+        self.base = Arc::new(Img::from_bitmap(image));
+        for a in &mut self.annotations {
+            a.kind.translate(dx, dy);
+        }
+        for e in self.history.undo.iter_mut().chain(self.history.redo.iter_mut()) {
+            e.translate(dx, dy);
+        }
+        if let Some(a) = &mut self.clipboard {
+            a.kind.translate(dx, dy);
+        }
+        self.pending = None;
+        self.gesture = Gesture::Idle;
+        self.generation += 1;
+        self.reset_cache();
     }
 
     /// The number for a new step: one past the highest step still on the canvas, so undo and
@@ -1230,5 +1269,97 @@ impl Editor {
         {
             t.push('\n');
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use laqta_domain::PixelFormat;
+
+    use super::*;
+
+    fn bitmap(w: u32, h: u32) -> Bitmap {
+        let px: Vec<u8> = std::iter::repeat_n([120u8, 120, 120, 255], (w * h) as usize).flatten().collect();
+        Bitmap::new(w, h, PixelFormat::Rgba8, px.into()).expect("a bitmap of the given size")
+    }
+
+    fn editor() -> Editor {
+        Editor::new(bitmap(64, 48), Fonts::empty())
+    }
+
+    /// Draws with the default tool: a pointer drag from `from` to `to`.
+    fn draw_rect(e: &mut Editor, from: (f32, f32), to: (f32, f32)) {
+        let mods = Mods::default();
+        e.handle(EditorInput::PointerDown { x: from.0, y: from.1, button: PointerButton::Left, mods });
+        e.handle(EditorInput::PointerMove { x: to.0, y: to.1, mods });
+        e.handle(EditorInput::PointerUp { x: to.0, y: to.1, button: PointerButton::Left, mods });
+    }
+
+    fn rect_of(e: &Editor, index: usize) -> RectF {
+        e.annotations()[index].kind.rect().expect("a rectangle")
+    }
+
+    #[test]
+    fn reframe_moves_marks_and_resizes_the_canvas() {
+        let mut e = editor();
+        draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
+        e.execute(Command::Reframe { image: bitmap(40, 30), dx: -5.0, dy: -5.0 });
+        assert_eq!(e.canvas_size(), (40, 30));
+        assert_eq!(rect_of(&e, 0), RectF::new(5.0, 5.0, 20.0, 15.0));
+    }
+
+    #[test]
+    fn undo_and_redo_follow_a_reframe() {
+        let mut e = editor();
+        draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
+        e.execute(Command::Reframe { image: bitmap(64, 48), dx: -5.0, dy: -5.0 });
+        e.execute(Command::Undo);
+        assert!(e.annotations().is_empty());
+        e.execute(Command::Redo);
+        assert_eq!(e.annotations().len(), 1);
+        assert_eq!(rect_of(&e, 0), RectF::new(5.0, 5.0, 20.0, 15.0));
+    }
+
+    #[test]
+    fn a_mark_moved_off_the_canvas_comes_back() {
+        let mut e = editor();
+        draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
+        e.execute(Command::Reframe { image: bitmap(64, 48), dx: -100.0, dy: 0.0 });
+        assert_eq!(e.annotations().len(), 1);
+        assert_eq!(rect_of(&e, 0), RectF::new(-90.0, 10.0, 20.0, 15.0));
+        e.execute(Command::Reframe { image: bitmap(64, 48), dx: 100.0, dy: 0.0 });
+        assert_eq!(rect_of(&e, 0), RectF::new(10.0, 10.0, 20.0, 15.0));
+    }
+
+    #[test]
+    fn export_has_the_new_size() {
+        let mut e = editor();
+        draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
+        e.execute(Command::Reframe { image: bitmap(40, 30), dx: -5.0, dy: -5.0 });
+        let out = e.export();
+        assert_eq!((out.width(), out.height()), (40, 30));
+    }
+
+    #[test]
+    fn reframe_is_refused_while_a_destructive_entry_is_in_history() {
+        let mut e = editor();
+        e.execute(Command::Flip { horizontal: true });
+        draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
+        e.execute(Command::Reframe { image: bitmap(40, 30), dx: 5.0, dy: 5.0 });
+        assert_eq!(e.canvas_size(), (64, 48));
+        assert_eq!(rect_of(&e, 0), RectF::new(10.0, 10.0, 20.0, 15.0));
+        // Undone twice, the flip sits in the redo stack, which also blocks the move.
+        e.execute(Command::Undo);
+        e.execute(Command::Undo);
+        e.execute(Command::Reframe { image: bitmap(40, 30), dx: 5.0, dy: 5.0 });
+        assert_eq!(e.canvas_size(), (64, 48));
+    }
+
+    #[test]
+    fn annotation_at_finds_a_mark_by_its_border() {
+        let mut e = editor();
+        draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
+        assert!(e.annotation_at(10.0, 17.0));
+        assert!(!e.annotation_at(50.0, 40.0));
     }
 }

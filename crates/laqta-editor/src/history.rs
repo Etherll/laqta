@@ -46,6 +46,28 @@ impl Entry {
             _ => 0,
         }
     }
+
+    /// Moves the annotations this entry holds by `(dx, dy)`. Snapshots are left alone: a reframe is
+    /// refused while one is in the history.
+    pub(crate) fn translate(&mut self, dx: f32, dy: f32) {
+        match self {
+            Entry::Add { annotation, .. } | Entry::Remove { annotation, .. } => annotation.kind.translate(dx, dy),
+            Entry::Modify { before, after } => {
+                before.kind.translate(dx, dy);
+                after.kind.translate(dx, dy);
+            }
+            Entry::Batch(entries) => entries.iter_mut().for_each(|e| e.translate(dx, dy)),
+            Entry::Reorder { .. } | Entry::Destructive { .. } => {}
+        }
+    }
+
+    fn is_destructive(&self) -> bool {
+        match self {
+            Entry::Destructive { .. } => true,
+            Entry::Batch(entries) => entries.iter().any(Entry::is_destructive),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -76,5 +98,10 @@ impl History {
 
     pub fn snapshot_bytes(&self) -> usize {
         self.undo.iter().chain(&self.redo).map(Entry::bytes).sum()
+    }
+
+    /// Whether an undo or redo entry holds a pixel snapshot, which a moved frame cannot carry.
+    pub(crate) fn has_destructive(&self) -> bool {
+        self.undo.iter().chain(&self.redo).any(Entry::is_destructive)
     }
 }
