@@ -161,7 +161,7 @@ craneLib.buildPackage (
       patchelf --add-rpath ${lib.makeLibraryPath dlopenLibs} $out/bin/laqta
     '';
 
-    passthru = { inherit ffmpeg cargoArtifacts; };
+    passthru = { inherit ffmpeg cargoArtifacts dlopenLibs; };
 
     meta = {
       description = "Capture, record, mark up and share your screen";
