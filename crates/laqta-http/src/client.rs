@@ -103,12 +103,15 @@ fn too_large(limit: u64) -> HttpError {
     HttpError::Network(format!("response body is larger than {limit} bytes"))
 }
 
-/// Maps a `reqwest` error: a timeout, an invalid request, or anything else as a network failure.
+/// Maps a `reqwest` error: a timeout, an invalid request, a failed connection, or anything else as a
+/// network failure.
 pub(crate) fn map_error(err: reqwest::Error) -> HttpError {
     if err.is_timeout() {
         HttpError::Timeout
     } else if err.is_builder() {
         HttpError::Invalid(describe(&err))
+    } else if err.is_connect() {
+        HttpError::Connect(describe(&err))
     } else {
         HttpError::Network(describe(&err))
     }

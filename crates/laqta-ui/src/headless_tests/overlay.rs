@@ -786,4 +786,14 @@ fn space_lends_the_pointer_while_held(cx: &mut TestAppContext) {
         })
     });
     assert_eq!(tool(cx), Some(Tool::Arrow));
+
+    // Space going down mid-drag waits: the shape being drawn ends as an arrow, not a lost pick.
+    cx.update(|cx| {
+        model.update(cx, |m, _| {
+            m.pressed = Some(Route::Editor);
+            m.borrow_pointer();
+        })
+    });
+    assert_eq!(tool(cx), Some(Tool::Arrow), "no switch under a press");
+    assert!(!cx.update(|cx| model.read(cx).space.is_lent()));
 }

@@ -70,7 +70,9 @@ fn sentence(message: &str) -> String {
     let s = message.trim();
     let mut out: String = s.chars().take(REASON_MAX).collect();
     if out.len() < s.len() {
-        let cut = out.rfind(' ').filter(|&i| i > REASON_MAX / 2).unwrap_or(out.len());
+        // Cut at the last space past half the limit, counted in characters like the limit.
+        let half = out.char_indices().nth(REASON_MAX / 2).map_or(out.len(), |(i, _)| i);
+        let cut = out.rfind(' ').filter(|&i| i > half).unwrap_or(out.len());
         out.truncate(cut);
         out = out.trim_end_matches([',', ':', ';', ' ']).to_owned() + "…";
     }
@@ -143,6 +145,13 @@ mod tests {
         let r = n.reason.expect("a reason");
         assert!(r.chars().count() <= REASON_MAX + 1 && r.ends_with("word…"), "{r}");
         assert_eq!(n.detail.as_deref(), Some(raw.trim()));
+    }
+
+    #[test]
+    fn a_long_message_in_another_script_keeps_most_of_its_words() {
+        let raw = "خطأ في الاتصال ".repeat(20);
+        let r = Notice::failure_text("x", &raw).reason.expect("a reason");
+        assert!(r.chars().count() > REASON_MAX / 2, "cut by characters, not bytes: {} chars", r.chars().count());
     }
 
     #[test]

@@ -98,6 +98,22 @@ fn shift_makes_a_straight_stroke() {
 }
 
 #[test]
+fn shift_mid_stroke_keeps_the_curve_drawn_before_it() {
+    let shift = Mods { shift: true, ..Mods::default() };
+    let e = run(Tool::Highlight, |e| {
+        e.handle(EditorInput::PointerDown { x: 6.0, y: 20.0, button: PointerButton::Left, mods: Mods::default() });
+        for i in 1..6 {
+            e.handle(EditorInput::PointerMove { x: 6.0 + i as f32 * 4.0, y: 20.0 + (i % 2) as f32 * 5.0, mods: Mods::default() });
+        }
+        e.handle(EditorInput::PointerMove { x: 50.0, y: 31.0, mods: shift });
+        e.handle(EditorInput::PointerUp { x: 56.0, y: 31.0, button: PointerButton::Left, mods: shift });
+    });
+    let AnnotationKind::Highlight { points } = &e.annotations()[0].kind else { panic!("a marker stroke") };
+    assert_eq!(points.len(), 7, "the six points drawn, then one straight segment");
+    assert_eq!(points[5].y, points[6].y, "the segment from where Shift went down is snapped level");
+}
+
+#[test]
 fn freehand() {
     check(Tool::Freehand, "freehand", |e| {
         e.handle(EditorInput::PointerDown { x: 5.0, y: 5.0, button: PointerButton::Left, mods: Mods::default() });

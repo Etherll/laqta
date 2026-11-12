@@ -175,6 +175,10 @@ struct EditorWindow {
     pressed: bool,
     /// Holding Space lends Select while a drawing tool is out.
     space: SpaceLend<Tool>,
+    /// The handle reach last given to the engine, in image pixels (`sync_reach`).
+    reach: f32,
+    /// The failure on show had its detail copied: its button says so.
+    detail_copied: bool,
 }
 
 /// An output that reads the image, so it waits for queued edits.
@@ -271,7 +275,21 @@ impl EditorWindow {
             hover: None,
             pressed: false,
             space: SpaceLend::new(Tool::Select),
+            reach: 0.0,
+            detail_copied: false,
         };
+        // Space let go in another window never comes back as a key-up here: losing focus ends the
+        // lend and any press.
+        cx.observe_window_activation(window, |this, window, cx| {
+            if !window.is_window_active() {
+                this.pressed = false;
+                if this.space.is_lent() {
+                    this.return_select(window, cx);
+                }
+                this.space.picked();
+            }
+        })
+        .detach();
         crate::close_guard::install(Self::close_guard, window, cx);
         if this.interaction.initial() {
             this.start_render(cx);
@@ -305,6 +323,10 @@ impl EditorWindow {
 
     fn apply(&mut self, step: Step, window: &mut Window, cx: &mut Context<Self>) {
         self.chrome = step.chrome;
+        // The marks may have moved under a still pointer (undo, a nudge, delete).
+        if let Some((x, y)) = self.pointer_at {
+            self.track_hover(x, y);
+        }
         if step.render_now {
             self.start_render(cx);
         }
@@ -777,6 +799,11 @@ impl EditorWindow {
 
     /// Holds Space: Select stands in for the drawing tool until Space comes up.
     fn borrow_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Only when the switch lands at once: mid-press it would end the drag as the wrong tool,
+        // and a busy or queued engine would leave `chrome.tool` behind the lend.
+        if self.pressed || self.busy.is_some() || !self.interaction.idle() {
+            return;
+        }
         if let Some(t) = self.space.space_down(self.chrome.tool) {
             self.set_tool(t, window, cx);
         }
@@ -816,11 +843,25 @@ impl EditorWindow {
         }
     }
 
+    /// Gives the engine the handle reach for zoom `z`, so a press takes a handle over the area its
+    /// resize cursor shows. Never waits on the engine: a busy one gets it on a later move or press.
+    fn sync_reach(&mut self, z: f32) {
+        let reach = crate::presenters::mark_pointer::GRAB / z;
+        if reach == self.reach {
+            return;
+        }
+        if let Ok(mut e) = self.interaction.editor().try_lock() {
+            e.set_handle_reach(reach);
+            self.reach = reach;
+        }
+    }
+
     /// Clears a message a few seconds after it appears.
     fn dismiss_later(&mut self, cx: &mut Context<Self>) {
         if self.message == self.toast_for {
             return;
         }
+        self.detail_copied = false;
         self.toast_for = self.message.clone();
         // A failure stays until dismissed, so its reason can be read and its detail copied.
         let Some(shown) = self.message.clone().filter(|m| !m.error) else { return };
@@ -1020,15 +1061,20 @@ impl EditorWindow {
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(editor_toolbar::label(chrome.tool)),
         );
+        // The marker draws with its own colour and width, not the border's.
+        let marker = chrome.tool == Tool::Highlight;
         if controls.color {
             let mut track =
                 div().flex().flex_none().items_center().gap(px(1.)).p(px(3.)).rounded(radius::PILL).bg(cx.theme().foreground.opacity(0.06));
+            let current = if marker { chrome.style.highlight_color } else { chrome.style.border_color };
             for (i, c) in PALETTE.into_iter().enumerate() {
                 track = track.child(widgets::swatch(
                     ("col", i),
                     rgba(c),
-                    chrome.style.border_color == c,
-                    cx.listener(move |this, _, window, cx| this.set_style(|s| s.border_color = c, window, cx)),
+                    current == c,
+                    cx.listener(move |this, _, window, cx| {
+                        this.set_style(|s| if marker { s.highlight_color = c } else { s.border_color = c }, window, cx)
+                    }),
                     cx,
                 ));
             }
@@ -1039,9 +1085,33 @@ impl EditorWindow {
                 "stroke",
                 "Width",
                 "Line width",
-                format!("{:.0} px", chrome.style.border_size),
-                cx.listener(|this, _, w, cx| this.set_style(|s| s.border_size = (s.border_size - 1.0).max(1.0), w, cx)),
-                cx.listener(|this, _, w, cx| this.set_style(|s| s.border_size = (s.border_size + 1.0).min(40.0), w, cx)),
+                format!("{:.0} px", if marker { chrome.style.highlight_size } else { chrome.style.border_size }),
+                cx.listener(move |this, _, w, cx| {
+                    this.set_style(
+                        |s| {
+                            if marker {
+                                s.highlight_size = (s.highlight_size - 2.0).max(4.0)
+                            } else {
+                                s.border_size = (s.border_size - 1.0).max(1.0)
+                            }
+                        },
+                        w,
+                        cx,
+                    )
+                }),
+                cx.listener(move |this, _, w, cx| {
+                    this.set_style(
+                        |s| {
+                            if marker {
+                                s.highlight_size = (s.highlight_size + 2.0).min(60.0)
+                            } else {
+                                s.border_size = (s.border_size + 1.0).min(40.0)
+                            }
+                        },
+                        w,
+                        cx,
+                    )
+                }),
                 cx,
             ));
         }
@@ -1301,13 +1371,15 @@ impl EditorWindow {
             body = body.child(div().text_size(text::SMALL).text_color(t.muted_foreground).child(reason));
         }
         if let Some(detail) = m.detail.clone() {
-            body = body.child(div().pt(px(4.)).child(Button::new("toast-copy").label("Copy details").xsmall().ghost().on_click(
-                cx.listener(move |this, _, _, cx| {
+            // The card stays: copying is not dismissing, and the reason may still be needed.
+            let label = if self.detail_copied { "Copied" } else { "Copy details" };
+            body = body.child(div().pt(px(4.)).child(Button::new("toast-copy").label(label).xsmall().ghost().on_click(cx.listener(
+                move |this, _, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(detail.clone()));
-                    this.message = Some(Notice::info("Copied the error details."));
+                    this.detail_copied = true;
                     cx.notify();
-                }),
-            )));
+                },
+            ))));
         }
         stop_canvas(div())
             .id("toast")
@@ -1332,6 +1404,8 @@ impl EditorWindow {
                 false,
                 cx.listener(|this, _, _, cx| {
                     this.message = None;
+                    // The same failure again later is a new card, with its own Copy details.
+                    this.toast_for = None;
                     cx.notify();
                 }),
                 cx,
@@ -1454,13 +1528,8 @@ impl EditorWindow {
                     window.focus(&this.focus, cx);
                     this.pressed = true;
                     this.hover = None;
-                    // The engine takes a handle press over the same area the resize cursor shows.
                     let (_, _, z) = this.layout(window);
-                    this.interaction
-                        .editor()
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .set_handle_reach(crate::presenters::mark_pointer::GRAB / z);
+                    this.sync_reach(z);
                     let (x, y) = this.to_image(ev.position, window);
                     this.input(EditorInput::PointerDown { x, y, button: b, mods: mods(&ev.modifiers) }, window, cx);
                 }
@@ -1552,6 +1621,7 @@ impl Render for EditorWindow {
                 let (x, y) = this.to_image(ev.position, window);
                 // Redraw only when the outline or the cursor shape changes, not on every move.
                 let (_, _, z) = this.layout(window);
+                this.sync_reach(z);
                 let before = this.canvas_cursor(z);
                 this.pointer_at = Some((x, y));
                 if this.track_hover(x, y) || this.canvas_cursor(z) != before {

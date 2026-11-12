@@ -169,7 +169,7 @@ fn into_bytes(data: UploadData) -> Result<Vec<u8>, UploadError> {
 
 fn http_error(error: HttpError) -> UploadError {
     match error {
-        HttpError::Network(message) | HttpError::Io(message) => UploadError::Network(message),
+        HttpError::Connect(message) | HttpError::Network(message) | HttpError::Io(message) => UploadError::Network(message),
         HttpError::Timeout => UploadError::Network("timed out".to_owned()),
         HttpError::Cancelled => UploadError::Cancelled,
         HttpError::Invalid(message) => UploadError::Unsupported(message),

@@ -108,6 +108,8 @@ pub fn style_controls(tool: Tool) -> StyleControls {
         Tool::Line | Tool::Arrow | Tool::Freehand => StyleControls { fill: false, font: false, ..all },
         Tool::Text => StyleControls { stroke: false, fill: false, ..all },
         Tool::SpeechBalloon | Tool::Step => StyleControls { stroke: false, ..all },
+        // The marker's colour and width.
+        Tool::Highlight => StyleControls { color: true, stroke: true, ..StyleControls::default() },
         _ => StyleControls::default(),
     }
 }

@@ -207,10 +207,27 @@ pub struct EditorOutput {
 #[derive(Clone, Debug)]
 enum Gesture {
     Idle,
-    Drawing { start: PointF, current: PointF, shift: bool },
-    Freehand { points: Vec<PointF>, marker: bool },
-    Moving { id: u64, last: PointF, before: Box<Annotation> },
-    Resizing { id: u64, handle: Handle, before: Box<Annotation> },
+    Drawing {
+        start: PointF,
+        current: PointF,
+        shift: bool,
+    },
+    /// `straight_from`: the point a held Shift draws straight from, kept while Shift is down.
+    Freehand {
+        points: Vec<PointF>,
+        marker: bool,
+        straight_from: Option<usize>,
+    },
+    Moving {
+        id: u64,
+        last: PointF,
+        before: Box<Annotation>,
+    },
+    Resizing {
+        id: u64,
+        handle: Handle,
+        before: Box<Annotation>,
+    },
 }
 
 /// How far from a handle, along each axis, a press still takes it, in canvas pixels, until the
@@ -337,13 +354,13 @@ impl Editor {
     /// outline; `None` over nothing or over the mark already picked.
     pub fn hover_at(&self, x: f32, y: f32) -> Option<RectF> {
         let id = self.hit(PointF::new(x, y)).filter(|id| Some(*id) != self.selected)?;
-        self.find(id).map(|a| a.kind.bounds())
+        self.find(id).map(Annotation::pick_box)
     }
 
     /// Whether the canvas point `(x, y)` is inside the picked mark's box, where a `Select` press
     /// drags it.
     pub fn in_picked(&self, x: f32, y: f32) -> bool {
-        self.selected.and_then(|id| self.find(id)).is_some_and(|a| a.kind.bounds().contains(PointF::new(x, y), 0.0))
+        self.selected.and_then(|id| self.find(id)).is_some_and(|a| a.pick_box().contains(PointF::new(x, y), 0.0))
     }
 
     pub fn can_undo(&self) -> bool {
@@ -433,7 +450,7 @@ impl Editor {
             tool: self.tool,
             style: self.style.clone(),
             canvas: (self.base.w, self.base.h),
-            selection: sel.map(|a| a.kind.bounds()).or_else(|| self.rubber_band()),
+            selection: sel.map(Annotation::pick_box).or_else(|| self.rubber_band()),
             handles: sel.map(|a| a.kind.handles()).unwrap_or_default(),
             pending: self.pending.map(|(_, r)| r),
             caret,
@@ -963,7 +980,7 @@ impl Editor {
             }
             Tool::Freehand | Tool::Highlight => {
                 self.selected = None;
-                self.gesture = Gesture::Freehand { points: vec![p], marker: self.tool == Tool::Highlight };
+                self.gesture = Gesture::Freehand { points: vec![p], marker: self.tool == Tool::Highlight, straight_from: None };
             }
             Tool::Step => {
                 let n = self.next_step_number();
@@ -996,15 +1013,19 @@ impl Editor {
                 *current = p;
                 *shift = mods.shift;
             }
-            Gesture::Freehand { points, .. } => {
-                // Shift draws a straight stroke from where it started (snapped to 45°), for a neat
-                // line under or over text.
-                if mods.shift
-                    && let Some(&first) = points.first()
-                {
-                    *points = vec![first, geom::snap_45(first, p)];
-                } else if points.last().is_none_or(|l| l.distance(p) >= 1.0) {
-                    points.push(p);
+            Gesture::Freehand { points, straight_from, .. } => {
+                // Shift draws straight (snapped to 45°) from where the stroke was when it went down,
+                // for a neat line under or over text; what was drawn before stays.
+                if mods.shift && !points.is_empty() {
+                    let from = *straight_from.get_or_insert(points.len() - 1);
+                    points.truncate(from + 1);
+                    let start = points[from];
+                    points.push(geom::snap_45(start, p));
+                } else {
+                    *straight_from = None;
+                    if points.last().is_none_or(|l| l.distance(p) >= 1.0) {
+                        points.push(p);
+                    }
                 }
             }
             Gesture::Moving { id, last, .. } => {
@@ -1032,7 +1053,7 @@ impl Editor {
         self.pointer_move(p, mods);
         match std::mem::replace(&mut self.gesture, Gesture::Idle) {
             Gesture::Drawing { start, current, shift } => return self.finish_drawing(start, current, shift),
-            Gesture::Freehand { points, marker } => {
+            Gesture::Freehand { points, marker, .. } => {
                 self.add(stroke_kind(points, marker));
             }
             Gesture::Moving { id, before, .. } | Gesture::Resizing { id, before, .. } => {
@@ -1096,7 +1117,7 @@ impl Editor {
                 let kind = self.kind_for(*start, end)?;
                 Some(Annotation { id: 0, kind, style: self.style.clone() })
             }
-            Gesture::Freehand { points, marker } => {
+            Gesture::Freehand { points, marker, .. } => {
                 Some(Annotation { id: 0, kind: stroke_kind(points.clone(), *marker), style: self.style.clone() })
             }
             _ => None,
@@ -1429,6 +1450,20 @@ mod tests {
         // Outside the box a press lets it go.
         drag(&mut e, (60.0, 45.0), (60.0, 45.0));
         assert!(!e.in_picked(35.0, 15.0));
+    }
+
+    #[test]
+    fn a_straight_marker_is_picked_by_the_width_it_is_drawn_with() {
+        let mut e = editor();
+        e.execute(Command::SetTool(Tool::Highlight));
+        draw_rect(&mut e, (10.0, 30.0), (50.0, 30.0));
+        e.execute(Command::SetTool(Tool::Select));
+        e.execute(Command::Deselect);
+        // 6 px under the centre line of a 20 px marker: inside the stroke as drawn.
+        let hover = e.hover_at(30.0, 36.0).expect("the marker is under the pointer");
+        assert!(hover.h >= 20.0, "the box is as tall as the stroke: {hover:?}");
+        e.execute(Command::SelectAll);
+        assert!(e.in_picked(30.0, 38.0));
     }
 
     #[test]

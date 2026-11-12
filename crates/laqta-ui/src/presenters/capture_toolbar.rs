@@ -313,7 +313,9 @@ pub fn with_color(style: &Style, tool: Tool, color: Rgba) -> Style {
 fn size_values(tool: Tool) -> Option<[f32; 3]> {
     Some(match tool {
         Tool::Highlight => [12.0, 20.0, 32.0],
-        Tool::Text | Tool::Step => [16.0, 24.0, 36.0],
+        Tool::Text => [16.0, 24.0, 36.0],
+        // Medium is the editor's own step size, so a step starts on one the strip offers.
+        Tool::Step => [14.0, 20.0, 28.0],
         Tool::Blur => [8.0, 15.0, 30.0],
         Tool::Pixelate => [6.0, 10.0, 18.0],
         Tool::Rectangle | Tool::Ellipse | Tool::Arrow | Tool::Line | Tool::Freehand => [2.0, 4.0, 8.0],
@@ -379,11 +381,11 @@ pub fn style_for(tool: Tool, marks: &[MarkStyle]) -> Style {
 
 /// Records `style` as `tool`'s picked colour and size.
 pub fn remember(marks: &mut Vec<MarkStyle>, tool: Tool, style: &Style) {
-    let mark = MarkStyle {
-        tool: tool.name().to_owned(),
-        color: color_of(style, tool),
-        size: size_of(style, tool).unwrap_or(Size::Medium).index(),
-    };
+    // A size the strip doesn't offer keeps the one picked before (or Medium): a colour pick alone
+    // never changes the size.
+    let earlier = marks.iter().find(|m| m.tool == tool.name()).map(|m| m.size);
+    let size = size_of(style, tool).map(Size::index).or(earlier).unwrap_or(Size::Medium.index());
+    let mark = MarkStyle { tool: tool.name().to_owned(), color: color_of(style, tool), size };
     match marks.iter_mut().find(|m| m.tool == mark.tool) {
         Some(m) => *m = mark,
         None => marks.push(mark),
@@ -471,6 +473,15 @@ mod tests {
         assert_eq!((pen.border_color, size_of(&pen, Tool::Freehand)), (INK[3], Some(Size::Medium)));
         assert_eq!(style_for(Tool::Highlight, &marks).highlight_color, MARKER[2]);
         assert_eq!(style_for(Tool::Rectangle, &marks), base_style(Tool::Rectangle), "an unpicked tool keeps its start");
+    }
+
+    #[test]
+    fn a_step_starts_on_a_size_the_strip_offers() {
+        let step = base_style(Tool::Step);
+        assert_eq!(size_of(&step, Tool::Step), Some(Size::Medium));
+        let mut marks = Vec::new();
+        remember(&mut marks, Tool::Step, &with_color(&step, Tool::Step, INK[4]));
+        assert_eq!(style_for(Tool::Step, &marks).font.size, step.font.size, "a colour pick leaves the size alone");
     }
 
     #[test]

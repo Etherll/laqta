@@ -159,7 +159,7 @@ impl OverlayModel {
                 let services = cx.global::<UiState>().services.clone();
                 let mut editor = Editor::new((*base).clone(), services.fonts.clone());
                 // The canvas is in desktop pixels, so the reach is the grab size as drawn.
-                editor.set_handle_reach(crate::presenters::mark_pointer::GRAB);
+                editor.set_handle_reach(self.grab);
                 let chrome = editor.chrome();
                 let compute = crate::editor_window::compute_fn(services.spawner.clone());
                 let interaction = EditorInteraction::new(editor, compute.clone());
@@ -189,7 +189,7 @@ impl OverlayModel {
         // A handle of the picked mark under the pointer, which reaches past the mark's outline.
         let mark_grip = self.annot.as_ref().and_then(|a| {
             let (x, y) = ((at.0 - a.rect.x) as f32, (at.1 - a.rect.y) as f32);
-            crate::presenters::mark_pointer::handle_under(&a.chrome.handles, (x, y), crate::presenters::mark_pointer::GRAB)
+            crate::presenters::mark_pointer::handle_under(&a.chrome.handles, (x, y), self.grab)
         });
         let over_mark = mark_grip.is_some()
             || self.annot.as_ref().is_some_and(|a| {
@@ -216,6 +216,7 @@ impl OverlayModel {
             over_text: self.text_point(at.0, at.1).is_some(),
             marks: self.annot.as_ref().is_some_and(Annot::has_marks),
             mark_grip,
+            frame_only: false,
         }
     }
 
@@ -237,8 +238,30 @@ impl OverlayModel {
         std::mem::replace(&mut a.hover, next) != next
     }
 
+    /// The pointer is on a monitor of scale `scale`: the handle reach follows it, for the cursor
+    /// and the engine alike.
+    pub(crate) fn set_grab_scale(&mut self, scale: f32) {
+        let grab = crate::presenters::mark_pointer::GRAB * scale.max(1.0);
+        if grab == self.grab {
+            return;
+        }
+        // The engine may be busy with a render; the reach is retried on the next move until it takes.
+        if let Some(a) = self.annot.as_ref() {
+            match a.interaction.editor().try_lock() {
+                Ok(mut e) => e.set_handle_reach(grab),
+                Err(_) => return,
+            }
+        }
+        self.grab = grab;
+    }
+
     /// Holds Space: the Pointer stands in for the drawing tool until Space comes up.
     pub(crate) fn borrow_pointer(&mut self) {
+        // Not mid-press: switching tools under a drag would end it as the wrong tool and lose the
+        // shape being drawn.
+        if self.pressed.is_some() {
+            return;
+        }
         if self.space.space_down(self.tool).is_some() {
             self.region_tool();
         }
@@ -328,6 +351,10 @@ impl OverlayModel {
             if a.chrome.annotation_count != step.chrome.annotation_count {
                 self.discard_armed = None;
             }
+            // The marks changed under a still pointer: the outline may be of a box that moved.
+            if a.chrome != step.chrome {
+                a.hover = None;
+            }
             a.chrome = step.chrome;
         }
         if step.render_now {
@@ -392,6 +419,9 @@ impl OverlayModel {
     /// goes first: switching tools drops the engine's selection, so the style can't restyle an
     /// earlier mark.
     fn use_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
+        if let Some(a) = self.annot.as_mut() {
+            a.hover = None;
+        }
         self.command(Command::SetTool(tool), cx);
         self.command(Command::SetStyle(bar::style_for(tool, &self.marks)), cx);
     }
@@ -646,9 +676,9 @@ pub(crate) fn badge_width(text: &str) -> f32 {
 /// The mouse-down handler for a bar: the press stays on the bar, and its release is the bar's too
 /// (the overlay catches releases before any bar sees them).
 pub(crate) fn press_on_bar(model: Entity<OverlayModel>) -> impl Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut App) + 'static {
-    move |_, _, cx| {
+    move |ev, _, cx| {
         cx.stop_propagation();
-        model.update(cx, |m, _| m.chrome_press = true);
+        model.update(cx, |m, _| m.chrome_press = Some(ev.button));
     }
 }
 

@@ -138,7 +138,7 @@ impl fmt::Debug for SxcuShortener {
 /// exchange itself went wrong.
 fn http_error(error: HttpError) -> UploadError {
     match error {
-        HttpError::Network(message) => UploadError::Network(message),
+        HttpError::Connect(message) | HttpError::Network(message) => UploadError::Network(message),
         HttpError::Timeout => UploadError::Network("timed out".into()),
         other => UploadError::BadResponse(other.to_string()),
     }

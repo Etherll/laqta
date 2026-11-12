@@ -29,7 +29,7 @@ pub fn http() -> Transport {
 fn net(e: laqta_http::HttpError) -> PortError {
     use laqta_http::HttpError;
     match e {
-        HttpError::Network(s) => PortError::Unreachable(s),
+        HttpError::Connect(s) => PortError::Unreachable(s),
         HttpError::Timeout => PortError::TimedOut,
         HttpError::Cancelled => PortError::Cancelled,
         other => PortError::Failed(other.to_string()),

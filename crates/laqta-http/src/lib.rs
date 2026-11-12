@@ -101,6 +101,11 @@ impl Response {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HttpError {
+    /// The connection couldn't be made: nothing listening, no route, a name that doesn't resolve.
+    #[error("network: {0}")]
+    Connect(String),
+    /// The exchange failed after it started, or for a reason other than connecting (TLS, a
+    /// dropped body, a redirect loop). A retry may fix it.
     #[error("network: {0}")]
     Network(String),
     #[error("timed out")]

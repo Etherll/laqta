@@ -31,6 +31,9 @@ pub struct PointerScene {
     pub marks: bool,
     /// A handle of the picked annotation under the pointer, as the way it drags (`grip`).
     pub mark_grip: Option<Grip>,
+    /// Alt is held at the press: under the Pointer, a press inside moves the frame alone, even
+    /// over a mark, so a mark covering the selection never pins it in place.
+    pub frame_only: bool,
 }
 
 /// The layer that takes a press.
@@ -60,8 +63,8 @@ fn pointer_tool(s: &PointerScene) -> bool {
 /// dropped when there are annotations. A left press on text goes to the text; otherwise an
 /// ongoing gesture keeps it in the session. With a selection the first match wins: a handle of
 /// the picked annotation, then the selection's handles and edges, then (under the Pointer) an
-/// annotation or the picked one's box, then the inside of the selection, which a drawing tool
-/// draws on and the Pointer moves. Outside, only the Pointer starts a selection, and only when
+/// annotation or the picked one's box (unless Alt is held), then the inside of the selection, which
+/// a drawing tool draws on and the Pointer moves. Outside, only the Pointer starts a selection, and only when
 /// there are no annotations.
 pub fn route(s: &PointerScene, at: (i32, i32), button: Button) -> Route {
     if button != Button::Left {
@@ -82,7 +85,7 @@ pub fn route(s: &PointerScene, at: (i32, i32), button: Button) -> Route {
         return Route::Session;
     }
     if inside(frame, at) {
-        let on_mark = s.over_mark || s.over_picked;
+        let on_mark = (s.over_mark || s.over_picked) && !s.frame_only;
         return if !pointer_tool(s) || on_mark { Route::Editor } else { Route::Session };
     }
     if pointer_tool(s) && !s.marks { Route::Session } else { Route::Ignore }
@@ -140,6 +143,14 @@ mod tests {
         assert_eq!(route(&PointerScene { tool: Some(Tool::Rectangle), over_mark: true, ..s }, INSIDE, Button::Left), Route::Editor);
         assert_eq!(pointer(&s, INSIDE), Pointer::Move);
         assert_eq!(pointer(&PointerScene { over_mark: true, ..s }, INSIDE), Pointer::Move);
+    }
+
+    #[test]
+    fn alt_moves_the_frame_even_over_a_mark() {
+        let s = PointerScene { over_mark: true, over_picked: true, frame_only: true, ..framed() };
+        assert_eq!(route(&s, INSIDE, Button::Left), Route::Session, "a mark covering the selection can't pin it");
+        let drawing = PointerScene { tool: Some(Tool::Rectangle), ..s };
+        assert_eq!(route(&drawing, INSIDE, Button::Left), Route::Editor, "a drawing tool still draws");
     }
 
     #[test]

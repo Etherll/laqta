@@ -169,7 +169,7 @@ fn unreachable_port_is_a_network_error() {
 
     let err = block_on(send(Request::new(Method::Get, format!("http://127.0.0.1:{port}/")))).expect_err("nothing listens on that port");
 
-    assert!(matches!(err, HttpError::Network(_)), "{err:?}");
+    assert!(matches!(err, HttpError::Connect(_)), "{err:?}");
 }
 
 #[test]

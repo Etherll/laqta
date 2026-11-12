@@ -4,9 +4,12 @@
 //! describes them in its reply; the picture is split per output like the portal's.
 
 use std::collections::HashMap;
-use std::io::Read as _;
-use std::os::fd::AsFd as _;
+use std::fs::File;
+use std::os::fd::{AsFd as _, OwnedFd};
 use std::time::Duration;
+
+use async_io::Async;
+use futures_lite::AsyncReadExt as _;
 
 use ashpd::zbus::Connection;
 use ashpd::zbus::{Fd, OwnedVariant, Variant};
@@ -33,27 +36,34 @@ pub async fn capture_all() -> Result<Vec<Frame>, PortError> {
 
 async fn capture() -> Result<Vec<Frame>, PortError> {
     let conn = Connection::session().await.map_err(fail)?;
-    let (mut reader, writer) = std::io::pipe().map_err(fail)?;
-    // KWin writes after it replies, so read from the start: a full pipe would stall it.
-    let pixels = blocking::unblock(move || {
+    let (reader, writer) = std::io::pipe().map_err(fail)?;
+    // Read on the reactor, not a blocking thread: when the time budget drops this future, the read
+    // end closes with it instead of leaving a thread waiting on KWin.
+    let mut reader = Async::new(File::from(OwnedFd::from(reader))).map_err(fail)?;
+    let pixels = async move {
         let mut buf = Vec::new();
-        reader.read_to_end(&mut buf).map(|_| buf)
-    });
+        reader.read_to_end(&mut buf).await.map(|_| buf)
+    };
     let options: HashMap<&str, Variant<'_>> =
         HashMap::from([("include-cursor", Variant::from(false)), ("native-resolution", Variant::from(true))]);
-    let reply = conn
-        .call_method(
-            Some("org.kde.KWin"),
-            "/org/kde/KWin/ScreenShot2",
-            Some("org.kde.KWin.ScreenShot2"),
-            "CaptureWorkspace",
-            &(options, Fd::from(writer.as_fd())),
-        )
-        .await;
-    // KWin holds its own copy of the write end; ours must go for the read to see the end.
-    drop(writer);
+    let call = async {
+        let reply = conn
+            .call_method(
+                Some("org.kde.KWin"),
+                "/org/kde/KWin/ScreenShot2",
+                Some("org.kde.KWin.ScreenShot2"),
+                "CaptureWorkspace",
+                &(options, Fd::from(writer.as_fd())),
+            )
+            .await;
+        // KWin holds its own copy of the write end; ours must go for the read to see the end.
+        drop(writer);
+        reply
+    };
+    // KWin may write before it replies, so the read runs from the start: a full pipe would stall it.
+    let (reply, pixels) = future::zip(call, pixels).await;
     let results: HashMap<String, OwnedVariant> = reply.map_err(fail)?.body().deserialize().map_err(fail)?;
-    let bytes = pixels.await.map_err(fail)?;
+    let bytes = pixels.map_err(fail)?;
     let get = |key: &str| results.get(key).and_then(|v| u32::try_from(v).ok()).ok_or_else(|| fail(format!("no {key} in the reply")));
     let (w, h, stride, format) = (get("width")?, get("height")?, get("stride")?, get("format")?);
     let rgba = to_rgba(format, w, h, stride, &bytes).ok_or_else(|| fail(format!("unsupported image format {format}")))?;
@@ -73,7 +83,7 @@ fn to_rgba(format: u32, w: u32, h: u32, stride: u32, bytes: &[u8]) -> Option<Vec
         _ => return None,
     };
     let (w, h, stride) = (w as usize, h as usize, stride as usize);
-    if stride < w * 4 || bytes.len() < stride * h.saturating_sub(1) + w * 4 {
+    if w == 0 || h == 0 || stride < w * 4 || bytes.len() < stride * h.saturating_sub(1) + w * 4 {
         return None;
     }
     let mut out = Vec::with_capacity(w * h * 4);
@@ -98,5 +108,6 @@ mod tests {
         assert_eq!(to_rgba(6, 1, 1, 4, &bgra), Some(vec![1, 2, 3, 255]));
         assert_eq!(to_rgba(13, 1, 1, 4, &bgra), None, "RGB888 is not handled");
         assert_eq!(to_rgba(16, 2, 2, 12, &rgbx[..16]), None, "short data");
+        assert_eq!(to_rgba(16, 0, 0, 0, &[]), None, "an empty picture, not a panic");
     }
 }

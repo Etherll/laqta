@@ -66,9 +66,10 @@ pub(crate) struct OverlayModel {
     pub(crate) marks: Vec<laqta_domain::capture::MarkStyle>,
     /// `marks` changed since the overlay opened; they are saved when it closes.
     pub(crate) marks_changed: bool,
-    /// The left button went down on a bar (toolbar, style strip, mode bar), so its release is the
-    /// bar's click and not the end of a drag on the canvas or the selection.
-    pub(crate) chrome_press: bool,
+    /// The button that went down on a bar (toolbar, style strip, mode bar), so its release is the
+    /// bar's click and not the end of a drag on the canvas or the selection. Kept per button: a
+    /// bar press during another button's drag can't swallow that drag's release.
+    pub(crate) chrome_press: Option<MouseButton>,
     /// The mode bar's Text button is on: the next settled selection is read in place.
     pub(crate) text_mode: bool,
     /// The selection's text, read in place (`overlay_text`).
@@ -78,6 +79,9 @@ pub(crate) struct OverlayModel {
     /// Who took the press under way (`capture_pointer::route`): its moves and release go there too,
     /// on whichever monitor's window they reach.
     pub(crate) pressed: Option<Route>,
+    /// How far a picked mark's handle reaches, in desktop pixels: `mark_pointer::GRAB` times the
+    /// scale of the monitor the pointer is on, so the grab square is the same size on every screen.
+    pub(crate) grab: f32,
     /// The last press on the selection held Alt: a move leaves the marks where they are on screen.
     pub(crate) frame_only: bool,
     /// Holding Space lends the Pointer (`None`) while a drawing tool is out.
@@ -157,12 +161,13 @@ pub(crate) fn show(frames: Vec<Frame>, images: Vec<Option<Arc<RenderImage>>>, vi
         tool: None,
         marks,
         marks_changed: false,
-        chrome_press: false,
+        chrome_press: None,
         text_mode: false,
         text: None,
         discard_armed: None,
         pressed: None,
         frame_only: false,
+        grab: crate::presenters::mark_pointer::GRAB,
         space: crate::presenters::space_lend::SpaceLend::new(None),
     });
     let mut windows = Vec::new();
@@ -649,6 +654,7 @@ impl Render for OverlayView {
         // Every press goes where `capture_pointer::route` says, and its moves and release follow it.
         root.on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
             let (x, y) = this.to_phys(ev.position, window, cx);
+            this.model.update(cx, |m, _| m.set_grab_scale(window.scale_factor()));
             let before = this.pointer_shape(this.model.read(cx));
             this.pointer = Some((x, y));
             if this.pointer_shape(this.model.read(cx)) != before {
@@ -675,12 +681,14 @@ impl Render for OverlayView {
         .on_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| {
             let (x, y) = this.to_phys(ev.position, window, cx);
             let Some(pressed) = button(ev.button) else { return };
-            let route = capture_pointer::route(&this.model.read(cx).pointer_scene((x, y), true), (x, y), pressed);
+            let mut scene = this.model.read(cx).pointer_scene((x, y), true);
+            scene.frame_only = ev.modifiers.alt;
+            let route = capture_pointer::route(&scene, (x, y), pressed);
             // A press the overlay sees is not on a bar: a bar press whose release never came back
             // can't swallow this one's release and leave the drag running.
             this.model.update(cx, |m, _| {
                 m.pressed = Some(route);
-                m.chrome_press = false;
+                m.chrome_press = None;
             });
             match route {
                 Route::Text => {
@@ -709,7 +717,7 @@ impl Render for OverlayView {
             }
         }))
         .capture_any_mouse_up(cx.listener(|this, ev: &MouseUpEvent, window, cx| {
-            if this.model.update(cx, |m, _| std::mem::take(&mut m.chrome_press)) {
+            if this.model.update(cx, |m, _| m.chrome_press.take_if(|b| *b == ev.button).is_some()) {
                 return;
             }
             let (x, y) = this.to_phys(ev.position, window, cx);

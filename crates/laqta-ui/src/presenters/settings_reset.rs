@@ -35,13 +35,24 @@ const PAGES: [Scope; 10] = [
     Scope::Models,
 ];
 
+/// Puts back into `draft` the settings other windows write while the settings window is open (the
+/// capture toolbar's colours, the editor's hidden tools), unless the window changed them itself:
+/// `opened` is what the window started from and `live` what is saved now.
+pub fn keep_outside_edits(draft: &mut Settings, opened: &Settings, live: &Settings) {
+    if draft.capture_marks == opened.capture_marks {
+        draft.capture_marks.clone_from(&live.capture_marks);
+    }
+    if draft.editor_hidden_tools == opened.editor_hidden_tools {
+        draft.editor_hidden_tools.clone_from(&live.editor_hidden_tools);
+    }
+}
+
 /// How many settings in `scope` differ from `defaults`.
 pub fn changed(scope: Scope, draft: &Settings, defaults: &Settings) -> usize {
     if scope == Scope::All {
         return PAGES.iter().map(|s| changed(*s, draft, defaults)).sum::<usize>()
             + differ(&draft.tray_click, &defaults.tray_click)
             + differ(&draft.editor_hidden_tools, &defaults.editor_hidden_tools)
-            + differ(&draft.capture_marks, &defaults.capture_marks)
             + differ(&draft.history.max_items, &defaults.history.max_items)
             + differ(&draft.defaults.beautify, &defaults.defaults.beautify)
             + differ(&draft.defaults.effect_preset, &defaults.defaults.effect_preset)
@@ -83,6 +94,8 @@ pub fn reset(scope: Scope, draft: &mut Settings, defaults: &Settings) {
             let scrolling = d.capture.scrolling.clone();
             d.capture.clone_from(&f.capture);
             d.capture.scrolling = scrolling;
+            // The capture toolbar's colours and sizes belong to the capture page too.
+            draft.capture_marks.clone_from(&defaults.capture_marks);
         }
         Scope::Shortcuts => {
             draft.disable_hotkeys = defaults.disable_hotkeys;
@@ -118,7 +131,6 @@ pub fn reset(scope: Scope, draft: &mut Settings, defaults: &Settings) {
             d.screenshots_dir.clone_from(&f.screenshots_dir);
             draft.tray_click = defaults.tray_click;
             draft.editor_hidden_tools.clone_from(&defaults.editor_hidden_tools);
-            draft.capture_marks.clone_from(&defaults.capture_marks);
             draft.history.max_items = defaults.history.max_items;
             for workflow in &mut draft.workflows {
                 if let Some(default) = default_workflow(workflow, defaults) {
@@ -299,6 +311,46 @@ mod tests {
         for scope in PAGES.into_iter().chain([Scope::All]) {
             assert_eq!(changed(scope, &d, &d), 0, "{scope:?}");
         }
+    }
+
+    #[test]
+    fn the_capture_page_owns_the_toolbar_colours() {
+        let d = defaults();
+        let mut s = d.clone();
+        s.capture_marks.push(laqta_domain::capture::MarkStyle {
+            tool: "Freehand".into(),
+            color: laqta_domain::color::Rgba::rgb(1, 2, 3),
+            size: 2,
+        });
+        assert_eq!(changed(Scope::Capture, &s, &d), 1);
+        assert_eq!(changed(Scope::All, &s, &d), 1, "counted once");
+        reset(Scope::Capture, &mut s, &d);
+        assert!(s.capture_marks.is_empty());
+    }
+
+    #[test]
+    fn a_save_keeps_what_other_windows_wrote_since_it_opened() {
+        let opened = defaults();
+        let mut draft = opened.clone();
+        draft.theme = Theme::Dark;
+        let mut live = opened.clone();
+        live.capture_marks.push(laqta_domain::capture::MarkStyle {
+            tool: "Arrow".into(),
+            color: laqta_domain::color::Rgba::rgb(1, 2, 3),
+            size: 0,
+        });
+        live.editor_hidden_tools.push("Spotlight".into());
+        keep_outside_edits(&mut draft, &opened, &live);
+        assert_eq!(draft.capture_marks, live.capture_marks);
+        assert_eq!(draft.editor_hidden_tools, live.editor_hidden_tools);
+        assert_eq!(draft.theme, Theme::Dark, "the window's own edits stay");
+
+        let mut reset_here = opened.clone();
+        reset_here.editor_hidden_tools.clear();
+        let mut opened_with = opened.clone();
+        opened_with.editor_hidden_tools.push("Blur".into());
+        keep_outside_edits(&mut reset_here, &opened_with, &live);
+        assert!(reset_here.editor_hidden_tools.is_empty(), "a change made in the window wins");
     }
 
     #[test]

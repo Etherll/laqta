@@ -577,7 +577,6 @@ impl AnnotationKind {
 }
 
 impl Annotation {
-    /// Bounds including border and shadow: what repaints when it changes.
     /// How wide the annotation's line is: the marker's for Highlight, else the border.
     pub fn stroke_width(&self) -> f32 {
         match self.kind {
@@ -586,6 +585,17 @@ impl Annotation {
         }
     }
 
+    /// The box a pick shows and drags by: a stroke's box takes in the line's width, so a straight
+    /// marker is as tall as it is drawn.
+    pub fn pick_box(&self) -> RectF {
+        let b = self.kind.bounds();
+        match self.kind {
+            AnnotationKind::Freehand { .. } | AnnotationKind::Highlight { .. } => b.inflate(self.stroke_width() / 2.0),
+            _ => b,
+        }
+    }
+
+    /// Bounds including border and shadow: what repaints when it changes.
     pub fn paint_bounds(&self) -> RectF {
         let mut b = self.kind.bounds().inflate(self.stroke_width() + self.style.arrow_head_width.max(4.0) + 2.0);
         if self.style.shadow {
