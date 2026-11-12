@@ -518,6 +518,7 @@ impl SettingsWindow {
     fn reset(&mut self, scope: Scope, window: &mut Window, cx: &mut Context<Self>) {
         let theme = self.draft.theme;
         settings_reset::reset(scope, &mut self.draft, &self.defaults);
+        settings_reset::claim_reset(scope, &mut self.opened, &cx.global::<UiState>().services.app.settings());
         if matches!(scope, Scope::Models | Scope::All) {
             let (models, background) = (self.draft.models.clone(), self.draft.cloud.background);
             self.apply_now(

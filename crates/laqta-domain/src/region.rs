@@ -259,6 +259,18 @@ pub fn grab_at(rect: PhysRect, at: (i32, i32), grab: u32) -> Option<Handle> {
         (Handle::N, PhysRect { x: rect.x.saturating_sub(half), y: top.saturating_sub(half), width: across_x, height: side }),
         (Handle::S, PhysRect { x: rect.x.saturating_sub(half), y: bottom.saturating_sub(half), width: across_x, height: side }),
     ];
+    // On a frame too small for the grab zones to leave an inside, its middle half still moves it.
+    let inner = |len: u32| to_i32((len / 4).min(half_px));
+    let small = rect.width <= side.saturating_mul(2) || rect.height <= side.saturating_mul(2);
+    if small
+        && contains(rect, at)
+        && at.0 - left >= inner(rect.width)
+        && right - at.0 >= inner(rect.width)
+        && at.1 - top >= inner(rect.height)
+        && bottom - at.1 >= inner(rect.height)
+    {
+        return None;
+    }
     handle_at(&points, at).or_else(|| handle_at(&strips, at))
 }
 
@@ -1839,6 +1851,14 @@ mod tests {
         state.handle(move_to(160, 150));
         state.handle(release(160, 150));
         assert!(state.hover_target().is_some(), "the target shows again once idle");
+    }
+
+    #[test]
+    fn a_small_frame_keeps_a_middle_to_move_it_by() {
+        let small = rect(100, 100, 12, 30);
+        assert_eq!(grab_at(small, (106, 115), 16), None, "the middle moves it");
+        assert_eq!(grab_at(small, (100, 115), 16), Some(Handle::W), "its edges still resize");
+        assert_eq!(grab_at(small, (111, 100), 16), Some(Handle::NE));
     }
 
     #[test]

@@ -282,6 +282,14 @@ impl EditorWindow {
         // lend and any press.
         cx.observe_window_activation(window, |this, window, cx| {
             if !window.is_window_active() {
+                // A drag whose release went to another window ends here, so the engine doesn't
+                // keep moving the mark (or lose its undo step) when the pointer comes back.
+                if this.pressed
+                    && let Some((x, y)) = this.pointer_at
+                {
+                    let up = EditorInput::PointerUp { x, y, button: PointerButton::Left, mods: Mods::default() };
+                    this.input(up, window, cx);
+                }
                 this.pressed = false;
                 if this.space.is_lent() {
                     this.return_select(window, cx);

@@ -47,6 +47,18 @@ pub fn keep_outside_edits(draft: &mut Settings, opened: &Settings, live: &Settin
     }
 }
 
+/// A reset of `scope` in the settings window is the window's own change to the settings other
+/// windows write, even when it leaves the draft as it opened: those fields stop following `live`
+/// (`keep_outside_edits`), so Save writes the reset.
+pub fn claim_reset(scope: Scope, opened: &mut Settings, live: &Settings) {
+    if matches!(scope, Scope::Capture | Scope::All) {
+        opened.capture_marks.clone_from(&live.capture_marks);
+    }
+    if scope == Scope::All {
+        opened.editor_hidden_tools.clone_from(&live.editor_hidden_tools);
+    }
+}
+
 /// How many settings in `scope` differ from `defaults`.
 pub fn changed(scope: Scope, draft: &Settings, defaults: &Settings) -> usize {
     if scope == Scope::All {
@@ -351,6 +363,23 @@ mod tests {
         opened_with.editor_hidden_tools.push("Blur".into());
         keep_outside_edits(&mut reset_here, &opened_with, &live);
         assert!(reset_here.editor_hidden_tools.is_empty(), "a change made in the window wins");
+    }
+
+    #[test]
+    fn a_reset_wins_over_colours_picked_since_the_window_opened() {
+        let d = defaults();
+        let mut opened = d.clone();
+        let mut draft = d.clone();
+        let mut live = d.clone();
+        live.capture_marks.push(laqta_domain::capture::MarkStyle {
+            tool: "Arrow".into(),
+            color: laqta_domain::color::Rgba::rgb(1, 2, 3),
+            size: 0,
+        });
+        reset(Scope::Capture, &mut draft, &d);
+        claim_reset(Scope::Capture, &mut opened, &live);
+        keep_outside_edits(&mut draft, &opened, &live);
+        assert!(draft.capture_marks.is_empty(), "Save writes the reset");
     }
 
     #[test]

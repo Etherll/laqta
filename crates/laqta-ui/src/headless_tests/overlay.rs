@@ -797,3 +797,21 @@ fn space_lends_the_pointer_while_held(cx: &mut TestAppContext) {
     assert_eq!(tool(cx), Some(Tool::Arrow), "no switch under a press");
     assert!(!cx.update(|cx| model.read(cx).space.is_lent()));
 }
+
+/// With a drawing tool out and no mark picked, the arrows nudge the frame, and an Alt click that
+/// never moved leaves no frame-only mode behind for the nudge.
+#[gpui::test]
+fn arrows_nudge_the_frame_under_a_drawing_tool(cx: &mut TestAppContext) {
+    use laqta_domain::region::{RegionInput, RegionKey};
+    use laqta_editor::Tool;
+
+    use crate::presenters::capture_toolbar::Item;
+
+    let (model, sent) = settled_overlay(cx, PhysRect { x: 100, y: 100, width: 200, height: 100 });
+    cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Rectangle), cx)));
+    cx.update(|cx| model.update(cx, |m, _| m.frame_only = true));
+    let window = cx.update(|cx| cx.windows()[0]);
+    cx.simulate_keystrokes(window, "left");
+    assert!(sent.lock().unwrap().iter().any(|i| matches!(i, RegionInput::Key { key: RegionKey::Left, .. })), "the session got the nudge");
+    assert!(!cx.update(|cx| model.read(cx).frame_only), "the nudge carries the marks");
+}

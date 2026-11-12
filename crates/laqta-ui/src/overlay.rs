@@ -860,10 +860,10 @@ impl OverlayView {
             _ => {}
         }
         // A picked mark takes the arrows and Delete under any tool; the selection under it does not.
+        // With nothing picked they nudge the frame, whatever tool is out, and other keys never
+        // reach the engine, whose letters would switch its tool behind the toolbar's back.
         let mark = self.model.read(cx).mark_selected();
-        if (drawing || mark)
-            && let Some(k) = crate::editor_window::editor_key(key)
-        {
+        if mark && let Some(k) = crate::editor_window::editor_key(key) {
             self.model.update(cx, |model, cx| model.editor_input(EditorInput::Key { key: k, mods }, cx));
             return;
         }
@@ -872,6 +872,9 @@ impl OverlayView {
             return;
         }
         if let Some(key) = region_key(key) {
+            // A nudge carries the marks: an Alt press that never moved must not leave its
+            // frame-only mode behind for it.
+            self.model.update(cx, |m, _| m.frame_only = false);
             self.send(RegionInput::Key { key, mods: KeyMods { shift: m.shift, ctrl: ctrl(m), alt: m.alt } }, cx);
         }
     }
