@@ -90,6 +90,9 @@ pub(crate) struct OverlayModel {
     pub(crate) finishing: bool,
     /// The last press on the selection held Alt: a move leaves the marks where they are on screen.
     pub(crate) frame_only: bool,
+    /// The gesture settling now was a resize: its marks stay over their pixels, whatever size it
+    /// ends at.
+    pub(crate) resized: bool,
     /// Holding Space lends the Pointer (`None`) while a drawing tool is out.
     pub(crate) space: crate::presenters::space_lend::SpaceLend<Option<laqta_editor::Tool>>,
 }
@@ -174,6 +177,7 @@ pub(crate) fn show(frames: Vec<Frame>, images: Vec<Option<Arc<RenderImage>>>, vi
         pressed: None,
         pressed_button: None,
         frame_only: false,
+        resized: false,
         grab: crate::presenters::mark_pointer::GRAB,
         finishing: false,
         space: crate::presenters::space_lend::SpaceLend::new(None),
@@ -300,6 +304,10 @@ pub(crate) fn update(view: RegionView, cx: &mut App) {
     let model = cx.global::<UiState>().overlay.model.clone();
     if let Some(model) = model {
         model.update(cx, |m, cx| {
+            // A resize keeps the marks over their pixels even when it ends at the old size.
+            if view.resizing.is_some() {
+                m.resized = true;
+            }
             m.view = view;
             m.sync_annot(cx);
             m.sync_text();
@@ -912,8 +920,14 @@ impl OverlayView {
         // A picked mark takes the arrows and Delete under any tool; the selection under it does not.
         // With nothing picked they nudge the frame, whatever tool is out, and other keys never
         // reach the engine, whose letters would switch its tool behind the toolbar's back.
+        // Only mark edits: a bare letter is an engine tool shortcut, which would switch its tool
+        // behind the toolbar's back; Ctrl letters are commands (copy, duplicate).
         let mark = self.model.read(cx).mark_selected();
-        if mark && let Some(k) = crate::editor_window::editor_key(key) {
+        let edit = |k: &laqta_editor::EditorKey| {
+            use laqta_editor::EditorKey as K;
+            matches!(k, K::Left | K::Right | K::Up | K::Down | K::Delete | K::Backspace) || (matches!(k, K::Char(_)) && mods.ctrl)
+        };
+        if mark && let Some(k) = crate::editor_window::editor_key(key).filter(edit) {
             self.model.update(cx, |model, cx| model.editor_input(EditorInput::Key { key: k, mods }, cx));
             return;
         }

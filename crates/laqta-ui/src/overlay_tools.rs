@@ -145,7 +145,8 @@ impl OverlayModel {
                     }
                     // A move carries the marks along, unless Alt left them in place; a resize keeps
                     // them over the pixels they were drawn on.
-                    let moved = (a.rect.width, a.rect.height) == (rect.width, rect.height);
+                    let resized = std::mem::take(&mut self.resized);
+                    let moved = (a.rect.width, a.rect.height) == (rect.width, rect.height) && !resized;
                     let old = a.rect;
                     let frame_only = std::mem::take(&mut self.frame_only);
                     let carry = moved && !frame_only;
@@ -156,6 +157,8 @@ impl OverlayModel {
                     self.command(Command::Reframe { image: (*base).clone(), dx, dy }, cx);
                     return;
                 }
+                // A gesture with no marks yet has nothing to keep in place.
+                self.resized = false;
                 let services = cx.global::<UiState>().services.clone();
                 let mut editor = Editor::new((*base).clone(), services.fonts.clone());
                 // The canvas is in desktop pixels, so the reach is the grab size as drawn.

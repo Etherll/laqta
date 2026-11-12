@@ -571,6 +571,15 @@ fn a_moved_selection_carries_its_marks_unless_alt_leaves_them(cx: &mut TestAppCo
     cx.update(|cx| crate::overlay::update(settled_view(wider), cx));
     assert_eq!(marks(cx), vec![RectF::new(40.0, 20.0, 40.0, 30.0)]);
     assert_eq!(cx.update(|cx| model.read(cx).tool), Some(Tool::Rectangle));
+
+    // A resize that ends at the old size (dragged across the far edge) still keeps them there.
+    let mut resizing = settled_view(wider);
+    resizing.resizing = Some(laqta_domain::region::Handle::W);
+    resizing.selection_image = None;
+    cx.update(|cx| crate::overlay::update(resizing, cx));
+    let flipped = PhysRect { x: 300, ..wider };
+    cx.update(|cx| crate::overlay::update(settled_view(flipped), cx));
+    assert_eq!(marks(cx), vec![RectF::new(-170.0, 20.0, 40.0, 30.0)], "the mark stayed over its pixels");
     assert!(sent.lock().unwrap().is_empty());
 }
 
