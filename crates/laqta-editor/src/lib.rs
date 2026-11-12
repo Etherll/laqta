@@ -1271,7 +1271,13 @@ impl Editor {
             EditorKey::Escape => {
                 if self.pending.is_some() || !matches!(self.gesture, Gesture::Idle) {
                     self.pending = None;
-                    self.gesture = Gesture::Idle;
+                    // A move or resize under way puts the mark back where the press found it.
+                    if let Gesture::Moving { id, before, .. } | Gesture::Resizing { id, before, .. } =
+                        std::mem::replace(&mut self.gesture, Gesture::Idle)
+                        && let Some(i) = self.index_of(id)
+                    {
+                        self.annotations[i] = *before;
+                    }
                 } else {
                     self.selected = None;
                 }
@@ -1469,6 +1475,27 @@ mod tests {
         draw_rect(&mut e, (0.5, 39.5), (4.5, 39.5));
         assert!(e.chrome().selection.is_some(), "still picked");
         assert_eq!(e.annotations()[0].kind.bounds().x, 14.0, "moved by the drag");
+    }
+
+    #[test]
+    fn esc_mid_drag_drops_the_stroke_or_puts_the_mark_back() {
+        let mut e = editor();
+        e.execute(Command::SetTool(Tool::Freehand));
+        let mods = Mods::default();
+        e.handle(EditorInput::PointerDown { x: 5.0, y: 5.0, button: PointerButton::Left, mods });
+        e.handle(EditorInput::PointerMove { x: 20.0, y: 20.0, mods });
+        e.handle(EditorInput::Key { key: EditorKey::Escape, mods });
+        e.handle(EditorInput::PointerUp { x: 20.0, y: 20.0, button: PointerButton::Left, mods });
+        assert!(e.annotations().is_empty(), "the stroke is dropped");
+
+        e.execute(Command::SetTool(Tool::Rectangle));
+        draw_rect(&mut e, (10.0, 10.0), (30.0, 25.0));
+        e.execute(Command::SetTool(Tool::Select));
+        e.handle(EditorInput::PointerDown { x: 10.0, y: 15.0, button: PointerButton::Left, mods });
+        e.handle(EditorInput::PointerMove { x: 30.0, y: 15.0, mods });
+        e.handle(EditorInput::Key { key: EditorKey::Escape, mods });
+        e.handle(EditorInput::PointerUp { x: 30.0, y: 15.0, button: PointerButton::Left, mods });
+        assert_eq!(rect_of(&e, 0), RectF::new(10.0, 10.0, 20.0, 15.0), "the mark is back where it was");
     }
 
     #[test]

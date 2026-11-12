@@ -833,3 +833,38 @@ fn the_frame_holds_still_while_the_marks_are_exported(cx: &mut TestAppContext) {
     cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Arrow), cx)));
     assert_eq!(cx.update(|cx| model.read(cx).tool), Some(Tool::Rectangle), "no tool change mid-export");
 }
+
+/// Mid-stroke, Enter doesn't finish the capture without the stroke, and Esc drops the stroke
+/// rather than putting the tool away and letting it land on the release.
+#[gpui::test]
+fn keys_mid_stroke_never_lose_or_leak_the_stroke(cx: &mut TestAppContext) {
+    use laqta_domain::region::{RegionCommand, RegionInput};
+    use laqta_editor::{EditorInput, Mods, PointerButton, Tool};
+
+    use crate::presenters::capture_pointer::Route;
+    use crate::presenters::capture_toolbar::Item;
+
+    let (model, sent) = settled_overlay(cx, PhysRect { x: 100, y: 100, width: 200, height: 100 });
+    cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Freehand), cx)));
+    let (left, plain) = (PointerButton::Left, Mods::default());
+    cx.update(|cx| {
+        model.update(cx, |m, cx| {
+            m.pressed = Some(Route::Editor);
+            m.editor_input(EditorInput::PointerDown { x: 10.0, y: 10.0, button: left, mods: plain }, cx);
+            m.editor_input(EditorInput::PointerMove { x: 60.0, y: 40.0, mods: plain }, cx);
+        })
+    });
+    let window = cx.update(|cx| cx.windows()[0]);
+    cx.simulate_keystrokes(window, "enter");
+    assert!(!sent.lock().unwrap().iter().any(|i| matches!(i, RegionInput::Command(RegionCommand::Finish(_)))), "no finish mid-stroke");
+    cx.simulate_keystrokes(window, "escape");
+    assert_eq!(cx.update(|cx| model.read(cx).tool), Some(Tool::Freehand), "the tool stays out");
+    cx.update(|cx| {
+        model.update(cx, |m, cx| {
+            m.pressed = None;
+            m.editor_input(EditorInput::PointerUp { x: 60.0, y: 40.0, button: left, mods: plain }, cx);
+        })
+    });
+    let count = cx.update(|cx| model.read(cx).annot.as_ref().map_or(0, |a| a.chrome.annotation_count));
+    assert_eq!(count, 0, "the stroke Esc dropped doesn't land on the release");
+}

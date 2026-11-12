@@ -1663,6 +1663,14 @@ impl Render for EditorWindow {
                     return;
                 }
                 let key = ev.keystroke.key.as_str();
+                // Mid-drag only Esc acts (it drops the stroke or puts the mark back): a tool key
+                // would end the drag as another tool and lose what it was drawing.
+                if this.pressed && !this.chrome.editing_text {
+                    if key == "escape" {
+                        this.input(EditorInput::Key { key: EditorKey::Escape, mods: m }, window, cx);
+                    }
+                    return;
+                }
                 // Holding Space lends Select while a drawing tool is out (repeats keep it lent).
                 if key == "space" && !this.chrome.editing_text && !m.ctrl {
                     this.borrow_select(window, cx);

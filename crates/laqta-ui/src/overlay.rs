@@ -829,6 +829,15 @@ impl OverlayView {
                 return;
             }
         }
+        // Mid-press on the canvas only Esc acts, and it drops the stroke or puts the dragged mark
+        // back: Enter would finish without it, and putting the tool away would leave it to land on
+        // the release.
+        if self.model.read(cx).pressed == Some(Route::Editor) {
+            if key == "escape" {
+                self.model.update(cx, |model, cx| model.editor_input(EditorInput::Key { key: laqta_editor::EditorKey::Escape, mods }, cx));
+            }
+            return;
+        }
         // Holding Space lends the Pointer while a drawing tool is out (repeats keep it lent).
         if key == "space" && !ctrl(m) && (drawing || self.model.read(cx).space.is_lent()) {
             self.model.update(cx, |model, cx| {

@@ -508,7 +508,9 @@ impl OverlayModel {
     /// crop would be of the old frame.
     pub(crate) fn finish(&mut self, action: SelectionAction, cx: &mut Context<Self>) {
         let stale = self.annot.as_ref().is_some_and(|a| Some(a.rect) != self.view.selected);
-        if self.view.gesture || stale || self.finishing {
+        // Nor mid-press on the canvas: the mark being drawn isn't in the export yet.
+        let drawing = self.pressed == Some(crate::presenters::capture_pointer::Route::Editor);
+        if self.view.gesture || stale || self.finishing || drawing {
             return;
         }
         let finish = RegionInput::Command(RegionCommand::Finish(action));
