@@ -79,7 +79,7 @@ pub struct CloudOptions {
 /// Where local models run.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ModelProvider {
-    /// The GPU when one is usable (DirectML, CUDA), else the CPU.
+    /// The GPU when one is usable, else the CPU. No GPU provider ships yet, so this runs on the CPU.
     #[default]
     Auto,
     Cpu,
