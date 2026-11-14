@@ -37,6 +37,7 @@ pub(crate) fn toggle(cx: &mut App) {
         ..Default::default()
     };
     match crate::popup::open(options, cx, |window, cx| {
+        crate::runtime::dismiss_on_escape(window, cx);
         let view = cx.new(|_| TrayPopup { menu });
         cx.new(|cx| Root::new(view, window, cx))
     }) {

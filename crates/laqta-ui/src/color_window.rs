@@ -16,6 +16,7 @@ use laqta_domain::Action;
 use laqta_domain::color::Rgba;
 
 use crate::assets::IconName;
+use crate::flash::{Flash, HasFlash};
 use crate::presenters::color::{dark_ink, rows, shades};
 use crate::runtime::UiState;
 use crate::theme::{radius, space, text};
@@ -72,6 +73,7 @@ pub(crate) fn open(color: Option<Rgba>, cx: &mut App) {
     };
     let start = color.or_else(|| cx.default_global::<Picker>().recent.iter().next()).unwrap_or(Rgba::rgb(0x3b, 0x82, 0xf6));
     let result = cx.open_window(options, move |window, cx| {
+        crate::runtime::dismiss_on_escape(window, cx);
         let view = cx.new(|cx| ColorWindow::new(start, color.is_some(), window, cx));
         cx.default_global::<Picker>().view = Some(view.downgrade());
         cx.new(|cx| Root::new(view, window, cx))
@@ -88,8 +90,13 @@ struct ColorWindow {
     /// The field holds text that isn't a colour.
     invalid: bool,
     /// "Copied #336699", shown for a moment.
-    notice: Option<SharedString>,
-    notice_seq: u64,
+    flash: Flash,
+}
+
+impl HasFlash for ColorWindow {
+    fn flash(&mut self) -> &mut Flash {
+        &mut self.flash
+    }
 }
 
 impl ColorWindow {
@@ -110,9 +117,9 @@ impl ColorWindow {
         })
         .detach();
         crate::vanish::restore_on_activation(window, cx).detach();
-        let mut this = ColorWindow { color, input, invalid: false, notice: None, notice_seq: 0 };
+        let mut this = ColorWindow { color, input, invalid: false, flash: Flash::default() };
         if picked {
-            this.flash(format!("Picked {} · copied", color.to_hex()), cx);
+            this.flash(format!("Picked {} and copied it", color.to_hex()), cx);
         }
         this
     }
@@ -123,7 +130,7 @@ impl ColorWindow {
         self.invalid = false;
         self.input.update(cx, |i, cx| i.set_value(color.to_hex(), window, cx));
         if picked {
-            self.flash(format!("Picked {} · copied", color.to_hex()), cx);
+            self.flash(format!("Picked {} and copied it", color.to_hex()), cx);
         }
         cx.notify();
     }
@@ -135,20 +142,7 @@ impl ColorWindow {
     }
 
     fn flash(&mut self, text: String, cx: &mut Context<Self>) {
-        self.notice = Some(text.into());
-        self.notice_seq += 1;
-        let seq = self.notice_seq;
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(std::time::Duration::from_millis(2200)).await;
-            let _ = this.update(cx, |this, cx| {
-                if this.notice_seq == seq {
-                    this.notice = None;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
+        Flash::show(self, text, cx);
     }
 
     /// Hides this window (no trace in the frozen screen) and starts the screen picker.
@@ -225,19 +219,16 @@ impl Render for ColorWindow {
                             .on_click(cx.listener(move |this, _, _, cx| this.copy(this.color.to_hex(), cx))),
                     ),
             )
-            .child(
-                div()
-                    .text_size(text::SMALL)
-                    .text_color(ink.opacity(0.8))
-                    .child(self.notice.clone().unwrap_or_else(|| "Click a format to copy it".into())),
-            );
+            .child(div().text_size(text::SMALL).text_color(ink.opacity(0.8)).child(
+                self.flash.current().map(|n| SharedString::from(n.title.clone())).unwrap_or_else(|| "Click a format to copy it".into()),
+            ));
 
         let pick =
             widgets::pill("pick-screen", "Pick from screen", Pill::Primary, false, |_, window, cx| Self::pick_from_screen(window, cx), cx)
                 .child(widgets::icon(IconName::Pipette, t.primary_foreground).size(px(16.)));
 
         let field = div().flex().flex_col().gap(space::S1).child(Input::new(&self.input)).when(self.invalid, |d| {
-            d.child(widgets::notice("Not a colour. Try #336699, rgb(51, 102, 153) or hsl(210, 50%, 40%).", false, cx))
+            d.child(widgets::notice("Not a color. Try #336699, rgb(51, 102, 153) or hsl(210, 50%, 40%).", false, cx))
         });
 
         let mut formats = div().flex().flex_col().rounded(radius::XL).bg(x.card).border_1().border_color(x.ring).overflow_hidden();

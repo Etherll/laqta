@@ -8,8 +8,8 @@ use gpui::{
     App, AppContext as _, ClipboardItem, Context, Entity, FontWeight, IntoElement, ParentElement as _, Render, RenderImage, Styled as _,
     StyledImage as _, Window, WindowOptions, div, img, prelude::FluentBuilder as _, px, size,
 };
+use gpui_component::Root;
 use gpui_component::input::{Textarea, TextareaState};
-use gpui_component::{ActiveTheme as _, Root};
 use laqta_domain::Bitmap;
 
 use crate::assets::IconName;
@@ -42,6 +42,7 @@ pub(crate) fn open(result: TextResult, cx: &mut App) {
     // The preview is converted before the window opens, so its first frame already has it.
     let preview = result.image.as_ref().and_then(crate::gpu_image::render_image);
     if let Err(e) = cx.open_window(options, move |window, cx| {
+        crate::runtime::dismiss_on_escape(window, cx);
         let editor = cx.new(|cx| TextareaState::new(window, cx).default_value(result.text.clone()));
         let view = cx.new(|_| TextWindow { title: result.title, preview, editor, copied: result.copied, notice: None });
         cx.new(|cx| Root::new(view, window, cx))
@@ -99,7 +100,6 @@ fn counts(text: &str) -> String {
 
 impl Render for TextWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.theme().clone();
         let x = crate::theme::extra(cx);
         let value = self.text(cx);
         let empty = value.trim().is_empty();
@@ -150,22 +150,15 @@ impl Render for TextWindow {
             })
             .child(div().flex_1().min_w_0().flex().flex_col().gap(space::S3).child(header).child(text_panel));
 
-        let footer = div()
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(space::S2)
-            .px(space::S4)
-            .py(space::S3)
-            .border_t_1()
-            .border_color(t.border)
-            .child(widgets::muted(self.notice.unwrap_or("You can edit the text before copying it."), cx))
-            .child(div().flex_1())
-            .child(widgets::pill("text-save", "Save as .txt", Pill::Ghost, false, cx.listener(|this, _, _, cx| this.save(cx)), cx))
-            .child(widgets::pill("text-close", "Close", Pill::Default, false, |_, window, _| window.remove_window(), cx))
-            .when(!empty, |d| {
-                d.child(widgets::pill("text-copy", "Copy all", Pill::Primary, false, cx.listener(|this, _, _, cx| this.copy(cx)), cx))
-            });
+        let mut actions = vec![
+            widgets::FooterAction::new("text-save", "Save as .txt", Pill::Ghost, cx.listener(|this, _, _, cx| this.save(cx))),
+            widgets::FooterAction::new("text-close", "Close", Pill::Default, |_, window, _| window.remove_window()),
+        ];
+        if !empty {
+            actions.push(widgets::FooterAction::new("text-copy", "Copy all", Pill::Primary, cx.listener(|this, _, _, cx| this.copy(cx))));
+        }
+        let note = self.notice.unwrap_or("You can edit the text before copying it.");
+        let footer = widgets::footer(Some(note.into()), actions, cx).flex_none();
 
         crate::chrome::rounded(widgets::page(cx), window)
             .child(crate::chrome::TitleBar::new().title(self.title.clone()).flat())

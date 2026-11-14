@@ -34,6 +34,7 @@ pub(crate) fn open_if_needed(cx: &mut App) {
         ..Default::default()
     };
     let result = cx.open_window(options, |window, cx| {
+        crate::runtime::dismiss_on_escape(window, cx);
         let view = cx.new(|cx| PermissionsWindow::new(hooks, cx));
         cx.new(|cx| Root::new(view, window, cx))
     });

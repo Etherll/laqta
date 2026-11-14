@@ -7,7 +7,6 @@ use gpui::{
     App, AppContext as _, ClipboardItem, Context, IntoElement, ParentElement as _, Render, RenderImage, Styled as _, Window, WindowOptions,
     div, img, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::{ActiveTheme as _, Root};
 
 use crate::runtime::UiState;
@@ -30,6 +29,7 @@ pub(crate) fn open(url: String, qr: bool, cx: &mut App) {
         ..Default::default()
     };
     let result = cx.open_window(options, |window, cx| {
+        crate::runtime::dismiss_on_escape(window, cx);
         let view = cx.new(|_| UrlWindow { qr: if qr { qr_image(&url) } else { None }, url });
         cx.new(|cx| Root::new(view, window, cx))
     });
@@ -63,19 +63,20 @@ impl Render for UrlWindow {
                 .w_full()
                 .child(div().truncate().text_size(crate::theme::text::LABEL).child(self.url.clone())),
         );
-        let footer = div()
-            .flex()
-            .flex_row()
-            .gap(px(8.))
-            .p(px(12.))
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(widgets::muted("", cx).flex_1())
-            .child(Button::new("copy").label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(u1.clone()))))
-            .child(Button::new("open").label("Open").primary().on_click(move |_, _, _| {
-                let _ = shell.open_url(&u2);
-            }))
-            .child(Button::new("close").label("Close").ghost().on_click(|_, window, _| window.remove_window()));
+        use widgets::{FooterAction, Pill};
+        let footer = widgets::footer(
+            Some("Esc closes".into()),
+            vec![
+                FooterAction::new("copy", "Copy link", Pill::Default, move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(u1.clone()))
+                }),
+                FooterAction::new("close", "Close", Pill::Ghost, |_, window, _| window.remove_window()),
+                FooterAction::new("open", "Open link", Pill::Primary, move |_, _, _| {
+                    let _ = shell.open_url(&u2);
+                }),
+            ],
+            cx,
+        );
         let title = if self.qr.is_some() { "QR code" } else { "Upload finished" };
         crate::chrome::rounded(widgets::page(cx), window)
             .child(crate::chrome::TitleBar::new().title(title).flat())

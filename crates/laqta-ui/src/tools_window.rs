@@ -217,7 +217,11 @@ fn list(paths: &[PathBuf]) -> String {
     if paths.is_empty() {
         return "Nothing was written.".into();
     }
-    format!("Wrote {} file(s):\n{}", paths.len(), paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n"))
+    format!(
+        "Wrote {}:\n{}",
+        crate::presenters::copy::count(paths.len(), "file", "files"),
+        paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n")
+    )
 }
 
 fn dir_of(path: &Path) -> PathBuf {
@@ -255,6 +259,7 @@ pub(crate) fn open(kind: ToolKind, files: Vec<PathBuf>, cx: &mut App) {
         ..Default::default()
     };
     if let Err(e) = cx.open_window(options, |window, cx| {
+        crate::runtime::dismiss_on_escape(window, cx);
         let view = cx.new(|cx| ToolsWindow::new(kind, files, window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     }) {
@@ -392,7 +397,7 @@ impl ToolsWindow {
                 self.image = image.as_ref().and_then(render_image);
             }
             Err(e) => {
-                self.output = format!("Failed: {e}");
+                self.output = crate::presenters::notice::failure_line("The tool failed", &e.to_string());
                 self.image = None;
             }
         }
@@ -673,9 +678,11 @@ impl Job {
                 None => text("The clipboard is empty.".into()),
                 Some(ClipboardContent::Text(s)) => text(format!("Text ({} characters):\n\n{s}", s.chars().count())),
                 Some(ClipboardContent::Image(b)) => Ok((format!("Image {}×{}", b.width(), b.height()), Some(b))),
-                Some(ClipboardContent::Files(f)) => {
-                    text(format!("{} file(s):\n{}", f.len(), f.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n")))
-                }
+                Some(ClipboardContent::Files(f)) => text(format!(
+                    "{}:\n{}",
+                    crate::presenters::copy::count(f.len(), "file", "files"),
+                    f.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n")
+                )),
             },
             Job::Borderless(title, on) => {
                 let title = run!(J::Borderless { title, on }, O::Window).ok_or("no window has that title")?;

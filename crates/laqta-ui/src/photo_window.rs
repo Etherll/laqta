@@ -12,7 +12,8 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputState};
-use gpui_component::{ActiveTheme as _, Disableable as _, Root, Selectable as _, Sizable as _};
+use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_component::{ActiveTheme as _, Disableable as _, Icon, Root, Selectable as _, Sizable as _};
 use laqta_domain::color::Rgba;
 use laqta_domain::{Bitmap, PixelFormat};
 use laqta_photo::{
@@ -21,6 +22,7 @@ use laqta_photo::{
 };
 use smallvec::SmallVec;
 
+use crate::assets::IconName;
 use crate::presenters::photo_interaction::PhotoInteraction;
 use crate::presenters::render_gate::ComputeFn;
 use crate::runtime::UiState;
@@ -35,6 +37,30 @@ fn head(window: &Window) -> f32 {
     crate::chrome::title_bar_height(window) + TOP_H
 }
 const PAD: f32 = 12.0;
+
+/// A blend mode's name as image editors show it.
+fn blend_name(b: BlendMode) -> &'static str {
+    match b {
+        BlendMode::Normal => "Normal",
+        BlendMode::Multiply => "Multiply",
+        BlendMode::Screen => "Screen",
+        BlendMode::Overlay => "Overlay",
+        BlendMode::Darken => "Darken",
+        BlendMode::Lighten => "Lighten",
+        BlendMode::ColorDodge => "Color dodge",
+        BlendMode::ColorBurn => "Color burn",
+        BlendMode::HardLight => "Hard light",
+        BlendMode::SoftLight => "Soft light",
+        BlendMode::Difference => "Difference",
+        BlendMode::Exclusion => "Exclusion",
+        BlendMode::Hue => "Hue",
+        BlendMode::Saturation => "Saturation",
+        BlendMode::Color => "Color",
+        BlendMode::Luminosity => "Luminosity",
+        #[allow(unreachable_patterns)]
+        _ => "Blend",
+    }
+}
 
 const BLENDS: [BlendMode; 16] = [
     BlendMode::Normal,
@@ -166,7 +192,7 @@ struct PhotoWindow {
     text: Entity<InputState>,
     /// Which adjustment "+ Adjustment" adds (an index into `Adjust::defaults()`).
     adjustment: usize,
-    message: Option<String>,
+    flash: crate::flash::Flash,
     busy: bool,
     /// The document revision the file on disk holds.
     saved_revision: u64,
@@ -176,7 +202,23 @@ struct PhotoWindow {
 
 use gpui::Entity;
 
+impl crate::flash::HasFlash for PhotoWindow {
+    fn flash(&mut self) -> &mut crate::flash::Flash {
+        &mut self.flash
+    }
+}
+
 impl PhotoWindow {
+    /// A passing note in the status line.
+    fn say(&mut self, msg: String, cx: &mut Context<Self>) {
+        crate::flash::Flash::show(self, msg, cx);
+    }
+
+    /// A failure in the status line; it stays until dismissed.
+    fn fail(&mut self, msg: String, cx: &mut Context<Self>) {
+        crate::flash::Flash::fail(self, msg, cx);
+    }
+
     fn new(image: Bitmap, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let services = cx.global::<UiState>().services.clone();
         // Scan the fonts now, off the UI thread, so the first text tool or emoji doesn't wait for it.
@@ -203,7 +245,7 @@ impl PhotoWindow {
             tolerance: input("32", cx),
             text: input("Text", cx),
             adjustment: 0,
-            message: None,
+            flash: Default::default(),
             busy: false,
             saved_revision: 0,
             close_after_save: false,
@@ -243,11 +285,11 @@ impl PhotoWindow {
         cx.spawn(async move |this, cx| {
             let r = run.await;
             let _ = this.update(cx, |this, cx| {
-                this.message = match r {
-                    Some(Ok(())) => None,
-                    Some(Err(e)) => Some(e),
-                    None => Some("The edit failed.".into()),
-                };
+                match r {
+                    Some(Ok(())) => {}
+                    Some(Err(e)) => this.fail(e, cx),
+                    None => this.fail("The edit failed.".into(), cx),
+                }
                 let render = this.interaction.command_finished();
                 if render || std::mem::take(&mut this.render_deferred) {
                     this.start_render(cx);
@@ -344,7 +386,7 @@ impl PhotoWindow {
         let cmd = match self.tool {
             Tool::Brush | Tool::Eraser | Tool::Clone | Tool::Heal => {
                 let Some(layer) = layer else {
-                    self.message = Some("Select a raster layer to paint on.".into());
+                    self.say("Select a raster layer to paint on.".into(), cx);
                     return cx.notify();
                 };
                 let offset = self.clone_source.map(|s| ((first.0 - s.0) as i32, (first.1 - s.1) as i32)).unwrap_or((0, 0));
@@ -355,7 +397,7 @@ impl PhotoWindow {
                     _ => BrushTool::Heal { offset },
                 };
                 if matches!(self.tool, Tool::Clone | Tool::Heal) && self.clone_source.is_none() {
-                    self.message = Some("Alt-click to set the source first.".into());
+                    self.say("Alt-click to set the source first.".into(), cx);
                     return cx.notify();
                 }
                 Command::Paint { layer, path, brush, tool }
@@ -390,25 +432,25 @@ impl PhotoWindow {
             let Ok(e) = editor.try_lock() else { return };
             let doc = e.document();
             let Some(sel) = doc.selection.clone() else {
-                self.message = Some("Select the area to fill first.".into());
+                self.say("Select the area to fill first.".into(), cx);
                 return cx.notify();
             };
             match doc.layer(layer).map(|l| &l.kind) {
                 Some(LayerKind::Raster(b)) => (b.clone(), sel),
                 _ => {
-                    self.message = Some("Inpainting works on a raster layer.".into());
+                    self.say("Inpainting works on a raster layer.".into(), cx);
                     return cx.notify();
                 }
             }
         };
         if bitmap.width() != mask.width() || bitmap.height() != mask.height() {
-            self.message = Some("Inpainting needs a layer the size of the canvas.".into());
+            self.say("Inpainting needs a layer the size of the canvas.".into(), cx);
             return cx.notify();
         }
         let app = cx.global::<UiState>().services.app.clone();
         let compute = self.compute.clone();
         self.busy = true;
-        self.message = Some("Inpainting…".into());
+        self.say("Inpainting…".into(), cx);
         cx.notify();
         let task = cx.background_spawn(async move {
             match app.erase(bitmap.clone(), mask.data().to_vec()).await {
@@ -429,13 +471,12 @@ impl PhotoWindow {
                 match r {
                     Ok((bitmap, fallback)) => {
                         this.exec(Command::InpaintResult { layer, bitmap }, cx);
-                        this.message = Some(if fallback {
-                            "Filled with the classic method (no model).".into()
-                        } else {
-                            "Filled with the model.".into()
-                        });
+                        this.say(
+                            if fallback { "Filled with the classic method (no model).".into() } else { "Filled with the model.".into() },
+                            cx,
+                        );
                     }
-                    Err(e) => this.message = Some(format!("Inpainting failed: {e}")),
+                    Err(e) => this.fail(crate::presenters::notice::failure_line("Couldn't fill the area", &e.to_string()), cx),
                 }
                 cx.notify();
             });
@@ -561,11 +602,11 @@ impl PhotoWindow {
                         if let Some(revision) = revision {
                             this.saved_revision = revision;
                         }
-                        this.message = Some(format!("Saved {}", p.display()));
+                        this.say(format!("Saved {}", p.display()), cx);
                         this.path = Some(p);
                     }
                     Ok(None) => {}
-                    Err(e) => this.message = Some(format!("Save failed: {e}")),
+                    Err(e) => this.fail(crate::presenters::notice::failure_line("Couldn't save", &e.to_string()), cx),
                 }
                 // An edit made while the file was written is not in it, so it keeps the window open.
                 if close && !(Self::close_guard().dirty)(this) {
@@ -583,21 +624,24 @@ impl PhotoWindow {
         let layers: Vec<_> = view.layers.iter().map(|l| (l.id, l.name.clone(), l.visible, l.opacity, l.blend, l.locked)).collect();
         let active = view.active.and_then(|i| view.layers.get(i).map(|l| l.id));
         let selection = self.doc_read(|d| d.selection.is_some()).unwrap_or(false);
-        let mut list = div().flex().flex_col().gap(px(4.));
+        let mut list = div().flex().flex_col().gap(crate::theme::space::S1);
+        let entity = cx.entity().downgrade();
         for (id, name, visible, opacity, blend, locked) in layers.into_iter().rev() {
             let selected = active == Some(id);
             list = list.child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(4.))
-                    .p(px(4.))
-                    .rounded(px(4.))
+                    .gap(crate::theme::space::S1)
+                    .p(crate::theme::space::S1)
+                    .rounded(crate::theme::radius::SM)
                     .when_selected(selected, cx)
                     .child(
+                        // An icon and a tooltip, so the state never rests on a glyph alone.
                         Button::new(SharedString::from(format!("vis-{}", id.0)))
-                            .label(if visible { "👁" } else { "–" })
-                            .xsmall()
+                            .icon(Icon::new(if visible { IconName::Eye } else { IconName::EyeOff }))
+                            .tooltip(if visible { "Hide layer" } else { "Show layer" })
+                            .small()
                             .ghost()
                             .on_click(
                                 cx.listener(move |this, _, _, cx| this.exec(Command::SetVisible { layer: id, visible: !visible }, cx)),
@@ -605,7 +649,9 @@ impl PhotoWindow {
                     )
                     .child(
                         Button::new(SharedString::from(format!("layer-{}", id.0)))
-                            .label(format!("{name}{}", if locked { " 🔒" } else { "" }))
+                            .label(name)
+                            .icon(Icon::new(if locked { IconName::Lock } else { IconName::Layers }))
+                            .tooltip(if locked { "Locked: it can't be moved or painted" } else { "Select this layer" })
                             .small()
                             .ghost()
                             .selected(selected)
@@ -614,18 +660,30 @@ impl PhotoWindow {
                             })),
                     )
                     .child(div().flex_1())
-                    .child(
-                        Button::new(SharedString::from(format!("blend-{}", id.0))).label(format!("{blend:?}")).xsmall().ghost().on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                let i = BLENDS.iter().position(|b| *b == blend).unwrap_or(0);
-                                this.exec(Command::SetBlend { layer: id, blend: BLENDS[(i + 1) % BLENDS.len()] }, cx);
-                            }),
-                        ),
-                    )
+                    .child({
+                        // Every blend mode by name in a menu, the current one checked.
+                        let entity = entity.clone();
+                        Button::new(SharedString::from(format!("blend-{}", id.0)))
+                            .label(blend_name(blend))
+                            .tooltip("Blend mode")
+                            .small()
+                            .ghost()
+                            .dropdown_caret(true)
+                            .dropdown_menu(move |mut menu, _, _| {
+                                for b in BLENDS {
+                                    let entity = entity.clone();
+                                    menu = menu.item(PopupMenuItem::new(blend_name(b)).checked(b == blend).on_click(move |_, _, cx| {
+                                        let _ = entity.update(cx, |this, cx| this.exec(Command::SetBlend { layer: id, blend: b }, cx));
+                                    }));
+                                }
+                                menu
+                            })
+                    })
                     .child(
                         Button::new(SharedString::from(format!("op-{}", id.0)))
                             .label(format!("{:.0}%", opacity * 100.0))
-                            .xsmall()
+                            .tooltip("Opacity: click for 25% less")
+                            .small()
                             .ghost()
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let next = if opacity <= 0.25 { 1.0 } else { opacity - 0.25 };
@@ -639,7 +697,7 @@ impl PhotoWindow {
                    f: fn(&mut PhotoWindow, LayerId, &mut Context<PhotoWindow>),
                    this: &Self,
                    cx: &mut Context<Self>| {
-            Button::new(id).label(label).xsmall().disabled(this.active().is_none()).on_click(cx.listener(move |this, _, _, cx| {
+            Button::new(id).label(label).small().disabled(this.active().is_none()).on_click(cx.listener(move |this, _, _, cx| {
                 if let Some(l) = this.active() {
                     f(this, l, cx);
                 }
@@ -663,7 +721,7 @@ impl PhotoWindow {
                     .flex()
                     .flex_wrap()
                     .gap(px(4.))
-                    .child(Button::new("add-raster").label("+ Layer").xsmall().on_click(cx.listener(move |this, _, _, cx| {
+                    .child(Button::new("add-raster").label("+ Layer").small().on_click(cx.listener(move |this, _, _, cx| {
                         this.add_layer(
                             LayerKind::Raster(
                                 Bitmap::new(w, h, PixelFormat::Rgba8, vec![0u8; (w * h * 4) as usize].into())
@@ -673,11 +731,11 @@ impl PhotoWindow {
                             cx,
                         )
                     })))
-                    .child(Button::new("add-fill").label("+ Fill").xsmall().on_click(cx.listener(|this, _, _, cx| {
+                    .child(Button::new("add-fill").label("+ Fill").small().on_click(cx.listener(|this, _, _, cx| {
                         let c = parse_hex(&this.val(&this.color, cx)).unwrap_or(Rgba::WHITE);
                         this.add_layer(LayerKind::Fill(Fill::Solid(c)), "Fill", cx)
                     })))
-                    .child(Button::new("add-grad").label("+ Gradient").xsmall().on_click(cx.listener(|this, _, _, cx| {
+                    .child(Button::new("add-grad").label("+ Gradient").small().on_click(cx.listener(|this, _, _, cx| {
                         let c = parse_hex(&this.val(&this.color, cx)).unwrap_or(Rgba::BLACK);
                         this.add_layer(
                             LayerKind::Fill(Fill::LinearGradient { from: c, to: Rgba { a: 0, ..c }, angle: 90.0 }),
@@ -685,19 +743,19 @@ impl PhotoWindow {
                             cx,
                         )
                     })))
-                    .child(Button::new("adj-pick").label(format!("{adjust_name} ▸")).xsmall().ghost().on_click(cx.listener(
+                    .child(Button::new("adj-pick").label(format!("{adjust_name} ▸")).small().ghost().on_click(cx.listener(
                         |this, _, _, cx| {
                             this.adjustment = (this.adjustment + 1) % laqta_domain::effects::Adjust::defaults().len().max(1);
                             cx.notify();
                         },
                     )))
-                    .child(Button::new("add-adj").label("+ Adjustment").xsmall().on_click(cx.listener(|this, _, _, cx| {
+                    .child(Button::new("add-adj").label("+ Adjustment").small().on_click(cx.listener(|this, _, _, cx| {
                         let all = laqta_domain::effects::Adjust::defaults();
                         let Some(a) = all.get(this.adjustment).cloned() else { return };
                         let name = a.name().to_owned();
                         this.add_layer(LayerKind::Adjustment(laqta_domain::effects::Effect::Adjust(a)), &name, cx)
                     })))
-                    .child(Button::new("add-text").label("+ Text").xsmall().on_click(cx.listener(|this, _, _, cx| {
+                    .child(Button::new("add-text").label("+ Text").small().on_click(cx.listener(|this, _, _, cx| {
                         let text = this.val(&this.text, cx);
                         let size: f32 = this.val(&this.brush_size, cx).parse().unwrap_or(32.0f32).max(8.0) * 2.0;
                         let color = parse_hex(&this.val(&this.color, cx)).unwrap_or(Rgba::BLACK);
@@ -708,16 +766,16 @@ impl PhotoWindow {
                     .child(
                         Button::new("add-rect")
                             .label("+ Rectangle")
-                            .xsmall()
+                            .small()
                             .on_click(cx.listener(|this, _, _, cx| this.add_shape(false, cx))),
                     )
                     .child(
                         Button::new("add-ellipse")
                             .label("+ Ellipse")
-                            .xsmall()
+                            .small()
                             .on_click(cx.listener(|this, _, _, cx| this.add_shape(true, cx))),
                     )
-                    .child(Button::new("add-frame").label("+ Frame").xsmall().on_click(cx.listener(|this, _, _, cx| {
+                    .child(Button::new("add-frame").label("+ Frame").small().on_click(cx.listener(|this, _, _, cx| {
                         let color = parse_hex(&this.val(&this.color, cx)).unwrap_or(Rgba::BLACK);
                         this.add_layer(LayerKind::Frame(FrameLayer { width: 16.0, color, radius: 0.0 }), "Frame", cx)
                     })))
@@ -745,48 +803,48 @@ impl PhotoWindow {
                     .flex()
                     .flex_wrap()
                     .gap(px(4.))
-                    .child(Button::new("sel-all").label("All").xsmall().on_click(
+                    .child(Button::new("sel-all").label("All").small().on_click(
                         cx.listener(|this, _, _, cx| this.exec(Command::Select { shape: SelectShape::All, op: SelectOp::Replace }, cx)),
                     ))
                     .child(
                         Button::new("sel-none")
                             .label("None")
-                            .xsmall()
+                            .small()
                             .disabled(!selection)
                             .on_click(cx.listener(|this, _, _, cx| this.exec(Command::Deselect, cx))),
                     )
                     .child(
                         Button::new("sel-inv")
                             .label("Invert")
-                            .xsmall()
+                            .small()
                             .disabled(!selection)
                             .on_click(cx.listener(|this, _, _, cx| this.exec(Command::InvertSelection, cx))),
                     )
                     .child(
                         Button::new("sel-feather")
                             .label("Feather 4")
-                            .xsmall()
+                            .small()
                             .disabled(!selection)
                             .on_click(cx.listener(|this, _, _, cx| this.exec(Command::Feather { radius: 4.0 }, cx))),
                     )
                     .child(
                         Button::new("sel-grow")
                             .label("Grow 4")
-                            .xsmall()
+                            .small()
                             .disabled(!selection)
                             .on_click(cx.listener(|this, _, _, cx| this.exec(Command::Grow { radius: 4 }, cx))),
                     )
                     .child(
                         Button::new("sel-shrink")
                             .label("Shrink 4")
-                            .xsmall()
+                            .small()
                             .disabled(!selection)
                             .on_click(cx.listener(|this, _, _, cx| this.exec(Command::Shrink { radius: 4 }, cx))),
                     )
                     .child(
                         Button::new("inpaint")
                             .label("Inpaint selection")
-                            .xsmall()
+                            .small()
                             .primary()
                             .disabled(!selection || self.busy)
                             .on_click(cx.listener(|this, _, _, cx| this.inpaint(cx))),
@@ -810,7 +868,7 @@ fn smart_active(t: &mut PhotoWindow, l: LayerId, cx: &mut Context<PhotoWindow>) 
             t.exec(Command::SetKind { layer: l, kind: LayerKind::Smart { source, effects: Vec::new() } }, cx)
         }
         _ => {
-            t.message = Some("Only a raster layer becomes a smart object.".into());
+            t.say("Only a raster layer becomes a smart object.".into(), cx);
             cx.notify();
         }
     }
@@ -872,7 +930,7 @@ impl Render for PhotoWindow {
                     cx,
                 );
             })))
-            .child(widgets::muted("Colour", cx))
+            .child(widgets::muted("Color", cx))
             .child(div().w(px(90.)).child(Input::new(&self.color).small()))
             .child(widgets::muted("Size", cx))
             .child(div().w(px(56.)).child(Input::new(&self.brush_size).small()))
@@ -882,7 +940,13 @@ impl Render for PhotoWindow {
             .child(div().w(px(56.)).child(Input::new(&self.tolerance).small()))
             .child(widgets::muted("Text", cx))
             .child(div().w(px(120.)).child(Input::new(&self.text).small()))
-            .child(div().flex_1().truncate().child(widgets::muted(self.message.clone().unwrap_or_else(|| format!("{w} × {h}")), cx)))
+            .child(
+                div().flex_1().min_w_0().child(
+                    self.flash
+                        .render(cx.listener(|this, _, _, cx| crate::flash::Flash::dismiss(this, cx)), cx)
+                        .unwrap_or_else(|| div().truncate().child(widgets::muted(format!("{w} × {h}"), cx))),
+                ),
+            )
             .child(
                 Button::new("save").label("Save").small().on_click(cx.listener(|this, _, w, cx| this.save(false, w.window_handle(), cx))),
             )
@@ -918,7 +982,7 @@ impl Render for PhotoWindow {
                     let p = this.to_doc(ev.position, window);
                     if ev.modifiers.alt && matches!(this.tool, Tool::Clone | Tool::Heal) {
                         this.clone_source = Some(p);
-                        this.message = Some("Source set. Paint to copy from it.".into());
+                        this.say("Source set. Paint to copy from it.".into(), cx);
                         return cx.notify();
                     }
                     this.drag = vec![p];
