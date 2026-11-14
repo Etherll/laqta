@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use laqta_app::{App, Dispatched, Ports, UploadSource};
-use laqta_domain::settings::SETTINGS_VERSION;
+use laqta_domain::settings::{AutoCaptureOptions, SETTINGS_VERSION};
 use laqta_domain::{Action, KeyChord, Settings, WorkflowId};
 use laqta_library::{History, SettingsStore};
 use laqta_ports::{
@@ -285,6 +285,8 @@ fn native_window(window: &gpui::Window, what: laqta_ui::NativeWindow) -> bool {
                 NativeWindow::CoverScreen => return false,
                 NativeWindow::RememberForeground => laqta_platform_windows::remember_foreground(),
                 NativeWindow::RestoreForeground => laqta_platform_windows::restore_foreground(),
+                // False before Windows 10 2004, which has no exclude-from-capture affinity.
+                NativeWindow::ExcludeFromCapture => return laqta_platform_windows::exclude_from_capture(hwnd),
             }
             return true;
         }
@@ -359,7 +361,7 @@ fn dispatched(result: Result<Dispatched, laqta_ports::AppError>) -> Result<Optio
         Ok(Dispatched::Exit) => Ok(None),
         Ok(Dispatched::Task(id)) => Ok(Some(vec![id])),
         Ok(Dispatched::Tasks(ids)) => Ok(Some(ids)),
-        Ok(_) | Err(laqta_ports::AppError::Cancelled) => Ok(Some(vec![])),
+        Ok(_) | Err(laqta_ports::AppError::Cancelled | laqta_ports::AppError::Busy) => Ok(Some(vec![])),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -422,20 +424,62 @@ pub(crate) fn load_settings(store: &SettingsStore) -> Settings {
     }
     match store.load::<Settings>(SETTINGS_VERSION, &SETTINGS_MIGRATIONS) {
         Ok(mut s) => {
-            // A file without `screenshots_dir` gets the serde default, a relative path that would put captures in
-            // the folder Laqta was started from.
-            if s.screenshots_dir == Settings::default().screenshots_dir {
-                s.screenshots_dir = default_settings().screenshots_dir;
-            } else if s.screenshots_dir.is_relative()
-                && let Some(home) = dirs::home_dir()
-            {
-                s.screenshots_dir = home.join(&s.screenshots_dir);
-            }
+            repair_loaded(&mut s);
             s
         }
         Err(e) => {
             tracing::error!("settings could not be loaded ({e}); using defaults");
             default_settings()
+        }
+    }
+}
+
+/// Puts right what `laqta_domain::settings::validate` would refuse in a file read at start-up, so a bad
+/// value never blocks a later save that is not the user's own edit. A file without `screenshots_dir` gets
+/// the serde default, a relative path that would put captures wherever Laqta was started from, and that
+/// becomes the default folder. Any other relative folder is taken from the home folder (the default one
+/// when that is not a full path either); an override's or a shortcut's relative or empty folder is
+/// dropped. An interval out of bounds goes back to the nearest bound.
+fn repair_loaded(s: &mut Settings) {
+    let relative = |path: &std::path::Path| !path.is_absolute();
+    if relative(&s.screenshots_dir) {
+        // The serde default (no folder in the file) becomes the platform default; a folder the user wrote
+        // relative stays theirs, taken from the home folder as earlier versions did.
+        let home = dirs::home_dir().filter(|_| s.screenshots_dir != Settings::default().screenshots_dir);
+        // A drive with no root (`D:pics` on Windows) stays relative when joined, so it takes the default too.
+        let fixed = match home.map(|home| home.join(&s.screenshots_dir)) {
+            Some(joined) if !s.screenshots_dir.as_os_str().is_empty() && joined.is_absolute() => joined,
+            _ => default_settings().screenshots_dir,
+        };
+        tracing::warn!(was = %s.screenshots_dir.display(), now = %fixed.display(), "the screenshots folder was not a full path");
+        s.screenshots_dir = fixed;
+    }
+    if s.defaults.screenshots_dir.as_deref().is_some_and(relative) {
+        tracing::warn!("the default screenshots folder override was not a full path; dropped");
+        s.defaults.screenshots_dir = None;
+    }
+    for w in &mut s.workflows {
+        if w.patch.screenshots_dir.as_deref().is_some_and(relative) {
+            tracing::warn!(workflow = w.id.0, "a shortcut's screenshots folder was not a full path; dropped");
+            w.patch.screenshots_dir = None;
+        }
+    }
+    let interval = &mut s.auto_capture.interval_ms;
+    let bounded = (*interval).clamp(AutoCaptureOptions::MIN_INTERVAL_MS, AutoCaptureOptions::MAX_INTERVAL_MS);
+    if bounded != *interval {
+        tracing::warn!(was = *interval, now = bounded, "the auto-capture interval was out of bounds; adjusted");
+        *interval = bounded;
+    }
+}
+
+/// Saves the settings after `Action::DisableHotkeys` flipped them in memory. False when the save failed: the
+/// caller then registers the shortcuts itself, so the switch still takes effect for this run.
+fn persist_hotkey_toggle(settings: Settings, save: &crate::imports::SaveSettings) -> bool {
+    match save(settings) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(%error, "could not save the shortcuts switch");
+            false
         }
     }
 }
@@ -599,7 +643,25 @@ fn shared_reader(cell: Arc<std::sync::RwLock<String>>) -> Arc<dyn Fn() -> String
     Arc::new(move || cell.read().map(|v| v.clone()).unwrap_or_default())
 }
 
+/// Applies a backup the settings window staged (ADR 006), before anything opens the settings or the
+/// history database. A no-op when nothing is staged; a failure is logged and the profile stays as it was.
+pub(crate) fn apply_staged_import(args: &crate::cli::Args) {
+    if args.sandbox {
+        return;
+    }
+    match laqta_library::apply_staged_import(&data_dir(args)) {
+        Ok(Some(files)) => tracing::info!(files = files.len(), "backup imported"),
+        Ok(None) => {}
+        Err(error) => tracing::warn!(%error, "the staged backup could not be imported"),
+    }
+}
+
 pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<(), String> {
+    // Only the copy that serves the instance: another copy may have these files open. No server means
+    // a `-multi` copy, which is not the instance.
+    if server.is_some() {
+        apply_staged_import(&args);
+    }
     let mut startup: Vec<laqta_ipc::Request> = Vec::new();
     // Absolute, as the second instance sends them: the working folder can change before they are read.
     let import = |path: &std::path::PathBuf| laqta_ipc::Request::Upload(std::path::absolute(path).unwrap_or_else(|_| path.clone()));
@@ -674,7 +736,6 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     // the startup requests that may upload, never on the main thread.
     let accounts: Arc<Mutex<()>> = Arc::default();
     let cloud_options: crate::cloud::SharedCloudOptions = Arc::new(std::sync::RwLock::new(settings.cloud.clone()));
-    let recorder_backend = Arc::new(std::sync::RwLock::new(settings.defaults.recording.backend));
     let ffmpeg_path = Arc::new(std::sync::RwLock::new(settings.defaults.recording.ffmpeg_path.clone()));
     let model_options: crate::models::SharedModelOptions = Arc::new(std::sync::RwLock::new(settings.models.clone()));
     let system_ocr = platform.os_ocr.as_ref().and(system_ocr_name()).map(str::to_owned);
@@ -692,7 +753,6 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             ffmpeg: Arc::new(crate::media::LazyMedia::new(data.clone(), shared_reader(ffmpeg_path.clone()), Arc::new(ui.clone()))),
             native: platform.native_recorder.clone(),
             stream: platform.stream.clone(),
-            backend: recorder_backend.clone(),
         }),
         stream: platform.stream.clone(),
         ocr: Arc::new(crate::ocr::LazyOcr::new(
@@ -788,12 +848,15 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     // workflow bound to it; a hotkey runs the workflow bound to the chord that fired, so that workflow's
     // settings apply.
     let hotkey_slot: Arc<Mutex<Option<HotkeyCallback>>> = Arc::new(Mutex::new(None));
+    // The save path is built after the actions that need it, so it is put here once it exists.
+    let save_slot: Arc<Mutex<Option<crate::imports::SaveSettings>>> = Arc::new(Mutex::new(None));
     let run_action: Arc<dyn Fn(Action, Option<WorkflowId>) + Send + Sync> = {
         let spawner = spawner.clone();
         let quit_tx = quit_tx.clone();
         let hotkeys = hotkeys.clone();
         let registered = registered.clone();
         let slot = hotkey_slot.clone();
+        let save_slot = save_slot.clone();
         let app = app.clone();
         Arc::new(move |action: Action, workflow: Option<WorkflowId>| {
             let app = app.clone();
@@ -801,6 +864,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             let hotkeys = hotkeys.clone();
             let registered = registered.clone();
             let slot = slot.clone();
+            let save_slot = save_slot.clone();
             let blocking = spawner.clone();
             spawner.spawn(Box::pin(async move {
                 match app.dispatch(action, workflow).await {
@@ -808,8 +872,12 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                         let _ = quit_tx.send(());
                     }
                     Ok(Dispatched::HotkeysToggled(off)) => {
+                        // The toggle is a setting: it goes through the save path, which keeps it across a restart,
+                        // tells the settings window, and registers (or releases) the shortcuts.
+                        let save = save_slot.lock().ok().and_then(|s| s.clone());
+                        let saved = save.is_some_and(|save| persist_hotkey_toggle(app.settings(), &save));
                         let cb = slot.lock().ok().and_then(|s| s.clone());
-                        if let Some(cb) = cb {
+                        if let (false, Some(cb)) = (saved, cb) {
                             // The portal round trip can take seconds: keep it off the async worker.
                             let app = app.clone();
                             blocking
@@ -822,6 +890,8 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                     }
                     Ok(d) => tracing::debug!(?action, ?d, "dispatched"),
                     Err(laqta_ports::AppError::Cancelled) => tracing::debug!(?action, "cancelled"),
+                    // A second capture key while the selection screen is open: the open one carries on.
+                    Err(laqta_ports::AppError::Busy) => tracing::info!(?action, "a selection is already open; request dropped"),
                     Err(e) => tracing::warn!(?action, "action failed: {e}"),
                 }
             }));
@@ -860,7 +930,6 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let save_settings: crate::imports::SaveSettings = {
         let model_options = model_options.clone();
         let cloud_options = cloud_options.clone();
-        let recorder_backend = recorder_backend.clone();
         let ffmpeg_path = ffmpeg_path.clone();
         let app = app.clone();
         let store = store.clone();
@@ -878,6 +947,13 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         let autostart = platform.autostart.clone();
         let run_as_admin = run_as_admin.clone();
         Arc::new(move |s: Settings| {
+            // A value no process could read the same way is refused before anything is written or applied.
+            // A problem the saved settings already have is not this save's (a theme click, the shortcuts
+            // switch, an import of something else), so only what this save introduces blocks it.
+            let before = laqta_domain::settings::validate(&app.settings());
+            if let Some(issue) = laqta_domain::settings::validate(&s).into_iter().find(|issue| !before.contains(issue)) {
+                return Err(issue.to_string());
+            }
             if !sandbox {
                 store.save(&s, SETTINGS_VERSION, clock.now()).map_err(|e| e.to_string())?;
             }
@@ -891,9 +967,6 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             }
             if let Ok(mut c) = cloud_options.write() {
                 *c = s.cloud.clone();
-            }
-            if let Ok(mut b) = recorder_backend.write() {
-                *b = s.defaults.recording.backend;
             }
             if let Ok(mut p) = ffmpeg_path.write() {
                 p.clone_from(&s.defaults.recording.ffmpeg_path);
@@ -933,6 +1006,9 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             Ok(())
         })
     };
+    if let Ok(mut slot) = save_slot.lock() {
+        *slot = Some(save_settings.clone());
+    }
     let importer = crate::imports::Importer {
         app: app.clone(),
         save: save_settings.clone(),
@@ -1487,6 +1563,48 @@ mod tests {
             assert_eq!(settings.tray_click, loaded, "saved {saved}");
             assert_eq!(settings.version, SETTINGS_VERSION);
         }
+    }
+
+    /// Turning the shortcuts off from the tray or a hotkey goes through the save path: the next start reads it.
+    #[test]
+    fn a_toggled_shortcuts_switch_is_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SettingsStore::new(dir.path().to_path_buf()));
+        let saved: crate::imports::SaveSettings = {
+            let store = store.clone();
+            Arc::new(move |s: Settings| {
+                store.save(&s, SETTINGS_VERSION, jiff::civil::date(2026, 11, 14).at(9, 0, 0, 0)).map_err(|e| e.to_string())
+            })
+        };
+        let mut settings = default_settings();
+        settings.disable_hotkeys = true;
+        assert!(persist_hotkey_toggle(settings, &saved));
+        assert!(load_settings(&store).disable_hotkeys, "still off after a restart");
+
+        let failing: crate::imports::SaveSettings = Arc::new(|_| Err("disk full".to_owned()));
+        assert!(!persist_hotkey_toggle(default_settings(), &failing), "a failed save is reported so the caller registers itself");
+    }
+
+    /// A relative or empty folder, or an interval out of bounds, in an old file is repaired at load, so
+    /// the save path's validation never blocks a save that is not the user's own edit.
+    #[test]
+    fn a_file_that_validation_would_refuse_is_repaired_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bad = default_settings();
+        bad.screenshots_dir = "Shots/Laqta".into();
+        bad.defaults.screenshots_dir = Some("".into());
+        bad.workflows[0].patch.screenshots_dir = Some("shots".into());
+        bad.auto_capture.interval_ms = 5;
+        let store = SettingsStore::new(dir.path().to_path_buf());
+        store.save(&bad, SETTINGS_VERSION, jiff::civil::date(2026, 11, 14).at(9, 0, 0, 0)).unwrap();
+
+        let loaded = load_settings(&store);
+        // A folder the user wrote relative is taken from the home folder, as earlier versions did.
+        assert_eq!(loaded.screenshots_dir, dirs::home_dir().unwrap().join("Shots/Laqta"));
+        assert_eq!(loaded.defaults.screenshots_dir, None);
+        assert_eq!(loaded.workflows[0].patch.screenshots_dir, None);
+        assert_eq!(loaded.auto_capture.interval_ms, AutoCaptureOptions::MIN_INTERVAL_MS);
+        assert!(laqta_domain::settings::validate(&loaded).is_empty());
     }
 
     /// The tests that set the shared hotkey report take turns.

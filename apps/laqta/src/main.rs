@@ -92,6 +92,12 @@ fn main() -> ExitCode {
     // its request to a running copy does not, so a shortcut or `--action` call raises no prompt.
     #[cfg(windows)]
     let mut elevation_note = None;
+    // A staged backup lands first, so a run-as-administrator setting it brings is read below. Only the
+    // copy that serves the instance applies it: a running copy has the files open.
+    #[cfg(windows)]
+    if matches!(claim, Some(Ok(laqta_ipc::Claim::Primary(_)))) || (claim.is_none() && !args.multi) {
+        wiring::apply_staged_import(&args);
+    }
     #[cfg(windows)]
     if matches!(claim, None | Some(Ok(laqta_ipc::Claim::Primary(_)))) && should_run_as_admin(&args) {
         // Let go of the endpoint first, so the elevated copy can claim it.

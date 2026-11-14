@@ -104,7 +104,6 @@ pub struct SwitchingMedia {
     pub ffmpeg: std::sync::Arc<dyn laqta_ports::Media>,
     pub native: Option<std::sync::Arc<dyn laqta_ports::Media>>,
     pub stream: std::sync::Arc<dyn laqta_ports::ScreenStream>,
-    pub backend: std::sync::Arc<std::sync::RwLock<laqta_domain::record::RecorderBackend>>,
 }
 
 impl laqta_ports::Media for SwitchingMedia {
@@ -115,7 +114,7 @@ impl laqta_ports::Media for SwitchingMedia {
         output: std::path::PathBuf,
     ) -> laqta_ports::BoxFuture<'_, Result<Box<dyn laqta_ports::RecordingHandle>, laqta_ports::PortError>> {
         Box::pin(async move {
-            let native = self.backend.read().map(|b| *b == laqta_domain::record::RecorderBackend::Native).unwrap_or(false);
+            let native = spec.backend == laqta_domain::record::RecorderBackend::Native;
             if let (true, Some(n)) = (native, &self.native) {
                 match n.start(input, spec.clone(), output.clone()).await {
                     // A refusal: the recording needs something only FFmpeg does.
