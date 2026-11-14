@@ -387,6 +387,32 @@ pub(crate) fn pill_with(
     clickable_if(el, enabled, on_click, cx)
 }
 
+/// A [`pill`] that reads the theme when it renders, so a caller without `cx` at hand (a builder
+/// chain) can place one.
+pub(crate) fn pill_click(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    kind: Pill,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> PillButton {
+    PillButton { id: id.into(), label: label.into(), kind, on_click: Box::new(on_click) }
+}
+
+#[derive(IntoElement)]
+pub(crate) struct PillButton {
+    id: ElementId,
+    label: SharedString,
+    kind: Pill,
+    on_click: OnClick,
+}
+
+impl gpui::RenderOnce for PillButton {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let on = self.on_click;
+        pill(self.id, self.label, self.kind, false, move |e, w, cx| on(e, w, cx), cx)
+    }
+}
+
 /// A pill nav row (sidebar, settings pages). The active row sits on the accent surface.
 pub(crate) fn nav_row(
     id: impl Into<ElementId>,
@@ -477,8 +503,31 @@ pub(crate) fn badge(label: impl Into<SharedString>, tone: Tone, cx: &App) -> Div
 }
 
 /// A key-chord hint, such as a hotkey: quiet text, so it never competes with the label.
+/// A shortcut as keycaps: "Ctrl+PrtSc" becomes two small bordered keys.
 pub(crate) fn kbd(keys: impl Into<SharedString>, cx: &App) -> Div {
-    div().flex_none().text_size(text::SMALL).text_color(cx.theme().muted_foreground).child(keys.into())
+    let t = cx.theme();
+    let keys: SharedString = keys.into();
+    let mut row = div().flex_none().flex().items_center().gap(px(3.));
+    for key in keys.split('+').filter(|k| !k.is_empty()) {
+        row = row.child(
+            div()
+                .h(px(20.))
+                .min_w(px(20.))
+                .px(px(6.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(radius::SM)
+                .border_1()
+                .border_color(t.border)
+                .bg(t.foreground.opacity(0.04))
+                .text_size(text::SMALL)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(t.muted_foreground)
+                .child(key.to_string()),
+        );
+    }
+    row
 }
 
 /// An empty state: an icon tile, a title and a line telling the user what to do.
@@ -659,12 +708,22 @@ pub(crate) fn menu_button_with(
     use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
     let id: SharedString = id.into();
     let label: SharedString = label.into();
+    // Long menus scroll instead of running off the window.
+    let long = items.len() > 12;
     let items = std::rc::Rc::new(items);
     let button = Button::new(ElementId::Name(id)).icon(Icon::new(glyph));
     let button = if label.is_empty() { button.ghost() } else { button.label(label).outline() };
     button
         .dropdown_menu(move |mut menu, _, _| {
+            if long {
+                menu = menu.scrollable(true).max_h(px(360.));
+            }
             for o in items.iter() {
+                // An item with no label is a separator between groups.
+                if o.label.is_empty() {
+                    menu = menu.separator();
+                    continue;
+                }
                 let h = o.on_click.clone();
                 menu = menu.item(PopupMenuItem::new(o.label.clone()).on_click(move |e, w, cx| h(e, w, cx)));
             }
@@ -919,7 +978,7 @@ pub(crate) fn option_row(
                 .flex_col()
                 .gap(px(2.))
                 .child(div().text_size(text::BODY).font_weight(FontWeight::MEDIUM).text_color(t.foreground).child(name))
-                .child(div().text_size(text::LABEL).text_color(t.muted_foreground).child(detail)),
+                .when(!detail.is_empty(), |d| d.child(div().text_size(text::LABEL).text_color(t.muted_foreground).child(detail))),
         );
     let radio = match on_pick {
         Some(on_pick) => clickable(radio, on_pick, cx).into_any_element(),
