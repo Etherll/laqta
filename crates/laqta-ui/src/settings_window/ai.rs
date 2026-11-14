@@ -94,7 +94,7 @@ impl SettingsWindow {
         let mut saved = services.app.settings();
         change(&mut saved);
         if let Err(e) = (services.save_settings)(saved) {
-            self.message = Some((false, format!("Couldn't save the choice: {e}")));
+            self.say((false, crate::presenters::notice::failure_line("Couldn't save the choice", &e.to_string())), cx);
         }
         cx.notify();
     }
@@ -138,7 +138,7 @@ impl SettingsWindow {
         // ONNX Runtime is shared: two downloads at once would both fetch it into the same place.
         let other = self.ai.jobs.iter().any(|(c, j)| *c != card && matches!(j.download, Download::Running { .. }));
         if other && !self.ai.runtime_ready {
-            self.message = Some((false, "Wait for the other download to finish first: it also fetches ONNX Runtime.".into()));
+            self.say((false, "Wait for the other download to finish first: it also fetches ONNX Runtime.".into()), cx);
             cx.notify();
             return;
         }
@@ -278,10 +278,17 @@ impl SettingsWindow {
                 )
                 .into_any_element(),
             ),
+            // A custom model whose file is gone: the one thing to do is take it out.
+            Status::FileMissing => ids
+                .iter()
+                .filter_map(|id| self.row(id))
+                .find(|row| row.custom && !row.installed)
+                .map(|row| self.remove_button(row, true, cx).into_any_element()),
             _ => None,
         };
         let detail = match &status {
-            Status::Failed(e) => Some(e.clone()),
+            // The reason in plain words; the raw error is cut to a sentence (`Notice::failure_text`).
+            Status::Failed(e) => crate::presenters::notice::Notice::failure_text("", e).reason.or_else(|| Some(e.clone())),
             Status::FileMissing => Some("Remove it, or add the file again under Advanced.".into()),
             Status::Missing { .. } if !self.ai.runtime_ready => Some("Includes ONNX Runtime, which every local model uses.".into()),
             _ => None,
@@ -362,7 +369,7 @@ impl SettingsWindow {
                     let _ = this.update(cx, |this, cx| {
                         let services = cx.global::<UiState>().services.clone();
                         if let Err(e) = services.models.remove(&id) {
-                            this.message = Some((false, format!("Couldn't remove the model: {e}")));
+                            this.say((false, crate::presenters::notice::failure_line("Couldn't remove the model", &e.to_string())), cx);
                             this.refresh_models(cx);
                             return;
                         }
@@ -771,7 +778,7 @@ impl SettingsWindow {
                 let services = cx.global::<UiState>().services.clone();
                 let dir = services.models.models_dir();
                 if let Err(e) = services.shell.open_path(&dir) {
-                    this.message = Some((false, format!("Couldn't open the models folder: {e}")));
+                    this.say((false, crate::presenters::notice::failure_line("Couldn't open the models folder", &e.to_string())), cx);
                     cx.notify();
                 }
             }),
