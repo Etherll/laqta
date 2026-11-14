@@ -21,14 +21,18 @@ use crate::loopback::{WasapiLoopback, list_devices};
 
 /// The screen the area is on, as an OS reference. `outputs` holds `(adapter index, output index,
 /// desktop rect)` for each attached display. The display is the one that holds the area's top-left
-/// corner. The area is clipped to that display, and each side is rounded down to an even count.
+/// corner. An area that runs past that display is `Unsupported`: one stream records one display, and the
+/// Recording session clips the area to a display itself. Each side is rounded down to an even count.
 pub(crate) fn screen_for_area(outputs: &[(u32, u32, PhysRect)], area: PhysRect) -> Result<OsScreen, PortError> {
     let &(adapter_index, output_index, output) = outputs
         .iter()
         .find(|(_, _, rect)| holds_point(*rect, area.x, area.y))
         .ok_or_else(|| PortError::Failed(format!("no display holds the point ({}, {})", area.x, area.y)))?;
-    let width = even_extent(area.x, area.right().min(output.right()));
-    let height = even_extent(area.y, area.bottom().min(output.bottom()));
+    if area.right() > output.right() || area.bottom() > output.bottom() {
+        return Err(PortError::Unsupported("the area spans more than one display".into()));
+    }
+    let width = even_extent(area.x, area.right());
+    let height = even_extent(area.y, area.bottom());
     if width == 0 || height == 0 {
         return Err(PortError::Failed("the area is smaller than two pixels on its display".into()));
     }
@@ -199,20 +203,10 @@ mod tests {
     }
 
     #[test]
-    fn area_crossing_an_edge_is_clipped_to_its_display() {
-        assert_eq!(
-            screen_for_area(&desktop(), rect(1800, 100, 400, 300)).ok(),
-            Some(OsScreen::Windows {
-                adapter_index: 0,
-                output_index: 0,
-                offset_x: 1800,
-                offset_y: 100,
-                width: 120,
-                height: 300,
-                desktop_x: 1800,
-                desktop_y: 100
-            })
-        );
+    fn area_crossing_an_edge_is_unsupported() {
+        assert!(matches!(screen_for_area(&desktop(), rect(1800, 100, 400, 300)), Err(PortError::Unsupported(_))));
+        // Past the bottom edge of its display too.
+        assert!(matches!(screen_for_area(&desktop(), rect(0, 1000, 100, 200)), Err(PortError::Unsupported(_))));
     }
 
     #[test]

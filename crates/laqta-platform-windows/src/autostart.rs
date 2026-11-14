@@ -257,6 +257,28 @@ fn remove_task() -> Result<(), PortError> {
     if task_exists() { schtasks_checked(&delete_task_args()) } else { Ok(()) }
 }
 
+/// The entry that starts Laqta at sign-in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Entry {
+    /// The logon task with the highest privileges.
+    Task,
+    /// The Run value; `elevated_asked` is set when the settings want the logon task but this process
+    /// cannot create or remove one, so the Run value is kept until an elevated start moves it.
+    RunValue { elevated_asked: bool },
+}
+
+/// Which entry a start at sign-in uses. The logon task needs the setting (`want_elevated`), a
+/// folder only an administrator can change (`protected`), and a process that may create it (`can_manage_task`:
+/// creating or deleting a task needs administrator rights, so a Laqta that was not started with them
+/// keeps the Run value instead of failing with "access denied").
+pub(crate) fn choose_entry(want_elevated: bool, protected: bool, can_manage_task: bool) -> Entry {
+    match (want_elevated, protected, can_manage_task) {
+        (true, true, true) => Entry::Task,
+        (true, true, false) => Entry::RunValue { elevated_asked: true },
+        _ => Entry::RunValue { elevated_asked: false },
+    }
+}
+
 /// The Run key under `HKCU`, and the value Laqta keeps there.
 #[cfg(windows)]
 #[derive(Debug)]
@@ -295,30 +317,54 @@ impl WindowsAutostart {
     /// is made before the old one is removed, so a failure (creating the task needs an elevated
     /// process) leaves the start at sign-in as it was.
     fn set(&self, enabled: bool, elevated: bool, executable: &Path) -> Result<(), PortError> {
-        match (enabled, elevated) {
-            // A task that starts a file other programs can replace would hand them administrator
-            // rights at sign-in, so outside Program Files the Run value stays (and the copy it starts
-            // asks for the rights through the UAC prompt).
-            (true, true) if !in_protected_folder(executable, &protected_folders()) => {
-                tracing::info!(exe = %executable.display(), "not in Program Files: starting at sign-in through the Run key and the UAC prompt");
-                self.write_run_value(executable)?;
-                remove_task()
-            }
-            // Already the logon task alone: nothing to rewrite. The installed copy keeps one path
-            // (`current\laqta.exe`), so a task that exists points at it.
-            (true, true) if !self.run_value_present()? && task_exists() => Ok(()),
-            (true, true) => {
+        let process_elevated = crate::elevation::is_elevated();
+        if !enabled {
+            let run = self.remove_run_value();
+            // Deleting a task needs administrator rights. Without them the entry would stay on with the
+            // switch showing off, so say what to do instead.
+            let task = match remove_task() {
+                Err(error) if !process_elevated => Err(PortError::Failed(format!(
+                    "the sign-in task was made with administrator rights and only an administrator can remove it ({error}); start Laqta as administrator and try again"
+                ))),
+                other => other,
+            };
+            return run.and(task);
+        }
+        let protected = in_protected_folder(executable, &protected_folders());
+        match choose_entry(elevated, protected, process_elevated) {
+            Entry::Task => {
+                // Already the logon task alone: nothing to rewrite. The installed copy keeps one path
+                // (`current\laqta.exe`), so a task that exists points at it.
+                if !self.run_value_present()? && task_exists() {
+                    return Ok(());
+                }
                 create_task(executable)?;
                 self.remove_run_value()
             }
-            (true, false) => {
+            Entry::RunValue { elevated_asked } => {
+                // A task that starts a file other programs can replace would hand them administrator
+                // rights at sign-in, so outside Program Files the Run value stays (and the copy it starts
+                // asks for the rights through the UAC prompt).
+                if elevated && !protected {
+                    tracing::info!(exe = %executable.display(), "not in Program Files: starting at sign-in through the Run key and the UAC prompt");
+                }
+                if elevated_asked {
+                    tracing::warn!(
+                        "this Laqta has no administrator rights, so start at sign-in uses the Run key; an elevated start moves it to the logon task"
+                    );
+                }
+                // A logon task that is already there keeps starting Laqta; with no rights to touch it,
+                // adding the Run value as well would start a second copy.
+                if elevated_asked && task_exists() {
+                    return Ok(());
+                }
+                // A task this process cannot remove would start Laqta next to the Run value, a second copy
+                // at every sign-in, so nothing is written and the person is told what to do.
+                if !process_elevated && task_exists() {
+                    return Err(PortError::Failed("Start Laqta as administrator once to remove its sign-in task".to_owned()));
+                }
                 self.write_run_value(executable)?;
                 remove_task()
-            }
-            (false, _) => {
-                let run = self.remove_run_value();
-                let task = remove_task();
-                run.and(task)
             }
         }
     }
@@ -345,9 +391,20 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        create_task_args, delete_task_args, in_protected_folder, query_task_args, run_command, task_file_bytes, task_user, task_xml,
-        xml_escape,
+        Entry, choose_entry, create_task_args, delete_task_args, in_protected_folder, query_task_args, run_command, task_file_bytes,
+        task_user, task_xml, xml_escape,
     };
+
+    /// A Program Files install with run-as-administrator on, toggled from a Laqta without administrator
+    /// rights, falls back to the Run value instead of failing with "access denied".
+    #[test]
+    fn the_logon_task_needs_the_setting_a_protected_folder_and_an_elevated_process() {
+        assert_eq!(choose_entry(true, true, true), Entry::Task);
+        assert_eq!(choose_entry(true, true, false), Entry::RunValue { elevated_asked: true });
+        assert_eq!(choose_entry(true, false, true), Entry::RunValue { elevated_asked: false }, "a per-user copy never gets a task");
+        assert_eq!(choose_entry(false, true, true), Entry::RunValue { elevated_asked: false });
+        assert_eq!(choose_entry(false, true, false), Entry::RunValue { elevated_asked: false });
+    }
 
     #[test]
     fn only_a_copy_inside_program_files_counts_as_protected() {

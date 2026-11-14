@@ -282,6 +282,18 @@ mod imp {
         }
     }
 
+    /// Leaves the window `hwnd` out of screen captures and recordings (`WDA_EXCLUDEFROMCAPTURE`), so the
+    /// recording bar and its border never end up in the video. Windows 10 2004 or later; on an older
+    /// system the call fails and the window stays visible to captures: it returns whether the exclusion took
+    /// effect. Call it on the thread that owns the window.
+    pub fn exclude_from_capture(hwnd: isize) -> bool {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE};
+        let hwnd = HWND(hwnd as *mut core::ffi::c_void);
+        // SAFETY: a plain Win32 call; a handle that is no longer a window makes it fail, which is reported as false.
+        unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) }.is_ok()
+    }
+
     /// Makes the window `hwnd` the foreground window, so it gets the keyboard. Windows refuses a
     /// plain request from a program that is not in the foreground, which Laqta no longer is once
     /// its main window has minimized for a capture. Joining the foreground window's input queue
@@ -391,14 +403,20 @@ mod imp {
 
     impl ScreenSource for WindowsScreen {
         fn capture_all(&self) -> BoxFuture<'_, Result<Vec<Frame>, PortError>> {
-            Box::pin(blocking::unblock(|| capture_frames(CaptureRequest::default())))
+            Box::pin(blocking::unblock(|| capture_frames(CaptureRequest::default()).map(|(frames, _)| frames)))
         }
 
         fn capture(&self, request: CaptureRequest) -> BoxFuture<'_, Result<Vec<Frame>, PortError>> {
             Box::pin(blocking::unblock(move || {
-                let mut frames = capture_frames(request)?;
+                let (mut frames, pointer_baked) = capture_frames(request)?;
                 if request.show_cursor {
-                    cursor::draw_onto(&mut frames);
+                    // A duplication frame of an HDR output can already hold the pointer; drawing it again
+                    // would blend it twice.
+                    for (frame, baked) in frames.iter_mut().zip(pointer_baked) {
+                        if !baked {
+                            cursor::draw_onto(std::slice::from_mut(frame));
+                        }
+                    }
                 }
                 Ok(frames)
             }))
@@ -406,7 +424,14 @@ mod imp {
 
         fn capture_window(&self, target: &HoverTarget, request: CaptureRequest) -> BoxFuture<'_, Result<Bitmap, PortError>> {
             let target = target.clone();
-            Box::pin(blocking::unblock(move || transparent::capture(&target, request.show_cursor)))
+            Box::pin(blocking::unblock(move || match transparent::capture(&target, request.show_cursor) {
+                Err(PortError::Failed(why)) => {
+                    // The caller crops the window out of the screen frames instead (ADR 018).
+                    tracing::warn!("transparent window capture failed ({why}); using a plain crop of the window");
+                    Err(PortError::Unsupported(format!("transparent window capture failed: {why}")))
+                }
+                other => other,
+            }))
         }
     }
 
@@ -416,8 +441,13 @@ mod imp {
     /// `LAQTA_FORCE_WGC=1` skips DXGI. `hdr_tonemap`: see `CaptureRequest`. `show_cursor` only goes to
     /// the debug log, which says once per capture which path was used and what DXGI reported about
     /// the pointer.
-    fn capture_frames(request: CaptureRequest) -> Result<Vec<Frame>, PortError> {
-        let CaptureRequest { hdr_tonemap, show_cursor, in_series, .. } = request;
+    ///
+    /// HDR monitors are always taken again through `wgc::still` with the pointer off, series included,
+    /// because their duplication frames may hold the pointer. The second value says, for each frame,
+    /// whether it is a duplication frame of an HDR output whose retake failed: it may hold the pointer,
+    /// so `draw_onto` skips it rather than draw a second one.
+    fn capture_frames(request: CaptureRequest) -> Result<(Vec<Frame>, Vec<bool>), PortError> {
+        let CaptureRequest { hdr_tonemap, show_cursor, .. } = request;
         if wgc::still::forced_by_env() {
             tracing::info!("LAQTA_FORCE_WGC is set; skipping DXGI duplication");
         } else {
@@ -425,12 +455,20 @@ mod imp {
                 Ok(captured) => {
                     tracing::debug!(path = "dxgi", show_cursor, pointer_visible = captured.pointer_visible, "screen capture");
                     let mut frames = captured.frames;
-                    // A scrolling capture takes many frames in a row; a retake per step would slow it badly.
-                    if !show_cursor && !in_series {
-                        retake_hdr_without_pointer(&mut frames, &captured.hdr_white, hdr_tonemap);
+                    let mut baked: Vec<bool> = captured.hdr_white.iter().map(Option::is_some).collect();
+                    baked.resize(frames.len(), false);
+                    // Whether or not the cursor is wanted: duplication of an HDR output may or may not hold
+                    // the pointer, and nothing per output says which. A frame taken again without it is
+                    // known to be clean, so `capture` can draw the pointer once where it is wanted.
+                    let retaken = retake_hdr_without_pointer(&mut frames, &captured.hdr_white, hdr_tonemap);
+                    for (baked, retaken) in baked.iter_mut().zip(retaken) {
+                        *baked &= !retaken;
                     }
-                    retake_black_frames(&mut frames);
-                    return Ok(frames);
+                    let replaced = retake_black_frames(&mut frames);
+                    for (baked, replaced) in baked.iter_mut().zip(replaced) {
+                        *baked &= !replaced;
+                    }
+                    return Ok((frames, baked));
                 }
                 Err(e) => tracing::info!("DXGI duplication failed ({e}); trying Windows.Graphics.Capture"),
             }
@@ -438,7 +476,8 @@ mod imp {
         match wgc::still::capture_all() {
             Ok(frames) => {
                 tracing::debug!(path = "wgc", show_cursor, "screen capture");
-                Ok(frames)
+                let none = vec![false; frames.len()];
+                Ok((frames, none))
             }
             Err(e) => {
                 tracing::info!("Windows.Graphics.Capture failed ({e}); falling back to GDI");
@@ -447,7 +486,8 @@ mod imp {
                 }
                 let frames = capture_gdi::capture()?;
                 tracing::debug!(path = "gdi", show_cursor, "screen capture");
-                Ok(frames)
+                let none = vec![false; frames.len()];
+                Ok((frames, none))
             }
         }
     }
@@ -455,18 +495,22 @@ mod imp {
     /// Takes each HDR monitor again through Windows.Graphics.Capture with the pointer left out. On an
     /// HDR desktop Windows often draws the pointer into the picture itself, so duplication holds it
     /// whatever `show_cursor` says. A retake that fails keeps the duplication frame.
-    fn retake_hdr_without_pointer(frames: &mut [Frame], hdr_white: &[Option<f32>], hdr_tonemap: bool) {
-        for (frame, white) in frames.iter_mut().zip(hdr_white) {
+    /// Returns, for each frame, whether it was replaced.
+    fn retake_hdr_without_pointer(frames: &mut [Frame], hdr_white: &[Option<f32>], hdr_tonemap: bool) -> Vec<bool> {
+        let mut retaken_flags = vec![false; frames.len()];
+        for ((frame, white), flag) in frames.iter_mut().zip(hdr_white).zip(retaken_flags.iter_mut()) {
             let Some(white) = *white else { continue };
             match wgc::still::capture_monitor(&frame.monitor, hdr_tonemap.then_some(white)) {
                 Ok(retaken) if !wgc::still::is_all_black(&retaken.image) => {
                     tracing::debug!(monitor = %frame.monitor.name, "HDR monitor taken again without the pointer");
                     *frame = retaken;
+                    *flag = true;
                 }
                 Ok(_) => tracing::debug!(monitor = %frame.monitor.name, "HDR retake was black; keeping the duplication frame"),
                 Err(e) => tracing::info!(monitor = %frame.monitor.name, "HDR retake without the pointer failed ({e})"),
             }
         }
+        retaken_flags
     }
 
     /// Replaces each entirely black frame with a Windows.Graphics.Capture frame of the same monitor,
@@ -475,10 +519,12 @@ mod imp {
     ///
     /// A monitor whose retake came back black or failed is not retaken again for 2 seconds, so a
     /// black screen does not add the wait for Windows.Graphics.Capture to every capture.
-    fn retake_black_frames(frames: &mut [Frame]) {
+    /// Returns, for each frame, whether it was replaced.
+    fn retake_black_frames(frames: &mut [Frame]) -> Vec<bool> {
         use crate::retake_throttle::Throttle;
         static THROTTLE: Mutex<Throttle> = Mutex::new(Throttle::new());
-        for frame in frames {
+        let mut replaced = vec![false; frames.len()];
+        for (frame, flag) in frames.iter_mut().zip(replaced.iter_mut()) {
             if !wgc::still::is_all_black(&frame.image) {
                 continue;
             }
@@ -503,9 +549,11 @@ mod imp {
                 tracing::info!(monitor = %name, "DXGI gave a black frame; using Windows.Graphics.Capture for it");
                 throttle.fruitful(&name);
                 *frame = retaken;
+                *flag = true;
             } else {
                 throttle.barren(&name, Instant::now());
             }
         }
+        replaced
     }
 }
