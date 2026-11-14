@@ -65,7 +65,7 @@ impl Render for UrlWindow {
         );
         use widgets::{FooterAction, Pill};
         let footer = widgets::footer(
-            Some("Esc closes".into()),
+            None,
             vec![
                 FooterAction::new("copy", "Copy link", Pill::Default, move |_, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(u1.clone()))
