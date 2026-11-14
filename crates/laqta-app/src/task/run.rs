@@ -783,9 +783,9 @@ impl Job {
         self.checkpoint()?;
         let (title, body, path) = match saved {
             Some(saved) if preview.is_none() && is_recording(&saved.path) => {
-                ("Recording saved", saved.path.display().to_string(), Some(saved.path.clone()))
+                ("Recording saved", where_saved(&saved.path), Some(saved.path.clone()))
             }
-            Some(saved) => ("Screenshot saved", saved.path.display().to_string(), Some(saved.path.clone())),
+            Some(saved) => ("Screenshot saved", where_saved(&saved.path), Some(saved.path.clone())),
             None => match &self.save_error {
                 Some(error) => ("Screenshot not saved", error.clone(), None),
                 None => ("Screenshot copied", String::new(), None),
@@ -928,6 +928,16 @@ fn is_recording(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| ["mp4", "webm", "mkv", "mov", "avi", "gif"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+/// The toast's second line: the file name and the folder it went to, not a full path that
+/// truncates before the part people read. "Laqta_2026-11-14_08-03.png in 2026-11".
+fn where_saved(path: &std::path::Path) -> String {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    match path.parent().and_then(|p| p.file_name()) {
+        Some(dir) => format!("{name} in {}", dir.to_string_lossy()),
+        None => name,
+    }
 }
 
 #[cfg(test)]
