@@ -8,12 +8,13 @@ use std::sync::{Arc, Mutex};
 
 use gpui::{
     App, AppContext as _, Context, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement as _, Pixels, Render, RenderImage, SharedString, Styled as _, Window, WindowOptions, div, img, px,
+    ParentElement as _, Pixels, Render, RenderImage, SharedString, StatefulInteractiveElement as _, Styled as _, Window, WindowOptions,
+    div, img, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputState};
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_component::{ActiveTheme as _, Disableable as _, Icon, Root, Selectable as _, Sizable as _};
+use gpui_component::{ActiveTheme as _, Icon, Root, Sizable as _};
 use laqta_domain::color::Rgba;
 use laqta_domain::{Bitmap, PixelFormat};
 use laqta_photo::{
@@ -26,11 +27,13 @@ use crate::assets::IconName;
 use crate::presenters::photo_interaction::PhotoInteraction;
 use crate::presenters::render_gate::ComputeFn;
 use crate::runtime::UiState;
-use crate::widgets;
+use crate::widgets::{self, Pill};
 
-const TOOLS_W: f32 = 120.0;
-const PANEL_W: f32 = 260.0;
-const TOP_H: f32 = 48.0;
+const TOOLS_W: f32 = 56.0;
+const PANEL_W: f32 = 300.0;
+const TOP_H: f32 = 52.0;
+/// The footer under the canvas: the status line and the save buttons.
+const FOOT_H: f32 = 60.0;
 
 /// Where the canvas area starts: the title bar (when the window draws its own) and the top bar.
 fn head(window: &Window) -> f32 {
@@ -95,16 +98,24 @@ enum Tool {
     Wand,
 }
 
-const TOOLS: [(Tool, &str); 9] = [
-    (Tool::Brush, "Brush"),
-    (Tool::Eraser, "Eraser"),
-    (Tool::Clone, "Clone stamp"),
-    (Tool::Heal, "Healing"),
-    (Tool::Bucket, "Fill bucket"),
-    (Tool::SelectRect, "Rect select"),
-    (Tool::SelectEllipse, "Ellipse select"),
-    (Tool::Lasso, "Lasso"),
-    (Tool::Wand, "Magic wand"),
+/// The tool rail, in groups: painting, retouching, selecting. Each tool has an icon and a name for
+/// its tooltip.
+const TOOLS: [&[(Tool, IconName, &str)]; 3] = [
+    &[
+        (Tool::Brush, IconName::PenLine, "Brush"),
+        (Tool::Eraser, IconName::Eraser, "Eraser"),
+        (Tool::Bucket, IconName::PaintBucket, "Fill bucket"),
+    ],
+    &[
+        (Tool::Clone, IconName::Stamp, "Clone stamp · Alt-click sets the source"),
+        (Tool::Heal, IconName::Sparkles, "Healing · Alt-click sets the source"),
+    ],
+    &[
+        (Tool::SelectRect, IconName::SquareDashed, "Rectangle select"),
+        (Tool::SelectEllipse, IconName::Circle, "Ellipse select"),
+        (Tool::Lasso, IconName::SquareDashedMousePointer, "Lasso"),
+        (Tool::Wand, IconName::WandSparkles, "Magic wand"),
+    ],
 ];
 
 pub(crate) fn open(image: Option<Bitmap>, path: Option<PathBuf>, cx: &mut App) {
@@ -178,6 +189,9 @@ struct PhotoWindow {
     /// The render gate asked for a render while a command held the engine.
     render_deferred: bool,
     picture: Option<Arc<RenderImage>>,
+    /// Where the canvas area was laid out last frame, in window coordinates (the same space as
+    /// mouse events). The window can sit inside a frame inset, so this is measured, not derived.
+    canvas_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<Pixels>>>>,
     size: (u32, u32),
     path: Option<PathBuf>,
     tool: Tool,
@@ -234,6 +248,7 @@ impl PhotoWindow {
             queue: std::collections::VecDeque::new(),
             render_deferred: false,
             picture: None,
+            canvas_bounds: Default::default(),
             size,
             path,
             tool: Tool::Brush,
@@ -360,19 +375,31 @@ impl PhotoWindow {
     }
 
     fn layout(&self, window: &Window) -> (f32, f32, f32) {
-        let vp = window.viewport_size();
-        let avail_w = (f32::from(vp.width) - TOOLS_W - PANEL_W - 2.0 * PAD).max(1.0);
-        let head = head(window);
-        let avail_h = (f32::from(vp.height) - head - 2.0 * PAD).max(1.0);
+        let (left, top, area_w, area_h) = match self.canvas_bounds.get() {
+            Some(b) => (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)),
+            None => {
+                let vp = window.viewport_size();
+                let head = head(window);
+                (TOOLS_W, head, f32::from(vp.width) - TOOLS_W - PANEL_W, f32::from(vp.height) - head - FOOT_H)
+            }
+        };
+        let avail_w = (area_w - 2.0 * PAD).max(1.0);
+        let avail_h = (area_h - 2.0 * PAD).max(1.0);
         let (w, h) = (self.size.0.max(1) as f32, self.size.1.max(1) as f32);
         let z = (avail_w / w).min(avail_h / h).clamp(0.05, 1.0);
-        (TOOLS_W + PAD, head + PAD, z)
+        // Centred in the canvas area.
+        (left + PAD + (avail_w - w * z) / 2.0, top + PAD + (avail_h - h * z) / 2.0, z)
     }
 
     fn in_canvas(&self, pos: gpui::Point<Pixels>, window: &Window) -> bool {
-        let x = f32::from(pos.x);
-        let y = f32::from(pos.y);
-        x > TOOLS_W && y > head(window) && x < f32::from(window.viewport_size().width) - PANEL_W
+        match self.canvas_bounds.get() {
+            Some(b) => b.contains(&pos),
+            None => {
+                let (x, y) = (f32::from(pos.x), f32::from(pos.y));
+                let vp = window.viewport_size();
+                x > TOOLS_W && y > head(window) && x < f32::from(vp.width) - PANEL_W && y < f32::from(vp.height) - FOOT_H
+            }
+        }
     }
 
     fn finish_drag(&mut self, cx: &mut Context<Self>) {
@@ -625,6 +652,7 @@ impl PhotoWindow {
         let active = view.active.and_then(|i| view.layers.get(i).map(|l| l.id));
         let selection = self.doc_read(|d| d.selection.is_some()).unwrap_or(false);
         let mut list = div().flex().flex_col().gap(crate::theme::space::S1);
+        let wash = crate::theme::extra(cx).wash;
         let entity = cx.entity().downgrade();
         for (id, name, visible, opacity, blend, locked) in layers.into_iter().rev() {
             let selected = active == Some(id);
@@ -648,25 +676,43 @@ impl PhotoWindow {
                             ),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("layer-{}", id.0)))
-                            .label(name)
-                            .icon(Icon::new(if locked { IconName::Lock } else { IconName::Layers }))
-                            .tooltip(if locked { "Locked: it can't be moved or painted" } else { "Select this layer" })
-                            .small()
-                            .ghost()
-                            .selected(selected)
+                        div()
+                            .id(SharedString::from(format!("layer-{}", id.0)))
+                            .flex_1()
+                            .min_w_0()
+                            .h(px(30.))
+                            .flex()
+                            .items_center()
+                            .gap(crate::theme::space::S2)
+                            .px(crate::theme::space::S2)
+                            .rounded(crate::theme::radius::SM)
+                            .cursor_pointer()
+                            .text_color(if selected { cx.theme().foreground } else { cx.theme().muted_foreground })
+                            .hover(move |s| s.bg(wash))
+                            // An icon and a tooltip, so the state never rests on a glyph alone.
+                            .child(
+                                Icon::new(if locked { IconName::Lock } else { IconName::Layers }).size(crate::theme::icon::SM).flex_none(),
+                            )
+                            .child(div().flex_1().min_w_0().truncate().font_weight(gpui::FontWeight::MEDIUM).child(name))
+                            .tooltip(move |window, cx| {
+                                gpui_component::tooltip::Tooltip::new(if locked {
+                                    "Locked: it can't be moved or painted"
+                                } else {
+                                    "Select this layer"
+                                })
+                                .build(window, cx)
+                            })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.edit(move |e| e.set_active(Some(id)).map_err(|e| e.to_string()), cx);
                             })),
                     )
-                    .child(div().flex_1())
                     .child({
                         // Every blend mode by name in a menu, the current one checked.
                         let entity = entity.clone();
                         Button::new(SharedString::from(format!("blend-{}", id.0)))
                             .label(blend_name(blend))
                             .tooltip("Blend mode")
-                            .small()
+                            .xsmall()
                             .ghost()
                             .dropdown_caret(true)
                             .dropdown_menu(move |mut menu, _, _| {
@@ -683,7 +729,7 @@ impl PhotoWindow {
                         Button::new(SharedString::from(format!("op-{}", id.0)))
                             .label(format!("{:.0}%", opacity * 100.0))
                             .tooltip("Opacity: click for 25% less")
-                            .small()
+                            .xsmall()
                             .ghost()
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let next = if opacity <= 0.25 { 1.0 } else { opacity - 0.25 };
@@ -692,166 +738,222 @@ impl PhotoWindow {
                     ),
             );
         }
-        let act = |label: &'static str,
-                   id: &'static str,
+        let has_layer: widgets::Enabled = if self.active().is_some() { Ok(()) } else { Err("Select a layer first".into()) };
+        let has_selection: widgets::Enabled = if selection { Ok(()) } else { Err("Select an area first".into()) };
+        // A layer action as an icon button, run on the active layer.
+        let act = |id: &'static str,
+                   glyph: IconName,
+                   tip: &'static str,
                    f: fn(&mut PhotoWindow, LayerId, &mut Context<PhotoWindow>),
-                   this: &Self,
                    cx: &mut Context<Self>| {
-            Button::new(id).label(label).small().disabled(this.active().is_none()).on_click(cx.listener(move |this, _, _, cx| {
-                if let Some(l) = this.active() {
-                    f(this, l, cx);
-                }
-            }))
+            widgets::icon_button_with(
+                id,
+                glyph,
+                tip,
+                false,
+                has_layer.clone(),
+                cx.listener(move |this, _, _, cx| {
+                    if let Some(l) = this.active() {
+                        f(this, l, cx);
+                    }
+                }),
+                cx,
+            )
+        };
+        let weak = cx.entity().downgrade();
+        // Runs `f` on this window from a menu item.
+        let item = |label: String, f: MenuAction| {
+            let weak = weak.clone();
+            widgets::Choice::new(label, false, move |_, _, cx| {
+                let f = f.clone();
+                let _ = weak.update(cx, move |this, cx| f(this, cx));
+            })
         };
         let (w, h) = self.size;
-        let adjust_name = laqta_domain::effects::Adjust::defaults().get(self.adjustment).map(|a| a.name()).unwrap_or("Adjustment");
+        let mut add = vec![
+            item(
+                "Empty layer".into(),
+                std::rc::Rc::new(move |this, cx| {
+                    let px = Bitmap::new(w, h, PixelFormat::Rgba8, vec![0u8; (w * h * 4) as usize].into()).unwrap_or_else(|_| blank(1, 1));
+                    this.add_layer(LayerKind::Raster(px), "Layer", cx)
+                }),
+            ),
+            item(
+                "Color fill".into(),
+                std::rc::Rc::new(|this, cx| {
+                    let c = parse_hex(&this.val(&this.color, cx)).unwrap_or(Rgba::WHITE);
+                    this.add_layer(LayerKind::Fill(Fill::Solid(c)), "Fill", cx)
+                }),
+            ),
+            item(
+                "Gradient".into(),
+                std::rc::Rc::new(|this, cx| {
+                    let c = parse_hex(&this.val(&this.color, cx)).unwrap_or(Rgba::BLACK);
+                    this.add_layer(LayerKind::Fill(Fill::LinearGradient { from: c, to: Rgba { a: 0, ..c }, angle: 90.0 }), "Gradient", cx)
+                }),
+            ),
+            item(
+                "Text".into(),
+                std::rc::Rc::new(|this, cx| {
+                    let text = this.val(&this.text, cx);
+                    let size: f32 = this.val(&this.brush_size, cx).parse().unwrap_or(32.0f32).max(8.0) * 2.0;
+                    let color = parse_hex(&this.val(&this.color, cx)).unwrap_or(Rgba::BLACK);
+                    let (x, y) = (this.size.0 as f32 * 0.1, this.size.1 as f32 * 0.1);
+                    let layer = TextLayer { text, font_family: String::new(), size, color, bold: false, italic: false, x, y };
+                    this.add_layer(LayerKind::Text(layer), "Text", cx)
+                }),
+            ),
+            item("Rectangle".into(), std::rc::Rc::new(|this, cx| this.add_shape(false, cx))),
+            item("Ellipse".into(), std::rc::Rc::new(|this, cx| this.add_shape(true, cx))),
+            item(
+                "Frame".into(),
+                std::rc::Rc::new(|this, cx| {
+                    let color = parse_hex(&this.val(&this.color, cx)).unwrap_or(Rgba::BLACK);
+                    this.add_layer(LayerKind::Frame(FrameLayer { width: 16.0, color, radius: 0.0 }), "Frame", cx)
+                }),
+            ),
+        ];
+        // Every adjustment by name, so none hides behind a cycling button.
+        add.push(item(String::new(), std::rc::Rc::new(|_, _| {})));
+        for (i, a) in laqta_domain::effects::Adjust::defaults().into_iter().enumerate() {
+            add.push(item(
+                format!("{} adjustment", a.name()),
+                std::rc::Rc::new(move |this, cx| {
+                    this.adjustment = i;
+                    let Some(a) = laqta_domain::effects::Adjust::defaults().get(this.adjustment).cloned() else { return };
+                    let name = a.name().to_owned();
+                    this.add_layer(LayerKind::Adjustment(laqta_domain::effects::Effect::Adjust(a)), &name, cx)
+                }),
+            ));
+        }
+        let on_layer = |label: &'static str, f: fn(&mut PhotoWindow, LayerId, &mut Context<PhotoWindow>)| {
+            item(
+                label.into(),
+                std::rc::Rc::new(move |this, cx| {
+                    if let Some(l) = this.active() {
+                        f(this, l, cx);
+                    } else {
+                        this.say("Select a layer first.".into(), cx);
+                    }
+                }),
+            )
+        };
+        let more = vec![
+            on_layer("Group", group_active),
+            on_layer("Make smart object", smart_active),
+            on_layer("Toggle shadow", |t, _, cx| t.toggle_style("shadow", cx)),
+            on_layer("Toggle glow", |t, _, cx| t.toggle_style("glow", cx)),
+            on_layer("Toggle stroke", |t, _, cx| t.toggle_style("stroke", cx)),
+            on_layer("Mask from selection", mask_from_selection),
+        ];
+        let refine = vec![
+            item("Feather by 4 px".into(), std::rc::Rc::new(|this, cx| this.exec(Command::Feather { radius: 4.0 }, cx))),
+            item("Grow by 4 px".into(), std::rc::Rc::new(|this, cx| this.exec(Command::Grow { radius: 4 }, cx))),
+            item("Shrink by 4 px".into(), std::rc::Rc::new(|this, cx| this.exec(Command::Shrink { radius: 4 }, cx))),
+        ];
+        let heading = |label: &'static str| {
+            div()
+                .font_family(crate::theme::text::HEADING_FONT)
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_size(crate::theme::text::SECTION)
+                .child(label)
+        };
         div()
             .w(px(PANEL_W))
             .h_full()
+            .flex_none()
             .flex()
             .flex_col()
-            .gap(px(8.))
-            .p(px(10.))
-            .border_l_1()
-            .border_color(cx.theme().border)
-            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Layers"))
-            .child(div().flex_1().overflow_hidden().child(list))
+            .gap(crate::theme::space::S3)
+            .p(crate::theme::space::S4)
+            .bg(cx.theme().sidebar)
+            .child(div().flex().items_center().justify_between().child(heading("Layers")).child(widgets::menu_button(
+                "add-layer",
+                "Add",
+                add,
+            )))
+            .child(div().flex_1().min_h_0().overflow_hidden().child(list))
             .child(
                 div()
                     .flex()
-                    .flex_wrap()
-                    .gap(px(4.))
-                    .child(Button::new("add-raster").label("+ Layer").small().on_click(cx.listener(move |this, _, _, cx| {
-                        this.add_layer(
-                            LayerKind::Raster(
-                                Bitmap::new(w, h, PixelFormat::Rgba8, vec![0u8; (w * h * 4) as usize].into())
-                                    .unwrap_or_else(|_| blank(1, 1)),
-                            ),
-                            "Layer",
-                            cx,
-                        )
-                    })))
-                    .child(Button::new("add-fill").label("+ Fill").small().on_click(cx.listener(|this, _, _, cx| {
-                        let c = parse_hex(&this.val(&this.color, cx)).unwrap_or(Rgba::WHITE);
-                        this.add_layer(LayerKind::Fill(Fill::Solid(c)), "Fill", cx)
-                    })))
-                    .child(Button::new("add-grad").label("+ Gradient").small().on_click(cx.listener(|this, _, _, cx| {
-                        let c = parse_hex(&this.val(&this.color, cx)).unwrap_or(Rgba::BLACK);
-                        this.add_layer(
-                            LayerKind::Fill(Fill::LinearGradient { from: c, to: Rgba { a: 0, ..c }, angle: 90.0 }),
-                            "Gradient",
-                            cx,
-                        )
-                    })))
-                    .child(Button::new("adj-pick").label(format!("{adjust_name} ▸")).small().ghost().on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.adjustment = (this.adjustment + 1) % laqta_domain::effects::Adjust::defaults().len().max(1);
-                            cx.notify();
-                        },
-                    )))
-                    .child(Button::new("add-adj").label("+ Adjustment").small().on_click(cx.listener(|this, _, _, cx| {
-                        let all = laqta_domain::effects::Adjust::defaults();
-                        let Some(a) = all.get(this.adjustment).cloned() else { return };
-                        let name = a.name().to_owned();
-                        this.add_layer(LayerKind::Adjustment(laqta_domain::effects::Effect::Adjust(a)), &name, cx)
-                    })))
-                    .child(Button::new("add-text").label("+ Text").small().on_click(cx.listener(|this, _, _, cx| {
-                        let text = this.val(&this.text, cx);
-                        let size: f32 = this.val(&this.brush_size, cx).parse().unwrap_or(32.0f32).max(8.0) * 2.0;
-                        let color = parse_hex(&this.val(&this.color, cx)).unwrap_or(Rgba::BLACK);
-                        let (x, y) = (this.size.0 as f32 * 0.1, this.size.1 as f32 * 0.1);
-                        let layer = TextLayer { text, font_family: String::new(), size, color, bold: false, italic: false, x, y };
-                        this.add_layer(LayerKind::Text(layer), "Text", cx)
-                    })))
-                    .child(
-                        Button::new("add-rect")
-                            .label("+ Rectangle")
-                            .small()
-                            .on_click(cx.listener(|this, _, _, cx| this.add_shape(false, cx))),
-                    )
-                    .child(
-                        Button::new("add-ellipse")
-                            .label("+ Ellipse")
-                            .small()
-                            .on_click(cx.listener(|this, _, _, cx| this.add_shape(true, cx))),
-                    )
-                    .child(Button::new("add-frame").label("+ Frame").small().on_click(cx.listener(|this, _, _, cx| {
-                        let color = parse_hex(&this.val(&this.color, cx)).unwrap_or(Rgba::BLACK);
-                        this.add_layer(LayerKind::Frame(FrameLayer { width: 16.0, color, radius: 0.0 }), "Frame", cx)
-                    })))
-                    .child(act("Group", "group", group_active, self, cx))
-                    .child(act("Smart object", "smart", smart_active, self, cx))
-                    .child(act("Shadow", "st-shadow", |t, _, cx| t.toggle_style("shadow", cx), self, cx))
-                    .child(act("Glow", "st-glow", |t, _, cx| t.toggle_style("glow", cx), self, cx))
-                    .child(act("Stroke", "st-stroke", |t, _, cx| t.toggle_style("stroke", cx), self, cx))
-                    .child(act("Mask from selection", "mask", mask_from_selection, self, cx))
-                    .child(act("Duplicate", "dup", |t, l, cx| t.exec(Command::DuplicateLayer { layer: l }, cx), self, cx))
-                    .child(act("Up", "up", |t, l, cx| t.exec(Command::MoveLayer { layer: l, direction: Direction::Up }, cx), self, cx))
+                    .items_center()
+                    .gap(px(2.))
                     .child(act(
-                        "Down",
-                        "down",
-                        |t, l, cx| t.exec(Command::MoveLayer { layer: l, direction: Direction::Down }, cx),
-                        self,
+                        "up",
+                        IconName::ArrowUp,
+                        "Move up",
+                        |t, l, cx| t.exec(Command::MoveLayer { layer: l, direction: Direction::Up }, cx),
                         cx,
                     ))
-                    .child(act("Merge down", "merge", |t, l, cx| t.exec(Command::MergeDown { layer: l }, cx), self, cx))
-                    .child(act("Delete", "del", |t, l, cx| t.exec(Command::RemoveLayer { layer: l }, cx), self, cx)),
+                    .child(act(
+                        "down",
+                        IconName::ArrowDown,
+                        "Move down",
+                        |t, l, cx| t.exec(Command::MoveLayer { layer: l, direction: Direction::Down }, cx),
+                        cx,
+                    ))
+                    .child(act("dup", IconName::Copy, "Duplicate", |t, l, cx| t.exec(Command::DuplicateLayer { layer: l }, cx), cx))
+                    .child(act("merge", IconName::Layers, "Merge down", |t, l, cx| t.exec(Command::MergeDown { layer: l }, cx), cx))
+                    .child(act("del", IconName::Trash, "Delete layer", |t, l, cx| t.exec(Command::RemoveLayer { layer: l }, cx), cx))
+                    .child(div().flex_1())
+                    .child(widgets::menu_button_with("layer-more", "", IconName::Ellipsis, more)),
             )
-            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Selection"))
+            .child(div().h(px(1.)).bg(cx.theme().border))
+            .child(div().flex().items_center().justify_between().child(heading("Selection")).child(widgets::menu_button_with(
+                "refine",
+                "",
+                IconName::Ellipsis,
+                refine,
+            )))
             .child(
                 div()
                     .flex()
-                    .flex_wrap()
-                    .gap(px(4.))
-                    .child(Button::new("sel-all").label("All").small().on_click(
+                    .items_center()
+                    .gap(crate::theme::space::S2)
+                    .child(widgets::pill(
+                        "sel-all",
+                        "All",
+                        Pill::Default,
+                        true,
                         cx.listener(|this, _, _, cx| this.exec(Command::Select { shape: SelectShape::All, op: SelectOp::Replace }, cx)),
+                        cx,
                     ))
-                    .child(
-                        Button::new("sel-none")
-                            .label("None")
-                            .small()
-                            .disabled(!selection)
-                            .on_click(cx.listener(|this, _, _, cx| this.exec(Command::Deselect, cx))),
-                    )
-                    .child(
-                        Button::new("sel-inv")
-                            .label("Invert")
-                            .small()
-                            .disabled(!selection)
-                            .on_click(cx.listener(|this, _, _, cx| this.exec(Command::InvertSelection, cx))),
-                    )
-                    .child(
-                        Button::new("sel-feather")
-                            .label("Feather 4")
-                            .small()
-                            .disabled(!selection)
-                            .on_click(cx.listener(|this, _, _, cx| this.exec(Command::Feather { radius: 4.0 }, cx))),
-                    )
-                    .child(
-                        Button::new("sel-grow")
-                            .label("Grow 4")
-                            .small()
-                            .disabled(!selection)
-                            .on_click(cx.listener(|this, _, _, cx| this.exec(Command::Grow { radius: 4 }, cx))),
-                    )
-                    .child(
-                        Button::new("sel-shrink")
-                            .label("Shrink 4")
-                            .small()
-                            .disabled(!selection)
-                            .on_click(cx.listener(|this, _, _, cx| this.exec(Command::Shrink { radius: 4 }, cx))),
-                    )
-                    .child(
-                        Button::new("inpaint")
-                            .label("Inpaint selection")
-                            .small()
-                            .primary()
-                            .disabled(!selection || self.busy)
-                            .on_click(cx.listener(|this, _, _, cx| this.inpaint(cx))),
-                    ),
+                    .child(widgets::pill_with(
+                        "sel-none",
+                        "None",
+                        Pill::Default,
+                        true,
+                        has_selection.clone(),
+                        cx.listener(|this, _, _, cx| this.exec(Command::Deselect, cx)),
+                        cx,
+                    ))
+                    .child(widgets::pill_with(
+                        "sel-inv",
+                        "Invert",
+                        Pill::Default,
+                        true,
+                        has_selection.clone(),
+                        cx.listener(|this, _, _, cx| this.exec(Command::InvertSelection, cx)),
+                        cx,
+                    )),
+            )
+            .child(
+                widgets::pill_with(
+                    "inpaint",
+                    "Fill selection with AI",
+                    Pill::Primary,
+                    false,
+                    if self.busy { Err("Wait for this to finish".into()) } else { has_selection },
+                    cx.listener(|this, _, _, cx| this.inpaint(cx)),
+                    cx,
+                )
+                .w_full(),
             )
     }
 }
+
+/// What a menu item in the layers panel does to the window.
+type MenuAction = std::rc::Rc<dyn Fn(&mut PhotoWindow, &mut Context<PhotoWindow>)>;
 
 /// Wraps the active layer in a group.
 fn group_active(t: &mut PhotoWindow, l: LayerId, cx: &mut Context<PhotoWindow>) {
@@ -893,86 +995,199 @@ impl Render for PhotoWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (ox, oy, z) = self.layout(window);
         let (w, h) = self.size;
-        let mut tools = div().w(px(TOOLS_W)).flex().flex_col().gap(px(4.)).p(px(8.)).border_r_1().border_color(cx.theme().border);
-        for (t, label) in TOOLS {
-            tools = tools.child(
-                Button::new(SharedString::from(format!("tool-{t:?}"))).label(label).small().ghost().selected(self.tool == t).on_click(
+        let t = cx.theme().clone();
+        let x = crate::theme::extra(cx);
+
+        // The tool rail: icon buttons in groups, the name in each tooltip.
+        let mut tools = div()
+            .w(px(TOOLS_W))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(crate::theme::space::S1)
+            .py(crate::theme::space::S3)
+            .bg(t.sidebar);
+        for (gi, group) in TOOLS.iter().enumerate() {
+            if gi > 0 {
+                tools = tools.child(div().w(px(28.)).h(px(1.)).my(crate::theme::space::S1).bg(t.border));
+            }
+            for &(tool, glyph, label) in group.iter() {
+                tools = tools.child(widgets::icon_button(
+                    SharedString::from(format!("tool-{tool:?}")),
+                    glyph,
+                    label,
+                    self.tool == tool,
                     cx.listener(move |this, _, _, cx| {
-                        this.tool = t;
+                        this.tool = tool;
                         cx.notify();
                     }),
-                ),
-            );
+                    cx,
+                ));
+            }
         }
+
+        // The options bar: undo and redo, then the settings the tools read.
+        let option = |label: &'static str, input: &Entity<InputState>, width: f32| {
+            div()
+                .flex()
+                .items_center()
+                .gap(crate::theme::space::S2)
+                .child(div().text_size(crate::theme::text::SMALL).text_color(t.muted_foreground).child(label))
+                .child(div().w(px(width)).child(Input::new(input).small()))
+        };
+        let swatch = parse_hex(&self.val(&self.color, cx))
+            .map(|c| gpui::Hsla::from(gpui::Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a: 1.0 }));
         let top = div()
             .h(px(TOP_H))
             .flex()
             .items_center()
-            .gap(px(8.))
-            .px(px(10.))
+            .gap(crate::theme::space::S4)
+            .px(crate::theme::space::S3)
             .border_b_1()
-            .border_color(cx.theme().border)
-            .child(Button::new("undo").label("Undo").small().on_click(cx.listener(|this, _, _, cx| {
-                this.edit(
-                    |e| {
-                        e.undo();
-                        Ok(())
-                    },
-                    cx,
-                );
-            })))
-            .child(Button::new("redo").label("Redo").small().on_click(cx.listener(|this, _, _, cx| {
-                this.edit(
-                    |e| {
-                        e.redo();
-                        Ok(())
-                    },
-                    cx,
-                );
-            })))
-            .child(widgets::muted("Color", cx))
-            .child(div().w(px(90.)).child(Input::new(&self.color).small()))
-            .child(widgets::muted("Size", cx))
-            .child(div().w(px(56.)).child(Input::new(&self.brush_size).small()))
-            .child(widgets::muted("Opacity", cx))
-            .child(div().w(px(56.)).child(Input::new(&self.opacity).small()))
-            .child(widgets::muted("Tolerance", cx))
-            .child(div().w(px(56.)).child(Input::new(&self.tolerance).small()))
-            .child(widgets::muted("Text", cx))
-            .child(div().w(px(120.)).child(Input::new(&self.text).small()))
+            .border_color(t.border)
             .child(
-                div().flex_1().min_w_0().child(
-                    self.flash
-                        .render(cx.listener(|this, _, _, cx| crate::flash::Flash::dismiss(this, cx)), cx)
-                        .unwrap_or_else(|| div().truncate().child(widgets::muted(format!("{w} × {h}"), cx))),
-                ),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .child(widgets::icon_button(
+                        "undo",
+                        IconName::Undo2,
+                        "Undo",
+                        false,
+                        cx.listener(|this, _, _, cx| {
+                            this.edit(
+                                |e| {
+                                    e.undo();
+                                    Ok(())
+                                },
+                                cx,
+                            );
+                        }),
+                        cx,
+                    ))
+                    .child(widgets::icon_button(
+                        "redo",
+                        IconName::Redo2,
+                        "Redo",
+                        false,
+                        cx.listener(|this, _, _, cx| {
+                            this.edit(
+                                |e| {
+                                    e.redo();
+                                    Ok(())
+                                },
+                                cx,
+                            );
+                        }),
+                        cx,
+                    )),
             )
+            .child(widgets::divider_v(cx))
             .child(
-                Button::new("save").label("Save").small().on_click(cx.listener(|this, _, w, cx| this.save(false, w.window_handle(), cx))),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::theme::space::S2)
+                    .child(
+                        div()
+                            .size(px(20.))
+                            .flex_none()
+                            .rounded(crate::theme::radius::PILL)
+                            .border_1()
+                            .border_color(x.ring)
+                            .bg(swatch.unwrap_or(gpui::transparent_black())),
+                    )
+                    .child(option("Color", &self.color, 96.)),
             )
-            .child(
-                Button::new("saveas")
-                    .label("Save as…")
-                    .small()
-                    .on_click(cx.listener(|this, _, w, cx| this.save(true, w.window_handle(), cx))),
-            )
-            .child(Button::new("close").label("Close").small().on_click(|_, w, cx| crate::close_guard::request_close(w, cx)));
-        let mut canvas = div().flex_1().relative().overflow_hidden().bg(cx.theme().secondary);
+            .child(option("Size", &self.brush_size, 56.))
+            .child(option("Opacity", &self.opacity, 56.))
+            .child(option("Tolerance", &self.tolerance, 56.))
+            .child(option("Text", &self.text, 140.));
+
+        // The footer: size or the status line on the left, the save actions on the right.
+        let status = self
+            .flash
+            .render(cx.listener(|this, _, _, cx| crate::flash::Flash::dismiss(this, cx)), cx)
+            .unwrap_or_else(|| div().truncate().child(widgets::muted(format!("{w} × {h} px"), cx)));
+        let footer = div()
+            .h(px(FOOT_H))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(crate::theme::space::S2)
+            .px(crate::theme::space::S4)
+            .border_t_1()
+            .border_color(t.border)
+            .child(div().flex_1().min_w_0().child(status))
+            .child(widgets::pill("close", "Close", Pill::Ghost, false, |_, w, cx| crate::close_guard::request_close(w, cx), cx))
+            .child(widgets::pill(
+                "saveas",
+                "Save as…",
+                Pill::Default,
+                false,
+                cx.listener(|this, _, w, cx| this.save(true, w.window_handle(), cx)),
+                cx,
+            ))
+            .child(widgets::pill(
+                "save",
+                "Save",
+                Pill::Primary,
+                false,
+                cx.listener(|this, _, w, cx| this.save(false, w.window_handle(), cx)),
+                cx,
+            ));
+
+        // Records where the canvas lands, so the picture and the pointer share one origin. A
+        // change paints again at once, so the first frame's guess never stays on screen.
+        let cell = self.canvas_bounds.clone();
+        let measure = gpui::canvas(
+            move |bounds, window, _| {
+                if cell.get() != Some(bounds) {
+                    cell.set(Some(bounds));
+                    window.refresh();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
+        let (bx, by) = self.canvas_bounds.get().map(|b| (f32::from(b.origin.x), f32::from(b.origin.y))).unwrap_or((TOOLS_W, head(window)));
+        let mut canvas = div().flex_1().relative().overflow_hidden().bg(x.stage).child(measure);
         if let Some(p) = &self.picture {
-            canvas = canvas
-                .child(img(p.clone()).absolute().left(px(ox - TOOLS_W)).top(px(oy - head(window))).w(px(w as f32 * z)).h(px(h as f32 * z)));
+            canvas =
+                canvas.child(img(p.clone()).absolute().left(px(ox - bx)).top(px(oy - by)).w(px(w as f32 * z)).h(px(h as f32 * z)).shadow(
+                    vec![gpui::BoxShadow {
+                        color: gpui::black().opacity(0.35),
+                        offset: gpui::point(px(0.), px(4.)),
+                        blur_radius: px(16.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }],
+                ));
         }
         crate::chrome::rounded(div(), window)
             .id("laqta-photo")
             .size_full()
             .flex()
             .flex_col()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            .text_sm()
+            .bg(t.background)
+            .text_color(t.foreground)
+            .font_family(crate::theme::text::UI_FONT)
+            .text_size(crate::theme::text::LABEL)
             .child(crate::chrome::TitleBar::new().title("Photo editor").flat())
             .child(top)
-            .child(div().flex_1().flex().flex_row().child(tools).child(canvas).child(self.layers_panel(cx)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_row()
+                    .child(tools)
+                    .child(div().flex_1().min_w_0().flex().flex_col().child(canvas).child(footer))
+                    .child(self.layers_panel(cx)),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, ev: &MouseDownEvent, window, cx| {
