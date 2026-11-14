@@ -125,7 +125,16 @@ fn build(behaviour: ClipboardBehaviour, spawner: Arc<dyn Spawner>, settings: Set
 
 /// Settings with the screenshots folder in `dir`.
 fn settings_in(dir: &Path) -> Settings {
-    Settings { screenshots_dir: dir.to_path_buf(), ..Settings::default_for(dir.to_path_buf()) }
+    let mut settings = Settings { screenshots_dir: dir.to_path_buf(), ..Settings::default_for(dir.to_path_buf()) };
+    settings.hosts.push(imgur_account());
+    settings
+}
+
+/// An Imgur account with a client id: without one an upload to `imgur` is refused before any request.
+fn imgur_account() -> laqta_domain::hosts::HostAccount {
+    let mut account = laqta_domain::hosts::HostAccount::new(laqta_domain::hosts::HostKind::Imgur);
+    account.values.insert("client_id".into(), "test-client-id".into());
+    account
 }
 
 /// Dispatches one PrintScreen with `settings`, runs its job, and returns the rig with the rendered trace.
@@ -277,7 +286,11 @@ fn save_fails() {
 
         assert_eq!(trace, include_str!("golden/save_fails.trace"));
         assert!(!has_part_file(tmp.path()));
-        assert!(rig.clipboard.images.lock().unwrap().is_empty(), "a failed save copies nothing");
+        // The capture is still in memory: the copy runs, and the toast reports the save error.
+        assert_eq!(rig.clipboard.images.lock().unwrap().len(), 1, "a failed save does not stop the copy");
+        let toasts = rig.notifier.toasts.lock().unwrap();
+        assert_eq!(toasts[0].title, "Screenshot not saved");
+        assert!(toasts[0].path.is_none() && !toasts[0].body.is_empty());
     });
 }
 
@@ -1345,5 +1358,88 @@ fn open_in_photo_editor() {
 
         assert_eq!(trace, include_str!("golden/open_in_photo_editor.trace"));
         assert_eq!(rig.tools.texts.lock().unwrap()[0].0, "photo editor");
+    });
+}
+
+/// Steps that need a saved file report why they did nothing when saving is off (they used to skip quietly).
+#[test]
+fn save_off_skips_file_steps() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let flags = AfterCaptureTasks::COPY_IMAGE_TO_CLIPBOARD
+            | AfterCaptureTasks::SAVE_THUMBNAIL_IMAGE_TO_FILE
+            | AfterCaptureTasks::COPY_FILE_PATH_TO_CLIPBOARD
+            | AfterCaptureTasks::SHOW_IN_EXPLORER;
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), with_flags(tmp.path(), flags));
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/save_off_skips_file_steps.trace"));
+        assert!(rig.clipboard.texts.lock().unwrap().is_empty());
+        assert!(rig.shell.revealed.lock().unwrap().is_empty());
+        assert!(!saved_png(tmp.path()).exists());
+    });
+}
+
+/// With shortening on, the default copied text is the short link.
+#[test]
+fn default_copied_text_follows_the_shortener() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let mut settings = upload_settings(tmp.path());
+        settings.defaults.after_upload =
+            AfterUploadTasks::USE_URL_SHORTENER | AfterUploadTasks::COPY_URL_TO_CLIPBOARD | AfterUploadTasks::OPEN_URL;
+        settings.defaults.upload.url_shortener = "fake".into();
+        assert_eq!(settings.defaults.upload.clipboard_format, "$url");
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), settings);
+        rig.uploaders.shorteners.lock().unwrap().push(Arc::new(FakeShortener));
+        destination(&rig, "imgur", vec![Ok(uploaded("https://img.example/3"))]);
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/upload_shorten_and_open.trace"));
+        assert_eq!(*rig.clipboard.texts.lock().unwrap(), vec!["https://img.example/3/s".to_owned()]);
+    });
+}
+
+/// An empty "Copied text" means the default, so the link is copied and the clipboard is not cleared.
+#[test]
+fn empty_copied_text_falls_back_to_the_link() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let mut settings = upload_settings(tmp.path());
+        settings.defaults.upload.clipboard_format = "  ".into();
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), settings);
+        destination(&rig, "imgur", vec![Ok(uploaded("https://img.example/5"))]);
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/upload_empty_clipboard_format.trace"));
+        assert_eq!(*rig.clipboard.texts.lock().unwrap(), vec!["https://img.example/5".to_owned()]);
+    });
+}
+
+/// Imgur with no account (so only the placeholder client id) fails before any request is sent.
+#[test]
+fn imgur_without_an_account_fails_before_a_request() {
+    in_compute_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let spawner = Arc::new(InlineSpawner::default());
+        let mut settings = upload_settings(tmp.path());
+        settings.hosts.clear();
+        let rig = build(ClipboardBehaviour::Succeed, spawner.clone(), settings);
+        let imgur = destination(&rig, "imgur", vec![Ok(uploaded("https://img.example/6"))]);
+        let mut events = rig.app.events();
+
+        let trace = dispatch_and_trace(&rig, &spawner, &mut events, tmp.path(), Action::PrintScreen);
+
+        assert_eq!(trace, include_str!("golden/upload_imgur_without_account.trace"));
+        assert!(imgur.requests.lock().unwrap().is_empty(), "no request was sent");
     });
 }

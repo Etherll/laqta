@@ -391,6 +391,7 @@ fn view_carries_the_magnifier_and_info_text_only_when_enabled() {
         grab_size: laqta_domain::region::HANDLE_SIZE * 2,
         right_click: RegionMouseAction::RemoveShapeOrCancel,
         middle_click: RegionMouseAction::CancelCapture,
+        mode_bar: true,
     });
 
     let on = view(&state, bounds, &options(), [1, 2, 3]);
@@ -403,6 +404,68 @@ fn view_carries_the_magnifier_and_info_text_only_when_enabled() {
     let quiet = view(&state, bounds, &off, [1, 2, 3]);
     assert_eq!(quiet.magnifier, None);
     assert_eq!(quiet.info_text, None);
+}
+
+#[test]
+fn a_second_session_while_one_is_open_is_busy_and_the_first_still_confirms() {
+    in_pool(|| {
+        let overlay = Arc::new(FakeOverlay::default());
+        let ports = test_ports(overlay.clone(), Arc::new(FakeHoverSource::unsupported()));
+        let options = options();
+        let mut first = pin!(select(&ports, two_frames(), &options));
+        assert!(step(first.as_mut()).is_none());
+
+        let mut second = pin!(select(&ports, two_frames(), &options));
+        let refused = step(second.as_mut()).expect("a second session answers at once");
+        assert!(matches!(refused, Err(AppError::Busy)), "{refused:?}");
+        assert!(overlay.is_open(), "the open session keeps its overlay");
+
+        drag(&overlay, (5, 1), (6, 2));
+        let selection = step(first.as_mut()).expect("the drag confirms").unwrap();
+        assert_eq!(selection.rects, vec![PhysRect { x: 5, y: 1, width: 2, height: 2 }]);
+
+        // The place is free again once the first session has ended.
+        let mut third = pin!(select(&ports, two_frames(), &options));
+        assert!(step(third.as_mut()).is_none());
+    });
+}
+
+#[test]
+fn a_custom_area_outside_every_monitor_is_an_error_not_a_one_pixel_image() {
+    in_pool(|| {
+        let ports = test_ports(Arc::new(FakeOverlay::default()), Arc::new(FakeHoverSource::unsupported()));
+        let away = vec![PhysRect { x: 5000, y: 5000, width: 10, height: 10 }];
+
+        let error = block_on(crop_frames(&ports, two_frames(), away, None)).unwrap_err();
+
+        assert!(matches!(&error, AppError::Io(why) if why.contains("outside every screen")), "{error:?}");
+        // One rect on a monitor is enough.
+        let partly = vec![PhysRect { x: 6, y: 0, width: 100, height: 100 }];
+        assert!(block_on(crop_frames(&ports, two_frames(), partly, None)).is_ok());
+    });
+}
+
+#[test]
+fn a_multi_region_crop_runs_on_the_compute_pool() {
+    in_pool(|| {
+        let overlay = Arc::new(FakeOverlay::default());
+        let spawner = Arc::new(InlineSpawner::default());
+        let mut ports = test_ports(overlay.clone(), Arc::new(FakeHoverSource::unsupported()));
+        ports.spawner = spawner.clone();
+        let options = RegionCaptureOptions { multi_region: true, ..options() };
+        let mut session = pin!(select(&ports, big_frames(), &options));
+        assert!(step(session.as_mut()).is_none());
+        drag(&overlay, (0, 0), (1, 3));
+        drag(&overlay, (22, 0), (23, 3));
+        assert!(step(session.as_mut()).is_none());
+        let before = *spawner.compute_calls.lock().unwrap();
+
+        press(&overlay, RegionKey::Enter);
+        let selection = step(session.as_mut()).expect("Enter confirms").unwrap();
+
+        assert_eq!(selection.rects.len(), 2);
+        assert!(*spawner.compute_calls.lock().unwrap() > before, "the crop went through the spawner");
+    });
 }
 
 #[test]
@@ -813,6 +876,7 @@ fn view_carries_the_selection_and_the_tools() {
         grab_size: laqta_domain::region::HANDLE_SIZE * 2,
         right_click: RegionMouseAction::RemoveShapeOrCancel,
         middle_click: RegionMouseAction::CancelCapture,
+        mode_bar: true,
     });
 
     let idle = view(&state, bounds, &selecting(), [0; 3]);

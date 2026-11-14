@@ -130,7 +130,36 @@ pub(crate) async fn pick_color(ports: &Ports, frames: Vec<Frame>, options: &Regi
     session(ports, frames, &options, Kind::Point).await
 }
 
+/// The overlays that have a session open, by address. One overlay shows one session, so a request
+/// that arrives while its overlay is taken is dropped (`AppError::Busy`) instead of replacing the
+/// open selection. Keyed by overlay, not process-wide, so independent `Ports` do not share it.
+static OPEN_SESSIONS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+/// Holds a session's place in `OPEN_SESSIONS` until it ends, on every path including a dropped future.
+struct SessionGuard(usize);
+
+impl SessionGuard {
+    fn enter(ports: &Ports) -> Result<SessionGuard, AppError> {
+        let key = Arc::as_ptr(&ports.overlay).cast::<()>() as usize;
+        let mut open = OPEN_SESSIONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if open.contains(&key) {
+            return Err(AppError::Busy);
+        }
+        open.push(key);
+        Ok(SessionGuard(key))
+    }
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        let mut open = OPEN_SESSIONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        open.retain(|key| *key != self.0);
+    }
+}
+
 async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptions, kind: Kind) -> Result<Selection, AppError> {
+    // Held until the overlay closes (taken there), so the final crop does not keep the next request out.
+    let mut open = Some(SessionGuard::enter(ports)?);
     let pick_point = kind == Kind::Point;
     let text_only = kind == Kind::Text;
     let bounds = bounds_of(&frames)?;
@@ -152,6 +181,7 @@ async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptio
         grab_size: handle_size(&frames) * 2,
         right_click: options.right_click,
         middle_click: options.middle_click,
+        mode_bar: options.show_mode_bar,
     });
 
     let (tx, mut inputs) = mpsc::unbounded::<RegionInput>();
@@ -281,12 +311,11 @@ async fn session(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptio
             let changed = state.handle(input);
             if let Some(outcome) = state.outcome().cloned() {
                 ports.overlay.close();
+                drop(open.take());
                 let annotate = state.annotate_requested();
-                return outcome_selection(outcome, &composed, bounds, &monitors, state.cursor(), annotated).map(|s| Selection {
-                    annotate,
-                    text_shown: matches!(text, Some(TextLayer::Read { .. } | TextLayer::Failed(_))),
-                    ..s
-                });
+                return outcome_selection(ports.spawner.as_ref(), outcome, &composed, bounds, &monitors, state.cursor(), annotated)
+                    .await
+                    .map(|s| Selection { annotate, text_shown: matches!(text, Some(TextLayer::Read { .. } | TextLayer::Failed(_))), ..s });
             }
             // Crop on a change of the selection only: moving the pointer over it is not one. A move,
             // resize or new draw crops once it ends, not on every step; a click that changes nothing
@@ -373,8 +402,15 @@ pub(crate) async fn crop_frames(
     target: Option<HoverTarget>,
 ) -> Result<Selection, AppError> {
     let bounds = bounds_of(&frames)?;
+    // An area on no monitor (a monitor unplugged, a resolution change) would crop to nothing.
+    let screens: Vec<PhysRect> = frames.iter().map(frame_rect).collect();
+    let on_a_screen =
+        |rect: &PhysRect| screens.iter().any(|s| rect.x < s.right() && rect.right() > s.x && rect.y < s.bottom() && rect.bottom() > s.y);
+    if !rects.iter().any(on_a_screen) {
+        return Err(AppError::Io("the area is outside every screen: check its position in Settings → Capture".to_owned()));
+    }
     let composed = compose(ports.spawner.as_ref(), frames).await?;
-    let image = crop_rects(&composed, bounds, &rects)?;
+    let image = crop_on_pool(ports.spawner.as_ref(), &composed, bounds, rects.clone()).await?;
     Ok(Selection { rects, target, image, annotate: false, action: SelectionAction::Default, text_shown: false })
 }
 
@@ -413,6 +449,7 @@ pub(crate) fn view(state: &RegionState, bounds: PhysRect, options: &RegionCaptur
         selection_image: None,
         tools_visible: state.tools_visible(),
         mode_bar: options.show_mode_bar,
+        multi_strip: state.multi_strip(),
         pick_point: state.picks_point(),
         text: None,
         text_only: false,
@@ -422,7 +459,8 @@ pub(crate) fn view(state: &RegionState, bounds: PhysRect, options: &RegionCaptur
 /// Turns the session's outcome into a selection. `monitors` holds each frame's rect and primary flag,
 /// and `cursor` is the point the session ended on. `annotated` is the overlay's edited crop of the
 /// selection, if it sent one: a confirmed selection returns it in place of the plain crop.
-fn outcome_selection(
+async fn outcome_selection(
+    spawner: &dyn Spawner,
     outcome: RegionOutcome,
     composed: &Bitmap,
     bounds: PhysRect,
@@ -434,23 +472,23 @@ fn outcome_selection(
         RegionOutcome::Confirmed { rects, target, action } => {
             let image = match annotated {
                 Some(image) => image,
-                None => crop_rects(composed, bounds, &rects)?,
+                None => crop_on_pool(spawner, composed, bounds, rects.clone()).await?,
             };
             Ok(Selection { rects, target, image, annotate: false, action, text_shown: false })
         }
-        RegionOutcome::Fullscreen => whole_rect(composed, bounds, bounds),
+        RegionOutcome::Fullscreen => whole_rect(spawner, composed, bounds, bounds).await,
         RegionOutcome::ActiveMonitor => {
             let rect = monitor_at(monitors, cursor).ok_or_else(|| AppError::Io("no monitors".to_owned()))?;
-            whole_rect(composed, bounds, rect)
+            whole_rect(spawner, composed, bounds, rect).await
         }
         RegionOutcome::Cancelled => Err(AppError::Cancelled),
     }
 }
 
 /// A selection of one whole rect, with no hover target.
-fn whole_rect(composed: &Bitmap, bounds: PhysRect, rect: PhysRect) -> Result<Selection, AppError> {
+async fn whole_rect(spawner: &dyn Spawner, composed: &Bitmap, bounds: PhysRect, rect: PhysRect) -> Result<Selection, AppError> {
     let rects = vec![rect];
-    let image = crop_rects(composed, bounds, &rects)?;
+    let image = crop_on_pool(spawner, composed, bounds, rects.clone()).await?;
     Ok(Selection { rects, target: None, image, annotate: false, action: SelectionAction::Default, text_shown: false })
 }
 
@@ -486,6 +524,13 @@ async fn compose(spawner: &dyn Spawner, frames: Vec<Frame>) -> Result<Bitmap, Ap
         Ok(Err(message)) => Err(AppError::Panic(message)),
         Err(oneshot::Canceled) => Err(AppError::Cancelled),
     }
+}
+
+/// Crops `rects` (desktop pixels) out of the composed desktop on the compute pool, off the async executor: with
+/// several rects the work is a pass over their bounding box. A panic there comes back as a value (ADR 020).
+async fn crop_on_pool(spawner: &dyn Spawner, composed: &Bitmap, bounds: PhysRect, rects: Vec<PhysRect>) -> Result<Bitmap, AppError> {
+    let composed = composed.clone();
+    compute(spawner, move || crop_rects(&composed, bounds, &rects)).await
 }
 
 /// Crops one selected `rect` (desktop pixels) out of the composed desktop on the compute pool. A panic

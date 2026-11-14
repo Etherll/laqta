@@ -1,7 +1,9 @@
 //! The steps of a Capture job, in order (ADR 011). Each step runs only when its flag in
 //! `settings.after_capture` is set. A stop request is checked before each step. A step that names a file
-//! is skipped quietly when this job saved none. A failed step is reported as `StepFailed` and the job goes
-//! on, except for the pixel work, the save and the upload, whose failure ends the job as `Failed`. A prompt the
+//! is skipped, with a `StepFailed` that says why, when this job saved none. A failed step is reported as
+//! `StepFailed` and the job goes on, except for the pixel work and the upload, whose failure ends the job as
+//! `Failed`. A failed save is a step failure too: the copy, the pin and the upload still run, and the toast
+//! reports the save error. A prompt the
 //! user cancels stops the job as `Stopped`. The order is the quick task menu, the after-capture window, the
 //! annotation, the effects, the beautifier, the encode and the save, the actions, the copies, the upload (with
 //! the before-upload window), and the toast, so the toast can carry the URL (upload.rs).
@@ -45,7 +47,7 @@ pub(super) async fn capture(
 ) {
     cx.reporter.status(id, TaskStatus::Preparing);
     cx.reporter.status(id, TaskStatus::Working);
-    let mut job = Job { cx, id, settings, info, stop, file: None, upload_sound: Default::default() };
+    let mut job = Job { cx, id, settings, info, stop, file: None, upload_sound: Default::default(), save_error: None };
     job.read_random_lines().await;
     // The outcome is already reported, so there is nothing to do with it here. A panic is not: it ends the job as a
     // failure that the caller reports (ADR 020), but the file still goes first.
@@ -76,6 +78,8 @@ pub(super) struct Job {
     /// An upload already played the task-completed sound (`play_sound_after_upload`), so the end of
     /// the job doesn't play it again.
     pub(super) upload_sound: std::sync::atomic::AtomicBool,
+    /// Why the save failed, when it did. The toast reports it, since there is no saved file to name.
+    pub(super) save_error: Option<String>,
 }
 
 impl Job {
@@ -105,7 +109,10 @@ impl Job {
                 && flags.contains(AfterCaptureTasks::SAVE_THUMBNAIL_IMAGE_TO_FILE),
             preview: self.settings.general.show_toast,
         };
-        let Prepared { image, encoded, thumbnail, preview } = self.prepare(input, plan).await?;
+        let Prepared { image, encoded, thumbnail, preview, warning } = self.prepare(input, plan).await?;
+        if let Some(warning) = warning {
+            self.step_failed("encode", warning);
+        }
         if self.settings.general.play_sound_after_capture {
             let general = &self.settings.general;
             let _ = self.cx.ports.notifier.sound(laqta_ports::Sound::Capture, general.custom_capture_sound.as_deref());
@@ -132,12 +139,15 @@ impl Job {
         let mut uploaded_output = None;
         if flags.contains(AfterCaptureTasks::PERFORM_ACTIONS) {
             let saved_path = saved_file.as_ref().map(|saved| saved.path.clone());
-            if let Some(path) = saved_path
-                && let Some(output) = self.perform_actions(&path).await?
-            {
-                saved_file = Some(SavedFile { path: output.clone() });
-                self.file = Some(output.clone());
-                uploaded_output = Some(output);
+            match saved_path {
+                Some(path) => {
+                    if let Some(output) = self.perform_actions(&path).await? {
+                        saved_file = Some(SavedFile { path: output.clone() });
+                        self.file = Some(output.clone());
+                        uploaded_output = Some(output);
+                    }
+                }
+                None => self.step_failed("action", self.no_file_reason()),
             }
         }
         let saved = saved_file.as_ref();
@@ -334,7 +344,7 @@ impl Job {
         compute(self.cx.ports.spawner.as_ref(), work).await.map_err(|error| self.fail(error))
     }
 
-    async fn save_image(&self, size: (u32, u32), encoded: Encoded) -> Step<Option<SavedFile>> {
+    async fn save_image(&mut self, size: (u32, u32), encoded: Encoded) -> Step<Option<SavedFile>> {
         self.checkpoint()?;
         match save::image(&self.cx, &self.settings, &self.info, size, encoded).await {
             Ok(Outcome::Saved(saved)) => {
@@ -345,7 +355,22 @@ impl Job {
                 self.emit(TaskEvent::SaveSkipped { id: self.id, path });
                 Ok(None)
             }
-            Err(error) => Err(self.fail(error)),
+            Err(error) => {
+                // The capture is still in memory: report the failure and let the copy, pin and upload go on.
+                self.step_failed("save", &error);
+                self.save_error = Some(error.to_string());
+                Ok(None)
+            }
+        }
+    }
+
+    /// Why a step that needs a saved file has none: Save is off, or the save did not happen.
+    fn no_file_reason(&self) -> &'static str {
+        let flags = self.settings.after_capture;
+        if flags.intersects(AfterCaptureTasks::SAVE_IMAGE_TO_FILE | AfterCaptureTasks::SAVE_IMAGE_TO_FILE_WITH_DIALOG) {
+            "the image was not saved"
+        } else {
+            "needs a saved file, and saving is off"
         }
     }
 
@@ -568,7 +593,11 @@ impl Job {
 
     /// Writes the thumbnail beside the saved image. Returns its path when it was written.
     async fn save_thumbnail(&self, saved: Option<&SavedFile>, made: Option<Result<Encoded, AppError>>) -> Step<Option<PathBuf>> {
-        let (Some(saved), Some(made)) = (saved, made) else { return Ok(None) };
+        let Some(saved) = saved else {
+            self.step_failed("thumbnail", self.no_file_reason());
+            return Ok(None);
+        };
+        let Some(made) = made else { return Ok(None) };
         self.checkpoint()?;
         let result = match made {
             Ok(encoded) => save::thumbnail(&self.cx, saved, &self.settings.image.thumbnail_suffix, encoded).await,
@@ -587,7 +616,10 @@ impl Job {
     }
 
     async fn copy_file(&self, saved: Option<&SavedFile>) -> Step {
-        let Some(saved) = saved else { return Ok(()) };
+        let Some(saved) = saved else {
+            self.step_failed("copy_file", self.no_file_reason());
+            return Ok(());
+        };
         self.checkpoint()?;
         let path = saved.path.clone();
         match self.clipboard(move |clipboard| clipboard.set_files(std::slice::from_ref(&path))).await {
@@ -598,7 +630,10 @@ impl Job {
     }
 
     async fn copy_path(&self, saved: Option<&SavedFile>) -> Step {
-        let Some(saved) = saved else { return Ok(()) };
+        let Some(saved) = saved else {
+            self.step_failed("copy_path", self.no_file_reason());
+            return Ok(());
+        };
         self.checkpoint()?;
         let text = saved.path.display().to_string();
         match self.clipboard(move |clipboard| clipboard.set_text(&text)).await {
@@ -610,7 +645,10 @@ impl Job {
 
     /// `COPY_FOLDER_PATH_TO_CLIPBOARD`: the saved file's folder.
     async fn copy_folder(&self, saved: Option<&SavedFile>) -> Step {
-        let Some(dir) = saved.and_then(|s| s.path.parent()) else { return Ok(()) };
+        let Some(dir) = saved.and_then(|s| s.path.parent()) else {
+            self.step_failed("copy_folder_path", self.no_file_reason());
+            return Ok(());
+        };
         self.checkpoint()?;
         let text = dir.display().to_string();
         match self.clipboard(move |clipboard| clipboard.set_text(&text)).await {
@@ -727,7 +765,10 @@ impl Job {
     }
 
     fn reveal(&self, saved: Option<&SavedFile>) -> Step {
-        let Some(saved) = saved else { return Ok(()) };
+        let Some(saved) = saved else {
+            self.step_failed("reveal", self.no_file_reason());
+            return Ok(());
+        };
         self.checkpoint()?;
         match self.cx.ports.shell.reveal(&saved.path) {
             Ok(()) => self.emit(TaskEvent::Revealed { id: self.id, path: saved.path.clone() }),
@@ -745,7 +786,10 @@ impl Job {
                 ("Recording saved", saved.path.display().to_string(), Some(saved.path.clone()))
             }
             Some(saved) => ("Screenshot saved", saved.path.display().to_string(), Some(saved.path.clone())),
-            None => ("Screenshot copied", String::new(), None),
+            None => match &self.save_error {
+                Some(error) => ("Screenshot not saved", error.clone(), None),
+                None => ("Screenshot copied", String::new(), None),
+            },
         };
         let toast = Toast { title: title.to_owned(), body, image: preview, path, url, options: self.settings.general.toast.clone() };
         match self.cx.ports.notifier.toast(toast) {

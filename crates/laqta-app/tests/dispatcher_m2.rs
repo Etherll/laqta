@@ -63,6 +63,10 @@ fn harness_with(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
         codecs: laqta_imaging::Codecs::builtin(),
     };
     let mut settings = Settings { screenshots_dir: dir.to_path_buf(), ..Settings::default_for(dir.to_path_buf()) };
+    // An Imgur account with a client id: without one an upload to `imgur` is refused before any request.
+    let mut imgur = laqta_domain::hosts::HostAccount::new(laqta_domain::hosts::HostKind::Imgur);
+    imgur.values.insert("client_id".into(), "test-client-id".into());
+    settings.hosts.push(imgur);
     edit(&mut settings);
     H { app: App::new(ports, settings), clipboard, prompt, uploaders, spawner }
 }

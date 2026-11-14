@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use futures_lite::future::block_on;
+use futures_lite::future::{block_on, poll_once};
 use laqta_app::{App, Dispatched, Ports};
 use laqta_domain::{Action, Bitmap, Frame, Monitor, MonitorId, PhysRect, PixelFormat, Settings};
 use laqta_ports::fakes::{
@@ -61,6 +61,8 @@ struct H {
     screen: Arc<FakeScreen>,
     clock: Arc<HookClock>,
     spawner: Arc<InlineSpawner>,
+    notifier: Arc<FakeNotifier>,
+    overlay: Arc<FakeOverlay>,
 }
 
 fn frame() -> Frame {
@@ -81,13 +83,15 @@ fn harness(dir: &Path, screen: FakeScreen, edit: impl FnOnce(&mut Settings)) -> 
     let screen = Arc::new(screen);
     let clock = Arc::new(HookClock::new());
     let spawner = Arc::new(InlineSpawner::default());
+    let notifier = Arc::new(FakeNotifier::default());
+    let overlay = Arc::new(FakeOverlay::default());
     let ports = Ports {
         screen: screen.clone(),
         clipboard: Arc::new(FakeClipboard::new(ClipboardBehaviour::Succeed)),
         shell: Arc::new(FakeShell::default()),
         clock: clock.clone(),
         spawner: spawner.clone(),
-        overlay: Arc::new(FakeOverlay::default()),
+        overlay: overlay.clone(),
         tools: Arc::new(FakeToolHost::default()),
         prompt: Arc::new(laqta_ports::fakes::FakePrompt::default()),
         editor: Arc::new(laqta_ports::fakes::FakeEditorHost::default()),
@@ -103,14 +107,14 @@ fn harness(dir: &Path, screen: FakeScreen, edit: impl FnOnce(&mut Settings)) -> 
         watcher: Arc::new(FakeFileWatcher::default()),
         uploaders: Arc::new(FakeUploaders::default()),
         hover: Arc::new(FakeHoverSource::new(Vec::new())),
-        notifier: Arc::new(FakeNotifier::default()),
+        notifier: notifier.clone(),
         rng: Arc::new(CountingRng::default()),
         host: HostInfo::default(),
         codecs: laqta_imaging::Codecs::builtin(),
     };
     let mut settings = Settings { screenshots_dir: dir.to_path_buf(), ..Settings::default_for(dir.to_path_buf()) };
     edit(&mut settings);
-    H { app: App::new(ports, settings), screen, clock, spawner }
+    H { app: App::new(ports, settings), screen, clock, spawner, notifier, overlay }
 }
 
 /// Runs the queued jobs, the auto capture loop and the captures it submits, until none is left. Imaging needs the
@@ -248,6 +252,54 @@ fn auto_capture_failed_runs_are_skipped_and_the_loop_goes_on() {
 
     assert_eq!(captures(&h), 3);
     assert!(!h.app.auto_capture_running());
+}
+
+#[test]
+fn auto_capture_stops_and_says_so_after_three_failures_in_a_row() {
+    let tmp = TempDir::new().unwrap();
+    // No count: without the limit this loop would fail every second for ever.
+    let h = harness(tmp.path(), FakeScreen::failing(PortError::Failed("no display".into())), |_| {});
+    let before = h.clock.now();
+
+    dispatch(&h, Action::StartAutoCapture).unwrap();
+    drain(&h);
+
+    assert_eq!(captures(&h), 3);
+    assert!(!h.app.auto_capture_running());
+    // Two waits between three runs, and none after the last one.
+    assert_eq!(h.clock.now(), before.checked_add(Duration::from_secs(120)).unwrap());
+    let toasts = h.notifier.toasts.lock().unwrap();
+    assert_eq!(toasts.len(), 1);
+    assert!(toasts[0].body.contains("3 captures in a row"), "{}", toasts[0].body);
+}
+
+#[test]
+fn auto_capture_a_busy_run_is_skipped_not_counted_as_a_failure() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path(), FakeScreen::new(vec![frame()]), |s| {
+        s.auto_capture.action = Action::RectangleRegion;
+        s.auto_capture.count = 4;
+        s.auto_capture.interval_ms = 1000;
+    });
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    pool.install(|| {
+        // A selection the user has open and has not finished: every run of the loop finds the overlay taken.
+        let mut open = h.app.dispatch(Action::RectangleRegion, None);
+        block_on(async {
+            while !h.overlay.is_open() {
+                assert!(poll_once(&mut open).await.is_none(), "the selection ended before it opened");
+            }
+        });
+
+        dispatch(&h, Action::StartAutoCapture).unwrap();
+        drain(&h);
+
+        // The open selection took one capture, and each of the four runs one more: none gave up the loop.
+        assert_eq!(captures(&h), 5);
+        assert!(!h.app.auto_capture_running());
+        assert!(h.notifier.toasts.lock().unwrap().is_empty(), "busy runs are not failures");
+        drop(open);
+    });
 }
 
 #[test]

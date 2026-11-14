@@ -8,6 +8,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use laqta_domain::hosts::HostKind;
 use laqta_domain::naming::{self, UploadInfo};
 use laqta_domain::workflow::{AfterUploadTasks, TaskSettings};
 use laqta_ports::{AppError, ProgressCallback, TaskEvent, TaskId, TaskStatus, UploadData, UploadKind, UploadRequest, UploadResult};
@@ -34,6 +35,9 @@ impl From<Halt> for Ended {
     }
 }
 
+/// The destination id of the bundled Imgur host.
+const IMGUR: &str = "imgur";
+
 /// The file an upload sent, as the upload-info tokens see it.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Sent {
@@ -49,7 +53,8 @@ pub(super) struct Sent {
 pub(super) async fn run(cx: Context, id: TaskId, source: UploadSource, settings: TaskSettings, stop: Arc<AtomicBool>) {
     cx.reporter.status(id, TaskStatus::Preparing);
     cx.reporter.status(id, TaskStatus::Working);
-    let mut job = Job { cx, id, settings, info: CaptureInfo::default(), stop, file: None, upload_sound: Default::default() };
+    let mut job =
+        Job { cx, id, settings, info: CaptureInfo::default(), stop, file: None, upload_sound: Default::default(), save_error: None };
     job.read_random_lines().await;
     // The outcome is already reported, so there is nothing to do with it here.
     let _ = job.run_upload(source).await;
@@ -156,6 +161,10 @@ impl Job {
             UploadKind::Text => &settings.text_destination,
             UploadKind::File => &settings.file_destination,
         };
+        if destination_id == IMGUR && !self.has_imgur_client_id() {
+            // The bundled Imgur client id is a placeholder that Imgur rejects: no request is worth sending.
+            return Err(Ended::Failed(AppError::Auth("Add an Imgur account in Settings → Uploads".to_owned())));
+        }
         let Some(destination) = self.cx.ports.uploaders.destination(destination_id) else {
             return Err(Ended::Failed(AppError::Unsupported(format!("no destination {destination_id}"))));
         };
@@ -187,6 +196,12 @@ impl Job {
                 Err(error) => return Err(Ended::Failed(AppError::from(error))),
             }
         }
+    }
+
+    /// Whether an Imgur account with a client id is saved. Without one Imgur uploads use a placeholder id.
+    fn has_imgur_client_id(&self) -> bool {
+        let settings = self.cx.settings.get();
+        settings.hosts.iter().any(|account| account.kind == HostKind::Imgur && !account.get("client_id").trim().is_empty())
     }
 
     /// The progress callback for one attempt. Reports go through `progress_due`, so a busy adapter does not
@@ -251,7 +266,9 @@ impl Job {
                 thumbnail_path: sent.thumbnail.as_deref(),
                 upload_time: self.cx.ports.clock.now(),
             };
-            let text = naming::upload_info(&self.settings.upload.clipboard_format, &info);
+            // An empty template means the default; the default follows the shortener (`$shorturl` once shortened).
+            let template = naming::clipboard_template(&self.settings.upload.clipboard_format, short.is_some());
+            let text = naming::upload_info(template, &info);
             match self.cx.ports.clipboard.set_text(&text) {
                 Ok(()) => self.emit(TaskEvent::UrlCopied { id, text }),
                 Err(error) => self.step_failed("copy_url", error),

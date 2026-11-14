@@ -989,3 +989,98 @@ fn the_gif_width_limit_reaches_the_encoder() {
         assert_eq!(media.specs.lock().unwrap().iter().map(|spec| spec.gif_max_width).collect::<Vec<_>>(), vec![800]);
     });
 }
+
+/// A stream like the Windows one: it takes an area on one 8 px wide monitor and refuses an area over the edge.
+struct OneMonitorStream {
+    inner: FakeScreenStream,
+}
+
+impl ScreenStream for OneMonitorStream {
+    fn open(&self, area: PhysRect, show_cursor: bool, fps: u32, audio: &[AudioDevice]) -> BoxFuture<'_, Result<RecordingInput, PortError>> {
+        if (area.x < 8) != (area.right() <= 8) {
+            return Box::pin(async { Err(PortError::Unsupported("the area spans more than one display".into())) });
+        }
+        self.inner.open(area, show_cursor, fps, audio)
+    }
+    fn audio_devices(&self) -> BoxFuture<'_, Result<Vec<AudioDevice>, PortError>> {
+        self.inner.audio_devices()
+    }
+}
+
+#[test]
+fn an_area_over_two_monitors_is_clipped_to_the_larger_part_with_a_warning() {
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let stream = Arc::new(OneMonitorStream { inner: FakeScreenStream::default() });
+        let swap = Swap { stream: Some(stream.clone()), ..Swap::default() };
+        // The monitors are 8x8 at x = 0 and x = 8. The area has 4 columns on the first and 6 on the second.
+        let mut h =
+            harness_with(tmp.path(), |s| s.defaults.capture.custom_region = Some(PhysRect { x: 4, y: 0, width: 10, height: 6 }), swap);
+        assert_eq!(start(&h, Action::ScreenRecorderCustomRegion).unwrap(), Dispatched::Done);
+
+        assert_eq!(*stream.inner.opened.lock().unwrap(), vec![PhysRect { x: 8, y: 0, width: 6, height: 6 }]);
+        assert_eq!(calls(&h), vec!["start X264 6x6".to_owned()]);
+        let seen = events(&mut h);
+        assert!(
+            seen.iter().any(|event| matches!(event, TaskEvent::StepFailed { step: "recording area", .. })),
+            "the clip is reported: {seen:?}"
+        );
+        assert!(h.app.is_recording());
+    });
+}
+
+#[test]
+fn an_unsupported_stream_with_no_monitor_part_fails_the_recording() {
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let stream = Arc::new(OneMonitorStream { inner: FakeScreenStream::default() });
+        let swap = Swap { stream: Some(stream), ..Swap::default() };
+        // Off every monitor: there is nothing to clip to, so the refusal stands.
+        let h = harness_with(tmp.path(), |s| s.defaults.capture.custom_region = Some(PhysRect { x: 7, y: 20, width: 4, height: 4 }), swap);
+        assert!(matches!(start(&h, Action::ScreenRecorderCustomRegion), Err(AppError::Unsupported(_))));
+        assert!(calls(&h).is_empty());
+    });
+}
+
+#[test]
+fn a_workflows_recorder_backend_reaches_the_media_spec() {
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let workflow = Workflow {
+            id: WorkflowId(8),
+            name: "Native".into(),
+            action: Action::ScreenRecorderCustomRegion,
+            hotkey: None,
+            enabled: true,
+            patch: TaskSettingsPatch {
+                recording: Some(RecordingSettings {
+                    backend: laqta_domain::record::RecorderBackend::Native,
+                    ..RecordingSettings::default()
+                }),
+                ..TaskSettingsPatch::default()
+            },
+        };
+        let media = GatedMedia::new(true);
+        let swap = Swap { media: Some(media.clone()), ..Swap::default() };
+        let h = harness_with(
+            tmp.path(),
+            |s| {
+                custom_region(s);
+                // The defaults say FFmpeg; only the workflow asks for the native recorder.
+                s.defaults.recording.backend = laqta_domain::record::RecorderBackend::Ffmpeg;
+                s.workflows.push(workflow);
+            },
+            swap,
+        );
+
+        block_on(h.app.dispatch(Action::ScreenRecorderCustomRegion, Some(WorkflowId(8)))).unwrap();
+        assert_eq!(media.specs.lock().unwrap().last().unwrap().backend, laqta_domain::record::RecorderBackend::Native);
+
+        // The same action without the workflow uses the defaults.
+        let media = GatedMedia::new(true);
+        let swap = Swap { media: Some(media.clone()), ..Swap::default() };
+        let h = harness_with(tmp.path(), custom_region, swap);
+        start(&h, Action::ScreenRecorderCustomRegion).unwrap();
+        assert_eq!(media.specs.lock().unwrap().last().unwrap().backend, laqta_domain::record::RecorderBackend::Ffmpeg);
+    });
+}
