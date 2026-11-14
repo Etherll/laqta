@@ -19,3 +19,5 @@ Status: accepted (2026-11-07)
 - **An encrypted file with a key stored next to it:** this gives no protection.
 
 **Consequences.** The application has no storage interface beyond `HistoryEdit`'s two writes, so it stays storage-independent without a seam that has one adapter and no test need.
+
+**As built (Windows window capture).** A transparent window capture that fails for any reason other than `Unsupported` (the window resized, a minimized or elevated window, a backdrop failure) is mapped by the Windows adapter to `PortError::Unsupported` and logged as a warning. The dispatcher then falls back to a plain crop of the window out of the screen frames; the adapter makes no fallback choice itself.
