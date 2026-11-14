@@ -18,7 +18,8 @@ pub(crate) fn toggle(cx: &mut App) {
         return;
     }
     let menu = crate::presenters::tray::tray_menu(&cx.global::<UiState>().services.app.settings());
-    let Some(display) = cx.primary_display() else { return };
+    // Wayland names no primary display: take the first then, or nothing would ever show.
+    let Some(display) = crate::placement::main_display(cx) else { return };
     let area = display.bounds();
     let (w, h) = (260.0, 36.0 * menu.items.len() as f32 + 16.0);
     let x = f32::from(area.origin.x) + f32::from(area.size.width) - w - 16.0;

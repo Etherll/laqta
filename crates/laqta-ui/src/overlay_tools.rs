@@ -893,9 +893,18 @@ pub(crate) fn notice(text: String, at: bar::Rect) -> AnyElement {
 
 /// A short line at the top of the screen before anything is selected.
 pub(crate) fn hint(win_w: f32, text: impl Into<SharedString>) -> AnyElement {
+    hint_at(win_w, 16., text)
+}
+
+/// `hint`, under the mode bar where the mode bar shows.
+pub(crate) fn hint_below_bar(win_w: f32, text: impl Into<SharedString>) -> AnyElement {
+    hint_at(win_w, 16.0 + BAR_H + 8.0, text)
+}
+
+fn hint_at(win_w: f32, top: f32, text: impl Into<SharedString>) -> AnyElement {
     div()
         .absolute()
-        .top(px(16.))
+        .top(px(top))
         .left(px(0.))
         .w(px(win_w))
         .flex()

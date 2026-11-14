@@ -1,6 +1,7 @@
 //! The recording bar: elapsed time, pause/resume, stop, abort, and a border around the
 //! recorded area. Shown on `RecordingStarted`, closed on `RecordingStopped`/`RecordingFailed`.
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Bounds, Context, IntoElement, ParentElement as _, Render, Styled as _, Window,
     WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, point, px, size,
@@ -35,6 +36,8 @@ struct Bar {
     /// The recorded area, and whether to draw the border around it.
     area: PhysRect,
     border: bool,
+    /// Stop was pressed and the file is being written (a GIF takes a while).
+    saving: bool,
     /// The scale the border was last placed at. It is placed from the bar's render, the first
     /// place the real (possibly fractional) scale is known, and again if that scale changes.
     border_scale: Option<f32>,
@@ -80,17 +83,17 @@ fn is_wayland() -> bool {
 }
 
 /// A layer-shell surface on Wayland, so the compositor neither places it nor lists it as a window;
-/// elsewhere a popup at the given bounds.
-fn popup(place: Place, size: gpui::Size<gpui::Pixels>, cx: &App) -> WindowOptions {
-    popup_on(place, size, None, cx)
-}
-
-/// Like `popup`, on the display `display` (a layer surface's margins are relative to its output).
+/// elsewhere a popup at the given bounds. On the display `display` (a layer surface's margins are
+/// relative to its output).
 fn popup_on(place: Place, size: gpui::Size<gpui::Pixels>, display: Option<gpui::DisplayId>, cx: &App) -> WindowOptions {
-    let (bounds, kind) = if is_wayland() {
-        (Bounds { origin: point(px(0.), px(0.)), size }, layer_kind(place))
+    let (bounds, kind, display) = if is_wayland() {
+        (Bounds { origin: point(px(0.), px(0.)), size }, layer_kind(place), display)
     } else {
-        (x11_bounds(place, size, cx), WindowKind::PopUp)
+        let bounds = x11_bounds(place, size, cx);
+        // Without its display GPUI checks the bounds against the primary one and, when they are
+        // off it, opens the window there at a default size.
+        let display = display.or_else(|| crate::placement::display_at(cx, bounds).map(|d| d.id()));
+        (bounds, WindowKind::PopUp, display)
     };
     WindowOptions {
         titlebar: None,
@@ -108,7 +111,7 @@ fn popup_on(place: Place, size: gpui::Size<gpui::Pixels>, display: Option<gpui::
 }
 
 fn x11_bounds(place: Place, size: gpui::Size<gpui::Pixels>, cx: &App) -> Bounds<gpui::Pixels> {
-    let screen = cx.primary_display().map(|d| d.bounds()).unwrap_or_default();
+    let screen = crate::placement::main_display(cx).map(|d| d.bounds()).unwrap_or_default();
     match place {
         Place::At(b) => b,
         Place::Center => Bounds {
@@ -175,8 +178,9 @@ pub(crate) fn resync(cx: &mut App) {
 
 pub(crate) fn on_event(event: &TaskEvent, cx: &mut App) {
     match event {
-        TaskEvent::RecordingCountdown { seconds_left, .. } => countdown(*seconds_left, cx),
-        TaskEvent::RecordingStarted { area, .. } => start(*area, cx),
+        TaskEvent::RecordingCountdown { seconds_left, area, .. } => countdown(*seconds_left, *area, cx),
+        TaskEvent::RecordingStarted { area, show_border, .. } => start(*area, *show_border, cx),
+        TaskEvent::RecordingFinishing { .. } => update(cx, |b| b.saving = true),
         TaskEvent::RecordingTick { elapsed_secs, .. } => update(cx, |b| b.elapsed = *elapsed_secs),
         TaskEvent::RecordingPaused { .. } => update(cx, |b| b.paused = true),
         TaskEvent::RecordingResumed { .. } => update(cx, |b| b.paused = false),
@@ -185,7 +189,7 @@ pub(crate) fn on_event(event: &TaskEvent, cx: &mut App) {
     }
 }
 
-fn countdown(seconds: u32, cx: &mut App) {
+fn countdown(seconds: u32, area: PhysRect, cx: &mut App) {
     if let Some(h) = cx.global::<UiState>().recording.countdown {
         let ok = h
             .update(cx, |root, _, cx| {
@@ -203,7 +207,16 @@ fn countdown(seconds: u32, cx: &mut App) {
             return;
         }
     }
-    if let Ok(handle) = crate::popup::open(popup(Place::Center, size(px(160.), px(160.)), cx), cx, |window, cx| {
+    // Centred on the area about to be recorded, so it shows on that area's monitor.
+    let a = logical(area, open_scale(cx), cx);
+    let side = size(px(160.), px(160.));
+    let at = Bounds {
+        origin: point(a.origin.x + (a.size.width - side.width) / 2.0, a.origin.y + (a.size.height - side.height) / 2.0),
+        size: side,
+    };
+    let display = crate::placement::display_at(cx, a).map(|d| d.id());
+    let place = if is_wayland() { Place::Center } else { Place::At(at) };
+    if let Ok(handle) = crate::popup::open(popup_on(place, side, display, cx), cx, |window, cx| {
         let view = cx.new(|_| Countdown { seconds });
         // The view is rounded: keep the root's square theme background out of the corners.
         cx.new(|cx| Root::new(view, window, cx).bg(gpui::transparent_black()))
@@ -226,15 +239,21 @@ fn update(cx: &mut App, f: impl FnOnce(&mut Bar)) {
     });
 }
 
-fn start(area: PhysRect, cx: &mut App) {
+/// The scale of a window that is already open: the best first guess for a new window's display.
+fn open_scale(cx: &mut App) -> f32 {
+    cx.windows().into_iter().find_map(|w| w.update(cx, |_, window, _| window.scale_factor()).ok()).unwrap_or(1.0)
+}
+
+/// `border` is the started task's own setting (a workflow can override the defaults).
+fn start(area: PhysRect, border: bool, cx: &mut App) {
     if let Some(c) = cx.global_mut::<UiState>().recording.countdown.take() {
         let _ = c.update(cx, |_, window, _| window.remove_window());
     }
-    let border = cx.global::<UiState>().services.app.settings().defaults.recording.show_border;
     cx.global_mut::<UiState>().recording = RecordingWindows::default();
-    // The scale of a window that is already open is the best first guess for the bar's display.
-    let scale = cx.windows().into_iter().find_map(|w| w.update(cx, |_, window, _| window.scale_factor()).ok()).unwrap_or(1.0);
-    open_bar(Bar { elapsed: 0, paused: false, area, border, border_scale: None, placed_scale: scale, moves: 0, wanted_y: None }, cx);
+    let scale = open_scale(cx);
+    let bar =
+        Bar { elapsed: 0, paused: false, area, border, saving: false, border_scale: None, placed_scale: scale, moves: 0, wanted_y: None };
+    open_bar(bar, cx);
 }
 
 /// Opens the bar for `state`, in place of any bar already open.
@@ -248,7 +267,9 @@ fn open_bar(mut state: Bar, cx: &mut App) {
     if let Some(old) = cx.global_mut::<UiState>().recording.bar.take() {
         let _ = old.update(cx, |_, window, _| window.remove_window());
     }
-    if let Ok(handle) = crate::popup::open(popup(place, bar, cx), cx, |window, cx| {
+    // On the area's monitor (on Wayland the compositor would pick one).
+    let display = crate::placement::display_at(cx, logical(state.area, state.placed_scale, cx)).map(|d| d.id());
+    if let Ok(handle) = crate::popup::open(popup_on(place, bar, display, cx), cx, |window, cx| {
         let view = cx.new(|_| state);
         // The view is rounded: keep the root's square theme background out of the corners.
         cx.new(|cx| Root::new(view, window, cx).bg(gpui::transparent_black()))
@@ -263,7 +284,7 @@ fn open_bar(mut state: Bar, cx: &mut App) {
 fn bar_bounds(area: PhysRect, scale: f32, bar: gpui::Size<gpui::Pixels>, cx: &App) -> Bounds<gpui::Pixels> {
     let a = logical(area, scale, cx);
     let center = point(a.origin.x + a.size.width / 2.0, a.origin.y + a.size.height / 2.0);
-    let display = cx.displays().into_iter().find(|d| d.bounds().contains(&center)).or_else(|| cx.primary_display());
+    let display = cx.displays().into_iter().find(|d| d.bounds().contains(&center)).or_else(|| crate::placement::main_display(cx));
     let screen = display.map(|d| d.visible_bounds()).unwrap_or(a);
     let bottom = screen.origin.y + screen.size.height;
     let below = a.origin.y + a.size.height + px(8.0);
@@ -300,39 +321,48 @@ fn place_border(bar: Bar, scale: f32, cx: &mut App) {
     for h in std::mem::take(&mut cx.global_mut::<UiState>().recording.border) {
         let _ = h.update(cx, |_, window, _| window.remove_window());
     }
+    use crate::presenters::monitor_placement::{Rect, Side, recording_border};
     let a = logical(bar.area, scale, cx);
-    // On Wayland each strip is placed on the display holding the area, relative to its origin.
     let center = point(a.origin.x + a.size.width / 2.0, a.origin.y + a.size.height / 2.0);
-    let display = cx.displays().into_iter().find(|d| d.bounds().contains(&center));
-    let (display_id, screen) = match (&display, is_wayland()) {
-        (Some(d), true) => (Some(d.id()), d.bounds()),
-        _ => (None, Bounds::default()),
+    let as_rect = |b: Bounds<gpui::Pixels>| Rect {
+        x: f32::from(b.origin.x),
+        y: f32::from(b.origin.y),
+        w: f32::from(b.size.width),
+        h: f32::from(b.size.height),
     };
-    let (ox, oy) = (f32::from(screen.origin.x), f32::from(screen.origin.y));
+    // On Wayland a strip is placed on the display holding the area, relative to its origin, and
+    // cannot reach another display. Elsewhere strips are in desktop coordinates (negative on a
+    // monitor left of or above the primary one), and each goes on the display it lies on.
+    let (origin, screens, wayland_display) = if is_wayland() {
+        let display = cx.displays().into_iter().find(|d| d.bounds().contains(&center));
+        let screen = display.as_ref().map(|d| as_rect(d.bounds()));
+        let origin = screen.map_or((0.0, 0.0), |s| (s.x, s.y));
+        let local = screen.map_or(Rect { x: 0.0, y: 0.0, w: f32::MAX / 4.0, h: f32::MAX / 4.0 }, |s| Rect { x: 0.0, y: 0.0, ..s });
+        (origin, vec![local], display.map(|d| d.id()))
+    } else {
+        ((0.0, 0.0), cx.displays().iter().map(|d| as_rect(d.bounds())).collect(), None)
+    };
     let t = 3.0;
-    let (x, y, w, h) = (f32::from(a.origin.x) - ox, f32::from(a.origin.y) - oy, f32::from(a.size.width), f32::from(a.size.height));
+    let area = Rect { x: f32::from(a.origin.x) - origin.0, y: f32::from(a.origin.y) - origin.1, ..as_rect(a) };
     // Windows also rounds a narrow window up by a pixel, so the left strip starts one pixel out.
     let (tall, slack) = if cfg!(windows) { (TALL_STRIP - t, 1.0) } else { (0.0, 0.0) };
-    // The tall top strip sits above the area with its line at the bottom. Near the top of the
-    // screen there is no room above, so it starts at the screen edge and its transparent rest
-    // hangs over the area instead.
-    let top_y = (y - t - tall).max(0.0).min(y - t);
-    let (top, bottom) = if cfg!(windows) { (Paint::Line(y - t - top_y), Paint::Line(0.0)) } else { (Paint::All, Paint::All) };
     let mut strips = Vec::new();
-    for (bx, by, bw, bh, paint) in [
-        (x - t, top_y, w + 2.0 * t, t + tall, top),
-        (x - t, y + h, w + 2.0 * t, t + tall, bottom),
-        (x - t - slack, y, t, h, Paint::All),
-        (x + w, y, t, h, Paint::All),
-    ] {
-        // A strip that would start off the screen is left out; shifting it would put it over the area.
-        if bx < 0. || by < 0. {
-            continue;
-        }
-        let b = Bounds { origin: point(px(bx), px(by)), size: size(px(bw), px(bh)) };
-        if let Ok(handle) =
-            crate::popup::open(popup_on(Place::At(b), b.size, display_id, cx), cx, |_, cx| cx.new(|_| BorderStrip { paint, thickness: t }))
-        {
+    for strip in recording_border(area, t, tall, slack, &screens) {
+        let r = strip.rect;
+        // A tall strip paints only its line next to the area: the top one at its bottom (which is
+        // nearer its top when it was cut at the screen's edge), the bottom one at its top.
+        let (paint, edge) = match strip.side {
+            Side::Top if cfg!(windows) => (Paint::Line(area.y - t - r.y), Edge::Top),
+            Side::Bottom if cfg!(windows) => (Paint::Line(0.0), Edge::Bottom),
+            Side::Top => (Paint::All, Edge::Top),
+            Side::Bottom => (Paint::All, Edge::Bottom),
+            Side::Left | Side::Right => (Paint::All, Edge::Side),
+        };
+        let b = Bounds { origin: point(px(r.x), px(r.y)), size: size(px(r.w), px(r.h)) };
+        // `popup_on` finds the display a strip lies on where none is given.
+        if let Ok(handle) = crate::popup::open(popup_on(Place::At(b), b.size, wayland_display, cx), cx, |_, cx| {
+            cx.new(|_| BorderStrip { paint, edge, thickness: t })
+        }) {
             strips.push(handle.into());
         }
     }
@@ -344,19 +374,34 @@ fn place_border(bar: Bar, scale: f32, cx: &mut App) {
     }
 }
 
+/// Which side of the area a strip runs along; the top and bottom ones round their outer corners.
+#[derive(Clone, Copy)]
+enum Edge {
+    Top,
+    Bottom,
+    Side,
+}
+
 struct BorderStrip {
     paint: Paint,
+    edge: Edge,
     thickness: f32,
 }
 
 impl Render for BorderStrip {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let r = px(self.thickness);
+        let round = |d: gpui::Div| match self.edge {
+            Edge::Top => d.rounded_t(r),
+            Edge::Bottom => d.rounded_b(r),
+            Edge::Side => d,
+        };
         match self.paint {
-            Paint::All => div().size_full().bg(cx.theme().danger),
+            Paint::All => round(div().size_full().bg(cx.theme().danger)),
             Paint::Line(offset) => div()
                 .size_full()
                 .relative()
-                .child(div().absolute().left_0().top(px(offset)).w_full().h(px(self.thickness)).bg(cx.theme().danger)),
+                .child(round(div().absolute().left_0().top(px(offset)).w_full().h(px(self.thickness)).bg(cx.theme().danger))),
         }
     }
 }
@@ -400,7 +445,14 @@ impl Render for Bar {
         let t = cx.theme();
         let x = crate::theme::extra(cx);
         // Paused reads as amber plus the word, so colour is never the only cue.
-        let (dot, state) = if paused { (x.warning, "Paused") } else { (t.danger, "REC") };
+        let (dot, state) = if self.saving {
+            (t.muted_foreground, "Saving…")
+        } else if paused {
+            (x.warning, "Paused")
+        } else {
+            (t.danger, "REC")
+        };
+        let saving = self.saving;
         div()
             .size_full()
             .flex()
@@ -418,16 +470,22 @@ impl Render for Bar {
             .child(div().size(px(8.)).rounded(radius::PILL).bg(dot))
             .child(div().text_size(text::CAPTION).font_weight(gpui::FontWeight::SEMIBOLD).text_color(t.muted_foreground).child(state))
             .child(div().w(px(48.)).text_size(text::LABEL).font_weight(gpui::FontWeight::MEDIUM).child(time))
-            .child(widgets::pill(
-                "pause",
-                if paused { "Resume" } else { "Pause" },
-                Pill::Default,
-                true,
-                move |_, _, _| if paused { a1.recording_resume() } else { a1.recording_pause() },
-                cx,
-            ))
-            .child(widgets::pill("stop", "Stop", Pill::Dark, true, move |_, _, _| a2.recording_stop(), cx))
-            .child(widgets::pill("abort", "Abort", Pill::Ghost, true, move |_, _, _| a3.recording_abort(), cx))
+            // Once stopped, the file is still being written: nothing left to press.
+            .when(saving, |d| {
+                d.child(div().text_size(text::CAPTION).text_color(t.muted_foreground).child("Writing the file, this can take a moment"))
+            })
+            .when(!saving, |d| {
+                d.child(widgets::pill(
+                    "pause",
+                    if paused { "Resume" } else { "Pause" },
+                    Pill::Default,
+                    true,
+                    move |_, _, _| if paused { a1.recording_resume() } else { a1.recording_pause() },
+                    cx,
+                ))
+                .child(widgets::pill("stop", "Stop", Pill::Dark, true, move |_, _, _| a2.recording_stop(), cx))
+                .child(widgets::pill("abort", "Abort", Pill::Ghost, true, move |_, _, _| a3.recording_abort(), cx))
+            })
     }
 }
 

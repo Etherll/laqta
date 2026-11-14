@@ -241,7 +241,7 @@ fn autostart_first_run(
 
 /// `-sandbox`: a fresh temporary folder, removed on exit. `-portable`: `LaqtaData` next to the
 /// binary, as the `portable` marker file or a "portable" executable name does.
-fn data_dir(args: &crate::cli::Args) -> std::path::PathBuf {
+pub(crate) fn data_dir(args: &crate::cli::Args) -> std::path::PathBuf {
     let exe = std::env::current_exe().ok();
     let exe_dir = exe.as_deref().and_then(|p| p.parent().map(|d| d.to_path_buf()));
     if args.sandbox {
@@ -283,6 +283,8 @@ fn native_window(window: &gpui::Window, what: laqta_ui::NativeWindow) -> bool {
                 NativeWindow::BringToFront => laqta_platform_windows::bring_to_front(hwnd),
                 NativeWindow::HideForCapture => laqta_platform_windows::hide_for_capture(hwnd),
                 NativeWindow::CoverScreen => return false,
+                NativeWindow::RememberForeground => laqta_platform_windows::remember_foreground(),
+                NativeWindow::RestoreForeground => laqta_platform_windows::restore_foreground(),
             }
             return true;
         }
@@ -314,12 +316,27 @@ fn logical_rect() -> Option<laqta_ui::LogicalRectHook> {
 }
 
 /// The privacy permissions the onboarding window lists, where the platform has them (macOS).
+/// Opens the app bundle again once this copy has quit (the shell waits a second for that).
+#[cfg(target_os = "macos")]
+fn relaunch_app() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    // …/Laqta.app/Contents/MacOS/laqta
+    let Some(bundle) = exe.ancestors().nth(3).filter(|p| p.extension().is_some_and(|e| e == "app")) else {
+        tracing::warn!("relaunch: {} is not inside an app bundle", exe.display());
+        return;
+    };
+    if let Err(e) = std::process::Command::new("/bin/sh").arg("-c").arg("sleep 1; /usr/bin/open \"$0\"").arg(bundle).spawn() {
+        tracing::warn!("relaunch failed: {e}");
+    }
+}
+
 fn permissions() -> Option<laqta_ui::PermissionHooks> {
     #[cfg(target_os = "macos")]
     {
         Some(laqta_ui::PermissionHooks {
             granted: Arc::new(laqta_platform_macos::permission_granted),
             request: Arc::new(laqta_platform_macos::request_permission),
+            relaunch: Arc::new(relaunch_app),
         })
     }
     #[cfg(not(target_os = "macos"))]
@@ -399,7 +416,7 @@ fn settings_v1_to_v2(mut value: serde_json::Value) -> serde_json::Value {
     value
 }
 
-fn load_settings(store: &SettingsStore) -> Settings {
+pub(crate) fn load_settings(store: &SettingsStore) -> Settings {
     if !store.path().exists() {
         return default_settings();
     }
@@ -460,8 +477,9 @@ fn merge_system_keys(keys: Vec<(KeyChord, String)>) {
     hotkeys_changed();
 }
 
-/// The desktop turned down chords the last registration reported as registered: they show as failed,
-/// and the next sync registers them again. A rejection of an older registration, which a newer one
+/// The desktop turned down chords the last registration reported as registered (all of them, or some
+/// that a later re-registration could not take again): they show as failed, and the next sync
+/// registers them again. A rejection of an older registration, which a newer one
 /// replaced meanwhile, changes nothing. `sync_hotkeys` replaces a registration while holding
 /// `registered`, so checking under that lock leaves no gap for a newer one to start.
 fn reject_hotkeys(registered: &RegisteredBindings, rejection: &laqta_ports::Rejection) {
@@ -469,16 +487,17 @@ fn reject_hotkeys(registered: &RegisteredBindings, rejection: &laqta_ports::Reje
     let reports = hotkey_reports();
     let mut report = reports.lock().unwrap_or_else(|e| e.into_inner());
     let set = |chords: &[KeyChord]| chords.iter().copied().collect::<std::collections::HashSet<_>>();
-    if !rejection.is_current() || set(&report.registered) != set(&rejection.chords) {
+    let rejected = set(&rejection.chords);
+    if !rejection.is_current() || rejected.is_empty() || !rejected.is_subset(&set(&report.registered)) {
         return;
     }
     let why = rejection.reason.as_str();
     // Not registered after all, so an unchanged save must not skip the next try.
     current.take();
     drop(current);
-    let chords = std::mem::take(&mut report.registered);
-    report.failed.extend(chords.into_iter().map(|chord| (chord, why.to_owned())));
-    report.system_keys.clear();
+    report.registered.retain(|chord| !rejected.contains(chord));
+    report.failed.extend(rejection.chords.iter().map(|&chord| (chord, why.to_owned())));
+    report.system_keys.retain(|(chord, _)| !rejected.contains(chord));
     drop(report);
     hotkeys_changed();
 }
@@ -544,6 +563,42 @@ fn sync_hotkeys(app: &App, hotkeys: &dyn HotkeyRegistrar, registered: &Registere
     unsupported
 }
 
+/// Makes the start-at-sign-in entry the kind `run_as_admin` asks for, when starting at sign-in is on:
+/// on Windows a logon task with the highest privileges for administrator, the Run value otherwise.
+/// Creating the task needs an elevated process, so a failure is only logged; the entry stays as it
+/// was and the change applies at the next elevated start.
+fn sync_autostart_kind(autostart: &dyn laqta_ports::Autostart, run_as_admin: bool, exe: &std::path::Path) {
+    match autostart.is_enabled() {
+        Ok(true) => {
+            if let Err(error) = autostart.set_enabled_elevated(true, run_as_admin, exe) {
+                tracing::warn!(%error, run_as_admin, "could not change the start at sign-in entry; it applies at the next start with administrator rights");
+            }
+        }
+        Ok(false) => {}
+        Err(error) => tracing::warn!(%error, "could not read the start at sign-in entry"),
+    }
+}
+
+/// Starts this copy again with administrator rights and quits it once the user accepts the prompt.
+/// The new copy waits for this one to let go of the single-instance pipe.
+#[cfg(windows)]
+fn restart_elevated(quit_tx: &mpsc::Sender<()>) {
+    let mut args = crate::without_startup_delay(std::env::args().skip(1).collect());
+    args.push("-Elevated".to_owned());
+    match laqta_platform_windows::elevation::relaunch_elevated_now(&args) {
+        Ok(true) => {
+            let _ = quit_tx.send(());
+        }
+        Ok(false) => tracing::info!("restart as administrator declined"),
+        Err(e) => tracing::warn!("cannot restart as administrator: {e}"),
+    }
+}
+
+/// Reads a setting that the save hook rewrites, so each call sees the latest saved value.
+fn shared_reader(cell: Arc<std::sync::RwLock<String>>) -> Arc<dyn Fn() -> String + Send + Sync> {
+    Arc::new(move || cell.read().map(|v| v.clone()).unwrap_or_default())
+}
+
 pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<(), String> {
     let mut startup: Vec<laqta_ipc::Request> = Vec::new();
     // Absolute, as the second instance sends them: the working folder can change before they are read.
@@ -577,6 +632,26 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         autostart_first_run(platform.autostart.as_ref(), &data, eligible, new_profile, &exe);
     }
     let settings = load_settings(&store);
+    // Started with administrator rights and asked to: make sure sign-in start is the elevated kind.
+    // This is where a change made while not elevated, which could not create the task, lands.
+    #[cfg(windows)]
+    // Elevated, the entry can be moved either way: this also removes a logon task left from when
+    // the setting was turned off without administrator rights.
+    if laqta_platform_windows::elevation::is_elevated()
+        && let Ok(exe) = std::env::current_exe()
+        && installed_copy(&args, &exe)
+    {
+        // It runs schtasks, so it stays off the way to the first window.
+        let (autostart, run_as_admin) = (platform.autostart.clone(), settings.run_as_admin);
+        let _ = std::thread::Builder::new()
+            .name("laqta-autostart-kind".into())
+            .spawn(move || sync_autostart_kind(autostart.as_ref(), run_as_admin, &exe));
+    }
+    // What the last save held, to see when a save changes it.
+    let run_as_admin = Arc::new(std::sync::atomic::AtomicBool::new(settings.run_as_admin));
+    // Before the first registration, so the shortcuts start out the way the setting asks.
+    #[cfg(windows)]
+    laqta_platform_windows::set_hotkeys_via_hook(settings.hotkeys_via_hook);
     let history = if settings.history.enabled && !args.sandbox {
         match History::open(&data.join("history.db")) {
             Ok(h) => Some(Arc::new(h)),
@@ -600,6 +675,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     let accounts: Arc<Mutex<()>> = Arc::default();
     let cloud_options: crate::cloud::SharedCloudOptions = Arc::new(std::sync::RwLock::new(settings.cloud.clone()));
     let recorder_backend = Arc::new(std::sync::RwLock::new(settings.defaults.recording.backend));
+    let ffmpeg_path = Arc::new(std::sync::RwLock::new(settings.defaults.recording.ffmpeg_path.clone()));
     let model_options: crate::models::SharedModelOptions = Arc::new(std::sync::RwLock::new(settings.models.clone()));
     let system_ocr = platform.os_ocr.as_ref().and(system_ocr_name()).map(str::to_owned);
     let ports = Ports {
@@ -613,14 +689,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         prompt: Arc::new(ui.clone()),
         editor: Arc::new(ui.clone()),
         media: Arc::new(crate::media::SwitchingMedia {
-            ffmpeg: Arc::new(crate::media::LazyMedia::new(
-                data.clone(),
-                {
-                    let s = settings.defaults.recording.ffmpeg_path.clone();
-                    Arc::new(move || s.clone())
-                },
-                Arc::new(ui.clone()),
-            )),
+            ffmpeg: Arc::new(crate::media::LazyMedia::new(data.clone(), shared_reader(ffmpeg_path.clone()), Arc::new(ui.clone()))),
             native: platform.native_recorder.clone(),
             stream: platform.stream.clone(),
             backend: recorder_backend.clone(),
@@ -763,7 +832,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         let app = app.clone();
         let run_action = run_action.clone();
         Arc::new(move |action: Action| {
-            let workflow = app.settings().workflows.iter().find(|w| w.enabled && w.action == action).map(|w| w.id);
+            let workflow = app.settings().workflow_for_action(action).map(|w| w.id);
             run_action(action, workflow);
         })
     };
@@ -792,6 +861,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         let model_options = model_options.clone();
         let cloud_options = cloud_options.clone();
         let recorder_backend = recorder_backend.clone();
+        let ffmpeg_path = ffmpeg_path.clone();
         let app = app.clone();
         let store = store.clone();
         let clock = clock.clone();
@@ -803,10 +873,18 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         let host_deps = host_deps.clone();
         let spawner = spawner.clone();
         let sandbox = args.sandbox;
+        // Only an installed copy owns the sign-in entry; a portable or dev copy must not point it at itself.
+        let installed = std::env::current_exe().is_ok_and(|exe| installed_copy(&args, &exe));
+        let autostart = platform.autostart.clone();
+        let run_as_admin = run_as_admin.clone();
         Arc::new(move |s: Settings| {
             if !sandbox {
                 store.save(&s, SETTINGS_VERSION, clock.now()).map_err(|e| e.to_string())?;
             }
+            let admin_changed = run_as_admin.swap(s.run_as_admin, std::sync::atomic::Ordering::SeqCst) != s.run_as_admin;
+            // Registers the current shortcuts again the other way only when the value flips.
+            #[cfg(windows)]
+            laqta_platform_windows::set_hotkeys_via_hook(s.hotkeys_via_hook);
             laqta_ui::i18n::set_language(s.language.as_deref());
             if let Ok(mut m) = model_options.write() {
                 *m = s.models.clone();
@@ -817,15 +895,27 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             if let Ok(mut b) = recorder_backend.write() {
                 *b = s.defaults.recording.backend;
             }
+            if let Ok(mut p) = ffmpeg_path.write() {
+                p.clone_from(&s.defaults.recording.ffmpeg_path);
+            }
             app.set_settings(s.clone());
             // Keyring reads and the hotkey portal can each take seconds; the caller (often the UI
             // thread) returns at once. Hotkeys re-register only when the bindings changed.
             let (app_b, hotkeys, registered, hotkey_dispatch) = (app.clone(), hotkeys.clone(), registered.clone(), hotkey_dispatch.clone());
             let (uploaders, host_deps, accounts) = (uploaders.clone(), host_deps.clone(), accounts.clone());
             let blocking = spawner.clone();
+            let (autostart, run_as_admin) = (autostart.clone(), s.run_as_admin);
             spawner.spawn(Box::pin(async move {
                 blocking
                     .run_blocking(Box::new(move || {
+                        // Only Windows has an elevated kind of entry. It is a process call, so it stays off the UI thread.
+                        if cfg!(windows)
+                            && admin_changed
+                            && installed
+                            && let Ok(exe) = std::env::current_exe()
+                        {
+                            sync_autostart_kind(autostart.as_ref(), run_as_admin, &exe);
+                        }
                         // Serialized, and from the latest settings, so two quick saves can't leave the older accounts.
                         {
                             let _one_at_a_time = accounts.lock().unwrap_or_else(|e| e.into_inner());
@@ -857,14 +947,49 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         let app = app.clone();
         let quit_tx = quit_tx.clone();
         let importer = importer.clone();
-        server.serve_requests(move |request| match futures_lite::future::block_on(run_request(&app, &importer, request)) {
-            Ok(None) => {
-                let _ = quit_tx.send(());
-                Ok(())
+        #[cfg(windows)]
+        let elevated = laqta_platform_windows::elevation::is_elevated();
+        #[cfg(not(windows))]
+        let elevated = false;
+        server.serve_requests(move |request| {
+            if elevated && !crate::requests::allowed_when_elevated(&request) {
+                tracing::warn!(?request, "refused: Laqta runs as administrator and takes no files or URLs from other programs");
+                return Err(
+                    "Laqta runs as administrator, so it takes no files or URLs from other programs. Open the file from Laqta's own window."
+                        .to_owned(),
+                );
             }
-            Ok(Some(_)) => Ok(()),
-            Err(e) => Err(e),
+            match futures_lite::future::block_on(run_request(&app, &importer, request)) {
+                Ok(None) => {
+                    let _ = quit_tx.send(());
+                    Ok(())
+                }
+                Ok(Some(_)) => Ok(()),
+                Err(e) => Err(e),
+            }
         });
+    }
+
+    // Without administrator rights, a program running with them is out of reach: offer, once per
+    // program and session, to restart Laqta with them.
+    #[cfg(windows)]
+    if !args.sandbox && !laqta_platform_windows::elevation::is_elevated() {
+        let offered = Arc::new(Mutex::new(std::collections::HashSet::<String>::new()));
+        let (ui, quit_tx) = (ui.clone(), quit_tx.clone());
+        laqta_platform_windows::elevated_watch::watch(Arc::new(move |name: String| {
+            if !offered.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_ascii_lowercase()) {
+                return;
+            }
+            let quit_tx = quit_tx.clone();
+            // The UAC prompt blocks its caller until it is answered: keep it off the UI thread.
+            ui.offer_admin_restart(
+                name,
+                Arc::new(move || {
+                    let quit_tx = quit_tx.clone();
+                    let _ = std::thread::Builder::new().name("laqta-restart-admin".into()).spawn(move || restart_elevated(&quit_tx));
+                }),
+            );
+        }));
     }
 
     let settings = app.settings();
@@ -1154,6 +1279,8 @@ mod tests {
     struct SignIn {
         on: std::sync::atomic::AtomicBool,
         sets: AtomicUsize,
+        /// The `elevated` argument of the last `set_enabled_elevated`.
+        elevated: Mutex<Option<bool>>,
         /// Attempts to turn it on that fail before one succeeds.
         failures: AtomicUsize,
         unsupported: std::sync::atomic::AtomicBool,
@@ -1175,6 +1302,49 @@ mod tests {
             self.on.store(enabled, Ordering::SeqCst);
             Ok(())
         }
+        fn set_enabled_elevated(&self, enabled: bool, elevated: bool, exe: &std::path::Path) -> Result<(), PortError> {
+            *self.elevated.lock().unwrap() = Some(elevated);
+            self.set_enabled(enabled, exe)
+        }
+    }
+
+    /// Turning `run_as_admin` on or off moves an entry that is on to the matching kind, and leaves one that is off alone.
+    #[test]
+    fn the_sign_in_entry_follows_run_as_admin_only_while_it_is_on() {
+        let exe = std::path::Path::new("/opt/laqta/laqta");
+        let off = SignIn::default();
+        sync_autostart_kind(&off, true, exe);
+        assert_eq!(off.sets.load(Ordering::SeqCst), 0);
+        assert!(!off.on.load(Ordering::SeqCst));
+
+        let on = SignIn::default();
+        on.on.store(true, Ordering::SeqCst);
+        sync_autostart_kind(&on, true, exe);
+        assert_eq!(*on.elevated.lock().unwrap(), Some(true));
+        sync_autostart_kind(&on, false, exe);
+        assert_eq!(*on.elevated.lock().unwrap(), Some(false));
+        assert!(on.on.load(Ordering::SeqCst), "it stays on");
+    }
+
+    /// A change that cannot be made (creating the task needs administrator rights) is only logged.
+    #[test]
+    fn a_failed_move_of_the_sign_in_entry_leaves_it_on() {
+        let sign_in = SignIn::default();
+        sign_in.on.store(true, Ordering::SeqCst);
+        sign_in.failures.store(1, Ordering::SeqCst);
+        sync_autostart_kind(&sign_in, true, std::path::Path::new("/opt/laqta/laqta"));
+        assert!(sign_in.on.load(Ordering::SeqCst));
+        assert_eq!(sign_in.sets.load(Ordering::SeqCst), 1);
+    }
+
+    /// The FFmpeg path is read at each call, so a saved change reaches the next recording.
+    #[test]
+    fn the_shared_reader_sees_a_later_write() {
+        let cell = Arc::new(std::sync::RwLock::new("old".to_owned()));
+        let read = shared_reader(cell.clone());
+        assert_eq!(read(), "old");
+        *cell.write().unwrap() = "new".to_owned();
+        assert_eq!(read(), "new");
     }
 
     /// The first run of a new install turns sign-in start on, once: turned off later, it stays off.
@@ -1212,6 +1382,23 @@ mod tests {
 
         assert!(registered.lock().unwrap().is_some(), "the newer registration stays cached");
         assert_eq!(hotkey_reports().lock().unwrap().registered, vec![chord]);
+    }
+
+    /// A re-registration that refused one chord of several marks only that one as failed.
+    #[test]
+    fn a_rejection_of_some_chords_fails_only_those() {
+        let _report = REPORT.lock().unwrap_or_else(|e| e.into_inner());
+        let kept: KeyChord = "Ctrl+Shift+F9".parse().expect("a chord");
+        let refused: KeyChord = "Ctrl+Shift+F10".parse().expect("a chord");
+        let registered: RegisteredBindings = Arc::new(Mutex::new(Some(vec![(kept, Action::PrintScreen), (refused, Action::ActiveWindow)])));
+        *hotkey_reports().lock().unwrap() = laqta_ui::HotkeyReport { registered: vec![kept, refused], ..Default::default() };
+
+        reject_hotkeys(&registered, &rejection(refused, true));
+
+        let report = hotkey_reports().lock().unwrap().clone();
+        assert_eq!(report.registered, vec![kept]);
+        assert_eq!(report.failed, vec![(refused, "cancelled".to_owned())]);
+        assert!(registered.lock().unwrap().is_none(), "the next sync tries again");
     }
 
     /// A rejection that comes after a newer registration with other chords is stale: it changes nothing.

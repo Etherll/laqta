@@ -6,7 +6,7 @@ mod protocol;
 
 pub use protocol::{Request, action_name, parse_action};
 
-use interprocess::local_socket::{GenericFilePath, ListenerOptions, prelude::*};
+use interprocess::local_socket::{GenericFilePath, ListenerOptions, Name, prelude::*};
 use laqta_domain::Action;
 use std::io::{self, BufReader, Write};
 use std::panic::{self, AssertUnwindSafe};
@@ -45,11 +45,24 @@ pub fn claim() -> io::Result<Claim> {
     claim_at(&endpoint_name())
 }
 
+/// Like [`claim`], for a process that may run elevated. On Windows, with the SID text of the current
+/// user, the pipe is created with an explicit access list: that user and the system get full access,
+/// and the pipe carries a medium integrity label. Without it an elevated process makes a pipe a
+/// non-elevated launch of Laqta cannot open, so it could not forward its action. Elsewhere the SID
+/// is ignored.
+pub fn claim_for_user(user_sid: Option<&str>) -> io::Result<Claim> {
+    claim_with(&endpoint_name(), user_sid)
+}
+
 /// Binds `endpoint`. If something already listens there, connects to it instead. If something is
 /// bound but nothing answers (a socket file left by a dead process), removes it and binds again.
 pub fn claim_at(endpoint: &str) -> io::Result<Claim> {
+    claim_with(endpoint, None)
+}
+
+fn claim_with(endpoint: &str, user_sid: Option<&str>) -> io::Result<Claim> {
     let name = endpoint.to_fs_name::<GenericFilePath>()?;
-    let bind_error = match ListenerOptions::new().name(name.borrow()).create_sync() {
+    let bind_error = match listen(name.borrow(), user_sid) {
         Ok(listener) => return Ok(Claim::Primary(Server { listener })),
         Err(error) => error,
     };
@@ -62,10 +75,54 @@ pub fn claim_at(endpoint: &str) -> io::Result<Claim> {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
-        let listener = ListenerOptions::new().name(name.borrow()).create_sync()?;
+        let listener = listen(name.borrow(), user_sid)?;
         return Ok(Claim::Primary(Server { listener }));
     }
     Err(bind_error)
+}
+
+/// Binds `name`, with the pipe's access list from `user_sid` where the platform has one.
+fn listen(name: Name<'_>, user_sid: Option<&str>) -> io::Result<LocalSocketListener> {
+    let options = ListenerOptions::new().name(name);
+    #[cfg(windows)]
+    let options = match user_sid {
+        Some(sid) => with_pipe_security(options, sid),
+        None => options,
+    };
+    #[cfg(not(windows))]
+    let _ = user_sid;
+    options.create_sync()
+}
+
+/// Gives `options` the access list for `user_sid`. If the list cannot be built, logs it and keeps
+/// the default one: a pipe only the elevated process can open still beats no single instance.
+#[cfg(windows)]
+fn with_pipe_security<'a>(options: ListenerOptions<'a>, user_sid: &str) -> ListenerOptions<'a> {
+    use interprocess::os::windows::local_socket::ListenerOptionsExt;
+    use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+
+    let descriptor = pipe_sddl(user_sid)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a SID"))
+        .and_then(|sddl| widestring::U16CString::from_str(sddl).map_err(io::Error::other))
+        .and_then(|sddl| SecurityDescriptor::deserialize(&sddl));
+    match descriptor {
+        Ok(descriptor) => options.security_descriptor(descriptor),
+        Err(error) => {
+            tracing::warn!(%error, "cannot build the ipc pipe's access list; using the default one");
+            options
+        }
+    }
+}
+
+/// The SDDL for the pipe: full access for `user_sid` and the system, and a medium mandatory label that
+/// lets a non-elevated process write to a pipe an elevated one created. `None` unless `user_sid` looks
+/// like a SID (`S-1-5-21-…`), so nothing else can end up in the string.
+#[cfg(any(windows, test))]
+fn pipe_sddl(user_sid: &str) -> Option<String> {
+    let digits = user_sid.strip_prefix("S-1-")?;
+    let valid =
+        !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit() || c == '-') && !digits.starts_with('-') && !digits.ends_with('-');
+    valid.then(|| format!("D:(A;;GA;;;{user_sid})(A;;GA;;;SY)S:(ML;;NW;;;ME)"))
 }
 
 /// The listening end, held by the primary process. Dropping it releases the endpoint.
@@ -192,5 +249,38 @@ impl Client {
             Some(line) => protocol::parse_reply(&line),
             None => Err("connection closed before a reply".to_owned()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pipe_sddl;
+
+    #[test]
+    fn the_pipe_grants_the_user_and_system_and_a_medium_label() {
+        assert_eq!(
+            pipe_sddl("S-1-5-21-1004336348-1177238915-682003330-1001").as_deref(),
+            Some("D:(A;;GA;;;S-1-5-21-1004336348-1177238915-682003330-1001)(A;;GA;;;SY)S:(ML;;NW;;;ME)")
+        );
+    }
+
+    #[test]
+    fn only_a_sid_gets_into_the_descriptor() {
+        for bad in ["", "S-1-", "S-1--5", "S-1-5-", "S-1-5-21)(A;;GA;;;WD", "S-2-5-18", "user", "S-1-5 18"] {
+            assert_eq!(pipe_sddl(bad), None, "{bad:?}");
+        }
+    }
+
+    /// Where there is no pipe access list the SID changes nothing. (On Windows a made-up SID would
+    /// lock the test out of its own pipe.)
+    #[cfg(unix)]
+    #[test]
+    fn claiming_for_a_user_still_claims_the_endpoint() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let endpoint = dir.path().join("laqta.sock").to_string_lossy().into_owned();
+        let first = super::claim_with(&endpoint, Some("S-1-5-21-1-2-3-1001")).expect("claim");
+        assert!(matches!(first, super::Claim::Primary(_)));
+        let second = super::claim_with(&endpoint, Some("S-1-5-21-1-2-3-1001")).expect("claim again");
+        assert!(matches!(second, super::Claim::Secondary(_)));
     }
 }

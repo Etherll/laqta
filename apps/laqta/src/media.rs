@@ -13,7 +13,8 @@ pub struct LazyMedia {
     data: PathBuf,
     configured: Arc<dyn Fn() -> String + Send + Sync>,
     prompt: Arc<dyn Prompt>,
-    ready: Mutex<Option<Arc<FfmpegMedia>>>,
+    /// The resolved FFmpeg, with the configured path it was resolved from.
+    ready: Mutex<Option<(String, Arc<FfmpegMedia>)>>,
 }
 
 impl std::fmt::Debug for LazyMedia {
@@ -28,11 +29,15 @@ impl LazyMedia {
     }
 
     async fn get(&self) -> Result<Arc<FfmpegMedia>, PortError> {
-        if let Some(m) = self.ready.lock().ok().and_then(|g| g.clone()) {
+        // A changed path in the settings resolves again, so the next recording uses it.
+        let configured = (self.configured)();
+        if let Some((from, m)) = self.ready.lock().ok().and_then(|g| g.clone())
+            && from == configured
+        {
             return Ok(m);
         }
         let work = self.data.join("recordings-tmp");
-        let paths = match laqta_media::find_ffmpeg(&(self.configured)(), &self.data) {
+        let paths = match laqta_media::find_ffmpeg(&configured, &self.data) {
             Some(p) => p,
             // No pinned build to download (macOS): say how to get one, not offer a download.
             None if !laqta_media::can_download_ffmpeg() => {
@@ -58,7 +63,7 @@ impl LazyMedia {
         };
         let media = Arc::new(FfmpegMedia::new(paths, work));
         if let Ok(mut g) = self.ready.lock() {
-            *g = Some(media.clone());
+            *g = Some((configured, media.clone()));
         }
         Ok(media)
     }
@@ -147,5 +152,61 @@ impl laqta_ports::Media for SwitchingMedia {
     }
     fn probe(&self, input: &std::path::Path) -> laqta_ports::BoxFuture<'_, Result<laqta_ports::MediaInfo, laqta_ports::PortError>> {
         self.ffmpeg.probe(input)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use laqta_ports::BoxFuture;
+
+    use super::*;
+
+    struct NoPrompt;
+
+    impl Prompt for NoPrompt {
+        fn ask_text(&self, _: &str, _: &str) -> BoxFuture<'_, Result<String, PortError>> {
+            Box::pin(async { Err(PortError::Cancelled) })
+        }
+        fn choose(&self, _: &str, _: &[String]) -> BoxFuture<'_, Result<usize, PortError>> {
+            Box::pin(async { Err(PortError::Cancelled) })
+        }
+        fn show_text(&self, _: &str, _: &str) -> BoxFuture<'_, Result<(), PortError>> {
+            Box::pin(async { Err(PortError::Cancelled) })
+        }
+        fn confirm(&self, _: &str, _: &str) -> BoxFuture<'_, Result<bool, PortError>> {
+            Box::pin(async { Err(PortError::Cancelled) })
+        }
+    }
+
+    /// A folder holding stand-ins for both binaries; nothing runs them.
+    fn fake_ffmpeg(root: &Path, name: &str) -> PathBuf {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        for exe in ["ffmpeg", "ffprobe"] {
+            let file = if cfg!(windows) { format!("{exe}.exe") } else { exe.to_owned() };
+            std::fs::write(dir.join(file), b"").unwrap();
+        }
+        dir
+    }
+
+    /// A saved FFmpeg path replaces the one resolved earlier, and an unchanged path keeps it.
+    #[test]
+    fn a_changed_ffmpeg_path_resolves_again() {
+        let root = tempfile::tempdir().unwrap();
+        let (first, second) = (fake_ffmpeg(root.path(), "first"), fake_ffmpeg(root.path(), "second"));
+        let setting = Arc::new(Mutex::new(first.to_string_lossy().into_owned()));
+        let read = setting.clone();
+        let media = LazyMedia::new(root.path().join("data"), Arc::new(move || read.lock().unwrap().clone()), Arc::new(NoPrompt));
+        let ffmpeg_dir = |m: Arc<FfmpegMedia>| m.paths().ffmpeg.parent().unwrap().to_path_buf();
+
+        let a = futures_lite::future::block_on(media.get()).unwrap();
+        assert_eq!(ffmpeg_dir(a.clone()), first);
+        let again = futures_lite::future::block_on(media.get()).unwrap();
+        assert!(Arc::ptr_eq(&a, &again), "an unchanged path reuses the resolved FFmpeg");
+
+        *setting.lock().unwrap() = second.to_string_lossy().into_owned();
+        let b = futures_lite::future::block_on(media.get()).unwrap();
+        assert_eq!(ffmpeg_dir(b), second);
     }
 }

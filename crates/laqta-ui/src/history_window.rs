@@ -22,13 +22,14 @@ use crate::thumbnails;
 use crate::widgets::{self, Pill};
 
 pub(crate) fn open(images_only: bool, cx: &mut App) {
-    if activate(cx.global::<UiState>().history, cx) {
+    let open = if images_only { cx.global::<UiState>().image_history } else { cx.global::<UiState>().history };
+    if activate(open, cx) {
         return;
     }
     let options = WindowOptions {
         window_bounds: Some(crate::chrome::centered(1080., 740., cx)),
         window_min_size: Some(size(px(640.), px(420.))),
-        titlebar: Some(crate::chrome::titlebar("Laqta history")),
+        titlebar: Some(crate::chrome::titlebar(if images_only { "Laqta image history" } else { "Laqta history" })),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,
         app_id: Some(crate::APP_ID.into()),
@@ -42,7 +43,10 @@ pub(crate) fn open(images_only: bool, cx: &mut App) {
         window.focus(&focus, cx);
         root
     }) {
-        Ok(handle) => cx.global_mut::<UiState>().history = Some(handle.into()),
+        Ok(handle) => {
+            let state = cx.global_mut::<UiState>();
+            *(if images_only { &mut state.image_history } else { &mut state.history }) = Some(handle.into());
+        }
         Err(e) => tracing::error!("history window failed: {e:#}"),
     }
 }

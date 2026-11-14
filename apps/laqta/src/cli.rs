@@ -23,6 +23,9 @@ pub struct Args {
     pub no_hotkeys: bool,
     pub autoclose: bool,
     pub startup_delay_secs: u32,
+    /// `-Elevated`: this copy was started by the run-as-administrator relaunch, so it never relaunches
+    /// again, even if it can't tell that it got the rights.
+    pub relaunched: bool,
     pub import_uploaders: Vec<PathBuf>,
     pub import_effects: Vec<PathBuf>,
 }
@@ -81,6 +84,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
                 out.requests.push(Request::Action(action(&name)?));
             }
             "-silent" | "--silent" | "-s" => out.silent = true,
+            "-elevated" => out.relaunched = true,
             "-portable" | "--portable" => out.portable = true,
             "-sandbox" | "--sandbox" => out.sandbox = true,
             "-multi" | "--multi" | "-m" => out.multi = true,
@@ -197,5 +201,11 @@ mod tests {
         assert_eq!(a.requests, vec![Request::Upload("/tmp/a.png".into()), Request::Upload("b.txt".into())]);
         assert_eq!(a.import_uploaders, vec![PathBuf::from("x.sxcu")]);
         assert_eq!(a.import_effects, vec![PathBuf::from("y.sxie")]);
+    }
+
+    #[test]
+    fn elevated_marks_a_relaunched_copy() {
+        assert!(run(&["-Elevated", "-silent"]).relaunched);
+        assert!(!run(&["-silent"]).relaunched);
     }
 }

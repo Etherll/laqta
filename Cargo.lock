@@ -4991,6 +4991,7 @@ dependencies = [
  "laqta-domain",
  "tempfile",
  "tracing",
+ "widestring",
 ]
 
 [[package]]

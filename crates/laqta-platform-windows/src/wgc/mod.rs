@@ -4,6 +4,7 @@
 //! back to FFmpeg. `pure` builds on every target, so its tests run on Linux.
 
 pub(crate) mod pure;
+pub(crate) mod still;
 
 #[cfg(windows)]
 mod capture;

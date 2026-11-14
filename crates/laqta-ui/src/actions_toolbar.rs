@@ -31,7 +31,8 @@ pub(crate) fn toggle(cx: &mut App) {
     {
         return;
     }
-    let Some(display) = cx.primary_display() else { return };
+    // Wayland names no primary display: take the first then, or nothing would ever show.
+    let Some(display) = crate::placement::main_display(cx) else { return };
     let area = display.bounds();
     let (w, h) = (DEFAULT_ACTIONS.len() as f32 * 118.0 + 16.0, 48.0);
     let x = f32::from(area.origin.x) + (f32::from(area.size.width) - w) / 2.0;

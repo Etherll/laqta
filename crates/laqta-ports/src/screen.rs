@@ -10,11 +10,16 @@ pub struct CaptureRequest {
     /// HDR screens: Laqta tonemaps the HDR desktop to SDR itself (true), or takes the SDR copy the
     /// OS makes (false). Only the Windows adapter reads it.
     pub hdr_tonemap: bool,
+    /// Keep Laqta's own windows in the capture. Off, an adapter that can (macOS) leaves them out.
+    pub include_own_windows: bool,
+    /// One of a quick series (the steps of a scrolling capture): the adapter skips slow extra work
+    /// for a single shot, such as Windows taking an HDR monitor again without the pointer.
+    pub in_series: bool,
 }
 
 impl Default for CaptureRequest {
     fn default() -> Self {
-        CaptureRequest { show_cursor: false, hdr_tonemap: true }
+        CaptureRequest { show_cursor: false, hdr_tonemap: true, include_own_windows: false, in_series: false }
     }
 }
 

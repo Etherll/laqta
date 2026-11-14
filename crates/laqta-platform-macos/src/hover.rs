@@ -4,6 +4,8 @@
 //! Window rects, owner names and ids need no permission. Window titles come back empty until
 //! Screen Recording is granted; that is not an error, and this module never asks for it.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use laqta_domain::region::{HoverTarget, TargetKind};
 use laqta_ports::{BoxFuture, HoverSource, PortError};
 use objc2_core_foundation::{CFArray, CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType, CGPoint, CGRect, CGSize};
@@ -17,6 +19,10 @@ use crate::ax::{self, Frame};
 use crate::displays::{self, Display, to_phys};
 use crate::permissions;
 
+/// Whether Laqta's own windows are snap targets, set through `HoverSource::set_include_own_windows`.
+/// A process-wide flag, so `MacHover` stays a unit struct.
+static INCLUDE_OWN_WINDOWS: AtomicBool = AtomicBool::new(false);
+
 #[derive(Debug, Default)]
 pub struct MacHover;
 
@@ -27,6 +33,10 @@ impl HoverSource for MacHover {
 
     fn active_window(&self) -> BoxFuture<'_, Result<Option<HoverTarget>, PortError>> {
         Box::pin(blocking::unblock(front_target))
+    }
+
+    fn set_include_own_windows(&self, include: bool) {
+        INCLUDE_OWN_WINDOWS.store(include, Ordering::Relaxed);
     }
 }
 
@@ -70,7 +80,8 @@ pub(crate) struct WindowInfo {
 }
 
 /// Whether a window is one the region overlay should snap to: an ordinary window (layer 0, which
-/// leaves out the menu bar, the Dock and overlays) that is drawn, not empty, and not this process's.
+/// leaves out the menu bar, the Dock and overlays) that is drawn, not empty, and not this process's
+/// (`own_pid`; pass -1 to keep them).
 fn is_snap_candidate(window: &WindowInfo, own_pid: i32) -> bool {
     window.layer == 0 && window.alpha > 0.0 && window.frame.width > 0.0 && window.frame.height > 0.0 && window.pid != own_pid
 }
@@ -79,7 +90,9 @@ fn is_snap_candidate(window: &WindowInfo, own_pid: i32) -> bool {
 fn snap_windows() -> Result<Vec<WindowInfo>, PortError> {
     let option = CGWindowListOption::OptionOnScreenOnly | CGWindowListOption::ExcludeDesktopElements;
     let all = window_list(option, kCGNullWindowID).ok_or_else(|| PortError::Failed("the window server returned no window list".into()))?;
-    let own = i32::try_from(std::process::id()).unwrap_or(-1);
+    // No window has pid -1, so including Laqta's windows keeps all of them. Overlays and toasts sit
+    // above layer 0 and are never candidates either way.
+    let own = if INCLUDE_OWN_WINDOWS.load(Ordering::Relaxed) { -1 } else { i32::try_from(std::process::id()).unwrap_or(-1) };
     Ok(all.into_iter().filter(|window| is_snap_candidate(window, own)).collect())
 }
 

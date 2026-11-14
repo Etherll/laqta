@@ -19,7 +19,8 @@ const MARGIN: f32 = 16.0;
 pub(crate) use crate::gpu_image::render_image;
 
 pub(crate) fn show(toast: Toast, cx: &mut App) {
-    let Some(display) = cx.primary_display() else { return };
+    // Wayland names no primary display: take the first then, or nothing would ever show.
+    let Some(display) = crate::placement::main_display(cx) else { return };
     // The work area keeps the toast clear of the Windows taskbar. Where the platform reports no
     // work area (it equals the whole display), a panel's height is left free at the bottom right.
     let area = display.visible_bounds();
@@ -75,6 +76,109 @@ pub(crate) fn show(toast: Toast, cx: &mut App) {
     });
     if let Err(e) = result {
         tracing::warn!("toast window failed: {e:#}");
+    }
+}
+
+/// How long the offer to restart as administrator stays when nobody answers it.
+const OFFER_SECONDS: u64 = 20;
+
+/// A toast-sized window at the bottom right with two buttons: restart Laqta as administrator, or
+/// not now. `app` is the program running as administrator that has the focus.
+pub(crate) fn offer_admin_restart(app: String, restart: Arc<dyn Fn() + Send + Sync>, cx: &mut App) {
+    let Some(display) = crate::placement::main_display(cx) else { return };
+    let area = display.visible_bounds();
+    let (w, h) = (380.0, 128.0);
+    let x = f32::from(area.origin.x) + f32::from(area.size.width) - w - MARGIN;
+    let y = f32::from(area.origin.y) + f32::from(area.size.height) - h - MARGIN;
+    let options = WindowOptions {
+        titlebar: None,
+        window_bounds: Some(WindowBounds::Windowed(Bounds { origin: point(px(x), px(y)), size: size(px(w), px(h)) })),
+        focus: false,
+        show: true,
+        kind: WindowKind::PopUp,
+        is_movable: false,
+        is_resizable: false,
+        is_minimizable: false,
+        display_id: Some(display.id()),
+        window_background: WindowBackgroundAppearance::Transparent,
+        app_id: Some("laqta-toast".into()),
+        ..Default::default()
+    };
+    let result = crate::popup::open(options, cx, move |window, cx| {
+        window
+            .spawn(cx, async move |cx| {
+                cx.background_executor().timer(Duration::from_secs(OFFER_SECONDS)).await;
+                let _ = cx.update(|window, _| window.remove_window());
+            })
+            .detach();
+        cx.new(|_| AdminOffer { app, restart })
+    });
+    if let Err(e) = result {
+        tracing::warn!("offer window failed: {e:#}");
+    }
+}
+
+struct AdminOffer {
+    app: String,
+    restart: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl Render for AdminOffer {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::widgets::{Pill, pill};
+        let x = crate::theme::extra(cx);
+        let t = cx.theme();
+        let restart = self.restart.clone();
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .justify_between()
+            .gap(px(10.))
+            .p(px(14.))
+            .rounded(crate::theme::radius::TOAST)
+            .bg(x.card)
+            .text_color(t.foreground)
+            .font_family(crate::theme::text::UI_FONT)
+            .border_1()
+            .border_color(x.ring)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_size(crate::theme::text::ROW)
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .truncate()
+                            .child(format!("{} runs as administrator", self.app)),
+                    )
+                    .child(
+                        div()
+                            .text_size(crate::theme::text::CAPTION)
+                            .text_color(t.muted_foreground)
+                            .child("Laqta's shortcuts can't reach it. Restart Laqta as administrator to use them there."),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(pill("not-now", "Not now", Pill::Ghost, true, |_, window, _| window.remove_window(), cx))
+                    .child(pill(
+                        "restart-admin",
+                        "Restart as administrator",
+                        Pill::Primary,
+                        true,
+                        move |_, window, _| {
+                            window.remove_window();
+                            restart();
+                        },
+                        cx,
+                    )),
+            )
     }
 }
 

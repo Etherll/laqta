@@ -19,17 +19,17 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
-    DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_UNSPECIFIED, DXGI_SAMPLE_DESC,
+    DXGI_COLOR_SPACE_TYPE, DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_MODE_ROTATION_IDENTITY,
+    DXGI_MODE_ROTATION_UNSPECIFIED, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput, IDXGIOutput1,
-    IDXGIOutput5, IDXGIOutput6, IDXGIResource,
+    IDXGIOutput5, IDXGIOutput6, IDXGIOutputDuplication, IDXGIResource,
 };
 use windows::core::{Error, Interface, Result};
 
 use crate::capture_gdi::monitor_from_handle;
-use crate::hdr::tonemap_frame;
+use crate::hdr::{tonemap_frame, wants_fp16 as is_hdr_colour_space};
 
 /// How long to wait for a frame whose `LastPresentTime` is set.
 const FIRST_FRAME_BUDGET: Duration = Duration::from_millis(500);
@@ -45,13 +45,26 @@ struct Staging {
     format: DXGI_FORMAT,
 }
 
+/// The frames of one duplication pass, and what Windows said about the pointer while taking them.
+pub(crate) struct Captured {
+    pub(crate) frames: Vec<Frame>,
+    /// Whether the presented frame of any output reported the pointer as visible. Duplication frames
+    /// never contain the pointer; this only tells the debug log what Windows had on screen.
+    pub(crate) pointer_visible: bool,
+    /// For each frame, the SDR white scale of its output when that output shows an HDR desktop.
+    /// Windows often draws the pointer into an HDR desktop itself, so duplication can hold it.
+    pub(crate) hdr_white: Vec<Option<f32>>,
+}
+
 /// With `hdr_tonemap` false, an HDR output is duplicated in 8 bits, so Windows makes the SDR image
 /// instead of Laqta's tonemap.
-pub(crate) fn capture(hdr_tonemap: bool) -> Result<Vec<Frame>> {
+pub(crate) fn capture(hdr_tonemap: bool) -> Result<Captured> {
     // SAFETY: COM calls on interfaces owned by this function; DXGI needs no apartment.
     unsafe {
         let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
         let mut frames = Vec::new();
+        let mut pointer_visible = false;
+        let mut hdr_whites = Vec::new();
         let mut adapter_index = 0;
         while let Ok(adapter) = factory.EnumAdapters1(adapter_index) {
             adapter_index += 1;
@@ -73,31 +86,63 @@ pub(crate) fn capture(hdr_tonemap: bool) -> Result<Vec<Frame>> {
                     return Err(E_FAIL.into());
                 }
                 let monitor = monitor_from_handle(desc.Monitor).ok_or_else(|| Error::from(E_FAIL))?;
-                let hdr_white = (hdr_tonemap && is_scrgb(&output)).then(|| sdr_white_scale(&monitor.name));
-                let image = duplicate(&output.cast::<IDXGIOutput1>()?, &device, &context, hdr_white)?;
+                let white = output_wants_fp16(&output).then(|| sdr_white_scale(&monitor.name));
+                let hdr_white = white.filter(|_| hdr_tonemap);
+                let (image, pointer) = duplicate(&output.cast::<IDXGIOutput1>()?, &device, &context, hdr_white, &monitor.name)?;
+                pointer_visible |= pointer;
                 frames.push(Frame { monitor, image });
+                hdr_whites.push(white);
             }
         }
         if frames.is_empty() {
             return Err(E_FAIL.into());
         }
-        Ok(frames)
+        Ok(Captured { frames, pointer_visible, hdr_white: hdr_whites })
     }
 }
 
-/// Whether the output shows an scRGB (HDR) desktop. Windows older than 10 1703 has no
-/// `IDXGIOutput6`, so those outputs count as SDR.
-fn is_scrgb(output: &IDXGIOutput) -> bool {
+/// Whether any output on any adapter shows an HDR desktop. For the log line when capture falls back
+/// to GDI, which cannot read HDR pixels.
+pub(crate) fn any_hdr_output() -> bool {
+    // SAFETY: COM calls on interfaces owned by this function; DXGI needs no apartment.
+    unsafe {
+        let Ok(factory) = CreateDXGIFactory1::<IDXGIFactory1>() else {
+            return false;
+        };
+        let mut adapter_index = 0;
+        while let Ok(adapter) = factory.EnumAdapters1(adapter_index) {
+            adapter_index += 1;
+            let mut output_index = 0;
+            while let Ok(output) = adapter.EnumOutputs(output_index) {
+                output_index += 1;
+                if output_wants_fp16(&output) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+/// Whether `cs` is an HDR colour space, which is duplicated as FP16 and tonemapped to sRGB. The
+/// decision itself is in `hdr::wants_fp16`, on the raw value, so it is tested on every target.
+fn wants_fp16(cs: DXGI_COLOR_SPACE_TYPE) -> bool {
+    is_hdr_colour_space(cs.0)
+}
+
+/// Whether the output shows an HDR desktop (`wants_fp16` of its colour space). Windows older than
+/// 10 1703 has no `IDXGIOutput6`, so those outputs count as SDR.
+fn output_wants_fp16(output: &IDXGIOutput) -> bool {
     let Ok(output6) = output.cast::<IDXGIOutput6>() else {
         return false;
     };
     // SAFETY: a plain query on a live output.
-    unsafe { output6.GetDesc1() }.is_ok_and(|desc| desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709)
+    unsafe { output6.GetDesc1() }.is_ok_and(|desc| wants_fp16(desc.ColorSpace))
 }
 
 /// SDR white in scRGB units for the monitor named `device`: `SDRWhiteLevel / 1000`, since 1000 is
 /// 80 nits and scRGB 1.0 is 80 nits. Falls back to 240 nits when Windows reports no level.
-fn sdr_white_scale(device: &str) -> f32 {
+pub(crate) fn sdr_white_scale(device: &str) -> f32 {
     sdr_white_level(device).map_or(FALLBACK_SDR_WHITE, |level| level as f32 / 1000.0)
 }
 
@@ -202,15 +247,21 @@ unsafe fn create_device(adapter: &IDXGIAdapter1) -> Result<(ID3D11Device, ID3D11
 /// staging texture. Frames with `LastPresentTime == 0` can be blank on some drivers, so a timeout
 /// fails and the caller falls back to GDI.
 ///
-/// With `hdr_white` set (an scRGB output), FP16 duplication is tried first. If the driver refuses
+/// With `hdr_white` set (an HDR output), FP16 duplication is tried first. If the driver refuses
 /// it, the 8-bit duplication is used. The format of the texture that was acquired decides whether
-/// the frame is tonemapped.
-unsafe fn duplicate(output: &IDXGIOutput1, device: &ID3D11Device, context: &ID3D11DeviceContext, hdr_white: Option<f32>) -> Result<Bitmap> {
+/// the frame is tonemapped. `name` is the monitor's device name, for the log.
+///
+/// The second value is whether the presented frame reported the pointer as visible.
+unsafe fn duplicate(
+    output: &IDXGIOutput1,
+    device: &ID3D11Device,
+    context: &ID3D11DeviceContext,
+    hdr_white: Option<f32>,
+    name: &str,
+) -> Result<(Bitmap, bool)> {
     // SAFETY: all calls are on live COM objects; each acquired frame is released before the next.
     unsafe {
-        let fp16 = hdr_white
-            .and_then(|_| output.cast::<IDXGIOutput5>().ok())
-            .and_then(|output5| output5.DuplicateOutput1(device, 0, &[DXGI_FORMAT_R16G16B16A16_FLOAT]).ok());
+        let fp16 = hdr_white.and_then(|_| duplicate_fp16(output, device, name));
         let dupl = match fp16 {
             Some(dupl) => dupl,
             None => output.DuplicateOutput(device)?,
@@ -218,6 +269,7 @@ unsafe fn duplicate(output: &IDXGIOutput1, device: &ID3D11Device, context: &ID3D
         let deadline = Instant::now() + FIRST_FRAME_BUDGET;
         let mut staging: Option<Staging> = None;
         let mut presented = false;
+        let mut pointer_visible = false;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
@@ -229,6 +281,7 @@ unsafe fn duplicate(output: &IDXGIOutput1, device: &ID3D11Device, context: &ID3D
                     copied?;
                     if info.LastPresentTime != 0 {
                         presented = true;
+                        pointer_visible = info.PointerPosition.Visible.as_bool();
                         break;
                     }
                 }
@@ -240,8 +293,28 @@ unsafe fn duplicate(output: &IDXGIOutput1, device: &ID3D11Device, context: &ID3D
             }
         }
         match staging {
-            Some(staging) if presented => read_frame(context, &staging, hdr_white),
+            Some(staging) if presented => Ok((read_frame(context, &staging, hdr_white)?, pointer_visible)),
             _ => Err(DXGI_ERROR_WAIT_TIMEOUT.into()),
+        }
+    }
+}
+
+/// FP16 duplication of an HDR output. `None` when the driver or Windows refuses it, which is logged
+/// because the frame is then the 8-bit image Windows makes for SDR, not Laqta's tonemap.
+unsafe fn duplicate_fp16(output: &IDXGIOutput1, device: &ID3D11Device, name: &str) -> Option<IDXGIOutputDuplication> {
+    let output5 = match output.cast::<IDXGIOutput5>() {
+        Ok(output5) => output5,
+        Err(e) => {
+            tracing::info!("no IDXGIOutput5 for HDR output {name} ({e}); duplicating it in 8 bits");
+            return None;
+        }
+    };
+    // SAFETY: a plain call on live COM objects; the format list outlives it.
+    match unsafe { output5.DuplicateOutput1(device, 0, &[DXGI_FORMAT_R16G16B16A16_FLOAT]) } {
+        Ok(dupl) => Some(dupl),
+        Err(e) => {
+            tracing::info!("DuplicateOutput1 refused FP16 on HDR output {name} ({e}); duplicating it in 8 bits");
+            None
         }
     }
 }

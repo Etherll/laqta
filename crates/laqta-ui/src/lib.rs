@@ -29,6 +29,7 @@ mod perf;
 mod permissions_window;
 mod photo_window;
 mod pin_window;
+mod placement;
 mod popup;
 mod prompt_window;
 mod recording_bar;

@@ -162,6 +162,11 @@ pub trait HoverSource: Send + Sync {
     fn targets(&self) -> crate::BoxFuture<'_, Result<Vec<HoverTarget>, PortError>>;
     /// The focused top-level window, if the platform can tell.
     fn active_window(&self) -> crate::BoxFuture<'_, Result<Option<HoverTarget>, PortError>>;
+    /// Whether Laqta's own windows are targets. Off by default; the dispatcher sets it before each
+    /// capture. A source that never lists its own windows ignores it.
+    fn set_include_own_windows(&self, include: bool) {
+        let _ = include;
+    }
 }
 
 /// A window the dispatcher can open (ARCHITECTURE §2.2), including the windowed tools.

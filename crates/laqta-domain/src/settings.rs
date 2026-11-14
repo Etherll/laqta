@@ -39,6 +39,13 @@ pub struct Settings {
     pub models: ModelOptions,
     /// Cloud services: background removal provider and the image analyzer.
     pub cloud: CloudOptions,
+    /// Windows only: start Laqta with administrator rights (one UAC prompt per start), so its
+    /// shortcuts and capture reach elevated windows. Other platforms ignore it.
+    pub run_as_admin: bool,
+    /// Windows only: catch the shortcuts with a keyboard hook instead of `RegisterHotKey`, so they
+    /// still work in games that take the keyboard for themselves. The hook takes the keys it
+    /// matches. Other platforms ignore it.
+    pub hotkeys_via_hook: bool,
 }
 
 /// Which background remover runs.
@@ -216,6 +223,8 @@ impl Settings {
             auto_capture: AutoCaptureOptions::default(),
             models: ModelOptions::default(),
             cloud: CloudOptions::default(),
+            run_as_admin: false,
+            hotkeys_via_hook: false,
         }
     }
 
@@ -233,6 +242,12 @@ impl Settings {
 
     pub fn workflow(&self, id: WorkflowId) -> Option<&Workflow> {
         self.workflows.iter().find(|w| w.id == id)
+    }
+
+    /// The workflow an action runs under when nothing names one (the tray, a Laqta window, the CLI):
+    /// the first enabled workflow for that action.
+    pub fn workflow_for_action(&self, action: Action) -> Option<&Workflow> {
+        self.workflows.iter().find(|w| w.enabled && w.action == action)
     }
 
     /// The first enabled workflow with that hotkey.
@@ -391,6 +406,18 @@ mod tests {
     }
 
     #[test]
+    fn run_as_admin_is_off_by_default() {
+        assert!(!settings().run_as_admin);
+        assert!(!Settings::default().run_as_admin);
+    }
+
+    #[test]
+    fn hotkeys_via_hook_is_off_by_default() {
+        assert!(!settings().hotkeys_via_hook);
+        assert!(!Settings::default().hotkeys_via_hook);
+    }
+
+    #[test]
     fn empty_object_loads_defaults() {
         let empty = serde::de::value::MapDeserializer::<_, serde::de::value::Error>::new(std::iter::empty::<(&str, &str)>());
         let loaded = Settings::deserialize(empty).expect("an empty object is valid settings");
@@ -412,5 +439,29 @@ mod json_tests {
         assert_eq!(back.workflows[1].name, "Capture region");
         let empty: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(empty.version, SETTINGS_VERSION);
+    }
+
+    #[test]
+    fn run_as_admin_round_trips_and_old_files_load_without_it() {
+        let mut s = Settings::default_for(PathBuf::from("/p"));
+        s.run_as_admin = true;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(back.run_as_admin);
+        let mut value = serde_json::to_value(Settings::default_for(PathBuf::from("/p"))).unwrap();
+        value.as_object_mut().unwrap().remove("run_as_admin");
+        let old: Settings = serde_json::from_value(value).unwrap();
+        assert!(!old.run_as_admin);
+    }
+
+    #[test]
+    fn hotkeys_via_hook_round_trips_and_old_files_load_without_it() {
+        let mut s = Settings::default_for(PathBuf::from("/p"));
+        s.hotkeys_via_hook = true;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(back.hotkeys_via_hook);
+        let mut value = serde_json::to_value(Settings::default_for(PathBuf::from("/p"))).unwrap();
+        value.as_object_mut().unwrap().remove("hotkeys_via_hook");
+        let old: Settings = serde_json::from_value(value).unwrap();
+        assert!(!old.hotkeys_via_hook);
     }
 }

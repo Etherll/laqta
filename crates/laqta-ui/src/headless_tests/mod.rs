@@ -235,6 +235,7 @@ pub(crate) fn install(cx: &mut TestAppContext, services: UiServices) {
             main: None,
             settings: None,
             history: None,
+            image_history: None,
             tray_popup: None,
             actions_toolbar: None,
             recording: Default::default(),

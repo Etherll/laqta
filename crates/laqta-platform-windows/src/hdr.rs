@@ -1,6 +1,21 @@
 //! HDR readback math: FP16 scRGB desktop pixels to 8-bit sRGB. Pure,
 //! so it builds and is tested on every target.
 
+/// `DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709`: linear scRGB, the colour space of an HDR desktop that
+/// Windows composes in FP16.
+const COLOR_SPACE_SCRGB: i32 = 1;
+
+/// `DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020`: HDR10, the colour space a display in HDR mode
+/// reports for its output.
+const COLOR_SPACE_HDR10: i32 = 12;
+
+/// Whether an output with this raw `DXGI_COLOR_SPACE_TYPE` is duplicated as FP16 and tonemapped.
+/// Both the scRGB and the HDR10 colour spaces are HDR: an 8-bit duplication of either is a
+/// washed-out image.
+pub(crate) fn wants_fp16(color_space: i32) -> bool {
+    matches!(color_space, COLOR_SPACE_SCRGB | COLOR_SPACE_HDR10)
+}
+
 /// Luminance (in SDR-white units) where the highlight roll-off starts. Everything below it is left alone.
 const SHOULDER: f32 = 0.9;
 
@@ -78,6 +93,20 @@ pub(crate) fn tonemap_frame(raw: &[u8], sdr_white: f32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wants_fp16_for_scrgb_and_hdr10() {
+        assert!(wants_fp16(1), "G10_NONE_P709 (scRGB)");
+        assert!(wants_fp16(12), "G2084_NONE_P2020 (HDR10)");
+    }
+
+    #[test]
+    fn wants_fp16_is_false_for_sdr_colour_spaces() {
+        assert!(!wants_fp16(0), "RGB_FULL_G22_NONE_P709 (sRGB)");
+        assert!(!wants_fp16(2), "RGB_STUDIO_G22_NONE_P709");
+        assert!(!wants_fp16(3), "RGB_STUDIO_G22_NONE_P2020 (wide-gamut SDR)");
+        assert!(!wants_fp16(-1), "out of range");
+    }
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-6

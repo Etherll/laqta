@@ -13,6 +13,7 @@ pub mod history;
 pub mod hotkeys;
 pub mod library;
 pub mod mark_pointer;
+pub mod monitor_placement;
 pub mod notice;
 pub mod open_urls;
 pub mod output;

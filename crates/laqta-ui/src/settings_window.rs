@@ -169,6 +169,7 @@ struct SettingsWindow {
 struct RecordingInputs {
     fps: Entity<InputState>,
     gif_fps: Entity<InputState>,
+    gif_max_width: Entity<InputState>,
     crf: Entity<InputState>,
     countdown: Entity<InputState>,
     duration: Entity<InputState>,
@@ -219,6 +220,7 @@ impl SettingsWindow {
         let rec = RecordingInputs {
             fps: input(&x.rec_fps),
             gif_fps: input(&x.rec_gif_fps),
+            gif_max_width: input(&x.rec_gif_max_width),
             crf: input(&x.rec_crf),
             countdown: input(&x.rec_countdown),
             duration: input(&x.rec_duration),
@@ -368,6 +370,7 @@ impl SettingsWindow {
             let r = &mut self.draft.defaults.recording;
             r.fps = num(&self.rec.fps, "Frame rate")?.clamp(1, 240);
             r.gif_fps = num(&self.rec.gif_fps, "GIF frame rate")?.clamp(1, 60);
+            r.gif_max_width = num(&self.rec.gif_max_width, "GIF maximum width")?;
             let crf = Self::value(&self.rec.crf, cx);
             r.quality = if crf.is_empty() {
                 laqta_domain::record::Quality::Default
@@ -866,7 +869,7 @@ impl SettingsWindow {
                     .child(self.sw(
                         "history",
                         "Keep history",
-                        Some(&format!("A list of your captures and uploads, stored in {data_dir}.")),
+                        Some(&format!("A list of your captures and uploads, stored in {data_dir}. Takes effect after Laqta restarts.")),
                         |s| s.history.enabled,
                         |this, v| this.draft.history.enabled = v,
                         cx,
@@ -1149,6 +1152,15 @@ impl SettingsWindow {
                         &self.rec.gif_fps,
                         |d| &d.rec_gif_fps,
                         cx,
+                    ))
+                    .child(self.input_row(
+                        "rec-gif-max-width-reset",
+                        "Maximum width",
+                        Some("Wider recordings are scaled down to this many pixels, so they save faster and stay small. 0 keeps the full size."),
+                        Slot::Number,
+                        &self.rec.gif_max_width,
+                        |d| &d.rec_gif_max_width,
+                        cx,
                     )),
             )
             .child(
@@ -1172,7 +1184,7 @@ impl SettingsWindow {
                     .child(self.sw(
                         "rec-highlight",
                         "Highlight the mouse",
-                        Some("X11 and Windows."),
+                        Some("Not available on Wayland."),
                         |s| s.defaults.recording.highlight_mouse,
                         rec(|r, c| r.highlight_mouse = c),
                         cx,
@@ -1575,7 +1587,11 @@ impl SettingsWindow {
                     let services = cx.global::<UiState>().services.clone();
                     let r = std::env::current_exe()
                         .map_err(|e| e.to_string())
-                        .and_then(|exe| services.autostart.set_enabled(*c, &exe).map_err(|e| e.to_string()));
+                        // An administrator Laqta starts from a scheduled task, so sign-in doesn't ask UAC each time.
+                        .and_then(|exe| {
+                            let elevated = services.app.settings().run_as_admin;
+                            services.autostart.set_enabled_elevated(*c, elevated, &exe).map_err(|e| e.to_string())
+                        });
                     this.report(
                         r.map(
                             |()| if *c { "Laqta will start when you sign in.".into() } else { "Laqta will not start at sign-in.".into() },
@@ -1623,8 +1639,26 @@ impl SettingsWindow {
         } else {
             ("File manager", file_manager)
         };
-        page().child(widgets::section("Startup", cx).child(startup)).child(widgets::section(files_title, cx).child(file_manager)).child(
-            widgets::section("Browser", cx).child(widgets::action_row(
+        let startup = widgets::section("Startup", cx).child(startup).when(cfg!(windows), |s| {
+            s.child(self.sw(
+                "run-as-admin",
+                "Run as administrator",
+                Some("Windows asks for administrator rights (UAC) when Laqta starts, so its shortcuts and captures also work in apps and games that run as administrator. Laqta then takes no files or links from other programs. Only turn it on if you need it: Laqta offers a one-time restart as administrator when such an app is in front. Applies after Laqta restarts."),
+                |s| s.run_as_admin,
+                |this, v| this.draft.run_as_admin = v,
+                cx,
+            ))
+            .child(self.sw(
+                "hotkeys-via-hook",
+                "Shortcuts work in games",
+                Some("Catches Laqta's shortcuts with a keyboard hook before other apps see them, for games that take the keyboard for themselves. Those keys then no longer reach the app in front. Games that run as administrator stay out of reach unless Laqta does too."),
+                |s| s.hotkeys_via_hook,
+                |this, v| this.draft.hotkeys_via_hook = v,
+                cx,
+            ))
+        });
+        page().child(startup).child(widgets::section(files_title, cx).child(file_manager)).child(widgets::section("Browser", cx).child(
+            widgets::action_row(
                 "Browser extension",
                 Some("Lets the ShareX browser extension (Chrome, Firefox) send pages, images and links to Laqta."),
                 widgets::pill(
@@ -1646,8 +1680,8 @@ impl SettingsWindow {
                     cx,
                 ),
                 cx,
-            )),
-        )
+            ),
+        ))
     }
     fn data(&self, cx: &mut Context<Self>) -> gpui::Div {
         let changed = settings_reset::changed(Scope::All, &self.draft, &self.defaults);
@@ -2167,9 +2201,17 @@ impl SettingsWindow {
                     .child(self.sw(
                         "transparent",
                         "Keep window transparency",
-                        Some("Keeps rounded corners and shadows when capturing a window."),
+                        Some("Keeps rounded corners and shadows when capturing a window. Not available on Wayland."),
                         |s| s.defaults.capture.transparent_window,
                         |this, v| this.draft.defaults.capture.transparent_window = v,
+                        cx,
+                    ))
+                    .child(self.sw(
+                        "include-own-windows",
+                        "Include Laqta's own windows",
+                        Some("Lets you capture Laqta's windows: they stay on screen and can be picked as a window. Off: they hide while you capture."),
+                        |s| s.defaults.capture.include_own_windows,
+                        |this, v| this.draft.defaults.capture.include_own_windows = v,
                         cx,
                     )),
             )
@@ -2513,7 +2555,7 @@ impl SettingsWindow {
                         .child(widgets::badge(headline, tone, cx))
                         .child(widgets::muted(detail, cx)),
                 )
-                .when_some(configure, |d, configure| {
+                .when_some(configure.clone(), |d, configure| {
                     d.child(widgets::pill(
                         "open-desktop-shortcuts",
                         "Open shortcut settings",
@@ -2549,9 +2591,12 @@ impl SettingsWindow {
                 RowStatus::Pending => (Some(t.muted_foreground), Some("Not active yet: save to apply.".into())),
                 RowStatus::Conflict(why) => (Some(t.danger), Some(why.clone())),
                 RowStatus::Failed(why) => (Some(t.danger), Some(format!("The system refused it: {why}"))),
-                RowStatus::DesktopKey(key) => {
-                    (Some(t.warning), Some(format!("Your desktop uses {key} for this. Change it in the desktop's shortcut settings.")))
-                }
+                RowStatus::DesktopKey(key) => (
+                    Some(t.warning),
+                    Some(format!(
+                        "Your desktop assigned {key} instead, because it keeps the key it stored first. Change it in the desktop's shortcut settings, or remove Laqta's entry there and save again."
+                    )),
+                ),
                 RowStatus::NoKey => (
                     Some(t.danger),
                     Some("Your desktop gave this shortcut no key, so it won't work. Set one in the desktop's shortcut settings.".into()),
@@ -2588,6 +2633,17 @@ impl SettingsWindow {
                         cx,
                     )
                 });
+            // The desktop keeps its own key for this row: send people straight to where they change it.
+            let desktop_fix = configure.clone().filter(|_| matches!(st, RowStatus::DesktopKey(_) | RowStatus::NoKey)).map(|open| {
+                widgets::pill(
+                    SharedString::from(format!("wf-desktop-{i}")),
+                    "Open shortcut settings",
+                    Pill::Default,
+                    true,
+                    cx.listener(move |_, _, _, _| open()),
+                    cx,
+                )
+            });
             let recording_here = self.recording == Some(i);
             let note = if recording_here {
                 Some(self.rec_error.unwrap_or("Press the keys, Esc to keep the old shortcut, Backspace to remove it.").to_owned())
@@ -2712,7 +2768,8 @@ impl SettingsWindow {
                         || (recording_here && self.rec_error.is_some());
                     d.child(div().pl(px(48.)).child(widgets::notice(n, !danger, cx)))
                 })
-                .when_some(snipping_fix, |d, button| d.child(div().pl(px(48.)).child(button)));
+                .when_some(snipping_fix, |d, button| d.child(div().pl(px(48.)).child(button)))
+                .when_some(desktop_fix, |d, button| d.child(div().pl(px(48.)).child(button)));
             let row = match w.patch.after_capture {
                 Some(flags) => row.child(div().pl(px(48.)).child(self.after_capture_list(
                     &format!("wf-{i}"),

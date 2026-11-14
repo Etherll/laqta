@@ -43,9 +43,10 @@ pub struct Selection {
 }
 
 /// Picks an area for a tool that acts on it straight away (recording, scrolling capture, OCR,
-/// QR): the selection confirms on release, with no capture toolbar.
+/// QR): the selection confirms on release, with no capture toolbar. It is one area, so the user's
+/// multi-region setting is ignored: a multi-region session waits for Enter instead of confirming.
 pub(crate) async fn pick(ports: &Ports, frames: Vec<Frame>, options: &RegionCaptureOptions) -> Result<Selection, AppError> {
-    let options = RegionCaptureOptions { show_tools_after_select: false, show_mode_bar: false, ..options.clone() };
+    let options = RegionCaptureOptions { show_tools_after_select: false, show_mode_bar: false, multi_region: false, ..options.clone() };
     select(ports, frames, &options).await
 }
 
@@ -123,6 +124,7 @@ pub(crate) async fn pick_color(ports: &Ports, frames: Vec<Frame>, options: &Regi
         show_magnifier: true,
         show_info: true,
         dim_alpha: 0,
+        multi_region: false,
         ..options.clone()
     };
     session(ports, frames, &options, Kind::Point).await

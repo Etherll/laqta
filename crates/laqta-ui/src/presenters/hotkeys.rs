@@ -20,7 +20,7 @@ pub enum Recorded {
     Waiting,
     /// Esc on its own: stop recording, keep the old shortcut.
     Cancel,
-    /// Backspace or Delete on its own: remove the shortcut.
+    /// Backspace on its own: remove the shortcut. Delete is a key like any other (it can be bound).
     Clear,
     /// A key a global shortcut can't use.
     Unusable,
@@ -41,7 +41,7 @@ pub fn record(key: &str, mods: Mods) -> Recorded {
     match key {
         "control" | "shift" | "alt" | "super" | "platform" | "function" | "" => return Recorded::Waiting,
         "escape" if plain => return Recorded::Cancel,
-        "backspace" | "delete" if plain => return Recorded::Clear,
+        "backspace" if plain => return Recorded::Clear,
         _ => {}
     }
     let name = match key {
@@ -140,7 +140,8 @@ pub enum RowStatus {
 }
 
 /// Whether the desktop's key text (KDE: "Ctrl+'", "Print", "Meta+Shift+S") names `chord`.
-/// Spelling differs between desktops, so names are compared loosely, in any order.
+/// Spelling differs between desktops, so names are compared loosely, in any order. A portal lists
+/// every key an action has, separated by ", " ("Print, Ctrl+Print"): any one of them may match.
 pub fn same_key(chord: KeyChord, desktop: &str) -> bool {
     /// One spelling per key: Laqta's names (`Minus`, `Numpad1`, `VolumeUp`) and the desktop's
     /// (Qt/KDE: `-`, `Num+1`, `Volume Up`) meet here.
@@ -207,7 +208,8 @@ pub fn same_key(chord: KeyChord, desktop: &str) -> bool {
         out.sort();
         out
     }
-    parts(&chord.to_string()) == parts(desktop)
+    let wanted = parts(&chord.to_string());
+    desktop.split(", ").any(|key| parts(key) == wanted)
 }
 
 /// The status of each row, from the draft (`(name, chord, enabled)` per row), the last
@@ -284,6 +286,8 @@ mod tests {
         assert_eq!(record("shift", ctrl_shift), Recorded::Waiting);
         assert_eq!(record("escape", Mods::default()), Recorded::Cancel);
         assert_eq!(record("backspace", Mods::default()), Recorded::Clear);
+        assert_eq!(record("delete", Mods::default()), Recorded::Chord(chord("Delete")));
+        assert_eq!(record("delete", Mods { ctrl: true, ..Mods::default() }), Recorded::Chord(chord("Ctrl+Delete")));
         assert_eq!(record("é", Mods::default()), Recorded::Unusable);
     }
 
@@ -357,6 +361,15 @@ mod tests {
         assert!(same_key(chord("Ctrl+Numpad1"), "Ctrl+Num+1"));
         assert!(same_key(chord("Ctrl+NumpadAdd"), "Ctrl+Num++"));
         assert!(!same_key(chord("Ctrl+1"), "Ctrl+Num+1"), "the keypad 1 is not the top-row 1");
+    }
+
+    #[test]
+    fn a_portal_description_with_several_keys_matches_any_of_them() {
+        assert!(same_key(chord("Ctrl+PrintScreen"), "Print, Ctrl+Print"));
+        assert!(same_key(chord("PrintScreen"), "Print, Ctrl+Print"));
+        assert!(!same_key(chord("Alt+PrintScreen"), "Print, Ctrl+Print"));
+        assert!(same_key(chord("Ctrl+Comma"), "Ctrl+,, Print"), "a comma key is not a separator");
+        assert!(same_key(chord("Ctrl+NumpadAdd"), "Print, Ctrl+Num++"));
     }
     use laqta_domain::settings::Settings;
 

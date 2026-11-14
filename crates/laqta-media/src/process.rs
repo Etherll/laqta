@@ -504,7 +504,11 @@ impl Inner {
         let palette = self.session.join("palette.png");
         let runs = match spec.codec {
             VideoCodec::Gif => {
-                vec![argv::palette_args(merged, spec.fps, &palette), argv::paletteuse_args(merged, &palette, spec.fps, part)]
+                let scale_to = argv::gif_scale_width(spec);
+                vec![
+                    argv::palette_args(merged, spec.fps, scale_to, &palette),
+                    argv::paletteuse_args(merged, &palette, spec.fps, scale_to, part),
+                ]
             }
             codec => vec![argv::animation_args(codec, merged, part)],
         };
@@ -995,6 +999,7 @@ mod tests {
             audio: Vec::new(),
             custom_args: String::new(),
             camera,
+            gif_max_width: 1280,
         };
         Plan { video: VideoInputDesc::RawFrames { width: 64, height: 48, fps: 30 }, audio: Vec::new(), spec, host }
     }

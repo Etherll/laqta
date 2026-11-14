@@ -56,6 +56,12 @@ pub(crate) enum UiCommand {
     },
     /// The hotkey report changed: open windows redraw their shortcut status.
     HotkeysChanged,
+    /// An app running as administrator has the focus, out of Laqta's reach: offer to restart Laqta
+    /// with the same rights. `restart` runs when the user accepts.
+    OfferAdminRestart {
+        app: String,
+        restart: Arc<dyn Fn() + Send + Sync>,
+    },
     Quit,
 }
 
@@ -82,6 +88,12 @@ impl UiHandle {
     /// Tells the UI that the hotkey report changed (registration finished, or the desktop assigned keys).
     pub fn hotkeys_changed(&self) {
         let _ = self.send(UiCommand::HotkeysChanged);
+    }
+
+    /// Offers to restart Laqta as administrator, because `app`, which runs as administrator, has
+    /// the focus. `restart` runs when the user accepts.
+    pub fn offer_admin_restart(&self, app: String, restart: Arc<dyn Fn() + Send + Sync>) {
+        let _ = self.send(UiCommand::OfferAdminRestart { app, restart });
     }
 
     /// Asks the GPUI loop to quit.
@@ -295,8 +307,8 @@ impl ToolHost for UiHandle {
     }
 }
 
-/// What `UiServices::native_window` does to a window. The first three are Windows behaviour and
-/// the last is macOS behaviour; a platform answers false to what it does not need.
+/// What `UiServices::native_window` does to a window. All but `CoverScreen` are Windows behaviour and
+/// `CoverScreen` is macOS behaviour; a platform answers false to what it does not need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeWindow {
     /// A borderless popup keeps only what it paints: no outline or shadow drawn by the OS.
@@ -312,6 +324,12 @@ pub enum NativeWindow {
     /// real one. The window is opened hidden and unfocused; the platform shows it and gives it
     /// the keyboard once it covers the screen.
     CoverScreen,
+    /// Notes which other program's window has the keyboard now, before the window takes it. Not
+    /// about the window the call is made with.
+    RememberForeground,
+    /// Gives the keyboard back to the window `RememberForeground` noted, if it is still open and not
+    /// minimized, and forgets it. Not about the window the call is made with.
+    RestoreForeground,
 }
 
 /// `UiServices::native_window`: true when the platform did what was asked.
@@ -330,6 +348,9 @@ pub struct PermissionHooks {
     pub granted: Arc<dyn Fn(laqta_ports::Permission) -> bool + Send + Sync>,
     /// Asks for the permission: the OS prompt where there is one, and its settings page.
     pub request: Arc<dyn Fn(laqta_ports::Permission) + Send + Sync>,
+    /// Starts a fresh copy of Laqta a moment after this one quits; the caller then quits. macOS reads
+    /// a new Screen Recording grant only in a new process.
+    pub relaunch: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl std::fmt::Debug for PermissionHooks {
@@ -514,6 +535,8 @@ pub(crate) struct UiState {
     pub main: Option<gpui::AnyWindowHandle>,
     pub settings: Option<gpui::AnyWindowHandle>,
     pub history: Option<gpui::AnyWindowHandle>,
+    /// Image history: its own window, so opening it doesn't just raise the full history.
+    pub image_history: Option<gpui::AnyWindowHandle>,
     pub tray_popup: Option<gpui::AnyWindowHandle>,
     pub actions_toolbar: Option<gpui::AnyWindowHandle>,
     pub recording: crate::recording_bar::RecordingWindows,
@@ -598,6 +621,7 @@ pub fn run(services: UiServices, rx: UiReceiver) {
             main: None,
             settings: None,
             history: None,
+            image_history: None,
             tray_popup: None,
             actions_toolbar: None,
             recording: Default::default(),
@@ -685,6 +709,7 @@ fn handle(cmd: UiCommand, cx: &mut App) {
         UiCommand::UpdateOverlay(view) => overlay::update(view, cx),
         UiCommand::CloseOverlay => overlay::close(cx),
         UiCommand::Toast(t) => toast::show(t, cx),
+        UiCommand::OfferAdminRestart { app, restart } => toast::offer_admin_restart(app, restart, cx),
         UiCommand::Open(ToolWindow::Main) => main_window::open(cx),
         UiCommand::Open(ToolWindow::Settings) => settings_window::open(cx),
         UiCommand::Open(ToolWindow::History) => history_window::open(false, cx),

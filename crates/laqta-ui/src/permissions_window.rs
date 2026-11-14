@@ -45,6 +45,8 @@ pub(crate) fn open_if_needed(cx: &mut App) {
 struct PermissionsWindow {
     hooks: PermissionHooks,
     granted: Vec<(Permission, bool)>,
+    /// Allow was pressed for Screen Recording: macOS only reports the grant to a new process.
+    asked_screen: bool,
 }
 
 impl PermissionsWindow {
@@ -67,7 +69,7 @@ impl PermissionsWindow {
             }
         })
         .detach();
-        PermissionsWindow { hooks, granted }
+        PermissionsWindow { hooks, granted, asked_screen: false }
     }
 }
 
@@ -116,7 +118,13 @@ impl Render for PermissionsWindow {
                     "Allow…",
                     if required { Pill::Primary } else { Pill::Default },
                     true,
-                    move |_, _, _| request(permission),
+                    cx.listener(move |this, _, _, cx| {
+                        if permission == Permission::ScreenRecording {
+                            this.asked_screen = true;
+                            cx.notify();
+                        }
+                        request(permission);
+                    }),
                     cx,
                 )
                 .debug_selector(move || allow_id(permission).into())
@@ -160,14 +168,37 @@ impl Render for PermissionsWindow {
                 "After you allow Screen Recording in System Settings, macOS asks to quit and reopen Laqta. The other permissions work at once.",
                 cx,
             ));
-        let footer = div().flex().justify_end().p(space::S3).border_t_1().border_color(cx.theme().border).child(widgets::pill(
-            "done",
-            "Done",
-            Pill::Default,
-            false,
-            |_, window, _| window.remove_window(),
-            cx,
-        ));
+        let screen_missing = self.granted.iter().any(|&(p, ok)| p == Permission::ScreenRecording && !ok);
+        let reopen = (self.asked_screen && screen_missing).then(|| {
+            let relaunch = self.hooks.relaunch.clone();
+            widgets::pill(
+                "reopen",
+                "Quit & Reopen",
+                Pill::Primary,
+                false,
+                move |_, _, cx| {
+                    relaunch();
+                    cx.quit();
+                },
+                cx,
+            )
+        });
+        let body = body.when(self.asked_screen && screen_missing, |b| {
+            b.child(widgets::notice(
+                "Already allowed in System Settings but still missing here? Quit & Reopen. If that doesn't help, remove Laqta from the Screen Recording list with −, add it again, then reopen: an update of a build that isn't notarized needs this each time.",
+                true,
+                cx,
+            ))
+        });
+        let footer = div()
+            .flex()
+            .justify_end()
+            .gap(space::S2)
+            .p(space::S3)
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .when_some(reopen, |f, b| f.child(b))
+            .child(widgets::pill("done", "Done", Pill::Default, false, |_, window, _| window.remove_window(), cx));
         crate::chrome::rounded(widgets::page(cx), window)
             .child(crate::chrome::TitleBar::new().title("Welcome to Laqta").flat())
             .child(body)

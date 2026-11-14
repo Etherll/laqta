@@ -6,9 +6,11 @@
 //! One recording runs at a time. Its slot is claimed before the area is chosen, so a second start stops the
 //! recording instead of starting another one.
 //!
-//! After the claim, every start ends in a `RecordingFailed` or a `RecordingStarted`, and the slot is always freed. A
-//! stop or abort that arrives while the area is chosen or the stream opens (a portal dialog nobody answers) cancels
-//! that step instead of waiting for it.
+//! After the claim, every start ends in a `RecordingFailed` or a running recording, and the slot is always freed.
+//! `RecordingStarted` comes as soon as the countdown is over, before the stream opens: it is the event that closes the
+//! countdown window, which must be gone before anything is captured. A start that fails after it ends in
+//! `RecordingFailed`. A stop or abort that arrives while the area is chosen or the stream opens (a portal dialog nobody
+//! answers) cancels that step instead of waiting for it.
 
 mod drive;
 
@@ -181,12 +183,15 @@ impl App {
             return Ok(None);
         }
         for seconds_left in (1..=ts.recording.countdown_secs).rev() {
-            self.emit(TaskEvent::RecordingCountdown { id, seconds_left });
+            self.emit(TaskEvent::RecordingCountdown { id, seconds_left, area: rect });
             self.ports.clock.sleep(SECOND).await;
             if stop_requested(&mut commands) {
                 return Ok(None);
             }
         }
+        // This closes the countdown window, so it goes before the stream opens: the countdown must be gone before the
+        // first frame is captured.
+        self.emit(TaskEvent::RecordingStarted { id, area: rect, show_border: ts.recording.show_border });
         // The output is prepared before the stream opens, so no error path below drops an open stream.
         let dir = self.settings.get().screenshots_dir_for(&ts);
         let output = self.task.recording_output(&ts, &dir, (rect.width, rect.height), codec.extension()).await?;
@@ -219,6 +224,7 @@ impl App {
             audio: devices,
             custom_args: ts.recording.custom_args.clone(),
             camera: self.camera(&ts).await,
+            gif_max_width: ts.recording.gif_max_width,
         };
         let handle = self.ports.media.start(input, spec, output.clone()).await.map_err(AppError::from)?;
         if stop_requested(&mut commands) {
@@ -226,7 +232,6 @@ impl App {
             let _ = handle.abort().await;
             return Ok(None);
         }
-        self.emit(TaskEvent::RecordingStarted { id, area: rect });
         *self.last_recording_area.lock().unwrap_or_else(PoisonError::into_inner) = Some(rect);
         let fixed_secs = ts.recording.fixed_duration_secs;
         Ok(Some(Live { handle, output, commands, ts, fixed_secs }))

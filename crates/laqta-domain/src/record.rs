@@ -124,6 +124,8 @@ pub struct RecordingSettings {
     pub gif_codec: VideoCodec,
     pub fps: u32,
     pub gif_fps: u32,
+    /// A GIF wider than this is scaled down to it (0 = no limit).
+    pub gif_max_width: u32,
     pub quality: Quality,
     pub show_cursor: bool,
     pub record_system_audio: bool,
@@ -204,6 +206,7 @@ impl Default for RecordingSettings {
             gif_codec: VideoCodec::Gif,
             fps: 30,
             gif_fps: 15,
+            gif_max_width: 1280,
             quality: Quality::Crf(23),
             show_cursor: true,
             record_system_audio: false,
@@ -232,6 +235,8 @@ pub struct RecordSpec {
     pub custom_args: String,
     /// The camera picture over the recording; `None` = off.
     pub camera: Option<CameraOverlay>,
+    /// A GIF wider than this is scaled down to it (0 = no limit). Only a GIF reads it.
+    pub gif_max_width: u32,
 }
 
 #[cfg(test)]
@@ -253,6 +258,18 @@ mod tests {
         let codecs: Vec<_> = VideoCodec::available(Os::Windows).collect();
         assert_eq!(codecs.len(), 13);
         assert!(!codecs.contains(&VideoCodec::Vaapi));
+    }
+
+    #[test]
+    fn gif_max_width_defaults_to_1280_and_round_trips() {
+        assert_eq!(RecordingSettings::default().gif_max_width, 1280);
+        let old: RecordingSettings = serde_json::from_str(r#"{"fps": 24}"#).expect("old settings still load");
+        assert_eq!(old.gif_max_width, 1280, "a settings file from before the field gets the default");
+        let unlimited = RecordingSettings { gif_max_width: 0, ..RecordingSettings::default() };
+        let json = serde_json::to_string(&unlimited).expect("serialises");
+        let back: RecordingSettings = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(back.gif_max_width, 0);
+        assert_eq!(back, unlimited);
     }
 
     #[test]

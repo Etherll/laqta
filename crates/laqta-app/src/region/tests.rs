@@ -22,7 +22,7 @@ use laqta_ports::fakes::{
 };
 use laqta_ports::{AppError, BoxFuture, HostInfo, HoverSource, Ocr, OcrLine, OcrResult, PortError, RegionView, TextLayer};
 
-use super::{Selection, crop_frames, pixel_at, pixel_in_frames, read_text, select, view};
+use super::{Selection, crop_frames, pick, pick_color, pixel_at, pixel_in_frames, read_text, select, view};
 use crate::dispatcher::Ports;
 
 /// The left monitor's pixel as the frame holds it (BGRA), and as the composed image holds it (RGBA).
@@ -246,6 +246,40 @@ fn multi_region_enter_keeps_both_rects_with_a_transparent_gap() {
         assert_eq!(pixel(&selection.image, 21, 3), CLEAR);
         assert_eq!(pixel(&selection.image, 22, 0), RIGHT);
         assert_eq!(pixel(&selection.image, 23, 3), RIGHT);
+    });
+}
+
+#[test]
+fn a_picker_ignores_multi_region_and_confirms_on_the_drag() {
+    in_pool(|| {
+        let overlay = Arc::new(FakeOverlay::default());
+        let ports = test_ports(overlay.clone(), Arc::new(FakeHoverSource::unsupported()));
+        let options = RegionCaptureOptions { multi_region: true, ..options() };
+        let mut session = pin!(pick(&ports, two_frames(), &options));
+        assert!(step(session.as_mut()).is_none());
+
+        drag(&overlay, (5, 1), (6, 2));
+        let selection = step(session.as_mut()).expect("the drag confirms").unwrap();
+
+        assert_eq!(selection.rects, vec![PhysRect { x: 5, y: 1, width: 2, height: 2 }]);
+        assert!(!overlay.is_open());
+    });
+}
+
+#[test]
+fn the_colour_picker_ignores_multi_region_and_confirms_on_the_click() {
+    in_pool(|| {
+        let overlay = Arc::new(FakeOverlay::default());
+        let ports = test_ports(overlay.clone(), Arc::new(FakeHoverSource::unsupported()));
+        let options = RegionCaptureOptions { multi_region: true, ..options() };
+        let mut session = pin!(pick_color(&ports, two_frames(), &options));
+        assert!(step(session.as_mut()).is_none());
+
+        click(&overlay, (5, 1));
+        let selection = step(session.as_mut()).expect("the click confirms").unwrap();
+
+        assert_eq!(selection.rects, vec![PhysRect { x: 5, y: 1, width: 1, height: 1 }]);
+        assert!(!overlay.is_open());
     });
 }
 

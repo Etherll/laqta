@@ -157,6 +157,8 @@ impl TaskList {
                 row.detail = format!("Recording {}:{:02}", elapsed_secs / 60, elapsed_secs % 60);
             }
             TaskEvent::RecordingPaused { .. } => row.detail = "Paused".into(),
+            // The row keeps its "Recording" state until the file is done; the recording bar shows the wait.
+            TaskEvent::RecordingFinishing { .. } => {}
             TaskEvent::RecordingStopped { path, .. } => {
                 row.title = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 row.path = Some(path.clone());
@@ -257,12 +259,22 @@ mod tests {
     fn a_recording_row_follows_its_events_and_settles() {
         let mut list = TaskList::default();
         let id = TaskId(7);
-        list.apply(&TaskEvent::RecordingCountdown { id, seconds_left: 2 });
+        list.apply(&TaskEvent::RecordingCountdown {
+            id,
+            seconds_left: 2,
+            area: laqta_domain::geometry::PhysRect { x: 0, y: 0, width: 10, height: 10 },
+        });
         assert_eq!(list.rows()[0].status, TaskStatus::Preparing);
-        list.apply(&TaskEvent::RecordingStarted { id, area: laqta_domain::geometry::PhysRect::default() });
+        list.apply(&TaskEvent::RecordingStarted { id, area: laqta_domain::geometry::PhysRect::default(), show_border: true });
         list.apply(&TaskEvent::RecordingTick { id, elapsed_secs: 65 });
         assert_eq!((list.rows()[0].status, list.rows()[0].detail.as_str()), (TaskStatus::Working, "Recording 1:05"));
         assert!(list.is_running());
+        list.apply(&TaskEvent::RecordingFinishing { id });
+        assert_eq!(
+            (list.rows()[0].status, list.rows()[0].detail.as_str()),
+            (TaskStatus::Working, "Recording 1:05"),
+            "finishing leaves the row as it is"
+        );
         list.apply(&TaskEvent::RecordingStopped { id, path: "/v/a.gif".into() });
         assert_eq!((list.rows()[0].status, list.rows()[0].title.as_str()), (TaskStatus::Completed, "a.gif"));
         assert!(!list.is_running());

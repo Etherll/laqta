@@ -222,6 +222,7 @@ pub struct InputTexts {
     pub retries: String,
     pub rec_fps: String,
     pub rec_gif_fps: String,
+    pub rec_gif_max_width: String,
     pub rec_crf: String,
     pub rec_countdown: String,
     pub rec_duration: String,
@@ -267,6 +268,7 @@ impl InputTexts {
             retries: d.upload.retries.to_string(),
             rec_fps: d.recording.fps.to_string(),
             rec_gif_fps: d.recording.gif_fps.to_string(),
+            rec_gif_max_width: d.recording.gif_max_width.to_string(),
             rec_crf: match d.recording.quality {
                 laqta_domain::record::Quality::Crf(c) => c.to_string(),
                 _ => String::new(),
