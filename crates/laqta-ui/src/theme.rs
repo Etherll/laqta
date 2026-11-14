@@ -167,6 +167,9 @@ pub fn apply(theme: Theme, cx: &mut App) {
         t.radius_lg = radius::DIALOG;
         t.shadow = false;
     });
+    // Open windows repaint now; otherwise one drawn before the switch keeps the old colours
+    // until something else redraws it.
+    cx.refresh_windows();
 }
 
 /// Re-applies `Theme::System` when the OS switches between light and dark. Every window reports
