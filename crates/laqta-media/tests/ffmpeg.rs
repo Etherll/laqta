@@ -165,6 +165,7 @@ fn spec(codec: VideoCodec, fps: u32) -> RecordSpec {
         custom_args: String::new(),
         camera: None,
         gif_max_width: 0,
+        backend: laqta_domain::record::RecorderBackend::Ffmpeg,
     }
 }
 

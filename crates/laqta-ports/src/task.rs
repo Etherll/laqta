@@ -9,6 +9,9 @@ use crate::PortError;
 pub enum AppError {
     #[error("cancelled")]
     Cancelled,
+    /// A region session is already open; the request was dropped.
+    #[error("busy: a region session is already open")]
+    Busy,
     #[error("permission denied")]
     PermissionDenied,
     #[error("unsupported: {0}")]

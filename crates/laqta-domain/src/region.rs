@@ -48,6 +48,17 @@ pub struct RegionConfig {
     pub right_click: RegionMouseAction,
     /// What a middle press does while idle.
     pub middle_click: RegionMouseAction,
+    /// The mode bar (with its Close button) is on screen. With it off and both clicks set to
+    /// `None`, a right press cancels, so the user always has a mouse exit.
+    pub mode_bar: bool,
+}
+
+/// The multi-region session's Capture and Cancel strip: how many regions are drawn, and whether
+/// Capture can act yet. Capture sends `RegionCommand::Confirm`, Cancel sends `RegionCommand::Cancel`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MultiStrip {
+    pub count: usize,
+    pub enabled: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -315,6 +326,12 @@ impl RegionState {
     /// Whether the user confirmed with `Annotate`: the capture opens in the editor first.
     pub fn annotate_requested(&self) -> bool {
         self.annotate
+    }
+
+    /// The Capture and Cancel strip of a multi-region session; `None` for any other session.
+    pub fn multi_strip(&self) -> Option<MultiStrip> {
+        (self.config.multi_region && !self.config.pick_point)
+            .then_some(MultiStrip { count: self.regions.len(), enabled: !self.regions.is_empty() })
     }
 
     /// Whether the capture tools are shown. Starts true; Space toggles it.
@@ -682,6 +699,11 @@ impl RegionState {
             Button::Left => {}
             Button::Right | Button::Middle if matches!(self.phase, Phase::Idle) => {
                 let action = if button == Button::Right { self.config.right_click } else { self.config.middle_click };
+                // No mode bar and no click action: a right press still ends the session.
+                let no_exit = !self.config.mode_bar
+                    && self.config.right_click == RegionMouseAction::None
+                    && self.config.middle_click == RegionMouseAction::None;
+                let action = if no_exit && button == Button::Right { RegionMouseAction::CancelCapture } else { action };
                 self.apply_mouse_action(action);
             }
             Button::Right | Button::Middle => self.cancel_gesture(),
@@ -985,6 +1007,7 @@ mod tests {
             grab_size: HANDLE_SIZE * 2,
             right_click: RegionMouseAction::RemoveShapeOrCancel,
             middle_click: RegionMouseAction::CancelCapture,
+            mode_bar: true,
         }
     }
 
@@ -1149,6 +1172,48 @@ mod tests {
         assert!(!state.handle(move_to(50, 50)));
         assert!(!state.handle(tap(RegionKey::Enter)));
         assert_eq!(state.outcome(), Some(&RegionOutcome::Cancelled));
+    }
+
+    #[test]
+    fn right_click_cancels_when_no_mouse_exit_is_configured() {
+        let none = RegionMouseAction::None;
+        let mut state = RegionState::new(RegionConfig { mode_bar: false, ..with_clicks(none, none, false) });
+        state.handle(right_press(5, 5));
+        assert_eq!(state.outcome(), Some(&RegionOutcome::Cancelled));
+    }
+
+    #[test]
+    fn right_click_stays_inert_when_the_mode_bar_or_a_middle_action_is_an_exit() {
+        let none = RegionMouseAction::None;
+        let mut with_bar = RegionState::new(RegionConfig { mode_bar: true, ..with_clicks(none, none, false) });
+        with_bar.handle(right_press(5, 5));
+        assert_eq!(with_bar.outcome(), None);
+        let mut with_middle =
+            RegionState::new(RegionConfig { mode_bar: false, ..with_clicks(none, RegionMouseAction::CancelCapture, false) });
+        with_middle.handle(right_press(5, 5));
+        assert_eq!(with_middle.outcome(), None);
+    }
+
+    #[test]
+    fn the_multi_strip_counts_regions_and_its_buttons_are_existing_commands() {
+        let single = RegionState::new(config());
+        assert_eq!(single.multi_strip(), None);
+
+        let mut state = RegionState::new(multi());
+        assert_eq!(state.multi_strip(), Some(MultiStrip { count: 0, enabled: false }));
+        state.handle(RegionInput::Command(RegionCommand::Confirm));
+        assert_eq!(state.outcome(), None, "Capture does nothing before a region is drawn");
+
+        drag(&mut state, (10, 10), (59, 59));
+        drag(&mut state, (200, 200), (259, 259));
+        assert_eq!(state.multi_strip(), Some(MultiStrip { count: 2, enabled: true }));
+        state.handle(RegionInput::Command(RegionCommand::Confirm));
+        assert!(matches!(state.outcome(), Some(RegionOutcome::Confirmed { rects, .. }) if rects.len() == 2));
+
+        let mut cancelled = RegionState::new(multi());
+        drag(&mut cancelled, (10, 10), (59, 59));
+        cancelled.handle(RegionInput::Command(RegionCommand::Cancel));
+        assert_eq!(cancelled.outcome(), Some(&RegionOutcome::Cancelled));
     }
 
     #[test]
@@ -1931,6 +1996,7 @@ mod command_tests {
             grab_size: HANDLE_SIZE * 2,
             right_click: Default::default(),
             middle_click: Default::default(),
+            mode_bar: true,
         })
     }
 

@@ -817,6 +817,7 @@ mod tests {
             custom_args: String::new(),
             camera: None,
             gif_max_width: 1280,
+            backend: laqta_domain::record::RecorderBackend::Ffmpeg,
         }
     }
 

@@ -1000,6 +1000,7 @@ mod tests {
             custom_args: String::new(),
             camera,
             gif_max_width: 1280,
+            backend: laqta_domain::record::RecorderBackend::Ffmpeg,
         };
         Plan { video: VideoInputDesc::RawFrames { width: 64, height: 48, fps: 30 }, audio: Vec::new(), spec, host }
     }

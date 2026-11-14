@@ -237,6 +237,8 @@ pub struct RecordSpec {
     pub camera: Option<CameraOverlay>,
     /// A GIF wider than this is scaled down to it (0 = no limit). Only a GIF reads it.
     pub gif_max_width: u32,
+    /// Which recorder the Recording session chose, from the effective task settings of this recording.
+    pub backend: RecorderBackend,
 }
 
 #[cfg(test)]

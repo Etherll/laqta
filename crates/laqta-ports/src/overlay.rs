@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use laqta_domain::geometry::PhysRect;
-use laqta_domain::region::{Handle, HoverTarget, RegionInput};
+use laqta_domain::region::{Handle, HoverTarget, MultiStrip, RegionInput};
 use laqta_domain::{Bitmap, Frame};
 
 use crate::PortError;
@@ -65,6 +65,9 @@ pub struct RegionView {
     pub tools_visible: bool,
     /// Show the mode bar at the top of the screen (`RegionCaptureOptions::show_mode_bar`).
     pub mode_bar: bool,
+    /// The multi-region Capture and Cancel strip: how many regions are drawn and whether Capture can act.
+    /// `None` outside a multi-region session. Capture sends `RegionCommand::Confirm`, Cancel `RegionCommand::Cancel`.
+    pub multi_strip: Option<MultiStrip>,
     /// The session picks one pixel (the screen colour picker): a click picks, nothing is drawn.
     pub pick_point: bool,
     /// The text read from `selected`, while the session reads text in place. Every view carries it
@@ -100,6 +103,7 @@ impl PartialEq for RegionView {
             selection_image,
             tools_visible,
             mode_bar,
+            multi_strip,
             pick_point,
             text,
             text_only,
@@ -128,6 +132,7 @@ impl PartialEq for RegionView {
             && *selected == other.selected
             && *tools_visible == other.tools_visible
             && *mode_bar == other.mode_bar
+            && *multi_strip == other.multi_strip
             && *pick_point == other.pick_point
             && *text == other.text
             && *text_only == other.text_only
