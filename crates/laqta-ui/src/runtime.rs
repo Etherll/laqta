@@ -330,6 +330,9 @@ pub enum NativeWindow {
     /// Gives the keyboard back to the window `RememberForeground` noted, if it is still open and not
     /// minimized, and forgets it. Not about the window the call is made with.
     RestoreForeground,
+    /// The window is left out of screen captures and recordings, so the recording bar and its border
+    /// are not in the video. A platform that cannot do it answers false.
+    ExcludeFromCapture,
 }
 
 /// `UiServices::native_window`: true when the platform did what was asked.
@@ -563,6 +566,66 @@ pub(crate) fn close_window(window: gpui::AnyWindowHandle, cx: &mut App) {
     let _ = window.update(cx, |_, window, _| window.remove_window());
 }
 
+/// The small windows Escape closes. The overlay, editors, dialogs and pins handle Escape
+/// themselves, and the main windows don't close on it.
+#[derive(Default)]
+struct Dismissable(std::collections::HashSet<gpui::AnyWindowHandle>);
+
+impl gpui::Global for Dismissable {}
+
+/// Lets Escape close `window`. Call it from the window's open closure.
+pub(crate) fn dismiss_on_escape(window: &gpui::Window, cx: &mut App) {
+    // Windows closed another way (X, a Close button) leave the list here.
+    let open: Vec<gpui::AnyWindowHandle> = cx.windows();
+    let list = &mut cx.default_global::<Dismissable>().0;
+    list.retain(|h| open.contains(h));
+    list.insert(window.window_handle());
+}
+
+/// Closes `handle` when it is a dismissable window; true when it did.
+fn dismiss(handle: gpui::AnyWindowHandle, cx: &mut App) -> bool {
+    if !cx.try_global::<Dismissable>().is_some_and(|d| d.0.contains(&handle)) {
+        return false;
+    }
+    cx.global_mut::<Dismissable>().0.remove(&handle);
+    let _ = handle.update(cx, |_, window, _| window.remove_window());
+    true
+}
+
+/// Keys every platform shares. Escape closes a dismissable window when nothing in it took the
+/// key: an open menu or a text field that binds Escape keeps it. Observing keystrokes, rather than
+/// binding Escape in a key context, works even when nothing in the window has focus.
+pub(crate) fn window_keys(cx: &mut App) {
+    cx.on_action(|_: &CloseWindow, cx| {
+        if let Some(window) = cx.active_window() {
+            close_window(window, cx);
+        }
+    });
+    // A focused text field binds Escape. It hands the key on when it has nothing to cancel (no
+    // menu, extra cursors or IME text), and then Escape closes the window like anywhere else.
+    cx.on_action(|_: &gpui_component::input::Escape, cx| {
+        // Deferred: the window is still being updated while its action runs.
+        if let Some(window) = cx.active_window() {
+            cx.defer(move |cx| {
+                dismiss(window, cx);
+            });
+        }
+    });
+    cx.observe_keystrokes(|ev, window, cx| {
+        let k = &ev.keystroke;
+        let plain = !(k.modifiers.control || k.modifiers.alt || k.modifiers.shift || k.modifiers.platform);
+        if k.key != "escape" || !plain || ev.action.is_some() {
+            return;
+        }
+        let handle = window.window_handle();
+        if cx.try_global::<Dismissable>().is_some_and(|d| d.0.contains(&handle)) {
+            cx.global_mut::<Dismissable>().0.remove(&handle);
+            window.remove_window();
+        }
+    })
+    .detach();
+}
+
 /// What a macOS app is expected to have: an application menu with Settings and Quit, their
 /// Command shortcuts and Command+W.
 fn mac_app_menu(dispatch: Arc<dyn Fn(Action) + Send + Sync>, cx: &mut App) {
@@ -570,11 +633,6 @@ fn mac_app_menu(dispatch: Arc<dyn Fn(Action) + Send + Sync>, cx: &mut App) {
     let (quit, settings) = (dispatch.clone(), dispatch);
     cx.on_action(move |_: &QuitLaqta, _| quit(Action::ExitLaqta));
     cx.on_action(move |_: &OpenSettings, _| settings(Action::OpenSettings));
-    cx.on_action(|_: &CloseWindow, cx| {
-        if let Some(window) = cx.active_window() {
-            close_window(window, cx);
-        }
-    });
     cx.bind_keys([
         KeyBinding::new("cmd-q", QuitLaqta, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
@@ -642,6 +700,7 @@ pub fn run(services: UiServices, rx: UiReceiver) {
         })
         .detach();
 
+        window_keys(cx);
         if cfg!(target_os = "macos") {
             mac_app_menu(services.dispatch.clone(), cx);
         }

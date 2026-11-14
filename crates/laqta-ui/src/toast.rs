@@ -52,7 +52,8 @@ pub(crate) fn show(toast: Toast, cx: &mut App) {
         ..Default::default()
     };
     let duration = Duration::from_millis(toast.options.duration_ms.max(500) as u64);
-    let fade = Duration::from_millis(toast.options.fade_ms.min(5000) as u64);
+    // Reduced motion: the toast closes without fading.
+    let fade = if cx.reduce_motion() { Duration::ZERO } else { Duration::from_millis(toast.options.fade_ms.min(5000) as u64) };
     let result = crate::popup::open(options, cx, move |window, cx| {
         let view = cx.new(|_| ToastView { image: toast.image.as_ref().and_then(render_image), toast, fading: false });
         // Stay for `duration`, fade out over `fade`, then close.

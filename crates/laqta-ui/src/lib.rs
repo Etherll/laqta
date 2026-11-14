@@ -18,6 +18,7 @@ mod color_window;
 mod dialog;
 mod editor_window;
 mod effects_window;
+mod flash;
 mod gpu_image;
 mod history_window;
 mod main_window;

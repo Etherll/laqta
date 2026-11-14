@@ -26,6 +26,12 @@ pub(crate) fn page(cx: &App) -> Div {
 /// A titled group of settings rows: a muted heading over its rows, no card. Pages space sections
 /// apart; rows inside sit close together.
 pub(crate) fn section(title: impl Into<SharedString>, cx: &App) -> Div {
+    let title: SharedString = title.into();
+    SEARCH_ROWS.with(|rows| {
+        if let Some(rows) = rows.borrow_mut().as_mut() {
+            rows.section = title.to_string();
+        }
+    });
     div().flex().flex_col().gap(px(2.)).child(
         div()
             .pb(space::S2)
@@ -33,8 +39,37 @@ pub(crate) fn section(title: impl Into<SharedString>, cx: &App) -> Div {
             .font_weight(FontWeight::MEDIUM)
             .text_size(text::HEADING)
             .text_color(cx.theme().muted_foreground)
-            .child(title.into()),
+            .child(title),
     )
+}
+
+/// What settings search collects while the pages build: each row's label and description under
+/// the section heading built before it.
+#[derive(Default)]
+pub(crate) struct CollectedRows {
+    section: String,
+    pub rows: Vec<(String, String, String)>,
+}
+
+thread_local! {
+    static SEARCH_ROWS: std::cell::RefCell<Option<CollectedRows>> = const { std::cell::RefCell::new(None) };
+    static HIGHLIGHT: std::cell::RefCell<Option<SharedString>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `build` (a settings page) and returns the rows it built as (section, label, description).
+pub(crate) fn collect_rows<R>(build: impl FnOnce() -> R) -> Vec<(String, String, String)> {
+    SEARCH_ROWS.with(|rows| *rows.borrow_mut() = Some(CollectedRows::default()));
+    drop(build());
+    SEARCH_ROWS.with(|rows| rows.borrow_mut().take().map(|c| c.rows).unwrap_or_default())
+}
+
+/// Runs `build` with the row labelled `label` drawn highlighted (a settings search result the
+/// user just opened).
+pub(crate) fn with_highlight<R>(label: Option<SharedString>, build: impl FnOnce() -> R) -> R {
+    HIGHLIGHT.with(|h| *h.borrow_mut() = label);
+    let out = build();
+    HIGHLIGHT.with(|h| *h.borrow_mut() = None);
+    out
 }
 
 /// How wide a row's control is. Controls sit right-aligned in a fixed slot so rows line up.
@@ -76,15 +111,24 @@ pub(crate) fn row_full(
     cx: &App,
 ) -> Div {
     let t = cx.theme();
+    let label: SharedString = label.into();
+    let description: Option<SharedString> = description.map(Into::into);
+    SEARCH_ROWS.with(|rows| {
+        if let Some(c) = rows.borrow_mut().as_mut() {
+            let entry = (c.section.clone(), label.to_string(), description.as_ref().map(|d| d.to_string()).unwrap_or_default());
+            c.rows.push(entry);
+        }
+    });
+    let highlighted = HIGHLIGHT.with(|h| h.borrow().as_ref() == Some(&label));
     let mut text_col = div()
         .flex_1()
         .min_w_0()
         .flex()
         .flex_col()
         .gap(px(2.))
-        .child(div().text_size(text::BODY).font_weight(FontWeight::MEDIUM).text_color(t.foreground).child(label.into()));
+        .child(div().text_size(text::BODY).font_weight(FontWeight::MEDIUM).text_color(t.foreground).child(label));
     if let Some(d) = description {
-        text_col = text_col.child(div().max_w(px(512.)).text_size(text::LABEL).text_color(t.muted_foreground).child(d.into()));
+        text_col = text_col.child(div().max_w(px(512.)).text_size(text::LABEL).text_color(t.muted_foreground).child(d));
     }
     let slot_el = match slot {
         Slot::Field => div().w(px(300.)),
@@ -98,6 +142,7 @@ pub(crate) fn row_full(
         .gap(space::S6)
         .min_h(px(52.))
         .py(px(8.))
+        .when(highlighted, |row| row.bg(t.accent).rounded(crate::theme::radius::CARD).px(space::S3).mx(-space::S3))
         .child(text_col)
         .children(reset.map(|r| reset_button(r, cx)))
         .child(slot_el.flex_none().flex().justify_end().child(control))
@@ -149,7 +194,7 @@ fn reset_button(Reset { id, tooltip, on_click }: Reset, cx: &App) -> gpui::State
     let t = cx.theme();
     let (fg, hover_bg, hover_fg) = (t.muted_foreground, t.secondary, t.foreground);
     let selector = id.to_string();
-    div()
+    let el = div()
         .id(ElementId::Name(id))
         .debug_selector(move || selector)
         .size(px(26.))
@@ -158,15 +203,22 @@ fn reset_button(Reset { id, tooltip, on_click }: Reset, cx: &App) -> gpui::State
         .items_center()
         .justify_center()
         .rounded(radius::SM)
+        .border_1()
+        .border_color(gpui::transparent_black())
         .text_color(fg)
-        .cursor_pointer()
         .hover(move |s| s.bg(hover_bg).text_color(hover_fg))
-        .on_click(move |ev, window, cx| {
+        .aria_label(tooltip.clone())
+        .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx))
+        .child(Icon::new(IconName::RotateCcw).size(theme::icon::SM));
+    // A tab stop with a focus ring, like every other control: its tooltip is its only label.
+    clickable(
+        el,
+        move |ev, window, cx| {
             cx.stop_propagation();
             on_click(ev, window, cx);
-        })
-        .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx))
-        .child(Icon::new(IconName::RotateCcw).size(px(14.)))
+        },
+        cx,
+    )
 }
 
 /// A row whose control is a button.
@@ -230,13 +282,42 @@ pub(crate) fn group_title(title: impl Into<SharedString>, cx: &App) -> Div {
 }
 
 pub(crate) fn icon(name: IconName, color: Hsla) -> Icon {
-    Icon::new(name).size(px(16.)).text_color(color)
+    Icon::new(name).size(theme::icon::MD).text_color(color)
+}
+
+/// Whether a control can be used now, and if not, why: the reason shows in its tooltip, so a
+/// disabled control is never a silent dead end (Nielsen 1; WCAG 3.3.1).
+pub(crate) type Enabled = Result<(), SharedString>;
+
+/// A disabled control: still a tab stop with a focus ring, so the keyboard reaches its reason,
+/// but faded, with the default cursor and no click handler.
+fn disabled(el: Stateful<Div>, reason: SharedString, cx: &App) -> Stateful<Div> {
+    let ring = theme::focus_ring(cx);
+    el.tab_index(0)
+        .cursor_default()
+        .opacity(theme::DISABLED_OPACITY)
+        .focus_visible(move |s| s.border_color(ring))
+        .aria_description(reason.clone())
+        .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(reason.clone()).build(window, cx))
+}
+
+/// `clickable` when `enabled` is `Ok`, otherwise a disabled control that says why.
+pub(crate) fn clickable_if(
+    el: Stateful<Div>,
+    enabled: Enabled,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> Stateful<Div> {
+    match enabled {
+        Ok(()) => clickable(el, on_click, cx),
+        Err(reason) => disabled(el, reason, cx),
+    }
 }
 
 /// Makes an element a keyboard tab stop with a focus ring, a pointer cursor and a click handler.
 pub(crate) fn clickable(el: Stateful<Div>, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static, cx: &App) -> Stateful<Div> {
     // Every caller gives the element a 1px border, so the ring never shifts layout.
-    let ring = cx.theme().foreground.opacity(0.6);
+    let ring = theme::focus_ring(cx);
     el.tab_index(0).cursor_pointer().focus_visible(move |s| s.border_color(ring)).on_click(on_click)
 }
 
@@ -261,6 +342,19 @@ pub(crate) fn pill(
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     cx: &App,
 ) -> Stateful<Div> {
+    pill_with(id, label, kind, small, Ok(()), on_click, cx)
+}
+
+/// A pill button that may be disabled with a reason (see [`Enabled`]).
+pub(crate) fn pill_with(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    kind: Pill,
+    small: bool,
+    enabled: Enabled,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> Stateful<Div> {
     let t = cx.theme();
     let x = theme::extra(cx);
     let (bg, fg, hover) = match kind {
@@ -269,6 +363,9 @@ pub(crate) fn pill(
         Pill::Dark => (x.action, t.background, x.action.opacity(0.85)),
         Pill::Ghost => (gpui::transparent_black(), t.foreground, x.wash),
     };
+    // Light mode: the grey fill sits almost at the page's own tone, so a hairline gives the
+    // button its edge. The focus ring still replaces this border.
+    let edge = if kind == Pill::Default && !t.is_dark() { t.border } else { gpui::transparent_black() };
     let el = div()
         .id(id)
         .h(if small { px(28.) } else { theme::CONTROL_H })
@@ -280,14 +377,14 @@ pub(crate) fn pill(
         .gap(space::S2)
         .rounded(radius::PILL)
         .border_1()
-        .border_color(gpui::transparent_black())
+        .border_color(edge)
         .bg(bg)
         .text_color(fg)
-        .text_size(if small { px(12.5) } else { text::LABEL })
+        .text_size(if small { text::SMALL } else { text::LABEL })
         .font_weight(FontWeight::MEDIUM)
-        .hover(move |s| s.bg(hover))
+        .when(enabled.is_ok(), move |d| d.hover(move |s| s.bg(hover)))
         .child(label.into());
-    clickable(el, on_click, cx)
+    clickable_if(el, enabled, on_click, cx)
 }
 
 /// A pill nav row (sidebar, settings pages). The active row sits on the accent surface.
@@ -359,7 +456,7 @@ pub(crate) fn badge(label: impl Into<SharedString>, tone: Tone, cx: &App) -> Div
     let t = cx.theme();
     let dot = match tone {
         Tone::Neutral => t.muted_foreground,
-        Tone::Success => t.primary,
+        Tone::Success => theme::extra(cx).success,
         Tone::Danger => t.danger,
         Tone::Busy => theme::extra(cx).info,
     };
@@ -586,6 +683,20 @@ pub(crate) fn icon_button(
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     cx: &App,
 ) -> Stateful<Div> {
+    icon_button_with(id, glyph, tooltip, active, Ok(()), on_click, cx)
+}
+
+/// An icon button that may be disabled. Disabled, its tooltip names the action and the reason:
+/// "Undo · Nothing to undo".
+pub(crate) fn icon_button_with(
+    id: impl Into<ElementId>,
+    glyph: IconName,
+    tooltip: impl Into<SharedString>,
+    active: bool,
+    enabled: Enabled,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> Stateful<Div> {
     let t = cx.theme();
     let wash = theme::extra(cx).wash;
     let tip: SharedString = tooltip.into();
@@ -604,10 +715,16 @@ pub(crate) fn icon_button(
         .border_color(gpui::transparent_black())
         .bg(bg)
         .text_color(fg)
-        .when(!active, move |d| d.hover(move |s| s.bg(wash).text_color(hover_fg)))
-        .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
-        .child(Icon::new(glyph).size(px(18.)));
-    clickable(el, on_click, cx)
+        .aria_label(tip.clone())
+        .when(!active && enabled.is_ok(), move |d| d.hover(move |s| s.bg(wash).text_color(hover_fg)))
+        .child(Icon::new(glyph).size(theme::icon::LG));
+    match enabled {
+        Ok(()) => {
+            let el = el.tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx));
+            clickable(el, on_click, cx)
+        }
+        Err(reason) => disabled(el, format!("{tip} · {reason}").into(), cx),
+    }
 }
 
 /// A thin vertical line between toolbar groups.
@@ -723,8 +840,9 @@ pub(crate) fn toggle_chip(
 ) -> Stateful<Div> {
     let t = cx.theme();
     let wash = theme::extra(cx).wash;
-    // On reads in the brand tint, so the state never depends on the label alone.
-    let (bg, fg) = if on { (theme::extra(cx).chip, t.primary) } else { (gpui::transparent_black(), t.foreground.opacity(0.72)) };
+    // On sits on the brand tint with full-strength ink (the green itself is 2.5:1 as text on the
+    // light page), so the state never depends on the label alone.
+    let (bg, fg) = if on { (theme::extra(cx).chip, t.foreground) } else { (gpui::transparent_black(), t.foreground.opacity(0.72)) };
     let hover_fg = t.foreground;
     let el = div()
         .id(id)
@@ -743,7 +861,7 @@ pub(crate) fn toggle_chip(
         .text_size(text::SMALL)
         .font_weight(FontWeight::MEDIUM)
         .when(!on, move |d| d.hover(move |s| s.bg(wash).text_color(hover_fg)))
-        .child(Icon::new(glyph).size(px(15.)))
+        .child(Icon::new(glyph).size(theme::icon::SM))
         .child(label);
     clickable(el, on_click, cx)
 }
@@ -820,4 +938,67 @@ pub(crate) fn option_row(
         .when(enabled, |d| d.hover(|s| s.bg(x.wash)))
         .child(radio)
         .children(trailing.map(|c| div().flex_none().flex().items_center().gap(space::S2).child(c)))
+}
+
+/// One button in a window's footer.
+pub(crate) struct FooterAction {
+    pub id: SharedString,
+    pub label: SharedString,
+    pub kind: Pill,
+    pub enabled: Enabled,
+    pub on_click: OnClick,
+}
+
+impl FooterAction {
+    pub(crate) fn new(
+        id: impl Into<SharedString>,
+        label: impl Into<SharedString>,
+        kind: Pill,
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        FooterAction { id: id.into(), label: label.into(), kind, enabled: Ok(()), on_click: Box::new(on_click) }
+    }
+}
+
+/// A window's footer: an optional note on the left, then the buttons on the right in the order
+/// given. Callers list secondary actions first, then Cancel or Close, then the primary, so the
+/// primary is always rightmost.
+pub(crate) fn footer(note: Option<SharedString>, actions: Vec<FooterAction>, cx: &App) -> Div {
+    let buttons = actions.into_iter().map(|a| {
+        let on = a.on_click;
+        pill_with(ElementId::Name(a.id), a.label, a.kind, false, a.enabled, move |ev, w, cx| on(ev, w, cx), cx)
+    });
+    div()
+        .flex()
+        .items_center()
+        .gap(space::S2)
+        .px(space::S4)
+        .py(space::S3)
+        .border_t_1()
+        .border_color(cx.theme().border)
+        .child(div().flex_1().min_w_0().truncate().children(note.map(|n| muted(n, cx))))
+        .children(buttons)
+}
+
+/// The states a list shows instead of its rows (`presenters::library::ListState`), drawn the same
+/// way in every window: Loading…, an empty state with its hint, a no-match state with Clear search,
+/// and an error with Try again. `None` for `Rows`. `empty_title` names what the list holds:
+/// "No captures yet".
+pub(crate) fn list_state(
+    state: &crate::presenters::library::ListState,
+    empty_title: &'static str,
+    on_clear: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_retry: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> Option<Div> {
+    use crate::presenters::library::ListState;
+    Some(match state {
+        ListState::Rows => return None,
+        ListState::Loading => div().flex().justify_center().py(space::S8).child(muted("Loading…", cx)),
+        ListState::Empty { hint } => empty_state(IconName::Images, empty_title, hint.clone(), cx),
+        ListState::NoMatch => empty_state(IconName::Search, "Nothing matches", "Try another name, or #tag to filter by tag.", cx)
+            .child(div().pt(space::S2).child(pill("list-clear", "Clear search", Pill::Ghost, true, on_clear, cx))),
+        ListState::Error(reason) => empty_state(IconName::TriangleAlert, "Couldn't load the list", reason.clone(), cx)
+            .child(div().pt(space::S2).child(pill("list-retry", "Try again", Pill::Default, true, on_retry, cx))),
+    })
 }
