@@ -36,15 +36,36 @@ pub fn shades(color: Rgba) -> Vec<Rgba> {
     tints.chain(std::iter::once(color)).chain(darks).collect()
 }
 
-/// True when dark text reads better than white on `color` (relative luminance above ~0.5).
+/// True when dark text reads better than white on `color` (relative luminance above ~0.179).
 pub fn dark_ink(color: Rgba) -> bool {
+    // The contrast against black beats the contrast against white above l ≈ 0.179.
+    relative_luminance(color.r, color.g, color.b) > 0.179
+}
+
+/// The text colour for a swatch: near-black or white.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ink {
+    /// #111111
+    Dark,
+    /// #FFFFFF
+    Light,
+}
+
+/// The ink with the higher WCAG contrast on `(r, g, b)`, against #111111 or #FFFFFF.
+pub fn readable_ink(r: u8, g: u8, b: u8) -> Ink {
+    let l = relative_luminance(r, g, b);
+    let on_dark = (l + 0.05) / (relative_luminance(0x11, 0x11, 0x11) + 0.05);
+    let on_light = 1.05 / (l + 0.05);
+    if on_dark > on_light { Ink::Dark } else { Ink::Light }
+}
+
+/// WCAG relative luminance of an sRGB colour: 0 for black, 1 for white.
+fn relative_luminance(r: u8, g: u8, b: u8) -> f32 {
     let lin = |c: u8| {
         let c = f32::from(c) / 255.0;
         if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
     };
-    let l = 0.2126 * lin(color.r) + 0.7152 * lin(color.g) + 0.0722 * lin(color.b);
-    // The contrast against black beats the contrast against white above l ≈ 0.179.
-    l > 0.179
+    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
 }
 
 #[cfg(test)]
@@ -75,5 +96,15 @@ mod tests {
         assert!(dark_ink(Rgba::rgb(0xea, 0xb3, 0x08)), "yellow takes dark text");
         assert!(!dark_ink(Rgba::rgb(0, 0, 0)));
         assert!(!dark_ink(Rgba::rgb(0x33, 0x66, 0x99)));
+    }
+
+    #[test]
+    fn readable_ink_picks_the_higher_contrast() {
+        assert_eq!(readable_ink(255, 255, 255), Ink::Dark, "white takes dark text");
+        assert_eq!(readable_ink(0xfa, 0xcc, 0x15), Ink::Dark, "yellow takes dark text");
+        assert_eq!(readable_ink(0, 0, 0), Ink::Light, "black takes white text");
+        assert_eq!(readable_ink(0x11, 0x11, 0x11), Ink::Light, "the dark ink itself takes white");
+        assert_eq!(readable_ink(0x76, 0x76, 0x76), Ink::Light, "#767676 reads better in white (4.5:1 against 4.2:1)");
+        assert_eq!(readable_ink(0x3b, 0x82, 0xf6), Ink::Dark, "blue reads better in #111111 (5.1:1 against 3.7:1)");
     }
 }

@@ -58,6 +58,45 @@ pub fn keep(tab: LibraryTab, item: &HistoryItem) -> bool {
     tab != LibraryTab::Uploads || item.url.is_some()
 }
 
+/// What a library list shows in place of its cards.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ListState {
+    /// The query has not returned yet.
+    Loading,
+    /// Nothing is saved yet; `hint` says how to start.
+    Empty {
+        hint: String,
+    },
+    /// The search matched nothing.
+    NoMatch,
+    /// The query failed: the reason, shown with a Try again action.
+    Error(String),
+    Rows,
+}
+
+/// The state of a list. `loaded` is whether the current query has returned, `rows` how many rows it
+/// returned, `query` the search text and `error` why it failed. `shortcut` is the capture shortcut the
+/// empty hint names. A failure replaces the rows, so the list never shows stale results under an error.
+pub fn list_state(loaded: bool, rows: usize, query: &str, error: Option<&str>, shortcut: Option<&str>) -> ListState {
+    if !loaded {
+        return ListState::Loading;
+    }
+    if let Some(error) = error {
+        return ListState::Error(error.to_string());
+    }
+    if rows > 0 {
+        return ListState::Rows;
+    }
+    if !query.trim().is_empty() {
+        return ListState::NoMatch;
+    }
+    let hint = match shortcut.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(key) => format!("Press {key} or pick a capture above."),
+        None => "Pick a capture above.".into(),
+    };
+    ListState::Empty { hint }
+}
+
 /// What a card shows in place of a thumbnail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardGlyph {
@@ -170,6 +209,27 @@ mod tests {
         assert_eq!(relative_when(date(2026, 11, 4).at(12, 0, 0, 0), now), "Wednesday");
         assert_eq!(relative_when(date(2026, 10, 2).at(12, 0, 0, 0), now), "2 Oct");
         assert_eq!(relative_when(date(2025, 10, 2).at(12, 0, 0, 0), now), "2 Oct 2025");
+    }
+
+    #[test]
+    fn list_state_follows_load_rows_query_and_error() {
+        assert_eq!(list_state(false, 0, "", None, Some("PrintScreen")), ListState::Loading);
+        assert_eq!(list_state(false, 0, "cat", None, None), ListState::Loading);
+        assert_eq!(
+            list_state(true, 0, "", None, Some("PrintScreen")),
+            ListState::Empty { hint: "Press PrintScreen or pick a capture above.".into() }
+        );
+        assert_eq!(list_state(true, 0, "  cat ", None, None), ListState::NoMatch);
+        assert_eq!(list_state(true, 0, "   ", None, None), ListState::Empty { hint: "Pick a capture above.".into() });
+        assert_eq!(list_state(true, 0, "", Some("disk full"), None), ListState::Error("disk full".into()));
+        assert_eq!(list_state(true, 2, "", Some("disk full"), None), ListState::Error("disk full".into()));
+        assert_eq!(list_state(true, 3, "cat", None, None), ListState::Rows);
+    }
+
+    #[test]
+    fn the_empty_hint_drops_a_blank_shortcut() {
+        assert_eq!(list_state(true, 0, "", None, Some("  ")), ListState::Empty { hint: "Pick a capture above.".into() });
+        assert_eq!(list_state(true, 0, "", None, Some(" ⌘⇧4 ")), ListState::Empty { hint: "Press ⌘⇧4 or pick a capture above.".into() });
     }
 
     #[test]

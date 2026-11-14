@@ -62,6 +62,19 @@ pub fn row(item: &HistoryItem) -> HistoryRow {
     }
 }
 
+/// The title of the tag editor for one item.
+pub fn tags_title(title: &str) -> String {
+    format!("Tags for “{title}”")
+}
+
+/// Why the pager's Previous and Next are unavailable, as `(previous, next)`. `first` is whether this is
+/// the first page; `more` whether another page may follow.
+pub fn page_reason(first: bool, more: bool) -> (Result<(), &'static str>, Result<(), &'static str>) {
+    let previous = if first { Err("Already on the first page") } else { Ok(()) };
+    let next = if more { Ok(()) } else { Err("No more captures") };
+    (previous, next)
+}
+
 /// "1,204 items · 980 images · 1.2 GB".
 pub fn stats_line(stats: &HistoryStats) -> String {
     let images = stats.by_kind.iter().find(|(k, _)| *k == HistoryKind::Image).map(|(_, n)| *n).unwrap_or(0);
@@ -119,6 +132,15 @@ mod tests {
         assert_eq!(parse_tags(" work, ,bug 12,work "), vec!["work".to_string(), "bug 12".to_string()]);
         let st = HistoryStats { total: 3, by_kind: vec![(HistoryKind::Image, 2), (HistoryKind::Text, 1)], total_bytes: 2048 };
         assert_eq!(stats_line(&st), "3 items · 2 images · 2.0 KB");
+    }
+
+    #[test]
+    fn tags_title_and_page_reasons() {
+        assert_eq!(tags_title("a.png"), "Tags for “a.png”");
+        assert_eq!(page_reason(true, true), (Err("Already on the first page"), Ok(())));
+        assert_eq!(page_reason(false, false), (Ok(()), Err("No more captures")));
+        assert_eq!(page_reason(true, false), (Err("Already on the first page"), Err("No more captures")));
+        assert_eq!(page_reason(false, true), (Ok(()), Ok(())));
     }
 
     #[test]

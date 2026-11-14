@@ -228,9 +228,13 @@ pub fn row_status(
             if !enabled {
                 return RowStatus::Disabled;
             }
-            if let Some((other, _, _)) = rows.iter().enumerate().find(|(j, (_, c, e))| *j != i && *e && *c == Some(*chord)).map(|(_, r)| r)
-            {
-                return RowStatus::Conflict(format!("Also used by “{other}”"));
+            // The first enabled row with a key wins (`Settings::workflow_for_hotkey`), so say which one never runs.
+            let same = |j: &usize, (_, c, e): &&(String, Option<KeyChord>, bool)| *j != i && *e && *c == Some(*chord);
+            if let Some((_, (first, _, _))) = rows.iter().enumerate().find(|(j, r)| *j < i && same(j, r)) {
+                return RowStatus::Conflict(format!("Never runs: “{first}” has the same key"));
+            }
+            if let Some((_, (later, _, _))) = rows.iter().enumerate().find(|(j, r)| same(j, r)) {
+                return RowStatus::Conflict(format!("Also used by “{later}”, which never runs"));
             }
             if let Some((_, why)) = failed.iter().find(|(c, _)| c == chord) {
                 return RowStatus::Failed(why.clone());
@@ -318,7 +322,8 @@ mod tests {
             ("Taken".to_owned(), Some(chord("F8")), true),
         ];
         let status = row_status(&rows, &[chord("PrintScreen")], &[(chord("F8"), "in use".into())], &[]);
-        assert_eq!(status[0], RowStatus::Conflict("Also used by “Window”".into()));
+        assert_eq!(status[0], RowStatus::Conflict("Also used by “Window”, which never runs".into()));
+        assert_eq!(status[1], RowStatus::Conflict("Never runs: “Region” has the same key".into()));
         assert_eq!(status[2], RowStatus::Active);
         assert_eq!(status[3], RowStatus::Disabled);
         assert_eq!(status[4], RowStatus::Unset);

@@ -35,6 +35,8 @@ impl Notice {
             }
             AppError::TimedOut => ("The service took too long to answer.".to_owned(), ""),
             AppError::Cancelled => ("It was cancelled.".to_owned(), ""),
+            // Callers drop a Busy request without a toast; this only keeps the match total.
+            AppError::Busy => ("A selection is already open.".to_owned(), ""),
             AppError::PermissionDenied => ("Permission was denied.".to_owned(), ""),
             AppError::Unsupported(m)
             | AppError::Io(m)
@@ -61,6 +63,14 @@ impl Notice {
         Notice { title: title.into(), reason, detail: (!said).then(|| message.to_owned()), error: true }
     }
 }
+
+/// How long `n` stays up: info fades after five seconds; a failure stays until it is dismissed.
+pub fn lifetime(n: &Notice) -> Option<std::time::Duration> {
+    if n.error { None } else { Some(std::time::Duration::from_millis(5000)) }
+}
+
+/// The shortest an info notice may stay up: long enough to read its headline.
+pub const MIN_INFO_MS: u32 = 4000;
 
 /// The longest reason shown; the rest is in the detail.
 const REASON_MAX: usize = 140;
@@ -112,9 +122,24 @@ impl AiTool {
     }
 }
 
+/// One line for a status bar: "`title`. `message` as a sentence." The message is cut at a word
+/// past `REASON_MAX`, so a long OS error never floods the line.
+pub fn failure_line(title: &str, message: &str) -> String {
+    let reason = sentence(message);
+    if reason.is_empty() { format!("{title}.") } else { format!("{title}. {reason}") }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failure_line_is_the_title_then_the_reason_as_a_sentence() {
+        assert_eq!(failure_line("Couldn't save", "permission denied"), "Couldn't save. Permission denied");
+        assert_eq!(failure_line("Couldn't save", "  "), "Couldn't save.");
+        let long = "word ".repeat(60);
+        assert!(failure_line("Export failed", &long).ends_with('…'));
+    }
 
     #[test]
     fn an_unreachable_service_says_so_and_keeps_the_raw_error() {
@@ -158,5 +183,19 @@ mod tests {
     fn info_fades_and_failures_stay() {
         assert!(!Notice::info("Saved").error);
         assert!(Notice::error("The command failed.").error);
+    }
+
+    #[test]
+    fn info_fades_after_five_seconds_and_never_sooner_than_the_minimum() {
+        let ms = lifetime(&Notice::info("Saved photo.png")).expect("info fades");
+        assert_eq!(ms, std::time::Duration::from_millis(5000));
+        assert!(ms.as_millis() >= u128::from(MIN_INFO_MS));
+    }
+
+    #[test]
+    fn a_failure_never_fades() {
+        assert_eq!(lifetime(&Notice::error("The command failed.")), None);
+        assert_eq!(lifetime(&Notice::failure("x", &AppError::TimedOut)), None);
+        assert_eq!(lifetime(&Notice::failure_text("x", "set the endpoint")), None);
     }
 }

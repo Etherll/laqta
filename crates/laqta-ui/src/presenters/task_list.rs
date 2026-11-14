@@ -7,6 +7,9 @@ use laqta_ports::{AppError, TaskEvent, TaskId, TaskStatus};
 /// Rows kept in the main window's task list.
 pub const MAX_ROWS: usize = 100;
 
+/// The title of a row before its task names it (a file name, or "Recording").
+const NEW_ROW_TITLE: &str = "Capture";
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct TaskRow {
     pub id: TaskId,
@@ -82,6 +85,17 @@ impl TaskList {
             .any(|r| matches!(r.status, TaskStatus::InQueue | TaskStatus::Preparing | TaskStatus::Working | TaskStatus::Stopping))
     }
 
+    /// Removes a settled row. A running one stays, since its task still reports to it.
+    pub fn dismiss(&mut self, id: TaskId) {
+        if let Some(pos) = self
+            .rows
+            .iter()
+            .position(|r| r.id == id && matches!(r.status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Stopped))
+        {
+            self.rows.remove(pos);
+        }
+    }
+
     fn row(&mut self, id: TaskId) -> &mut TaskRow {
         let pos = match self.rows.iter().position(|r| r.id == id) {
             Some(p) => p,
@@ -91,7 +105,7 @@ impl TaskList {
                     TaskRow {
                         id,
                         status: TaskStatus::InQueue,
-                        title: format!("Task {}", id.0),
+                        title: NEW_ROW_TITLE.into(),
                         detail: String::new(),
                         path: None,
                         url: None,
@@ -127,7 +141,7 @@ impl TaskList {
             TaskEvent::CopyFailed { reason, .. } => row.detail = format!("Copy failed: {reason}"),
             TaskEvent::Failed { error, .. } => {
                 row.error = Some(error.to_string());
-                row.detail = format!("Failed: {error}");
+                row.detail = error.to_string();
             }
             TaskEvent::UploadStarted { destination, .. } => row.detail = format!("Uploading to {destination}"),
             TaskEvent::Progress { sent, total, .. } => {
@@ -166,7 +180,7 @@ impl TaskList {
                 row.detail = "Recorded".into();
             }
             TaskEvent::RecordingFailed { error, partial, .. } => {
-                if row.title.starts_with("Task ") {
+                if row.title == NEW_ROW_TITLE {
                     row.title = "Recording".into();
                 }
                 if matches!(error, AppError::Cancelled) {
@@ -175,11 +189,11 @@ impl TaskList {
                 } else {
                     row.status = TaskStatus::Failed;
                     row.error = Some(error.to_string());
-                    row.detail = format!("Failed: {error}");
+                    row.detail = error.to_string();
                     row.path = partial.clone().or(row.path.take());
                 }
             }
-            TaskEvent::SaveSkipped { path, .. } => row.detail = format!("Skipped: {} exists", path.display()),
+            TaskEvent::SaveSkipped { path, .. } => row.detail = format!("Skipped: a file named “{}” already exists", path.display()),
             TaskEvent::StepFailed { step, reason, .. } => row.detail = format!("{step} failed: {reason}"),
             _ => {}
         }
@@ -233,7 +247,38 @@ mod tests {
         let id = TaskId(3);
         list.apply(&TaskEvent::Failed { id, error: laqta_ports::AppError::Io("disk full".into()) });
         list.apply(&TaskEvent::StatusChanged { id, status: TaskStatus::Failed });
-        assert_eq!(list.rows()[0].detail, "Failed: i/o: disk full");
+        assert_eq!(list.rows()[0].detail, "i/o: disk full");
+    }
+
+    #[test]
+    fn new_rows_are_titled_capture_until_named() {
+        let mut list = TaskList::default();
+        list.apply(&TaskEvent::StatusChanged { id: TaskId(4), status: TaskStatus::InQueue });
+        assert_eq!(list.rows()[0].title, "Capture");
+        list.apply(&TaskEvent::RecordingFailed { id: TaskId(4), error: AppError::Io("no mic".into()), partial: None });
+        assert_eq!(list.rows()[0].title, "Recording");
+        assert_eq!(list.rows()[0].detail, "i/o: no mic");
+    }
+
+    #[test]
+    fn a_skipped_save_names_the_file() {
+        let mut list = TaskList::default();
+        list.apply(&TaskEvent::SaveSkipped { id: TaskId(5), path: "/s/a.png".into() });
+        assert_eq!(list.rows()[0].detail, "Skipped: a file named “/s/a.png” already exists");
+    }
+
+    #[test]
+    fn dismiss_removes_a_settled_row_only() {
+        let mut list = TaskList::default();
+        list.apply(&TaskEvent::Failed { id: TaskId(1), error: AppError::Io("disk full".into()) });
+        list.apply(&TaskEvent::StatusChanged { id: TaskId(1), status: TaskStatus::Failed });
+        list.apply(&TaskEvent::StatusChanged { id: TaskId(2), status: TaskStatus::Working });
+        list.dismiss(TaskId(2));
+        assert_eq!(list.rows().len(), 2, "a running row stays");
+        list.dismiss(TaskId(1));
+        assert_eq!(list.rows().iter().map(|r| r.id).collect::<Vec<_>>(), vec![TaskId(2)]);
+        list.dismiss(TaskId(99));
+        assert_eq!(list.rows().len(), 1);
     }
 
     #[test]
