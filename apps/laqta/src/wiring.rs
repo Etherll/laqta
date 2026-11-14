@@ -902,6 +902,8 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         let app = app.clone();
         let run_action = run_action.clone();
         Arc::new(move |action: Action| {
+            // Every action logs where it came from, so a capture nobody asked for can be traced.
+            tracing::info!(?action, source = "ui", "action");
             let workflow = app.settings().workflow_for_action(action).map(|w| w.id);
             run_action(action, workflow);
         })
@@ -916,7 +918,10 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                 return;
             }
             match app.settings().workflow_for_hotkey(chord) {
-                Some(workflow) => run_action(workflow.action, Some(workflow.id)),
+                Some(workflow) => {
+                    tracing::info!(%chord, action = ?workflow.action, source = "hotkey", "action");
+                    run_action(workflow.action, Some(workflow.id))
+                }
                 None => tracing::debug!(%chord, "no enabled workflow is bound to this hotkey"),
             }
         })
@@ -1028,6 +1033,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         #[cfg(not(windows))]
         let elevated = false;
         server.serve_requests(move |request| {
+            tracing::info!(?request, source = "ipc", "request");
             if elevated && !crate::requests::allowed_when_elevated(&request) {
                 tracing::warn!(?request, "refused: Laqta runs as administrator and takes no files or URLs from other programs");
                 return Err(
