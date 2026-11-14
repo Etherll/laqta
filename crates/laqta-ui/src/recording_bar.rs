@@ -217,6 +217,7 @@ fn countdown(seconds: u32, area: PhysRect, cx: &mut App) {
     let display = crate::placement::display_at(cx, a).map(|d| d.id());
     let place = if is_wayland() { Place::Center } else { Place::At(at) };
     if let Ok(handle) = crate::popup::open(popup_on(place, side, display, cx), cx, |window, cx| {
+        exclude_from_capture(window, cx);
         let view = cx.new(|_| Countdown { seconds });
         // The view is rounded: keep the root's square theme background out of the corners.
         cx.new(|cx| Root::new(view, window, cx).bg(gpui::transparent_black()))
@@ -256,6 +257,14 @@ fn start(area: PhysRect, border: bool, cx: &mut App) {
     open_bar(bar, cx);
 }
 
+/// Keeps a recording window (bar, border, countdown) out of the video where the OS can: on Windows
+/// a full-screen recording would otherwise hold the bar, which then sits inside the area.
+/// Elsewhere the windows stay outside the area, as placed.
+fn exclude_from_capture(window: &mut gpui::Window, cx: &mut App) {
+    let native = cx.global::<UiState>().services.native_window.clone();
+    native(window, crate::runtime::NativeWindow::ExcludeFromCapture);
+}
+
 /// Opens the bar for `state`, in place of any bar already open.
 fn open_bar(mut state: Bar, cx: &mut App) {
     let bar = size(px(BAR_SIZE.0), px(BAR_SIZE.1));
@@ -270,6 +279,7 @@ fn open_bar(mut state: Bar, cx: &mut App) {
     // On the area's monitor (on Wayland the compositor would pick one).
     let display = crate::placement::display_at(cx, logical(state.area, state.placed_scale, cx)).map(|d| d.id());
     if let Ok(handle) = crate::popup::open(popup_on(place, bar, display, cx), cx, |window, cx| {
+        exclude_from_capture(window, cx);
         let view = cx.new(|_| state);
         // The view is rounded: keep the root's square theme background out of the corners.
         cx.new(|cx| Root::new(view, window, cx).bg(gpui::transparent_black()))
@@ -360,7 +370,8 @@ fn place_border(bar: Bar, scale: f32, cx: &mut App) {
         };
         let b = Bounds { origin: point(px(r.x), px(r.y)), size: size(px(r.w), px(r.h)) };
         // `popup_on` finds the display a strip lies on where none is given.
-        if let Ok(handle) = crate::popup::open(popup_on(Place::At(b), b.size, wayland_display, cx), cx, |_, cx| {
+        if let Ok(handle) = crate::popup::open(popup_on(Place::At(b), b.size, wayland_display, cx), cx, |window, cx| {
+            exclude_from_capture(window, cx);
             cx.new(|_| BorderStrip { paint, edge, thickness: t })
         }) {
             strips.push(handle.into());

@@ -262,6 +262,17 @@ fn open_window(
             });
             let focus = view.read(cx).focus.clone();
             window.focus(&focus, cx);
+            // Alt+F4 or another close request from the OS: end the selection, as Escape does. Removing
+            // only the window would leave the session waiting, and its place in the one-session guard
+            // would refuse every later capture as busy. The session closes the overlay itself.
+            window.on_window_should_close(cx, |window, cx| {
+                let handle = window.window_handle();
+                if !cx.has_global::<UiState>() || !cx.global::<UiState>().overlay.holds(handle) {
+                    return true;
+                }
+                crate::runtime::close_window(handle, cx);
+                false
+            });
             view
         })
         .map_err(|e| anyhow_like::Error(format!("{e:#}")))?;
@@ -395,7 +406,7 @@ fn wheel_steps(acc: &mut f32, delta: f32) -> i32 {
     steps as i32
 }
 
-const SELECTION: u32 = 0x3d8bfd;
+const SELECTION: u32 = crate::theme::INFO;
 const HOVER: u32 = 0x8ab4f8;
 
 fn color(rgb: u32, alpha: f32) -> Hsla {
@@ -669,6 +680,12 @@ impl Render for OverlayView {
                         root = root.child(strip);
                     }
                 }
+                // The keys that finish, at the top while the selection and its bars stay clear of it
+                // (no hint over the area being captured, or over a bar placed above it).
+                let clear_of_hint = sel_l.y > 64.0 && at.y > 64.0;
+                if self.index == owner && !view.gesture && model.text.is_none() && !view.mode_bar && clear_of_hint {
+                    root = root.child(crate::overlay_tools::hint(win_w, "Enter captures  ·  Esc cancels"));
+                }
                 // Beside the toolbar, where the eye already is; the mode bar covers the screen's top.
                 if let Some(text) = model.discard_notice() {
                     let (w, h) = (crate::overlay_tools::notice_width(&text), crate::overlay_tools::NOTICE_H);
@@ -680,27 +697,27 @@ impl Render for OverlayView {
             if contains(origin, view.cursor) {
                 root = root.child(crate::overlay_tools::hint(
                     win_w,
-                    "Click to pick a color  ·  Arrow keys move one pixel  ·  Enter picks  ·  Esc closes",
+                    "Click to pick a color  ·  Arrow keys move one pixel  ·  Enter picks  ·  Esc cancels",
                 ));
             }
-        } else if self.index == owner && !view.regions.is_empty() && view.drawing.is_none() && !view.gesture {
-            // Several regions (multi-region mode): nothing is selected, so no toolbar; say how to finish.
-            let n = view.regions.len();
-            let text =
-                format!("Drag to add another region  ·  Enter captures {n} region{}  ·  Esc to cancel", if n == 1 { "" } else { "s" });
-            // Under the mode bar when it shows, or the bar would cover it.
-            root = root.child(if view.mode_bar {
-                crate::overlay_tools::hint_below_bar(win_w, text)
-            } else {
-                crate::overlay_tools::hint(win_w, text)
-            });
+        } else if let Some(strip) =
+            view.multi_strip.filter(|s| s.count > 0 && self.index == owner && view.drawing.is_none() && !view.gesture)
+        {
+            // Several regions (multi-region mode): nothing is selected, so no capture toolbar. The
+            // strip finishes the selection with the mouse; Enter and Esc still work.
+            root = root.child(crate::overlay_tools::multi_strip(
+                &self.model,
+                win_w,
+                crate::overlay_tools::multi_strip_top(view.mode_bar),
+                strip,
+            ));
         } else if self.index == owner && view.regions.is_empty() && view.drawing.is_none() && !view.mode_bar {
             root = root.child(crate::overlay_tools::hint(
                 win_w,
                 if view.text_only {
-                    "Drag over the text you want  ·  Click a window to read all of it  ·  Esc to close"
+                    "Drag over the text you want  ·  Click a window to read all of it  ·  Esc cancels"
                 } else {
-                    "Drag to select, or click a window or a part of one  ·  Scroll to grow  ·  Esc to cancel"
+                    "Drag to select, or click a window or a part of one  ·  Scroll to grow  ·  Esc cancels"
                 },
             ));
         }
@@ -1075,7 +1092,7 @@ fn magnifier_and_info(view: &RegionView, monitors: &[MonitorImage], at: (i32, i3
         }
         // Faint pixel lines through the centre row and column, then the centre pixel's frame.
         let (mx, my) = ((n_w / 2) as f32 * cell, (n_h / 2) as f32 * cell);
-        let guide = color(0x3d8bfd, 0.25);
+        let guide = color(SELECTION, 0.25);
         grid = grid
             .child(div().absolute().left_0().top(px(my)).w(px(gw)).h(px(cell)).bg(guide))
             .child(div().absolute().left(px(mx)).top_0().w(px(cell)).h(px(gh)).bg(guide))
@@ -1086,7 +1103,14 @@ fn magnifier_and_info(view: &RegionView, monitors: &[MonitorImage], at: (i32, i3
         card = card.child(grid);
     }
     if let Some(info) = &view.info_text {
-        let mut text = div().flex().flex_col().gap(px(1.)).px(px(8.)).py(px(6.)).text_color(color(0xffffff, 0.92)).text_size(px(11.5));
+        let mut text = div()
+            .flex()
+            .flex_col()
+            .gap(px(1.))
+            .px(px(8.))
+            .py(px(6.))
+            .text_color(color(0xffffff, 0.92))
+            .text_size(crate::theme::text::CAPTION);
         for line in info.lines() {
             text = text.child(div().child(line.to_string()));
         }
