@@ -6,6 +6,7 @@
 mod editor;
 mod overlay;
 mod permissions;
+mod polish;
 mod settings;
 
 use std::path::{Path, PathBuf};
@@ -240,5 +241,6 @@ pub(crate) fn install(cx: &mut TestAppContext, services: UiServices) {
             actions_toolbar: None,
             recording: Default::default(),
         });
+        crate::runtime::window_keys(cx);
     });
 }
