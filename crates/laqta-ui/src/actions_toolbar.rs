@@ -2,11 +2,12 @@
 //! The second toggle closes it.
 
 use gpui::{
-    App, AppContext as _, Bounds, Context, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Window, WindowBounds,
-    WindowKind, WindowOptions, div, point, px, size,
+    App, AppContext as _, Bounds, Context, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowKind,
+    WindowOptions, div, point, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::{ActiveTheme as _, Icon, Root, Sizable as _};
+use gpui_component::{ActiveTheme as _, Icon, Sizable as _};
 
 use crate::assets::IconName;
 use laqta_domain::Action;
@@ -34,7 +35,8 @@ pub(crate) fn toggle(cx: &mut App) {
     // Wayland names no primary display: take the first then, or nothing would ever show.
     let Some(display) = crate::placement::main_display(cx) else { return };
     let area = display.bounds();
-    let (w, h) = (DEFAULT_ACTIONS.len() as f32 * 118.0 + 16.0, 48.0);
+    // The capsule plus room for its shadow on every side.
+    let (w, h) = (DEFAULT_ACTIONS.len() as f32 * 86.0 + 2.0 * SHADOW_PAD + 76.0, BAR_H + 2.0 * SHADOW_PAD);
     let x = f32::from(area.origin.x) + (f32::from(area.size.width) - w) / 2.0;
     let y = f32::from(area.origin.y) + 24.0;
     let options = WindowOptions {
@@ -47,33 +49,46 @@ pub(crate) fn toggle(cx: &mut App) {
         is_movable: true,
         display_id: Some(display.id()),
         app_id: Some("laqta-toolbar".into()),
+        // Drawn by Laqta: no system title bar over the capsule, and the corners stay clear.
+        window_decorations: Some(WindowDecorations::Client),
+        window_background: WindowBackgroundAppearance::Transparent,
         ..Default::default()
     };
     match crate::popup::open(options, cx, |window, cx| {
-        let view = cx.new(|_| ActionsToolbar);
-        cx.new(|cx| Root::new(view, window, cx))
+        // No Root: it paints the page colour, and the window around the capsule stays clear.
+        let _ = window;
+        cx.new(|_| ActionsToolbar)
     }) {
         Ok(handle) => cx.global_mut::<UiState>().actions_toolbar = Some(handle.into()),
         Err(e) => tracing::warn!("actions toolbar failed: {e:#}"),
     }
 }
 
+/// The capsule's height.
+const BAR_H: f32 = 48.0;
+/// Clear space around the capsule for its shadow.
+const SHADOW_PAD: f32 = 12.0;
+
 struct ActionsToolbar;
 
 impl Render for ActionsToolbar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dispatch = cx.global::<UiState>().services.dispatch.clone();
-        let mut bar = div()
-            .size_full()
+        let t = cx.theme();
+        // A grip to move the bar: the compositor moves it, since Wayland lets no app place itself.
+        let grip = div()
+            .id("grip")
+            .h_full()
+            .w(px(22.))
             .flex()
-            .flex_row()
             .items_center()
-            .gap(px(2.))
-            .p(px(6.))
-            .bg(crate::theme::extra(cx).card)
-            .font_family(crate::theme::text::UI_FONT)
-            .border_1()
-            .border_color(cx.theme().border);
+            .justify_center()
+            .cursor_grab()
+            .text_color(t.muted_foreground)
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
+            .tooltip(|window, cx| gpui_component::tooltip::Tooltip::new("Drag to move").build(window, cx))
+            .child(Icon::new(IconName::GripVertical).size(crate::theme::icon::SM));
+        let mut bar = crate::widgets::floating(cx).h(px(BAR_H)).px(px(6.)).gap(px(2.)).font_family(crate::theme::text::UI_FONT).child(grip);
         for (i, action) in DEFAULT_ACTIONS.into_iter().enumerate() {
             let d = dispatch.clone();
             bar = bar.child(
@@ -82,11 +97,21 @@ impl Render for ActionsToolbar {
                     .icon(Icon::new(action_icon(action)))
                     .small()
                     .ghost()
+                    .rounded(crate::theme::radius::PILL)
                     .tooltip(crate::i18n::action_label(action))
                     .on_click(move |_, _, _| d(action)),
             );
         }
-        bar
+        bar = bar.child(crate::widgets::divider_v(cx)).child(
+            Button::new("close")
+                .icon(Icon::new(IconName::X))
+                .small()
+                .ghost()
+                .rounded(crate::theme::radius::PILL)
+                .tooltip("Close the toolbar")
+                .on_click(|_, _, cx| toggle(cx)),
+        );
+        div().size_full().flex().items_center().justify_center().p(px(SHADOW_PAD)).child(bar)
     }
 }
 
