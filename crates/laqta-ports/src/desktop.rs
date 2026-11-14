@@ -129,7 +129,9 @@ pub trait HotkeyRegistrar: Send + Sync {
     fn on_assigned(&self, _assigned: AssignedCallback) {}
     /// Called when the desktop turns the registered chords down after `register` reported them
     /// registered: the GlobalShortcuts portal binds after `register` returns, as the bind can wait on
-    /// a dialog. None of the chords is active then. Call before `register`.
+    /// a dialog. None of the chords is active then. Windows also reports chords that a registration
+    /// it made again on its own (the keyboard hook was turned off or lost) could not take; only those
+    /// chords are inactive then. Call before `register`.
     fn on_rejected(&self, _rejected: RejectedCallback) {}
     /// Reports the key combinations pressed while the returned recording lives, for the keys a
     /// window can't see on this platform (Windows: Print Screen, Pause, Scroll Lock and media

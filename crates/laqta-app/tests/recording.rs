@@ -5,20 +5,28 @@
 //! future that runs until it is told to stop (or its duration runs out), so each test steps the spawned futures
 //! one poll at a time.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 use async_broadcast::Receiver;
 use futures_lite::future::{block_on, poll_once};
 use laqta_app::{App, Dispatched, Ports};
+use laqta_domain::record::{AudioDevice, RecordSpec, RecordingSettings};
 use laqta_domain::region::{Button, HoverTarget, RegionInput, TargetKind};
-use laqta_domain::workflow::AfterCaptureTasks;
+use laqta_domain::workflow::{AfterCaptureTasks, TaskSettingsPatch, Workflow, WorkflowId};
 use laqta_domain::{Action, Bitmap, Frame, Monitor, MonitorId, PhysRect, PixelFormat, Settings};
 use laqta_ports::fakes::{
     ClipboardBehaviour, CountingRng, FakeClipboard, FakeHoverSource, FakeMedia, FakeNotifier, FakeOverlay, FakeScreen, FakeScreenStream,
     FakeShell, FakeToolHost, InlineSpawner, ManualClock,
 };
-use laqta_ports::{AppError, BoxFuture, HostInfo, PortError, TaskEvent, TaskId, TaskStatus};
+use laqta_ports::{
+    AppError, BoxFuture, HostInfo, Media, MediaInfo, PortError, RecordingHandle, RecordingInput, ScreenStream, TaskEvent, TaskId,
+    TaskStatus, TranscodeSpec,
+};
 use tempfile::TempDir;
 
 struct H {
@@ -68,7 +76,19 @@ fn window() -> HoverTarget {
     }
 }
 
+/// Ports a test swaps in for the fakes the harness builds. A swapped port is used by the app; the fake of the same
+/// name in `H` then sees nothing.
+#[derive(Default)]
+struct Swap {
+    stream: Option<Arc<dyn ScreenStream>>,
+    media: Option<Arc<dyn Media>>,
+}
+
 fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
+    harness_with(dir, edit, Swap::default())
+}
+
+fn harness_with(dir: &Path, edit: impl FnOnce(&mut Settings), swap: Swap) -> H {
     let overlay = Arc::new(FakeOverlay::default());
     let highlighter = Arc::new(laqta_ports::fakes::FakeHighlighter::default());
     let spawner = Arc::new(InlineSpawner::default());
@@ -89,8 +109,8 @@ fn harness(dir: &Path, edit: impl FnOnce(&mut Settings)) -> H {
         tools: Arc::new(FakeToolHost::default()),
         prompt: Arc::new(laqta_ports::fakes::FakePrompt::default()),
         editor: Arc::new(laqta_ports::fakes::FakeEditorHost::default()),
-        media: media.clone(),
-        stream: stream.clone(),
+        media: swap.media.unwrap_or_else(|| media.clone()),
+        stream: swap.stream.unwrap_or_else(|| stream.clone()),
         ocr: Arc::new(laqta_ports::fakes::FakeOcr::default()),
         window_ops: Arc::new(laqta_ports::fakes::FakeWindowOps::default()),
         input: Arc::new(laqta_ports::fakes::FakeInputSynth::default()),
@@ -597,11 +617,13 @@ fn a_cancelled_portal_after_the_countdown_ends_with_cancelled_and_no_toast() {
             .map(|e| match e {
                 TaskEvent::RecordingCountdown { seconds_left: 2, .. } => "count 2",
                 TaskEvent::RecordingCountdown { seconds_left: 1, .. } => "count 1",
+                TaskEvent::RecordingStarted { .. } => "started",
                 TaskEvent::RecordingFailed { error: AppError::Cancelled, partial: None, .. } => "cancelled",
                 _ => "other",
             })
             .collect();
-        assert_eq!(kinds, vec!["count 2", "count 1", "cancelled"]);
+        // `RecordingStarted` closes the countdown before the stream opens, so the failed open comes after it.
+        assert_eq!(kinds, vec!["count 2", "count 1", "started", "cancelled"]);
         assert!(!h.app.is_recording());
         assert!(h.notifier.toasts.lock().unwrap().is_empty(), "the user closed the portal, so there is nothing to report");
     });
@@ -654,7 +676,7 @@ fn stop_abort_and_a_second_start_each_cancel_a_stream_that_never_opens() {
             let seen = events(&mut h);
             let failed = failures(&seen);
             assert!(matches!(failed.as_slice(), [(AppError::Cancelled, None)]), "{name}: {seen:?}");
-            assert!(!seen.iter().any(|e| matches!(e, TaskEvent::RecordingStarted { .. } | TaskEvent::Saved { .. })), "{name}");
+            assert!(!seen.iter().any(|e| matches!(e, TaskEvent::RecordingStopped { .. } | TaskEvent::Saved { .. })), "{name}");
             assert!(!h.app.is_recording(), "{name}: the slot is free");
             assert!(calls(&h).is_empty(), "{name}: the encoder never started");
             assert!(h.notifier.toasts.lock().unwrap().is_empty(), "{name}: a cancel shows no toast");
@@ -709,11 +731,356 @@ fn stop_while_the_encoder_starts_saves_nothing() {
         let seen = events(&mut h);
         let failed = failures(&seen);
         assert!(matches!(failed.as_slice(), [(AppError::Cancelled, None)]), "{seen:?}");
-        let kept =
-            |e: &&TaskEvent| matches!(e, TaskEvent::RecordingStarted { .. } | TaskEvent::RecordingStopped { .. } | TaskEvent::Saved { .. });
-        assert!(!seen.iter().any(|e| kept(&e)), "nothing started or saved");
+        let kept = |e: &&TaskEvent| matches!(e, TaskEvent::RecordingStopped { .. } | TaskEvent::Saved { .. });
+        assert!(!seen.iter().any(|e| kept(&e)), "nothing was stopped or saved");
         assert_eq!(calls(&h), vec!["start X264 4x4".to_owned(), "abort".to_owned()], "the started encoder is aborted, not stopped");
         assert!(!h.app.is_recording());
         assert!(h.notifier.toasts.lock().unwrap().is_empty());
+    });
+}
+
+/// A media port whose recording takes as long to finish as the test says: `stop` waits for `gate`. It keeps the
+/// specs it was started with.
+struct GatedMedia {
+    gate: Arc<AtomicBool>,
+    specs: Mutex<Vec<RecordSpec>>,
+}
+
+impl GatedMedia {
+    fn new(open: bool) -> Arc<Self> {
+        Arc::new(GatedMedia { gate: Arc::new(AtomicBool::new(open)), specs: Mutex::new(Vec::new()) })
+    }
+}
+
+struct GatedHandle {
+    gate: Arc<AtomicBool>,
+    output: PathBuf,
+}
+
+/// Pending until the gate opens.
+struct WaitFor(Arc<AtomicBool>);
+
+impl Future for WaitFor {
+    type Output = ();
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.0.load(Ordering::SeqCst) {
+            return Poll::Ready(());
+        }
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    }
+}
+
+impl RecordingHandle for GatedHandle {
+    fn pause(&mut self) -> BoxFuture<'_, Result<(), PortError>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn resume(&mut self) -> BoxFuture<'_, Result<(), PortError>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn stop(self: Box<Self>) -> BoxFuture<'static, Result<PathBuf, PortError>> {
+        Box::pin(async move {
+            WaitFor(self.gate.clone()).await;
+            Ok(self.output)
+        })
+    }
+    fn abort(self: Box<Self>) -> BoxFuture<'static, Result<(), PortError>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn is_alive(&mut self) -> bool {
+        true
+    }
+}
+
+impl Media for GatedMedia {
+    fn start(
+        &self,
+        _input: RecordingInput,
+        spec: RecordSpec,
+        output: PathBuf,
+    ) -> BoxFuture<'_, Result<Box<dyn RecordingHandle>, PortError>> {
+        self.specs.lock().unwrap().push(spec);
+        let handle: Box<dyn RecordingHandle> = Box::new(GatedHandle { gate: self.gate.clone(), output });
+        Box::pin(async move { Ok(handle) })
+    }
+    fn transcode(&self, _input: &Path, _output: &Path, _spec: TranscodeSpec) -> BoxFuture<'_, Result<(), PortError>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn probe(&self, _input: &Path) -> BoxFuture<'_, Result<MediaInfo, PortError>> {
+        Box::pin(async {
+            Ok(MediaInfo {
+                duration_secs: 3.0,
+                width: 640,
+                height: 480,
+                fps: 30.0,
+                video_codec: "h264".into(),
+                audio_codec: None,
+                size_bytes: 1000,
+            })
+        })
+    }
+}
+
+#[test]
+fn finishing_is_reported_before_a_slow_stop_ends() {
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let media = GatedMedia::new(false);
+        let swap = Swap { media: Some(media.clone()), ..Swap::default() };
+        let mut h = harness_with(tmp.path(), custom_region, swap);
+        start(&h, Action::ScreenRecorderCustomRegion).unwrap();
+
+        h.app.recording_stop();
+        step(&mut h);
+
+        // The encoder is still finishing the file: the driver has said so, and has not said it is done.
+        let seen = events(&mut h);
+        assert!(seen.iter().any(|e| matches!(e, TaskEvent::RecordingFinishing { .. })), "{seen:?}");
+        assert!(!seen.iter().any(|e| matches!(e, TaskEvent::RecordingStopped { .. })), "{seen:?}");
+        assert!(h.app.is_recording(), "the slot is held until the file is done");
+
+        media.gate.store(true, Ordering::SeqCst);
+        settle(&mut h);
+
+        let seen = events(&mut h);
+        let finishing = seen.iter().position(|e| matches!(e, TaskEvent::RecordingFinishing { .. })).expect("finishing");
+        let stopped = seen.iter().position(|e| matches!(e, TaskEvent::RecordingStopped { .. })).expect("stopped");
+        assert!(finishing < stopped, "{seen:?}");
+        assert_eq!(seen.iter().filter(|e| matches!(e, TaskEvent::RecordingFinishing { .. })).count(), 1);
+        let started_id = recording_id(&mut h);
+        assert!(
+            seen.iter().any(|e| matches!(e, TaskEvent::RecordingFinishing { id } if *id == started_id)),
+            "it is the recording's own id"
+        );
+        assert!(!h.app.is_recording());
+    });
+}
+
+#[test]
+fn an_abort_does_not_report_finishing() {
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let mut h = harness(tmp.path(), custom_region);
+        start(&h, Action::ScreenRecorderCustomRegion).unwrap();
+        h.app.recording_abort();
+        settle(&mut h);
+        assert!(!events(&mut h).iter().any(|e| matches!(e, TaskEvent::RecordingFinishing { .. })));
+    });
+}
+
+/// A stream port that notes which task events had been emitted when `open` was called.
+struct SnoopStream {
+    inner: FakeScreenStream,
+    events: Mutex<Option<Receiver<TaskEvent>>>,
+    at_open: Mutex<Option<Vec<TaskEvent>>>,
+}
+
+impl ScreenStream for SnoopStream {
+    fn open(&self, area: PhysRect, show_cursor: bool, fps: u32, audio: &[AudioDevice]) -> BoxFuture<'_, Result<RecordingInput, PortError>> {
+        if let Some(events) = self.events.lock().unwrap().as_mut() {
+            let mut seen = Vec::new();
+            while let Ok(event) = events.try_recv() {
+                seen.push(event);
+            }
+            *self.at_open.lock().unwrap() = Some(seen);
+        }
+        self.inner.open(area, show_cursor, fps, audio)
+    }
+    fn audio_devices(&self) -> BoxFuture<'_, Result<Vec<AudioDevice>, PortError>> {
+        self.inner.audio_devices()
+    }
+    fn camera_devices(&self) -> BoxFuture<'_, Result<Vec<String>, PortError>> {
+        self.inner.camera_devices()
+    }
+}
+
+#[test]
+fn the_countdown_is_closed_before_the_stream_opens() {
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let snoop = Arc::new(SnoopStream { inner: FakeScreenStream::default(), events: Mutex::new(None), at_open: Mutex::new(None) });
+        let swap = Swap { stream: Some(snoop.clone()), ..Swap::default() };
+        let h = harness_with(
+            tmp.path(),
+            |s| {
+                custom_region(s);
+                s.defaults.recording.countdown_secs = 3;
+            },
+            swap,
+        );
+        *snoop.events.lock().unwrap() = Some(h.app.events());
+
+        start(&h, Action::ScreenRecorderCustomRegion).unwrap();
+
+        // `RecordingStarted` is the event that closes the countdown window. The stream saw it, and the whole countdown,
+        // before it was asked to open.
+        let before_open = snoop.at_open.lock().unwrap().clone().expect("the stream was opened");
+        let kinds: Vec<String> = before_open
+            .iter()
+            .map(|e| match e {
+                TaskEvent::RecordingCountdown { seconds_left, .. } => format!("count {seconds_left}"),
+                TaskEvent::RecordingStarted { .. } => "started".to_owned(),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(kinds, vec!["count 3", "count 2", "count 1", "started"]);
+        assert_eq!(calls(&h), vec!["start X264 4x4".to_owned()], "and the recording went on to start");
+    });
+}
+
+#[test]
+fn recording_started_carries_the_border_setting_of_the_task() {
+    in_pool(|| {
+        let border_of = |seen: &[TaskEvent]| {
+            seen.iter()
+                .find_map(|e| match e {
+                    TaskEvent::RecordingStarted { show_border, .. } => Some(*show_border),
+                    _ => None,
+                })
+                .expect("the recording started")
+        };
+        let tmp = TempDir::new().unwrap();
+        for show in [true, false] {
+            let mut h = harness(tmp.path(), |s| {
+                custom_region(s);
+                s.defaults.recording.show_border = show;
+            });
+            start(&h, Action::ScreenRecorderCustomRegion).unwrap();
+            assert_eq!(border_of(&events(&mut h)), show, "the default setting");
+        }
+
+        // A workflow's own recording section wins over the defaults.
+        let workflow = Workflow {
+            id: WorkflowId(7),
+            name: "No border".into(),
+            action: Action::ScreenRecorderCustomRegion,
+            hotkey: None,
+            enabled: true,
+            patch: TaskSettingsPatch {
+                recording: Some(RecordingSettings { show_border: false, ..RecordingSettings::default() }),
+                ..TaskSettingsPatch::default()
+            },
+        };
+        let mut h = harness(tmp.path(), |s| {
+            custom_region(s);
+            s.defaults.recording.show_border = true;
+            s.workflows.push(workflow);
+        });
+        block_on(h.app.dispatch(Action::ScreenRecorderCustomRegion, Some(WorkflowId(7)))).unwrap();
+        assert!(!border_of(&events(&mut h)), "the workflow turns the border off");
+    });
+}
+
+#[test]
+fn the_gif_width_limit_reaches_the_encoder() {
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let media = GatedMedia::new(true);
+        let swap = Swap { media: Some(media.clone()), ..Swap::default() };
+        let h = harness_with(
+            tmp.path(),
+            |s| {
+                custom_region(s);
+                s.defaults.recording.gif_max_width = 800;
+            },
+            swap,
+        );
+        start(&h, Action::ScreenRecorderGifCustomRegion).unwrap();
+        assert_eq!(media.specs.lock().unwrap().iter().map(|spec| spec.gif_max_width).collect::<Vec<_>>(), vec![800]);
+    });
+}
+
+/// A stream like the Windows one: it takes an area on one 8 px wide monitor and refuses an area over the edge.
+struct OneMonitorStream {
+    inner: FakeScreenStream,
+}
+
+impl ScreenStream for OneMonitorStream {
+    fn open(&self, area: PhysRect, show_cursor: bool, fps: u32, audio: &[AudioDevice]) -> BoxFuture<'_, Result<RecordingInput, PortError>> {
+        if (area.x < 8) != (area.right() <= 8) {
+            return Box::pin(async { Err(PortError::Unsupported("the area spans more than one display".into())) });
+        }
+        self.inner.open(area, show_cursor, fps, audio)
+    }
+    fn audio_devices(&self) -> BoxFuture<'_, Result<Vec<AudioDevice>, PortError>> {
+        self.inner.audio_devices()
+    }
+}
+
+#[test]
+fn an_area_over_two_monitors_is_clipped_to_the_larger_part_with_a_warning() {
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let stream = Arc::new(OneMonitorStream { inner: FakeScreenStream::default() });
+        let swap = Swap { stream: Some(stream.clone()), ..Swap::default() };
+        // The monitors are 8x8 at x = 0 and x = 8. The area has 4 columns on the first and 6 on the second.
+        let mut h =
+            harness_with(tmp.path(), |s| s.defaults.capture.custom_region = Some(PhysRect { x: 4, y: 0, width: 10, height: 6 }), swap);
+        assert_eq!(start(&h, Action::ScreenRecorderCustomRegion).unwrap(), Dispatched::Done);
+
+        assert_eq!(*stream.inner.opened.lock().unwrap(), vec![PhysRect { x: 8, y: 0, width: 6, height: 6 }]);
+        assert_eq!(calls(&h), vec!["start X264 6x6".to_owned()]);
+        let seen = events(&mut h);
+        assert!(
+            seen.iter().any(|event| matches!(event, TaskEvent::StepFailed { step: "recording area", .. })),
+            "the clip is reported: {seen:?}"
+        );
+        assert!(h.app.is_recording());
+    });
+}
+
+#[test]
+fn an_unsupported_stream_with_no_monitor_part_fails_the_recording() {
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let stream = Arc::new(OneMonitorStream { inner: FakeScreenStream::default() });
+        let swap = Swap { stream: Some(stream), ..Swap::default() };
+        // Off every monitor: there is nothing to clip to, so the refusal stands.
+        let h = harness_with(tmp.path(), |s| s.defaults.capture.custom_region = Some(PhysRect { x: 7, y: 20, width: 4, height: 4 }), swap);
+        assert!(matches!(start(&h, Action::ScreenRecorderCustomRegion), Err(AppError::Unsupported(_))));
+        assert!(calls(&h).is_empty());
+    });
+}
+
+#[test]
+fn a_workflows_recorder_backend_reaches_the_media_spec() {
+    in_pool(|| {
+        let tmp = TempDir::new().unwrap();
+        let workflow = Workflow {
+            id: WorkflowId(8),
+            name: "Native".into(),
+            action: Action::ScreenRecorderCustomRegion,
+            hotkey: None,
+            enabled: true,
+            patch: TaskSettingsPatch {
+                recording: Some(RecordingSettings {
+                    backend: laqta_domain::record::RecorderBackend::Native,
+                    ..RecordingSettings::default()
+                }),
+                ..TaskSettingsPatch::default()
+            },
+        };
+        let media = GatedMedia::new(true);
+        let swap = Swap { media: Some(media.clone()), ..Swap::default() };
+        let h = harness_with(
+            tmp.path(),
+            |s| {
+                custom_region(s);
+                // The defaults say FFmpeg; only the workflow asks for the native recorder.
+                s.defaults.recording.backend = laqta_domain::record::RecorderBackend::Ffmpeg;
+                s.workflows.push(workflow);
+            },
+            swap,
+        );
+
+        block_on(h.app.dispatch(Action::ScreenRecorderCustomRegion, Some(WorkflowId(8)))).unwrap();
+        assert_eq!(media.specs.lock().unwrap().last().unwrap().backend, laqta_domain::record::RecorderBackend::Native);
+
+        // The same action without the workflow uses the defaults.
+        let media = GatedMedia::new(true);
+        let swap = Swap { media: Some(media.clone()), ..Swap::default() };
+        let h = harness_with(tmp.path(), custom_region, swap);
+        start(&h, Action::ScreenRecorderCustomRegion).unwrap();
+        assert_eq!(media.specs.lock().unwrap().last().unwrap().backend, laqta_domain::record::RecorderBackend::Ffmpeg);
     });
 }

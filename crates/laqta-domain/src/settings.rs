@@ -39,6 +39,97 @@ pub struct Settings {
     pub models: ModelOptions,
     /// Cloud services: background removal provider and the image analyzer.
     pub cloud: CloudOptions,
+    /// Windows only: start Laqta with administrator rights (one UAC prompt per start), so its
+    /// shortcuts and capture reach elevated windows. Other platforms ignore it.
+    pub run_as_admin: bool,
+    /// Windows only: catch the shortcuts with a keyboard hook instead of `RegisterHotKey`, so they
+    /// still work in games that take the keyboard for themselves. The hook takes the keys it
+    /// matches. Other platforms ignore it.
+    pub hotkeys_via_hook: bool,
+}
+
+/// Bounds for numbers the settings window takes as text. The window shows an error for a value outside
+/// them and never changes it silently; the code that reads a setting clamps again as a last guard.
+pub mod limits {
+    /// JPEG quality, in percent.
+    pub const JPEG_QUALITY: (u32, u32) = (1, 100);
+    /// Recording frame rate.
+    pub const FPS: (u32, u32) = (1, 240);
+    /// GIF frame rate.
+    pub const GIF_FPS: (u32, u32) = (1, 60);
+    /// Camera picture width, in percent of the recording.
+    pub const CAMERA_SIZE_PERCENT: (u32, u32) = (5, 100);
+    /// How long a notification stays, in milliseconds.
+    pub const TOAST_DURATION_MS: (u32, u32) = (500, 600_000);
+    /// Upload retries after the first attempt.
+    pub const RETRIES: (u32, u32) = (0, 10);
+    /// Constant rate factor of x264 and friends.
+    pub const CRF: (u32, u32) = (0, 63);
+    /// Scrolling capture: frames, wheel notches per step, and the wait between steps in milliseconds.
+    pub const SCROLL_FRAMES: (u32, u32) = (2, 500);
+    pub const SCROLL_AMOUNT: (u32, u32) = (1, 50);
+    pub const SCROLL_DELAY_MS: (u32, u32) = (50, 60_000);
+}
+
+impl AutoCaptureOptions {
+    /// The shortest wait between two automatic captures, in milliseconds.
+    pub const MIN_INTERVAL_MS: u32 = 1_000;
+    /// The longest: a day. Larger values would overflow when the window converts seconds to milliseconds.
+    pub const MAX_INTERVAL_MS: u32 = 86_400_000;
+}
+
+/// A setting the application refuses to save.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SettingsIssue {
+    /// A screenshots folder that is not an absolute path: it would mean a different folder for every
+    /// process, depending on where it was started. `workflow` is the shortcut that overrides the folder.
+    RelativeScreenshotsDir { workflow: Option<WorkflowId>, path: PathBuf },
+    /// An automatic capture interval outside [`AutoCaptureOptions::MIN_INTERVAL_MS`, `MAX_INTERVAL_MS`].
+    AutoCaptureInterval { interval_ms: u32 },
+}
+
+impl std::fmt::Display for SettingsIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SettingsIssue::RelativeScreenshotsDir { path, .. } if path.as_os_str().is_empty() => {
+                write!(f, "The screenshots folder can't be empty")
+            }
+            SettingsIssue::RelativeScreenshotsDir { path, .. } => {
+                write!(f, "The screenshots folder must be a full path, not \"{}\"", path.display())
+            }
+            SettingsIssue::AutoCaptureInterval { interval_ms } => write!(
+                f,
+                "The auto-capture interval must be between {} and {} seconds, not {}",
+                AutoCaptureOptions::MIN_INTERVAL_MS / 1000,
+                AutoCaptureOptions::MAX_INTERVAL_MS / 1000,
+                interval_ms / 1000
+            ),
+        }
+    }
+}
+
+/// What is wrong with `settings`, in the order a person would fix it; empty when it can be saved.
+pub fn validate(settings: &Settings) -> Vec<SettingsIssue> {
+    let mut issues = Vec::new();
+    let mut folder = |workflow: Option<WorkflowId>, path: &std::path::Path| {
+        if !path.is_absolute() {
+            issues.push(SettingsIssue::RelativeScreenshotsDir { workflow, path: path.to_path_buf() });
+        }
+    };
+    folder(None, &settings.screenshots_dir);
+    if let Some(dir) = &settings.defaults.screenshots_dir {
+        folder(None, dir);
+    }
+    for w in &settings.workflows {
+        if let Some(dir) = &w.patch.screenshots_dir {
+            folder(Some(w.id), dir);
+        }
+    }
+    let interval = settings.auto_capture.interval_ms;
+    if !(AutoCaptureOptions::MIN_INTERVAL_MS..=AutoCaptureOptions::MAX_INTERVAL_MS).contains(&interval) {
+        issues.push(SettingsIssue::AutoCaptureInterval { interval_ms: interval });
+    }
+    issues
 }
 
 /// Which background remover runs.
@@ -216,6 +307,8 @@ impl Settings {
             auto_capture: AutoCaptureOptions::default(),
             models: ModelOptions::default(),
             cloud: CloudOptions::default(),
+            run_as_admin: false,
+            hotkeys_via_hook: false,
         }
     }
 
@@ -233,6 +326,12 @@ impl Settings {
 
     pub fn workflow(&self, id: WorkflowId) -> Option<&Workflow> {
         self.workflows.iter().find(|w| w.id == id)
+    }
+
+    /// The workflow an action runs under when nothing names one (the tray, a Laqta window, the CLI):
+    /// the first enabled workflow for that action.
+    pub fn workflow_for_action(&self, action: Action) -> Option<&Workflow> {
+        self.workflows.iter().find(|w| w.enabled && w.action == action)
     }
 
     /// The first enabled workflow with that hotkey.
@@ -298,6 +397,37 @@ mod tests {
     use crate::image::ImageFormat;
     use crate::workflow::ImageSettings;
     use serde::Deserialize;
+
+    #[test]
+    fn validate_accepts_the_defaults_and_names_a_relative_screenshots_folder() {
+        assert!(validate(&settings()).is_empty());
+        let mut s = settings();
+        s.screenshots_dir = PathBuf::from("Pictures/Laqta");
+        s.workflows[1].patch.screenshots_dir = Some(PathBuf::from("shots"));
+        s.defaults.screenshots_dir = Some(PathBuf::from(""));
+        let id = s.workflows[1].id;
+        assert_eq!(
+            validate(&s),
+            vec![
+                SettingsIssue::RelativeScreenshotsDir { workflow: None, path: PathBuf::from("Pictures/Laqta") },
+                SettingsIssue::RelativeScreenshotsDir { workflow: None, path: PathBuf::new() },
+                SettingsIssue::RelativeScreenshotsDir { workflow: Some(id), path: PathBuf::from("shots") },
+            ]
+        );
+        assert!(validate(&s)[0].to_string().contains("full path"));
+        assert!(validate(&s)[1].to_string().contains("can't be empty"));
+    }
+
+    #[test]
+    fn validate_bounds_the_auto_capture_interval() {
+        let mut s = settings();
+        for (ms, ok) in [(0, false), (999, false), (1_000, true), (86_400_000, true), (86_400_001, false), (u32::MAX, false)] {
+            s.auto_capture.interval_ms = ms;
+            assert_eq!(validate(&s).is_empty(), ok, "{ms} ms");
+        }
+        s.auto_capture.interval_ms = 0;
+        assert!(validate(&s)[0].to_string().contains("between 1 and 86400 seconds"));
+    }
 
     #[test]
     fn a_tray_click_opens_the_main_window() {
@@ -391,6 +521,18 @@ mod tests {
     }
 
     #[test]
+    fn run_as_admin_is_off_by_default() {
+        assert!(!settings().run_as_admin);
+        assert!(!Settings::default().run_as_admin);
+    }
+
+    #[test]
+    fn hotkeys_via_hook_is_off_by_default() {
+        assert!(!settings().hotkeys_via_hook);
+        assert!(!Settings::default().hotkeys_via_hook);
+    }
+
+    #[test]
     fn empty_object_loads_defaults() {
         let empty = serde::de::value::MapDeserializer::<_, serde::de::value::Error>::new(std::iter::empty::<(&str, &str)>());
         let loaded = Settings::deserialize(empty).expect("an empty object is valid settings");
@@ -412,5 +554,29 @@ mod json_tests {
         assert_eq!(back.workflows[1].name, "Capture region");
         let empty: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(empty.version, SETTINGS_VERSION);
+    }
+
+    #[test]
+    fn run_as_admin_round_trips_and_old_files_load_without_it() {
+        let mut s = Settings::default_for(PathBuf::from("/p"));
+        s.run_as_admin = true;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(back.run_as_admin);
+        let mut value = serde_json::to_value(Settings::default_for(PathBuf::from("/p"))).unwrap();
+        value.as_object_mut().unwrap().remove("run_as_admin");
+        let old: Settings = serde_json::from_value(value).unwrap();
+        assert!(!old.run_as_admin);
+    }
+
+    #[test]
+    fn hotkeys_via_hook_round_trips_and_old_files_load_without_it() {
+        let mut s = Settings::default_for(PathBuf::from("/p"));
+        s.hotkeys_via_hook = true;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(back.hotkeys_via_hook);
+        let mut value = serde_json::to_value(Settings::default_for(PathBuf::from("/p"))).unwrap();
+        value.as_object_mut().unwrap().remove("hotkeys_via_hook");
+        let old: Settings = serde_json::from_value(value).unwrap();
+        assert!(!old.hotkeys_via_hook);
     }
 }

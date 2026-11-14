@@ -9,16 +9,15 @@ use gpui::{
     App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, RenderImage,
     SharedString, Styled as _, Window, WindowOptions, div, img, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::ScrollableElement as _;
-use gpui_component::{ActiveTheme as _, Disableable as _, Root, Selectable as _, Sizable as _};
+use gpui_component::{ActiveTheme as _, Root};
 use laqta_app as t;
 use laqta_domain::{Bitmap, ImageFormat, PixelFormat};
 use laqta_ports::{ClipboardContent, ToolKind};
 
 use crate::runtime::UiState;
-use crate::widgets;
+use crate::widgets::{self, Pill};
 
 pub(crate) fn title(kind: ToolKind) -> &'static str {
     match kind {
@@ -162,7 +161,7 @@ fn spec(kind: ToolKind) -> Spec {
             None,
             &[("Text", "https://")],
             &["Generate", "Decode a file"],
-            Some("Go"),
+            Some("Generate code"),
             "Generate a code from text, or decode one from an image file.",
         ),
         ToolKind::HashCheck => s(
@@ -170,17 +169,21 @@ fn spec(kind: ToolKind) -> Spec {
             None,
             &[("Expected hash (optional)", "")],
             &[],
-            Some("Hash"),
+            Some("Hash file"),
             "CRC32, MD5, SHA-1/256/384/512, BLAKE3, XXH64, XXH3.",
         ),
-        ToolKind::Metadata => s(Pick::OneFile, None, &[], &[], Some("Read"), "EXIF for images; container tags for video and audio."),
-        ToolKind::StripMetadata => s(Pick::Files, None, &[], &[], Some("Strip"), "Writes copies without metadata next to the originals."),
+        ToolKind::Metadata => {
+            s(Pick::OneFile, None, &[], &[], Some("Read metadata"), "EXIF for images; container tags for video and audio.")
+        }
+        ToolKind::StripMetadata => {
+            s(Pick::Files, None, &[], &[], Some("Strip metadata"), "Writes copies without metadata next to the originals.")
+        }
         ToolKind::IndexFolder => s(
             Pick::Folder,
             None,
             &[("Depth (empty = all)", "")],
             &["Text", "HTML", "JSON", "XML"],
-            Some("Index"),
+            Some("List folder"),
             "Lists the folder's tree; copy or save the result.",
         ),
         ToolKind::ClipboardViewer => s(Pick::Nothing, None, &[], &[], Some("Refresh"), "What the clipboard holds now."),
@@ -217,7 +220,11 @@ fn list(paths: &[PathBuf]) -> String {
     if paths.is_empty() {
         return "Nothing was written.".into();
     }
-    format!("Wrote {} file(s):\n{}", paths.len(), paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n"))
+    format!(
+        "Wrote {}:\n{}",
+        crate::presenters::copy::count(paths.len(), "file", "files"),
+        paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n")
+    )
 }
 
 fn dir_of(path: &Path) -> PathBuf {
@@ -255,6 +262,7 @@ pub(crate) fn open(kind: ToolKind, files: Vec<PathBuf>, cx: &mut App) {
         ..Default::default()
     };
     if let Err(e) = cx.open_window(options, |window, cx| {
+        crate::runtime::dismiss_on_escape(window, cx);
         let view = cx.new(|cx| ToolsWindow::new(kind, files, window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     }) {
@@ -271,6 +279,8 @@ struct ToolsWindow {
     output: String,
     image: Option<Arc<RenderImage>>,
     busy: bool,
+    /// The output is a failure line, drawn in the danger colour.
+    failed: bool,
     colour_step: usize,
     /// Network monitor rows: (interface, received/s, sent/s, total received, total sent).
     net: Vec<(String, u64, u64, u64, u64)>,
@@ -290,6 +300,7 @@ impl ToolsWindow {
             output: String::new(),
             image: None,
             busy: false,
+            failed: false,
             colour_step: 0,
             net: Vec::new(),
         };
@@ -386,13 +397,14 @@ impl ToolsWindow {
 
     fn finish(&mut self, r: Result<(String, Option<Bitmap>), String>, cx: &mut Context<Self>) {
         self.busy = false;
+        self.failed = r.is_err();
         match r {
             Ok((text, image)) => {
                 self.output = text;
                 self.image = image.as_ref().and_then(render_image);
             }
             Err(e) => {
-                self.output = format!("Failed: {e}");
+                self.output = crate::presenters::notice::failure_line("The tool failed", &e.to_string());
                 self.image = None;
             }
         }
@@ -673,9 +685,11 @@ impl Job {
                 None => text("The clipboard is empty.".into()),
                 Some(ClipboardContent::Text(s)) => text(format!("Text ({} characters):\n\n{s}", s.chars().count())),
                 Some(ClipboardContent::Image(b)) => Ok((format!("Image {}×{}", b.width(), b.height()), Some(b))),
-                Some(ClipboardContent::Files(f)) => {
-                    text(format!("{} file(s):\n{}", f.len(), f.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n")))
-                }
+                Some(ClipboardContent::Files(f)) => text(format!(
+                    "{}:\n{}",
+                    crate::presenters::copy::count(f.len(), "file", "files"),
+                    f.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n")
+                )),
             },
             Job::Borderless(title, on) => {
                 let title = run!(J::Borderless { title, on }, O::Window).ok_or("no window has that title")?;
@@ -757,77 +771,117 @@ impl Render for ToolsWindow {
             }
             return crate::chrome::rounded(widgets::page(cx), window)
                 .child(crate::chrome::TitleBar::new().title(title(self.kind)).flat())
-                .child(body.child(table));
+                .child(body.child(widgets::card(cx).p(crate::theme::space::S4).child(table)));
         }
 
+        // The inputs sit in one card of settings-style rows: label and state on the left, the
+        // control on the right.
+        let mut inputs: Vec<gpui::AnyElement> = Vec::new();
         if sp.pick != Pick::Nothing {
-            let label = match sp.pick {
-                Pick::Files => "Choose files…",
-                Pick::Folder => "Choose folder…",
-                _ => "Choose file…",
-            };
-            let chosen = match self.files.len() {
-                0 => "Nothing chosen".to_string(),
-                1 => self.files[0].display().to_string(),
-                n => format!("{n} files"),
-            };
-            body = body.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(Button::new("pick").label(label).on_click(cx.listener(|this, _, _, cx| this.pick(false, cx))))
-                    .child(div().flex_1().truncate().child(chosen)),
+            let (what, button) = pick_words(self.kind, sp.pick);
+            let chosen = chosen_line(&self.files);
+            inputs.push(
+                widgets::row_with(
+                    what,
+                    Some(chosen),
+                    widgets::Slot::Hug,
+                    widgets::pill("pick", button, Pill::Default, false, cx.listener(|this, _, _, cx| this.pick(false, cx)), cx),
+                    cx,
+                )
+                .into_any_element(),
             );
         }
         if let Some(what) = sp.second {
-            let chosen = self.second.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "Nothing chosen".into());
-            body = body.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(Button::new("pick2").label(format!("{what}…")).on_click(cx.listener(|this, _, _, cx| this.pick(true, cx))))
-                    .child(div().flex_1().truncate().child(chosen)),
+            let chosen = chosen_line(self.second.as_slice());
+            inputs.push(
+                widgets::row_with(
+                    what,
+                    Some(chosen),
+                    widgets::Slot::Hug,
+                    widgets::pill("pick2", "Choose…", Pill::Default, false, cx.listener(|this, _, _, cx| this.pick(true, cx)), cx),
+                    cx,
+                )
+                .into_any_element(),
             );
         }
         for (i, (label, _)) in sp.fields.iter().enumerate() {
-            body = body.child(widgets::row(*label, Input::new(&self.fields[i]), cx));
+            inputs.push(widgets::row(*label, Input::new(&self.fields[i]), cx).into_any_element());
         }
         if !sp.choices.is_empty() {
-            let mut row = div().flex().flex_wrap().gap(px(4.));
-            for (i, c) in sp.choices.iter().enumerate() {
-                row = row.child(
-                    Button::new(SharedString::from(format!("choice-{i}"))).label(*c).small().selected(self.choice == i).on_click(
-                        cx.listener(move |this, _, _, cx| {
+            let options = sp
+                .choices
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let view = cx.entity().downgrade();
+                    widgets::Choice::new(*c, self.choice == i, move |_, _, cx| {
+                        let _ = view.update(cx, |this, cx| {
                             this.choice = i;
                             cx.notify();
-                        }),
-                    ),
-                );
+                        });
+                    })
+                })
+                .collect();
+            inputs.push(
+                widgets::row_with(
+                    choice_label(self.kind),
+                    None::<SharedString>,
+                    widgets::Slot::Hug,
+                    widgets::choice("choice", options, cx),
+                    cx,
+                )
+                .into_any_element(),
+            );
+        }
+        if !inputs.is_empty() {
+            let mut card = widgets::card(cx).flex().flex_col().px(crate::theme::space::S5).py(crate::theme::space::S2);
+            for (i, row) in inputs.into_iter().enumerate() {
+                if i > 0 {
+                    card = card.child(widgets::divider_h(cx));
+                }
+                card = card.child(row);
             }
-            body = body.child(row);
+            body = body.child(card);
         }
-        let mut actions = div().flex().gap(px(8.));
-        if let Some(run) = sp.run {
-            actions = actions
-                .child(Button::new("run").label(run).primary().disabled(self.busy).on_click(cx.listener(|this, _, _, cx| this.run(cx))));
+
+        if (self.image.is_some() || !self.output.is_empty()) && self.kind != ToolKind::ImageViewer {
+            body = body.child(div().pt(crate::theme::space::S4).child(widgets::group_title("Result", cx)));
         }
-        if self.kind == ToolKind::ColorPicker {
-            actions = actions.child(Button::new("from-screen").label("Pick from screen").on_click(cx.listener(|_, _, _, cx| {
-                let dispatch = cx.global::<UiState>().services.dispatch.clone();
-                dispatch(laqta_domain::Action::ScreenColorPicker);
-            })));
+        if let Some(image) = &self.image {
+            body = body.child(
+                div()
+                    .flex()
+                    .justify_center()
+                    .p(px(12.))
+                    .bg(crate::theme::extra(cx).stage)
+                    .rounded(crate::theme::radius::CARD)
+                    .child(img(image.clone()).max_w_full().max_h(px(420.)).rounded(crate::theme::radius::MD)),
+            );
         }
         if !self.output.is_empty() {
+            let tone = if self.failed { cx.theme().danger } else { cx.theme().foreground };
+            body = body.child(
+                widgets::card(cx)
+                    .p(crate::theme::space::S4)
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_size(crate::theme::text::LABEL)
+                    .text_color(tone)
+                    .whitespace_normal()
+                    .child(self.output.clone()),
+            );
+        }
+
+        // Footer: secondary actions, then the one primary that names what it does.
+        let mut actions: Vec<widgets::FooterAction> = Vec::new();
+        if !self.output.is_empty() && !self.failed {
             let out = self.output.clone();
-            actions = actions.child(Button::new("copy").label("Copy result").ghost().on_click(move |_, _, cx| {
+            actions.push(widgets::FooterAction::new("copy", "Copy result", Pill::Ghost, move |_, _, cx| {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(out.clone()));
             }));
             if self.kind == ToolKind::IndexFolder {
                 let out = self.output.clone();
                 let ext = ["txt", "html", "json", "xml"][self.choice];
-                actions = actions.child(Button::new("save").label("Save…").ghost().on_click(move |_, _, cx| {
+                actions.push(widgets::FooterAction::new("save", "Save…", Pill::Default, move |_, _, cx| {
                     let out = out.clone();
                     cx.background_spawn(async move {
                         if let Some(f) = rfd::AsyncFileDialog::new().set_file_name(format!("index.{ext}")).save_file().await
@@ -840,33 +894,76 @@ impl Render for ToolsWindow {
                 }));
             }
         }
-        body = body.child(actions);
-        if let Some(image) = &self.image {
-            body = body.child(
-                div()
-                    .flex()
-                    .justify_center()
-                    .p(px(12.))
-                    .bg(cx.theme().secondary)
-                    .rounded(crate::theme::radius::CARD)
-                    .child(img(image.clone()).max_w_full().max_h(px(420.)).rounded(crate::theme::radius::MD)),
-            );
+        if self.kind == ToolKind::ColorPicker {
+            actions.push(widgets::FooterAction::new("from-screen", "Pick from screen", Pill::Default, |_, _, cx| {
+                let dispatch = cx.global::<UiState>().services.dispatch.clone();
+                dispatch(laqta_domain::Action::ScreenColorPicker);
+            }));
         }
-        if !self.output.is_empty() {
-            body = body.child(
-                div()
-                    .p(px(12.))
-                    .rounded(crate::theme::radius::LG)
-                    .bg(cx.theme().secondary)
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_sm()
-                    .whitespace_normal()
-                    .child(self.output.clone()),
-            );
+        if let Some(run) = run_label(self.kind, sp.run, self.choice) {
+            let mut action = widgets::FooterAction::new("run", run, Pill::Primary, cx.listener(|this, _, _, cx| this.run(cx)));
+            action.enabled = if self.busy {
+                Err("Wait for this to finish".into())
+            } else if sp.pick != Pick::Nothing && self.files.is_empty() && !(self.kind == ToolKind::QrCode) {
+                Err(format!("{} first", pick_words(self.kind, sp.pick).1.trim_end_matches('…')).into())
+            } else {
+                Ok(())
+            };
+            actions.push(action);
         }
-        crate::chrome::rounded(widgets::page(cx), window)
+        let note = self.busy.then(|| SharedString::from("Working…"));
+        let mut page = crate::chrome::rounded(widgets::page(cx), window)
             .child(crate::chrome::TitleBar::new().title(title(self.kind)).flat())
-            .child(div().flex_1().overflow_y_scrollbar().child(body))
+            .child(div().flex_1().min_h_0().overflow_y_scrollbar().child(body));
+        if !actions.is_empty() {
+            page = page.child(widgets::footer(note, actions, cx));
+        }
+        page
+    }
+}
+
+/// What the file row is called and what its button says.
+fn pick_words(kind: ToolKind, pick: Pick) -> (&'static str, &'static str) {
+    let video = matches!(kind, ToolKind::VideoConverter | ToolKind::VideoTrimmer | ToolKind::VideoThumbnailer | ToolKind::GifMaker);
+    match pick {
+        Pick::Folder => ("Folder", "Choose folder…"),
+        Pick::Files if matches!(kind, ToolKind::StripMetadata) => ("Files", "Choose files…"),
+        Pick::Files => ("Images", "Choose images…"),
+        _ if video => ("Video", "Choose video…"),
+        _ if matches!(kind, ToolKind::GifTrimmer) => ("Animated GIF", "Choose GIF…"),
+        _ if matches!(kind, ToolKind::HashCheck | ToolKind::Metadata) => ("File", "Choose file…"),
+        _ => ("Image", "Choose image…"),
+    }
+}
+
+/// The line under a file row: what is chosen, or that nothing is yet.
+fn chosen_line(files: &[PathBuf]) -> SharedString {
+    let name = |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string());
+    match files {
+        [] => "Nothing chosen yet".into(),
+        [one] => one.display().to_string().into(),
+        [first, rest @ ..] => format!("{} and {} more", name(first), rest.len()).into(),
+    }
+}
+
+/// The label of a tool's choice row.
+fn choice_label(kind: ToolKind) -> &'static str {
+    match kind {
+        ToolKind::ImageCombiner => "Direction",
+        ToolKind::ImageResizer => "Fit",
+        ToolKind::ImageConverter | ToolKind::IndexFolder => "Format",
+        ToolKind::ImageWatermark => "Position",
+        ToolKind::VideoConverter => "Codec",
+        ToolKind::BorderlessWindow => "Border",
+        _ => "Mode",
+    }
+}
+
+/// The primary button's label. The QR tool's names the chosen mode.
+fn run_label(kind: ToolKind, run: Option<&'static str>, choice: usize) -> Option<&'static str> {
+    match kind {
+        ToolKind::QrCode => Some(if choice == 0 { "Generate code" } else { "Decode an image…" }),
+        _ => run,
     }
 }
 

@@ -244,11 +244,11 @@ pub fn toast_progress(notifier: &Arc<dyn Notifier>, title: &str, what: &str) -> 
         let Some(percent) = quarters.lock().ok().and_then(|mut q| q.advance(done, total)) else {
             return;
         };
-        let body = match percent {
-            0 => format!("Downloading {what}"),
-            100 => format!("Downloaded {what}, checking it"),
-            percent => format!("Downloading {what}: {percent} %"),
-        };
+        // One notice when the file is in, not one every quarter: progress toasts are noise.
+        if percent < 100 {
+            return;
+        }
+        let body = format!("Downloaded {what}");
         let options = ToastOptions { duration_ms: 1500, fade_ms: 300, ..ToastOptions::default() };
         if let Err(error) = notifier.toast(Toast { title: title.clone(), body, image: None, path: None, url: None, options }) {
             tracing::warn!(%error, "the download notice was not shown");

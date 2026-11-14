@@ -16,6 +16,7 @@ fn fail(e: impl std::fmt::Display) -> PortError {
 /// the file deleted, and the image split per output using the `wl_output` layout. No restore token
 /// exists or is stored (ADR 019).
 pub async fn capture_all() -> Result<Vec<Frame>, PortError> {
+    let layout = capture_wayshot::layout_soon();
     let response = Screenshot::request()
         .interactive(false)
         .modal(false)
@@ -28,14 +29,14 @@ pub async fn capture_all() -> Result<Vec<Frame>, PortError> {
             other => fail(other),
         })?;
     let path = file_path(response.uri().as_str()).ok_or_else(|| fail("not a file URI"))?;
-    blocking::unblock(move || {
+    let (w, h, rgba) = blocking::unblock(move || {
         let bytes = std::fs::read(&path).map_err(fail);
         let _ = std::fs::remove_file(&path);
-        let (w, h, rgba) = decode_png(&bytes?)?;
-        let layout = capture_wayshot::layout().unwrap_or_default();
-        Ok(split(w, h, rgba, &layout))
+        decode_png(&bytes?)
     })
-    .await
+    .await?;
+    let layout = layout.await;
+    blocking::unblock(move || Ok(split(w, h, PixelFormat::Rgba8, rgba, &layout))).await
 }
 
 /// `file:///a%20b.png` → `/a b.png`.
@@ -78,8 +79,9 @@ fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), PortError> {
 
 /// Splits the composed image into one frame per output. The image covers the union of the
 /// logical rects at one uniform factor (image width / union width), which is every output's scale,
-/// so physical rects are the logical rects times that factor. Without a layout, one frame.
-pub(crate) fn split(w: u32, h: u32, rgba: Vec<u8>, layout: &[OutputLayout]) -> Vec<Frame> {
+/// so physical rects are the logical rects times that factor. Without a layout, one frame. The
+/// pixels stay in `format`; only whole rows are copied.
+pub(crate) fn split(w: u32, h: u32, format: PixelFormat, rgba: Vec<u8>, layout: &[OutputLayout]) -> Vec<Frame> {
     let whole = |rgba: Vec<u8>| Frame {
         monitor: Monitor {
             id: MonitorId("portal".into()),
@@ -88,11 +90,14 @@ pub(crate) fn split(w: u32, h: u32, rgba: Vec<u8>, layout: &[OutputLayout]) -> V
             scale: 1.0,
             primary: true,
         },
-        image: Bitmap::new(w, h, PixelFormat::Rgba8, Arc::from(rgba)).unwrap_or_else(|_| unreachable!("decoder size")),
+        image: Bitmap::new(w, h, format, Arc::from(rgba)).unwrap_or_else(|_| unreachable!("decoder size")),
     };
     let Some(union) = layout.iter().map(|o| o.logical).reduce(PhysRect::union) else { return vec![whole(rgba)] };
     if union.width == 0 {
         return vec![whole(rgba)];
+    }
+    if !capture_wayshot::fits(w, h, layout) {
+        tracing::warn!(w, h, ?union, "the outputs' layout does not match the picture; its frames may be cut wrongly");
     }
     let f = w as f64 / union.width as f64;
     let mut frames = Vec::new();
@@ -109,7 +114,7 @@ pub(crate) fn split(w: u32, h: u32, rgba: Vec<u8>, layout: &[OutputLayout]) -> V
             let s = ((row * w + x0) * 4) as usize;
             px.extend_from_slice(&rgba[s..s + (cw * 4) as usize]);
         }
-        let Ok(image) = Bitmap::new(cw, ch, PixelFormat::Rgba8, Arc::from(px)) else { continue };
+        let Ok(image) = Bitmap::new(cw, ch, format, Arc::from(px)) else { continue };
         let at = to_physical(o.logical, f as f32);
         frames.push(Frame {
             monitor: Monitor {
@@ -144,7 +149,7 @@ mod tests {
         let layout = [out("A", 0, 2, 1), out("B", 2, 1, 1)];
         let (w, h) = (6, 2);
         let rgba: Vec<u8> = (0..w * h).flat_map(|i| [i as u8, 0, 0, 255]).collect();
-        let frames = split(w, h, rgba, &layout);
+        let frames = split(w, h, PixelFormat::Rgba8, rgba, &layout);
         assert_eq!(frames.len(), 2);
         assert_eq!((frames[0].image.width(), frames[0].image.height()), (4, 2));
         assert_eq!((frames[1].image.width(), frames[1].image.height()), (2, 2));
@@ -158,9 +163,22 @@ mod tests {
     fn split_places_frames_from_the_logical_origin() {
         // Union (-2, 0, 3, 1) at factor 6 / 3 = 2: A starts left of the origin.
         let layout = [out("A", -2, 2, 1), out("B", 0, 1, 1)];
-        let frames = split(6, 2, vec![0; 6 * 2 * 4], &layout);
+        let frames = split(6, 2, PixelFormat::Rgba8, vec![0; 6 * 2 * 4], &layout);
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0].monitor.rect, PhysRect { x: -4, y: 0, width: 4, height: 2 });
         assert_eq!(frames[1].monitor.rect, PhysRect { x: 0, y: 0, width: 2, height: 2 });
+    }
+
+    #[test]
+    fn split_keeps_the_pixel_format_and_bytes() {
+        let layout = [out("A", 0, 1, 1), out("B", 1, 1, 1)];
+        let bgra = vec![3, 2, 1, 255, 6, 5, 4, 255];
+        let frames = split(2, 1, PixelFormat::Bgra8, bgra, &layout);
+        assert_eq!(frames.len(), 2);
+        assert!(frames.iter().all(|f| f.image.format() == PixelFormat::Bgra8));
+        assert_eq!(frames[0].image.pixels(), [3, 2, 1, 255]);
+        assert_eq!(frames[1].image.pixels(), [6, 5, 4, 255]);
+        let whole = split(2, 1, PixelFormat::Bgra8, vec![0; 8], &[]);
+        assert_eq!((whole.len(), whole[0].image.format()), (1, PixelFormat::Bgra8));
     }
 }

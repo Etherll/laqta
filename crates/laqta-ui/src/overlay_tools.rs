@@ -28,7 +28,7 @@ use crate::presenters::capture_toolbar::{self as bar, Item};
 use crate::presenters::editor_interaction::EditorInteraction;
 use crate::presenters::render_gate::ComputeFn;
 use crate::runtime::UiState;
-use crate::theme::radius;
+use crate::theme::{self, radius};
 
 /// The editor engine over the current selection.
 pub(crate) struct Annot {
@@ -98,8 +98,9 @@ fn rgba(rgb: u32, alpha: f32) -> Hsla {
     c
 }
 
-/// The accent used for the selection, the active tool and Done.
-pub(crate) const ACCENT: u32 = 0x3d8bfd;
+/// The selection, its handles and the active tool: the theme's `info` blue (ADR 028). The one key
+/// action (Done, Capture N regions) is the brand green instead.
+pub(crate) const SELECTION: u32 = theme::INFO;
 
 fn icon(item: Item) -> IconName {
     match item {
@@ -593,7 +594,7 @@ pub(crate) fn canvas(a: &Annot, local: impl Fn(PhysRect) -> bar::Rect, frame: ba
                 .w(px(sel.w / s + 2.0))
                 .h(px(sel.h / s + 2.0))
                 .border_2()
-                .border_color(rgba(ACCENT, 1.0)),
+                .border_color(rgba(SELECTION, 1.0)),
         );
     }
     if let Some(h) = a.hover {
@@ -605,15 +606,15 @@ pub(crate) fn canvas(a: &Annot, local: impl Fn(PhysRect) -> bar::Rect, frame: ba
                 .w(px(h.w / s + 4.0))
                 .h(px(h.h / s + 4.0))
                 .border_1()
-                .border_color(rgba(ACCENT, 0.7)),
+                .border_color(rgba(SELECTION, 0.7)),
         );
     }
     for (_, p) in &a.chrome.handles {
-        el = el.child(crate::mark_chrome::mark_handle(p.x / s, p.y / s, rgba(ACCENT, 1.0)));
+        el = el.child(crate::mark_chrome::mark_handle(p.x / s, p.y / s, rgba(SELECTION, 1.0)));
     }
     if let Some(c) = a.chrome.caret {
         let h = (a.chrome.style.font.size / s).max(12.0);
-        el = el.child(div().absolute().left(px(c.x / s)).top(px(c.y / s)).w(px(2.)).h(px(h)).bg(rgba(ACCENT, 1.0)));
+        el = el.child(div().absolute().left(px(c.x / s)).top(px(c.y / s)).w(px(2.)).h(px(h)).bg(rgba(SELECTION, 1.0)));
     }
     let clip = div().absolute().left(px(frame.x)).top(px(frame.y)).w(px(frame.w)).h(px(frame.h)).overflow_hidden().child(shown).child(el);
     Some(clip.into_any_element())
@@ -667,8 +668,8 @@ pub(crate) fn toolbar(model: &Entity<OverlayModel>, at: bar::Rect, cx: &App) -> 
 
 fn button(model: Entity<OverlayModel>, item: Item, active: bool, enabled: bool) -> AnyElement {
     let (bg, fg, hover) = match item {
-        Item::Confirm => (rgba(ACCENT, 1.0), rgba(0xffffff, 1.0), rgba(ACCENT, 0.85)),
-        _ if active => (rgba(ACCENT, 0.9), rgba(0xffffff, 1.0), rgba(ACCENT, 0.8)),
+        Item::Confirm => (rgba(theme::PRIMARY, 1.0), rgba(theme::INK, 1.0), rgba(theme::PRIMARY, 0.85)),
+        _ if active => (rgba(SELECTION, 0.9), rgba(0xffffff, 1.0), rgba(SELECTION, 0.8)),
         Item::Cancel => (gpui::transparent_black(), rgba(0xff6b6b, 1.0), rgba(0xff6b6b, 0.16)),
         _ => (gpui::transparent_black(), rgba(0xffffff, 0.88), rgba(0xffffff, 0.12)),
     };
@@ -676,6 +677,16 @@ fn button(model: Entity<OverlayModel>, item: Item, active: bool, enabled: bool) 
     let tip = match &keys {
         Some(keys) => format!("{}  ·  {keys}", bar::label(item)),
         None => bar::label(item).to_owned(),
+    };
+    // A disabled button says why, in its tooltip and to a screen reader.
+    let reason: Option<&'static str> = match item {
+        Item::Undo => crate::presenters::editor_toolbar::undo_reason(enabled).err(),
+        Item::Redo => crate::presenters::editor_toolbar::redo_reason(enabled).err(),
+        _ => (!enabled).then_some("Not available now"),
+    };
+    let tip = match reason {
+        Some(r) => format!("{}  ·  {r}", bar::label(item)),
+        None => tip,
     };
     let is_tool = matches!(item, Item::Pointer | Item::Tool(_));
     let activate = model.clone();
@@ -693,14 +704,14 @@ fn button(model: Entity<OverlayModel>, item: Item, active: bool, enabled: bool) 
         .rounded(px(8.))
         .bg(bg)
         .when(enabled, |d| d.cursor_pointer().hover(move |s| s.bg(hover)))
-        .when(!enabled, |d| d.opacity(0.35))
+        .when(!enabled, |d| d.opacity(theme::DISABLED_OPACITY))
         .child(gpui_component::Icon::new(icon(item)).size(px(17.)).text_color(fg))
         // Icon-only, so the name a screen reader announces comes from the tooltip's label.
         .role(Role::Button)
         .aria_label(bar::label(item))
         .when_some(keys, |d, keys| d.aria_keyshortcuts(keys))
         .when(is_tool, |d| d.aria_toggled(if active { Toggled::True } else { Toggled::False }))
-        .when(!enabled, |d| d.aria_description("Not available yet"))
+        .when_some(reason, |d, r| d.aria_description(r))
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .when(enabled, |d| {
             d.on_click(move |_, _, cx| {
@@ -753,7 +764,7 @@ pub(crate) fn style_strip(
     let mut row = div()
         .id("style-strip")
         .role(Role::Toolbar)
-        .aria_label("Colour and size")
+        .aria_label("Color and size")
         .absolute()
         .left(px(at.x))
         .top(px(at.y))
@@ -771,7 +782,7 @@ pub(crate) fn style_strip(
         .on_any_mouse_down(crate::overlay_tools::press_on_bar(model.clone()))
         .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation());
     for (i, &c) in colors.iter().enumerate() {
-        row = row.child(swatch(model.clone(), i, c, c == current));
+        row = row.child(swatch(model.clone(), i, c.rgba, c.rgba == current));
     }
     if !colors.is_empty() {
         row = row.child(div().mx(px(5.)).w(px(1.)).h(px(18.)).bg(rgba(0xffffff, 0.14)));
@@ -893,9 +904,13 @@ pub(crate) fn notice(text: String, at: bar::Rect) -> AnyElement {
 
 /// A short line at the top of the screen before anything is selected.
 pub(crate) fn hint(win_w: f32, text: impl Into<SharedString>) -> AnyElement {
+    hint_at(win_w, 16., text)
+}
+
+fn hint_at(win_w: f32, top: f32, text: impl Into<SharedString>) -> AnyElement {
     div()
         .absolute()
-        .top(px(16.))
+        .top(px(top))
         .left(px(0.))
         .w(px(win_w))
         .flex()
@@ -911,6 +926,84 @@ pub(crate) fn hint(win_w: f32, text: impl Into<SharedString>) -> AnyElement {
                 .child(text.into()),
         )
         .into_any_element()
+}
+
+/// The bar a multi-region selection finishes with: how many regions are drawn, Capture (the
+/// confirm, as Enter) and Cancel (as Esc). Finishing never depends on the overlay having keyboard
+/// focus, which Windows can refuse a window that just opened.
+pub(crate) fn multi_strip(model: &Entity<OverlayModel>, win_w: f32, top: f32, strip: laqta_domain::region::MultiStrip) -> AnyElement {
+    let n = strip.count;
+    let label: SharedString = if n == 1 { "Capture 1 region".into() } else { format!("Capture {n} regions").into() };
+    let button = |id: &'static str, text: SharedString, primary: bool, command: RegionCommand| {
+        let entity = model.clone();
+        let a11y = model.clone();
+        let (bg, hover, fg) = if primary {
+            (rgba(theme::PRIMARY, 1.0), rgba(theme::PRIMARY, 0.85), rgba(theme::INK, 1.0))
+        } else {
+            (rgba(0xffffff, 0.10), rgba(0xffffff, 0.18), rgba(0xffffff, 0.95))
+        };
+        div()
+            .id(id)
+            .debug_selector(move || id.to_owned())
+            .h(theme::CONTROL_H)
+            .px(px(14.))
+            .flex()
+            .items_center()
+            .rounded(radius::PILL)
+            .bg(bg)
+            .text_color(fg)
+            .text_size(px(13.))
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .role(Role::Button)
+            .aria_label(text.clone())
+            .child(text)
+            .on_a11y_action(A11yAction::Click, move |_, _, cx| a11y.update(cx, |m, _| m.send(RegionInput::Command(command))))
+            .on_click(move |_, _, cx| entity.update(cx, |m, _| m.send(RegionInput::Command(command))))
+    };
+    div()
+        .absolute()
+        .top(px(top))
+        .left(px(0.))
+        .w(px(win_w))
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .id("multi-strip")
+                .role(Role::Toolbar)
+                .aria_label("Regions")
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .pl(px(14.))
+                .pr(px(6.))
+                .py(px(5.))
+                .rounded(radius::PILL)
+                .bg(rgba(0x1c1c1f, 0.95))
+                .border_1()
+                .border_color(rgba(0xffffff, 0.10))
+                .shadow_lg()
+                .cursor_default()
+                // A press here is the strip's, not the start of a new region.
+                .on_any_mouse_down(press_on_bar(model.clone()))
+                .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .text_color(rgba(0xffffff, 0.85))
+                        .text_size(theme::text::SMALL)
+                        .child("Drag to add another  ·  Enter captures  ·  Esc cancels"),
+                )
+                // Cancel, then the key action rightmost, as in every footer.
+                .child(button("multi-cancel", "Cancel".into(), false, RegionCommand::Cancel))
+                .child(button("multi-capture", label, true, RegionCommand::Confirm)),
+        )
+        .into_any_element()
+}
+
+/// `multi_strip`'s top edge: under the mode bar when it shows, or the bar would cover it.
+pub(crate) fn multi_strip_top(mode_bar: bool) -> f32 {
+    if mode_bar { 16.0 + BAR_H + 8.0 } else { 16.0 }
 }
 
 /// A button on the mode bar at the top of the selection screen.
@@ -1114,7 +1207,7 @@ pub(crate) fn mode_bar(model: &Entity<OverlayModel>, win_w: f32, cx: &App) -> An
                                 .w(px(BUTTON - 20.))
                                 .h(px(2.))
                                 .rounded(radius::PILL)
-                                .bg(rgba(ACCENT, 1.0)),
+                                .bg(rgba(SELECTION, 1.0)),
                         )
                     })
                     .role(Role::Button)
@@ -1152,7 +1245,7 @@ pub(crate) fn mode_hint(win_w: f32) -> AnyElement {
                 .bg(rgba(0x1c1c1f, 0.85))
                 .text_color(rgba(0xffffff, 0.85))
                 .text_size(px(12.))
-                .child("Drag to select  ·  Click a window  ·  Space hides the tools  ·  Esc closes"),
+                .child("Drag to select  ·  Click a window  ·  Space hides the tools  ·  Esc cancels"),
         )
         .into_any_element()
 }

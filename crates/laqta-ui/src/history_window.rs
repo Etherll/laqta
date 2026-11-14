@@ -2,7 +2,6 @@
 //! through `laqta-library` on a background thread; rows come from the history presenter.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _, IntoElement,
@@ -15,6 +14,7 @@ use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme as _, Root};
 
 use crate::assets::IconName;
+use crate::flash::{Flash, HasFlash};
 use crate::presenters::history::{self, HistoryRow, PAGE_SIZE};
 use crate::runtime::{UiState, activate};
 use crate::theme::{self, radius, space, text};
@@ -22,13 +22,14 @@ use crate::thumbnails;
 use crate::widgets::{self, Pill};
 
 pub(crate) fn open(images_only: bool, cx: &mut App) {
-    if activate(cx.global::<UiState>().history, cx) {
+    let open = if images_only { cx.global::<UiState>().image_history } else { cx.global::<UiState>().history };
+    if activate(open, cx) {
         return;
     }
     let options = WindowOptions {
         window_bounds: Some(crate::chrome::centered(1080., 740., cx)),
         window_min_size: Some(size(px(640.), px(420.))),
-        titlebar: Some(crate::chrome::titlebar("Laqta history")),
+        titlebar: Some(crate::chrome::titlebar(if images_only { "Laqta image history" } else { "Laqta history" })),
         window_decorations: crate::chrome::decorations(),
         app_owns_titlebar_drag: true,
         app_id: Some(crate::APP_ID.into()),
@@ -42,7 +43,10 @@ pub(crate) fn open(images_only: bool, cx: &mut App) {
         window.focus(&focus, cx);
         root
     }) {
-        Ok(handle) => cx.global_mut::<UiState>().history = Some(handle.into()),
+        Ok(handle) => {
+            let state = cx.global_mut::<UiState>();
+            *(if images_only { &mut state.image_history } else { &mut state.history }) = Some(handle.into());
+        }
         Err(e) => tracing::error!("history window failed: {e:#}"),
     }
 }
@@ -57,9 +61,19 @@ struct HistoryWindow {
     page: u32,
     rows: Vec<HistoryRow>,
     error: Option<String>,
+    /// History is turned off in Settings: nothing to load, and nothing failed.
+    off: bool,
+    /// Whether the first query has returned, so an empty list before it reads "Loading…", not "No captures yet".
+    loaded: bool,
     /// A short confirmation ("Copied", "Removed from history") shown under the title for a moment.
-    notice: Option<SharedString>,
+    flash: Flash,
     focus: FocusHandle,
+}
+
+impl HasFlash for HistoryWindow {
+    fn flash(&mut self) -> &mut Flash {
+        &mut self.flash
+    }
 }
 
 impl HistoryWindow {
@@ -70,6 +84,13 @@ impl HistoryWindow {
             if matches!(ev, InputEvent::Change) {
                 this.page = 0;
                 this.reload(cx);
+            }
+        })
+        .detach();
+        // Enter in the tags field saves them, as the Save tags button does.
+        cx.subscribe(&tags, |this: &mut Self, _, ev: &InputEvent, cx| {
+            if matches!(ev, InputEvent::PressEnter { .. }) {
+                this.save_tags(cx);
             }
         })
         .detach();
@@ -84,7 +105,9 @@ impl HistoryWindow {
             page: 0,
             rows: Vec::new(),
             error: None,
-            notice: None,
+            off: false,
+            loaded: false,
+            flash: Flash::default(),
             focus: cx.focus_handle(),
         };
         this.reload(cx);
@@ -93,18 +116,22 @@ impl HistoryWindow {
 
     fn reload(&mut self, cx: &mut Context<Self>) {
         let Some(store) = cx.global::<UiState>().services.history.clone() else {
-            self.error = Some("History is turned off.".into());
+            // Not a failure: the user turned history off. The body says so and links to the switch.
+            self.off = true;
+            self.loaded = true;
             return;
         };
         let q = history::page_query(&self.search.read(cx).value(), self.images_only, self.page);
         let task = cx.background_spawn(async move {
             let rows = store.query(&q).map(|items| items.iter().map(history::row).collect::<Vec<_>>());
-            let stats = store.stats().map(|s| history::stats_line(&s)).unwrap_or_default();
+            // A failed count leaves the list usable; the line says the totals are missing instead of going blank.
+            let stats = store.stats().map(|s| history::stats_line(&s)).unwrap_or_else(|_| "Couldn't count the items".into());
             rows.map(|r| (r, stats))
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
+                this.loaded = true;
                 match result {
                     Ok((rows, stats)) => {
                         this.rows = rows;
@@ -136,7 +163,7 @@ impl HistoryWindow {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
                 if let Err(e) = result {
-                    this.error = Some(e);
+                    Flash::notice(this, crate::presenters::notice::Notice::failure_text("Couldn't save the tags", &e), cx);
                 }
                 this.reload(cx);
             });
@@ -153,7 +180,9 @@ impl HistoryWindow {
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(()) => this.flash("Removed from history", cx),
-                    Err(e) => this.error = Some(e),
+                    Err(e) => {
+                        Flash::notice(this, crate::presenters::notice::Notice::failure_text("Couldn't remove it from history", &e), cx)
+                    }
                 }
                 this.reload(cx);
             });
@@ -162,20 +191,8 @@ impl HistoryWindow {
     }
 
     /// Shows `text` under the title for a moment.
-    fn flash(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
-        let text = text.into();
-        self.notice = Some(text.clone());
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(2500)).await;
-            let _ = this.update(cx, |this, cx| {
-                if this.notice.as_ref() == Some(&text) {
-                    this.notice = None;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
+    fn flash(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        Flash::show(self, text, cx);
     }
 
     /// Copies the image itself to the clipboard; other files copy their path. The file is read off
@@ -192,8 +209,7 @@ impl HistoryWindow {
             let _ = this.update(cx, |this, cx| match result {
                 Ok(()) => this.flash("Copied", cx),
                 Err(e) => {
-                    this.error = Some(format!("Couldn't copy the picture: {e}"));
-                    cx.notify();
+                    Flash::notice(this, crate::presenters::notice::Notice::failure_text("Couldn't copy the picture", &e.to_string()), cx)
                 }
             });
         })
@@ -263,8 +279,14 @@ impl Render for HistoryWindow {
         let views = vec![view_seg("List", false, self, cx), view_seg("Grid", true, self, cx)];
         let kinds = vec![kind_seg("All", false, self, cx), kind_seg("Images", true, self, cx)];
 
-        // The stats line doubles as the place a short confirmation appears.
-        let subtitle: SharedString = self.notice.clone().unwrap_or_else(|| self.stats.clone().into());
+        // The stats line doubles as the place a short confirmation appears; a failure gets its own
+        // line below the title, in the danger tone with its reason and Dismiss.
+        let failed = self.flash.current().is_some_and(|n| n.error);
+        let subtitle: SharedString = match self.flash.current() {
+            Some(n) if !n.error => n.title.clone().into(),
+            _ => self.stats.clone().into(),
+        };
+        let failure = if failed { self.flash.render(cx.listener(|this, _, _, cx| Flash::dismiss(this, cx)), cx) } else { None };
         let header = div()
             .flex()
             .flex_col()
@@ -273,7 +295,9 @@ impl Render for HistoryWindow {
             .pt(space::S4)
             .pb(space::S4)
             .child(widgets::page_title("History", subtitle, cx))
-            .child(
+            .children(failure)
+            // Search and filters have nothing to act on while history is off.
+            .children((!self.off).then(|| {
                 div()
                     .flex()
                     .items_center()
@@ -287,24 +311,51 @@ impl Render for HistoryWindow {
                     )
                     .child(div().flex_1())
                     .child(widgets::segmented(kinds, cx))
-                    .child(widgets::segmented(views, cx)),
-            );
+                    .child(widgets::segmented(views, cx))
+            }));
 
         let mut body = div().flex().flex_col().gap(space::S3);
-        if let Some(e) = &self.error {
-            body = body.child(
-                widgets::card(cx)
-                    .flex()
-                    .items_center()
-                    .gap(space::S3)
-                    .px(space::S4)
-                    .py(space::S3)
-                    .child(widgets::icon(IconName::TriangleAlert, t.danger))
-                    .child(widgets::notice(e.clone(), false, cx)),
-            );
+        let query = self.search.read(cx).value().to_string();
+        let state = if self.off {
+            // Shown below instead of any list state.
+            crate::presenters::library::ListState::Rows
+        } else {
+            crate::presenters::library::list_state(self.loaded, self.rows.len(), &query, self.error.as_deref(), None)
+        };
+        if self.off {
+            let dispatch = cx.global::<UiState>().services.dispatch.clone();
+            let off = widgets::empty_state(
+                IconName::Database,
+                "History is off",
+                "Turn on Keep history in Settings → General. It starts with Laqta's next launch.",
+                cx,
+            )
+            .child(div().pt(space::S3).child(widgets::pill(
+                "history-open-settings",
+                "Open settings",
+                Pill::Default,
+                false,
+                move |_, _, _| dispatch(laqta_domain::Action::OpenSettings),
+                cx,
+            )));
+            body = body.child(widgets::card(cx).child(off));
         }
-        if self.rows.is_empty() && self.error.is_none() {
-            let empty = if self.search.read(cx).value().is_empty() {
+        if !matches!(state, crate::presenters::library::ListState::Empty { .. } | crate::presenters::library::ListState::Rows) {
+            let search = self.search.clone();
+            let shown = widgets::list_state(
+                &state,
+                "No captures yet",
+                cx.listener(move |_, _, window, cx| search.update(cx, |s, cx| s.set_value("", window, cx))),
+                cx.listener(|this, _, _, cx| {
+                    this.error = None;
+                    this.reload(cx);
+                }),
+                cx,
+            );
+            body = body.children(shown.map(|s| widgets::card(cx).child(s)));
+        }
+        if matches!(state, crate::presenters::library::ListState::Empty { .. }) {
+            let empty = {
                 let dispatch = cx.global::<UiState>().services.dispatch.clone();
                 widgets::empty_state(IconName::Images, "No captures yet", "Captures, recordings and uploads land here.", cx).child(
                     div().pt(space::S3).child(widgets::pill(
@@ -318,21 +369,29 @@ impl Render for HistoryWindow {
                         cx,
                     )),
                 )
-            } else {
-                widgets::empty_state(IconName::Search, "Nothing matches", "Try another name, or #tag to filter by tag.", cx)
             };
             body = body.child(widgets::card(cx).child(empty));
         }
         if let Some(id) = self.editing_tags {
+            let title = self.rows.iter().find(|r| r.id == id).map(|r| history::tags_title(&r.title)).unwrap_or_else(|| "Tags".into());
             body = body.child(
                 widgets::card(cx)
+                    .id("tags-editor")
+                    // Escape in the tags field cancels the edit.
+                    .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                        if ev.keystroke.key == "escape" {
+                            this.editing_tags = None;
+                            cx.notify();
+                            cx.stop_propagation();
+                        }
+                    }))
                     .flex()
                     .items_center()
                     .gap(space::S3)
                     .p(space::S3)
                     .pl(space::S5)
                     .child(widgets::icon(IconName::Tag, t.muted_foreground))
-                    .child(widgets::muted(format!("Tags for item {id}"), cx))
+                    .child(widgets::muted(title, cx))
                     .child(div().flex_1().child(Input::new(&self.tags)))
                     .child(widgets::pill(
                         "tags-cancel",
@@ -378,7 +437,9 @@ impl Render for HistoryWindow {
             }
         };
 
-        if self.grid && !self.rows.is_empty() {
+        // Rows only under the Rows state: an error replaces them, so stale rows never sit under it.
+        let show_rows = matches!(state, crate::presenters::library::ListState::Rows) && !self.off;
+        if self.grid && show_rows {
             let mut grid = div().grid().grid_cols(4).gap(space::S5);
             for r in &self.rows {
                 let title = r.title.clone();
@@ -426,7 +487,7 @@ impl Render for HistoryWindow {
             body = body.child(grid);
         }
 
-        if !self.grid && !self.rows.is_empty() {
+        if !self.grid && show_rows {
             let mut list = widgets::card(cx).p(space::S1).flex().flex_col().gap(px(2.));
             for r in &self.rows {
                 let id = r.id;
@@ -434,7 +495,12 @@ impl Render for HistoryWindow {
                     [r.when.clone(), r.size.clone(), r.dimensions.clone()].into_iter().filter(|s| !s.is_empty()).collect();
                 let group = SharedString::from(format!("row-{id}"));
                 // Copy, Copy link and Open stay visible; the icon actions appear while the row is hovered.
-                let mut hover_actions = div().flex().items_center().gap(px(2.)).opacity(0.).group_hover(group.clone(), |s| s.opacity(1.));
+                let mut hover_actions = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .opacity(crate::theme::QUIET_OPACITY)
+                    .group_hover(group.clone(), |s| s.opacity(1.));
                 let mut actions = div().flex().flex_none().items_center().gap(space::S1);
                 let line = div()
                     .id(SharedString::from(format!("row-{id}")))
@@ -587,28 +653,28 @@ impl Render for HistoryWindow {
         let more = self.rows.len() as u32 == PAGE_SIZE;
         let first = self.page == 0;
         let pager = (!first || more).then(|| {
-            let prev = icon_button(
+            let (can_prev, can_next) = history::page_reason(first, more);
+            let prev = widgets::icon_button_with(
                 "prev",
                 IconName::ChevronLeft,
                 "Previous page",
                 false,
+                can_prev.map_err(SharedString::from),
                 cx.listener(|this, _, _, cx| {
                     this.page = this.page.saturating_sub(1);
                     this.reload(cx);
                 }),
                 cx,
             );
-            let next = icon_button(
+            let next = widgets::icon_button_with(
                 "next",
                 IconName::ChevronRight,
                 "Next page",
                 false,
+                can_next.map_err(SharedString::from),
                 cx.listener(|this, _, _, cx| {
-                    // A short page is the last one.
-                    if this.rows.len() as u32 == PAGE_SIZE {
-                        this.page += 1;
-                        this.reload(cx);
-                    }
+                    this.page += 1;
+                    this.reload(cx);
                 }),
                 cx,
             );
@@ -622,8 +688,8 @@ impl Render for HistoryWindow {
                 .border_t_1()
                 .border_color(t.border)
                 .child(div().pr(space::S2).text_size(text::LABEL).text_color(t.muted_foreground).child(format!("Page {}", self.page + 1)))
-                .child(div().when(first, |d| d.opacity(0.35)).child(prev))
-                .child(div().when(!more, |d| d.opacity(0.35)).child(next))
+                .child(prev)
+                .child(next)
         });
 
         widgets::tab_keys(crate::chrome::rounded(widgets::page(cx), window), &self.focus)

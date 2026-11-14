@@ -9,6 +9,8 @@ pub(crate) use gpui_kit_assets::IconName;
 gpui_kit_assets::icon_assets!(
     ViewIcons,
     [
+        // The titlebar controls (`chrome.rs`); embedded here so they never depend on the kit's file-backed bundle.
+        WindowClose,
         ALargeSmall,
         AppWindow,
         ArrowDown,
@@ -64,6 +66,7 @@ gpui_kit_assets::icon_assets!(
         ListChecks,
         ListOrdered,
         LoaderCircle,
+        Lock,
         Maximize,
         MessageSquare,
         Mic,
@@ -109,8 +112,6 @@ gpui_kit_assets::icon_assets!(
         Upload,
         Video,
         WandSparkles,
-        // The titlebar controls (`chrome.rs`); embedded here so they never depend on the kit's file-backed bundle.
-        WindowClose,
         WindowMaximize,
         WindowMinimize,
         WindowRestore,

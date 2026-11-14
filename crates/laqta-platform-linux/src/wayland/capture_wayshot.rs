@@ -17,6 +17,25 @@ pub fn layout() -> Result<Vec<OutputLayout>, PortError> {
     Ok(conn.get_all_outputs().iter().map(to_layout).collect())
 }
 
+/// Starts reading the outputs' layout on the blocking pool. A capture starts it first and awaits it
+/// once it has its picture, so the Wayland round trip runs while the compositor takes the picture
+/// instead of after it. It is read fresh every time: a layout kept from an earlier capture could not
+/// tell two identical monitors that swapped places. A failed read is an empty layout (one frame).
+pub fn layout_soon() -> blocking::Task<Vec<OutputLayout>> {
+    blocking::unblock(|| layout().unwrap_or_default())
+}
+
+/// Whether a `w` x `h` picture is the layout's union at one uniform factor, which is what
+/// `capture_portal::split` assumes. Rounded logical sizes leave a little slack.
+pub(crate) fn fits(w: u32, h: u32, layout: &[OutputLayout]) -> bool {
+    let Some(union) = layout.iter().map(|o| o.logical).reduce(PhysRect::union) else { return false };
+    if w == 0 || h == 0 || union.width == 0 || union.height == 0 {
+        return false;
+    }
+    let (fx, fy) = (f64::from(w) / f64::from(union.width), f64::from(h) / f64::from(union.height));
+    (fx - fy).abs() <= 0.02 * fx.max(fy)
+}
+
 fn to_layout(o: &libwayshot::output::OutputInfo) -> OutputLayout {
     let r = o.logical_region.inner;
     OutputLayout {
@@ -96,6 +115,28 @@ pub(crate) fn scale_nearest(rgba: &[u8], w: u32, h: u32, new_w: u32, new_h: u32)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn output(x: i32, width: u32, height: u32) -> OutputLayout {
+        OutputLayout { name: String::new(), description: String::new(), logical: PhysRect { x, y: 0, width, height }, scale: 1.0 }
+    }
+
+    #[test]
+    fn a_layout_fits_a_picture_of_its_union_at_one_factor() {
+        let two = [output(0, 1920, 1080), output(1920, 1280, 1080)];
+        assert!(fits(3200, 1080, &two), "factor 1");
+        assert!(fits(6400, 2160, &two), "factor 2");
+        assert!(fits(4800, 1620, &two), "factor 1.5");
+        assert!(fits(3200, 1079, &two), "a rounded edge");
+    }
+
+    #[test]
+    fn a_layout_that_does_not_match_the_picture_does_not_fit() {
+        let one = [output(0, 1920, 1080)];
+        assert!(!fits(3840, 1080, &one), "an output was added");
+        assert!(!fits(1920, 1080, &[]), "no layout");
+        assert!(!fits(0, 0, &one), "no picture");
+        assert!(!fits(1920, 1080, &[output(0, 0, 0)]), "an empty output");
+    }
 
     #[test]
     fn scale_nearest_upscales_by_integer_factor() {

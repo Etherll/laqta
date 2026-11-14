@@ -164,7 +164,11 @@ fn image(base: &ImageSettings, object: &Object, what: &str, warnings: &mut Vec<S
         match name.to_ascii_lowercase().as_str() {
             "uniquename" => image.file_exists = FileExistsAction::AppendNumber,
             "overwrite" => image.file_exists = FileExistsAction::Overwrite,
-            "ask" => image.file_exists = FileExistsAction::Ask,
+            // Laqta never asks: a taken name gets a number, which is what `Ask` does here, so say so.
+            "ask" => {
+                image.file_exists = FileExistsAction::AppendNumber;
+                warnings.push(format!("{what}: file exists action `ask` is not supported; Laqta adds a number to the name"));
+            }
             "skip" => image.file_exists = FileExistsAction::Skip,
             _ => warnings.push(format!("{what}: file exists action `{name}` has no Laqta equivalent; kept `{:?}`", base.file_exists)),
         }

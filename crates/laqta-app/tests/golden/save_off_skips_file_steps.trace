@@ -1,0 +1,9 @@
+status InQueue
+status Preparing
+status Working
+copied
+step_failed thumbnail
+step_failed copy_path
+step_failed reveal
+notified
+status Completed

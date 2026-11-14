@@ -7,7 +7,7 @@ use std::path::Path;
 
 use jiff::civil::date;
 use laqta_domain::history::{HistoryItem, HistoryKind, HistoryQuery, NewHistoryItem};
-use laqta_library::{History, LibraryError, export_archive, import_archive};
+use laqta_library::{History, LibraryError, apply_staged_import, export_archive, has_staged_import, import_archive, stage_archive};
 use tempfile::TempDir;
 use zip::ZipArchive;
 use zip::write::SimpleFileOptions;
@@ -218,4 +218,105 @@ fn an_entry_that_leaves_the_folder_fails_the_import_and_writes_nothing() {
         assert!(!target.join("backups").exists(), "{name}: no backup was written");
         assert!(!root.path().join("evil").exists(), "{name}: nothing escaped the data folder");
     }
+}
+
+/// C2: the import is kept while the app runs and applied at the next start, with the history database
+/// still open in the old profile (the case that failed on Windows).
+#[test]
+fn a_staged_import_leaves_the_running_profile_alone_and_applies_at_the_next_start() {
+    let source = TempDir::new().unwrap();
+    let history = populated(source.path());
+    let out = TempDir::new().unwrap();
+    let zip_path = out.path().join("laqta.zip");
+    export_archive(source.path(), &zip_path, Some(&history)).unwrap();
+
+    let running = TempDir::new().unwrap();
+    fs::write(running.path().join("settings.json"), r#"{"version":3,"name":"old"}"#).unwrap();
+    let open = History::open(&running.path().join("history.db")).unwrap();
+
+    let known = stage_archive(&zip_path, running.path()).unwrap();
+    assert_eq!(known, 5, "settings, history, one uploader and two backups");
+    assert!(has_staged_import(running.path()));
+    assert_eq!(fs::read_to_string(running.path().join("settings.json")).unwrap(), r#"{"version":3,"name":"old"}"#, "nothing applied yet");
+    assert!(all(&open).is_empty(), "the open database is untouched");
+    drop(open);
+
+    let written = apply_staged_import(running.path()).unwrap().expect("something was staged");
+    assert!(written.contains(&running.path().join("settings.json")));
+    assert_eq!(fs::read_to_string(running.path().join("settings.json")).unwrap(), SETTINGS);
+    assert_eq!(fs::read_to_string(running.path().join("backups/settings-before-import.json")).unwrap(), r#"{"version":3,"name":"old"}"#);
+    let restored = History::open(&running.path().join("history.db")).unwrap();
+    assert_eq!(all(&restored), all(&history));
+    assert!(!has_staged_import(running.path()), "applied once");
+    assert!(apply_staged_import(running.path()).unwrap().is_none());
+}
+
+#[test]
+fn staging_refuses_an_archive_that_could_not_be_applied_and_keeps_nothing() {
+    let out = TempDir::new().unwrap();
+    let data = TempDir::new().unwrap();
+
+    let hostile = out.path().join("hostile.zip");
+    write_zip(&hostile, &[("settings.json", SETTINGS.as_bytes()), ("../evil", b"x")]);
+    assert!(stage_archive(&hostile, data.path()).is_err());
+
+    let unrelated = out.path().join("unrelated.zip");
+    write_zip(&unrelated, &[("photo.png", b"x")]);
+    assert!(stage_archive(&unrelated, data.path()).is_err(), "no Laqta part in it");
+
+    let not_a_zip = out.path().join("text.zip");
+    fs::write(&not_a_zip, "plain text").unwrap();
+    assert!(stage_archive(&not_a_zip, data.path()).is_err());
+
+    assert!(!has_staged_import(data.path()));
+}
+
+#[test]
+fn a_staged_archive_that_fails_to_apply_is_dropped_so_the_next_start_is_not_blocked() {
+    let data = TempDir::new().unwrap();
+    fs::write(data.path().join("import-pending.zip"), "damaged").unwrap();
+    assert!(apply_staged_import(data.path()).is_err());
+    assert!(!has_staged_import(data.path()));
+}
+
+/// An I/O error (here a file where a folder must go) keeps the staged archive and changes nothing, so the
+/// next start retries; a damaged archive is dropped instead (the test above).
+#[test]
+fn an_io_error_keeps_the_staged_import_for_the_next_start() {
+    let out = TempDir::new().unwrap();
+    let zip_path = out.path().join("laqta.zip");
+    write_zip(&zip_path, &[("settings.json", SETTINGS.as_bytes()), ("uploaders/a.sxcu", b"{}")]);
+
+    let data = TempDir::new().unwrap();
+    fs::write(data.path().join("settings.json"), "old").unwrap();
+    fs::write(data.path().join("uploaders"), "a file where the folder goes").unwrap();
+    stage_archive(&zip_path, data.path()).unwrap();
+
+    assert!(matches!(apply_staged_import(data.path()), Err(LibraryError::Io(_))));
+    assert!(has_staged_import(data.path()), "kept for a retry");
+    assert_eq!(fs::read_to_string(data.path().join("settings.json")).unwrap(), "old", "the settings are moved last, so nothing changed");
+    assert!(!data.path().join("import-unpacking").exists(), "no scratch files left behind");
+
+    fs::remove_file(data.path().join("uploaders")).unwrap();
+    assert!(apply_staged_import(data.path()).unwrap().is_some());
+    assert_eq!(fs::read_to_string(data.path().join("settings.json")).unwrap(), SETTINGS);
+    assert!(data.path().join("uploaders/a.sxcu").is_file());
+    assert!(!has_staged_import(data.path()));
+}
+
+/// The old history log is still there until the imported database is in place; afterwards it is gone.
+#[test]
+fn the_history_log_goes_after_the_imported_database_is_in_place() {
+    let source = TempDir::new().unwrap();
+    let history = populated(source.path());
+    let out = TempDir::new().unwrap();
+    let zip_path = out.path().join("laqta.zip");
+    export_archive(source.path(), &zip_path, Some(&history)).unwrap();
+
+    let data = TempDir::new().unwrap();
+    fs::write(data.path().join("history.db-wal"), "stale").unwrap();
+    stage_archive(&zip_path, data.path()).unwrap();
+    apply_staged_import(data.path()).unwrap();
+    assert!(!data.path().join("history.db-wal").exists());
+    assert_eq!(all(&History::open(&data.path().join("history.db")).unwrap()), all(&history));
 }

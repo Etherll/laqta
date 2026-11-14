@@ -12,7 +12,6 @@ use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::switch::Switch;
 use gpui_component::{ActiveTheme as _, Root};
 use laqta_domain::capture::RegionMouseAction;
-use laqta_domain::geometry::PhysRect;
 use laqta_domain::hotkey::KeyChord;
 use laqta_domain::settings::Theme;
 use laqta_domain::workflow::{AfterCaptureTasks, FileExistsAction, ToastPlacement, Workflow};
@@ -20,6 +19,7 @@ use laqta_domain::{Action, ImageFormat, Settings, WorkflowId};
 
 use crate::assets::IconName;
 use crate::presenters::settings::{self as present, TaskOption};
+use crate::presenters::settings_form;
 use crate::presenters::settings_reset::{self, InputTexts, Scope};
 use crate::runtime::{UiState, activate};
 use crate::theme::{space, text};
@@ -120,7 +120,8 @@ struct SettingsWindow {
     /// The text each field shows at its default.
     default_texts: InputTexts,
     page: Page,
-    message: Option<(bool, String)>,
+    /// The footer line after Save, a reset or a failed action (`crate::flash`).
+    flash: crate::flash::Flash,
     dir: Entity<InputState>,
     pattern: Entity<InputState>,
     window_pattern: Entity<InputState>,
@@ -164,11 +165,19 @@ struct SettingsWindow {
     rec_error: Option<&'static str>,
     /// Windows: the hook that catches keys the window can't see, while a row records.
     key_hook: Option<laqta_ports::KeyRecording>,
+    /// The search field above the page list, and what it holds.
+    search: Entity<InputState>,
+    query: String,
+    /// Every setting the pages show, collected on the first search (`search_index`).
+    index: Option<Vec<crate::presenters::settings_search::Entry>>,
+    /// The row a search result opened, drawn highlighted until the page changes.
+    highlight: Option<SharedString>,
 }
 
 struct RecordingInputs {
     fps: Entity<InputState>,
     gif_fps: Entity<InputState>,
+    gif_max_width: Entity<InputState>,
     crf: Entity<InputState>,
     countdown: Entity<InputState>,
     duration: Entity<InputState>,
@@ -192,7 +201,18 @@ fn text_input(value: impl Into<SharedString>, window: &mut Window, cx: &mut Cont
     input
 }
 
+impl crate::flash::HasFlash for SettingsWindow {
+    fn flash(&mut self) -> &mut crate::flash::Flash {
+        &mut self.flash
+    }
+}
+
 impl SettingsWindow {
+    /// The footer line: a passing note when `ok`, else a failure that stays until dismissed.
+    fn say(&mut self, (ok, msg): (bool, String), cx: &mut Context<Self>) {
+        if ok { crate::flash::Flash::show(self, msg, cx) } else { crate::flash::Flash::fail(self, msg, cx) }
+    }
+
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let draft = cx.global::<UiState>().services.app.settings();
         let mut this = Self::build(draft, window, cx);
@@ -219,6 +239,7 @@ impl SettingsWindow {
         let rec = RecordingInputs {
             fps: input(&x.rec_fps),
             gif_fps: input(&x.rec_gif_fps),
+            gif_max_width: input(&x.rec_gif_max_width),
             crf: input(&x.rec_crf),
             countdown: input(&x.rec_countdown),
             duration: input(&x.rec_duration),
@@ -259,6 +280,10 @@ impl SettingsWindow {
             rec_focus: cx.focus_handle(),
             rec_error: None,
             key_hook: None,
+            search: Self::search_field(window, cx),
+            query: String::new(),
+            index: None,
+            highlight: None,
             rec,
             auto_interval,
             auto_count,
@@ -279,7 +304,7 @@ impl SettingsWindow {
             draft,
             defaults,
             page: Page::General,
-            message: None,
+            flash: Default::default(),
             integration_status: None,
         };
         this.rebuild_workflow_inputs(window, cx);
@@ -325,76 +350,49 @@ impl SettingsWindow {
         self.collect_with(cx, true)
     }
 
+    /// The window's text fields, trimmed, in the shape `settings_form::apply` reads.
+    fn texts(&self, cx: &App) -> InputTexts {
+        let v = |input: &Entity<InputState>| Self::value(input, cx);
+        InputTexts {
+            dir: v(&self.dir),
+            pattern: v(&self.pattern),
+            window_pattern: v(&self.window_pattern),
+            subfolder: v(&self.subfolder),
+            jpeg_quality: v(&self.jpeg_quality),
+            auto_jpeg: v(&self.auto_jpeg),
+            thumb_w: v(&self.thumb_w),
+            thumb_h: v(&self.thumb_h),
+            delay: v(&self.delay),
+            toast_ms: v(&self.toast_ms),
+            custom_region: v(&self.custom_region),
+            window_title: v(&self.window_title),
+            sound_capture: v(&self.sound_capture),
+            sound_task: v(&self.sound_task),
+            sound_error: v(&self.sound_error),
+            clipboard_format: v(&self.clipboard_format),
+            retries: v(&self.retries),
+            rec_fps: v(&self.rec.fps),
+            rec_gif_fps: v(&self.rec.gif_fps),
+            rec_gif_max_width: v(&self.rec.gif_max_width),
+            rec_crf: v(&self.rec.crf),
+            rec_countdown: v(&self.rec.countdown),
+            rec_duration: v(&self.rec.duration),
+            rec_microphone: v(&self.rec.microphone),
+            rec_args: v(&self.rec.args),
+            rec_ffmpeg: v(&self.rec.ffmpeg),
+            rec_camera_device: v(&self.rec.camera_device),
+            rec_camera_size: v(&self.rec.camera_size),
+            auto_interval: v(&self.auto_interval),
+            auto_count: v(&self.auto_count),
+            scroll: self.scroll.each_ref().map(v),
+            cloud: [v(&self.cloud[0]), v(&self.cloud[1]), v(&self.cloud[2])],
+        }
+    }
+
     /// Reads every input into the draft. With `store_secrets`, typed keys and passwords also go to
     /// the keyring (they are never part of the draft).
     fn collect_with(&mut self, cx: &App, store_secrets: bool) -> Result<(), String> {
-        let num = |input: &Entity<InputState>, what: &str| -> Result<u32, String> {
-            let v = Self::value(input, cx);
-            if v.is_empty() {
-                return Ok(0);
-            }
-            v.parse::<u32>().map_err(|_| format!("{what} must be a whole number"))
-        };
-        let dir = Self::value(&self.dir, cx);
-        if dir.is_empty() {
-            return Err("The screenshots folder can't be empty".into());
-        }
-        self.draft.screenshots_dir = dir.into();
-        let d = &mut self.draft.defaults;
-        d.naming.pattern = Self::value(&self.pattern, cx);
-        d.naming.window_pattern = Self::value(&self.window_pattern, cx);
-        d.naming.subfolder = Self::value(&self.subfolder, cx);
-        let q = num(&self.jpeg_quality, "JPEG quality")?;
-        if !(1..=100).contains(&q) {
-            return Err("JPEG quality must be between 1 and 100".into());
-        }
-        d.image.jpeg_quality = q as u8;
-        let kb = num(&self.auto_jpeg, "The JPEG size threshold")?;
-        d.image.auto_jpeg_above_bytes = (kb > 0).then_some(kb as u64 * 1024);
-        d.image.thumbnail_width = num(&self.thumb_w, "Thumbnail width")?;
-        d.image.thumbnail_height = num(&self.thumb_h, "Thumbnail height")?;
-        d.capture.delay_ms = num(&self.delay, "Capture delay")?;
-        d.capture.custom_window_title = Self::value(&self.window_title, cx);
-        d.capture.custom_region = parse_region(&Self::value(&self.custom_region, cx))?;
-        let path = |input: &Entity<InputState>| {
-            let v = Self::value(input, cx);
-            (!v.is_empty()).then(|| std::path::PathBuf::from(v))
-        };
-        d.general.custom_capture_sound = path(&self.sound_capture);
-        d.general.custom_task_sound = path(&self.sound_task);
-        d.general.custom_error_sound = path(&self.sound_error);
-        d.general.toast.duration_ms = num(&self.toast_ms, "Toast duration")?.max(500);
-        {
-            let r = &mut self.draft.defaults.recording;
-            r.fps = num(&self.rec.fps, "Frame rate")?.clamp(1, 240);
-            r.gif_fps = num(&self.rec.gif_fps, "GIF frame rate")?.clamp(1, 60);
-            let crf = Self::value(&self.rec.crf, cx);
-            r.quality = if crf.is_empty() {
-                laqta_domain::record::Quality::Default
-            } else {
-                laqta_domain::record::Quality::Crf(crf.parse::<u8>().ok().filter(|c| *c <= 63).ok_or("Quality (CRF) must be 0–63")?)
-            };
-            r.countdown_secs = num(&self.rec.countdown, "Countdown")?;
-            r.fixed_duration_secs = num(&self.rec.duration, "Fixed duration")?;
-            let mic = Self::value(&self.rec.microphone, cx);
-            r.microphone = (!mic.is_empty()).then_some(mic);
-            r.custom_args = Self::value(&self.rec.args, cx);
-            r.ffmpeg_path = Self::value(&self.rec.ffmpeg, cx);
-            r.camera.device = Self::value(&self.rec.camera_device, cx);
-            r.camera.size_percent = num(&self.rec.camera_size, "Camera size")?.clamp(5, 100) as u8;
-        }
-        {
-            let o = &mut self.draft.defaults.capture.scrolling;
-            o.start_delay_ms = num(&self.scroll[0], "Start delay")?;
-            o.scroll_delay_ms = num(&self.scroll[1], "Scroll delay")?.max(50);
-            o.max_frames = num(&self.scroll[2], "Maximum frames")?.clamp(2, 500);
-            o.scroll_amount = num(&self.scroll[3], "Scroll amount")?.clamp(1, 50);
-            o.ignore_top = num(&self.scroll[4], "Fixed rows at the top")?;
-            o.ignore_bottom = num(&self.scroll[5], "Fixed rows at the bottom")?;
-        }
-        self.draft.cloud.analyzer.base_url = Self::value(&self.cloud[0], cx);
-        self.draft.cloud.analyzer.model = Self::value(&self.cloud[1], cx);
-        self.draft.cloud.analyzer.prompt = Self::value(&self.cloud[2], cx);
+        settings_form::apply(&self.texts(cx), &mut self.draft).map_err(|e| e.to_string())?;
         {
             let secrets = cx.global::<UiState>().services.secrets.clone();
             for (input, key) in [(&self.cloud[3], "cloud:analyzer"), (&self.cloud[4], "cloud:remove.bg")] {
@@ -404,15 +402,11 @@ impl SettingsWindow {
                 }
             }
         }
-        self.draft.auto_capture.interval_ms = num(&self.auto_interval, "Auto-capture interval")?.max(1) * 1000;
-        self.draft.auto_capture.count = num(&self.auto_count, "Auto-capture count")?;
         for (folder, (dir, filter)) in self.draft.watch_folders.iter_mut().zip(&self.watch) {
             folder.folder = Self::value(dir, cx).into();
             let f = Self::value(filter, cx);
             folder.filter = if f.is_empty() { "*".into() } else { f };
         }
-        self.draft.defaults.upload.clipboard_format = Self::value(&self.clipboard_format, cx);
-        self.draft.defaults.upload.retries = num(&self.retries, "Retries")?.min(10);
         let secrets = cx.global::<UiState>().services.secrets.clone();
         for (account, inputs) in self.draft.hosts.iter_mut().zip(&self.hosts) {
             for (key, secret, input) in inputs {
@@ -432,14 +426,14 @@ impl SettingsWindow {
             w.hotkey = if hk.is_empty() {
                 None
             } else {
-                Some(hk.parse::<KeyChord>().map_err(|e| format!("Hotkey \"{hk}\" for {}: {e}", w.name))?)
+                Some(hk.parse::<KeyChord>().map_err(|e| format!("Shortcut “{hk}” for {}: {e}", w.name))?)
             };
         }
         Ok(())
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
-        self.message = Some(match self.collect(cx) {
+        let said = match self.collect(cx) {
             Err(e) => (false, e),
             Ok(()) => {
                 let conflicts = present::hotkey_conflicts(&self.draft);
@@ -459,7 +453,8 @@ impl SettingsWindow {
                     Err(e) => (false, format!("Couldn't save settings: {e}")),
                 }
             }
-        });
+        };
+        self.say(said, cx);
         cx.notify();
     }
 
@@ -471,7 +466,7 @@ impl SettingsWindow {
         let mut saved = services.app.settings();
         saved.theme = theme;
         if let Err(e) = (services.save_settings)(saved) {
-            self.message = Some((false, format!("Couldn't save the theme: {e}")));
+            self.say((false, crate::presenters::notice::failure_line("Couldn't save the theme", &e.to_string())), cx);
         }
     }
 
@@ -480,7 +475,7 @@ impl SettingsWindow {
         // Typed values on other pages live in their inputs until Save; keep them through the reset.
         // Typed keys reach the keyring only once the reset is confirmed.
         if let Err(e) = self.collect_with(cx, false) {
-            self.message = Some((false, format!("Fix this before resetting: {e}")));
+            self.say((false, crate::presenters::notice::failure_line("Fix this before resetting", &e.to_string())), cx);
             cx.notify();
             return;
         }
@@ -499,6 +494,7 @@ impl SettingsWindow {
             Scope::Models => {
                 format!("{what} back to the default. Model choices change now; addresses and prompts are saved when you press Save.")
             }
+            Scope::General => format!("{what} back to the default. The theme changes now; the rest is saved when you press Save."),
             _ => format!("{what} back to the default. Nothing is saved until you press Save."),
         };
         let answer = window.prompt(gpui::PromptLevel::Warning, message, Some(&detail), &["Reset", "Cancel"], cx);
@@ -509,7 +505,7 @@ impl SettingsWindow {
             let _ = this.update_in(cx, |this, window, cx| {
                 // The inputs are rebuilt from the draft, so typed keys are stored now or lost.
                 if let Err(e) = this.collect(cx) {
-                    this.message = Some((false, format!("Fix this before resetting: {e}")));
+                    this.say((false, crate::presenters::notice::failure_line("Fix this before resetting", &e.to_string())), cx);
                     cx.notify();
                     return;
                 }
@@ -537,25 +533,211 @@ impl SettingsWindow {
             self.set_theme(self.draft.theme, cx);
         }
         self.reload_inputs(window, cx);
-        self.message = Some((true, "Back to the defaults. Press Save to keep them.".into()));
+        self.say((true, "Back to the defaults. Press Save to keep them.".into()), cx);
         cx.notify();
+    }
+
+    /// The search field: each edit runs the search; Escape empties it.
+    fn search_field(window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search settings"));
+        cx.subscribe(&input, |this, input, ev: &InputEvent, cx| {
+            if matches!(ev, InputEvent::Change) {
+                this.query = input.read(cx).value().to_string();
+                this.highlight = None;
+                cx.notify();
+            }
+        })
+        .detach();
+        input
+    }
+
+    /// Opens a search result: its page, with its row highlighted, and the search emptied.
+    fn open_hit(&mut self, page: usize, label: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.page = PAGES[page].0;
+        self.recording = None;
+        self.sync_key_hook(window, cx);
+        self.query.clear();
+        self.search.update(cx, |s, cx| s.set_value("", window, cx));
+        self.highlight = Some(label.into());
+        cx.notify();
+    }
+
+    /// One page's body.
+    fn page_content(&self, page: Page, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
+        match page {
+            Page::General => self.general(cx),
+            Page::AfterCapture => {
+                let flags = self.draft.defaults.after_capture;
+                self.after_capture_list(
+                    "ac",
+                    flags,
+                    Some(self.defaults.defaults.after_capture),
+                    |this, f, on| this.draft.defaults.after_capture.set(f, on),
+                    cx,
+                )
+            }
+            Page::Image => self.image(cx),
+            Page::Naming => self.naming(cx),
+            Page::Capture => self.capture(cx),
+            Page::Workflows => self.workflows_page(cx),
+            Page::Uploads => self.uploads(window, cx),
+            Page::Recording => self.recording(cx),
+            Page::Automation => self.automation(cx),
+            Page::Models => self.models_page(cx),
+            Page::Integration => self.integration(cx),
+            Page::Data => self.data(cx),
+        }
+    }
+
+    /// Every setting on every page, from the rows the pages build. Built once per window: labels
+    /// don't change while it is open.
+    fn search_index(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<crate::presenters::settings_search::Entry> {
+        use crate::presenters::settings_search::Entry;
+        let mut out = Vec::new();
+        for (i, (page, title, _)) in PAGES.iter().enumerate() {
+            let (_, description) = page_header(*page);
+            out.push(Entry {
+                page: i,
+                page_title: (*title).into(),
+                section: String::new(),
+                label: (*title).into(),
+                description: description.into(),
+            });
+            for (section, label, description) in widgets::collect_rows(|| self.page_content(*page, window, cx)) {
+                out.push(Entry { page: i, page_title: (*title).into(), section, label, description });
+            }
+        }
+        out
+    }
+
+    /// The search results in place of a page.
+    fn search_results(&mut self, window: &mut Window, cx: &mut Context<Self>) -> (String, gpui::Div) {
+        use crate::presenters::settings_search::{search, summary};
+        if self.index.is_none() {
+            self.index = Some(self.search_index(window, cx));
+        }
+        let index = self.index.as_deref().unwrap_or_default();
+        let hits = search(index, &self.query);
+        let heading = summary(hits.len(), &self.query);
+        if hits.is_empty() {
+            let body = widgets::empty_state(
+                IconName::Search,
+                "Nothing here by that name",
+                "Try another word, like “sound”, “format” or “upload”.",
+                cx,
+            );
+            return (heading, div().child(body));
+        }
+        let t = cx.theme();
+        let (fg, muted, wash) = (t.foreground, t.muted_foreground, crate::theme::extra(cx).wash);
+        // Pulled out by the row padding, so result text lines up with the heading above.
+        let mut list = div().flex().flex_col().gap(px(2.)).mx(-space::S3);
+        for (i, hit) in hits.into_iter().enumerate().take(60) {
+            let (page, label) = (hit.page, hit.label.clone());
+            let place = if hit.section.is_empty() || hit.section == hit.page_title {
+                hit.page_title.clone()
+            } else {
+                format!("{} › {}", hit.page_title, hit.section)
+            };
+            let row = div()
+                .id(("search-hit", i))
+                .debug_selector(move || format!("search-hit-{i}"))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .px(space::S3)
+                .py(space::S2)
+                .rounded(crate::theme::radius::CARD)
+                .border_1()
+                .border_color(gpui::transparent_black())
+                .hover(move |s| s.bg(wash))
+                .child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap(space::S2)
+                        .child(div().text_size(text::BODY).font_weight(FontWeight::MEDIUM).text_color(fg).child(hit.label.clone()))
+                        .child(div().text_size(text::LABEL).text_color(muted).child(place)),
+                )
+                .when(!hit.description.is_empty(), |d| {
+                    d.child(div().max_w(px(560.)).text_size(text::LABEL).text_color(muted).child(hit.description.clone()))
+                });
+            // An arrow on the right says the row opens something.
+            let row = row.relative().pr(space::S8).child(
+                div()
+                    .absolute()
+                    .right(space::S3)
+                    .top_0()
+                    .bottom_0()
+                    .flex()
+                    .items_center()
+                    .child(widgets::icon(IconName::ChevronRight, muted)),
+            );
+            let open = cx.listener(move |this, _, window, cx| this.open_hit(page, label.clone(), window, cx));
+            list = list.child(widgets::clickable(row, open, cx));
+        }
+        (heading, list)
     }
 
     /// Rebuilds every input from the draft, keeping the page, messages and loaded state.
     fn reload_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut fresh = Self::build(self.draft.clone(), window, cx);
         fresh.page = self.page;
-        fresh.message = self.message.take();
+        fresh.flash = std::mem::take(&mut self.flash);
         fresh.ai = std::mem::take(&mut self.ai);
         fresh.update = self.update.take();
         fresh.integration_status = self.integration_status.take();
         fresh.focus = self.focus.clone();
+        fresh.search = self.search.clone();
+        fresh.query = std::mem::take(&mut self.query);
+        fresh.highlight = self.highlight.take();
         *self = fresh;
         // A reset mid-recording ends the recording: let the global hotkeys run again.
         self.sync_key_hook(window, cx);
     }
 
     /// The page's "Reset page" button, while something on it differs from the default.
+    /// A line under the page header when shortcuts carry their own copy of this page's settings
+    /// (ADR 008): changes here don't reach them, and nothing else on the page says so.
+    fn override_note(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use crate::presenters::settings_overrides::{Section, overriding};
+        let sections: &[Section] = match self.page {
+            Page::General => &[Section::General, Section::ScreenshotsDir],
+            Page::AfterCapture => &[Section::AfterCapture, Section::AfterUpload],
+            Page::Image => &[Section::Image, Section::Effects, Section::Beautify],
+            Page::Naming => &[Section::Naming],
+            Page::Capture | Page::Automation => &[Section::Capture],
+            Page::Uploads => &[Section::Upload],
+            Page::Recording => &[Section::Recording],
+            _ => return None,
+        };
+        let mut ids: Vec<_> = sections.iter().flat_map(|s| overriding(&self.draft, *s)).collect();
+        ids.sort_by_key(|id| id.0);
+        ids.dedup();
+        let names: Vec<String> = ids.iter().filter_map(|id| self.draft.workflow(*id)).map(|w| format!("“{}”", w.name)).collect();
+        let text = match names.as_slice() {
+            [] => return None,
+            [one] => format!(
+                "The shortcut {one} uses its own settings for this page, so changes here don't reach it. Change it under Shortcuts."
+            ),
+            [first, rest @ ..] => format!(
+                "{first} and {} other shortcut{} use their own settings for this page, so changes here don't reach them. Change them under Shortcuts.",
+                rest.len(),
+                if rest.len() == 1 { "" } else { "s" }
+            ),
+        };
+        Some(
+            div()
+                .id("override-note")
+                .debug_selector(|| "override-note".into())
+                .mt(space::S2)
+                .text_size(text::SMALL)
+                .text_color(cx.theme().muted_foreground)
+                .child(text)
+                .into_any_element(),
+        )
+    }
+
     fn page_reset(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let scope = page_scope(self.page)?;
         let n = settings_reset::changed(scope, &self.draft, &self.defaults);
@@ -866,7 +1048,7 @@ impl SettingsWindow {
                     .child(self.sw(
                         "history",
                         "Keep history",
-                        Some(&format!("A list of your captures and uploads, stored in {data_dir}.")),
+                        Some(&format!("A list of your captures and uploads, stored in {data_dir}. Takes effect after Laqta restarts.")),
                         |s| s.history.enabled,
                         |this, v| this.draft.history.enabled = v,
                         cx,
@@ -962,7 +1144,15 @@ impl SettingsWindow {
                 cx.spawn(async move |this, cx| {
                     let r = task.await;
                     let _ = this.update(cx, |this, cx| {
-                        this.update = Some(r.unwrap_or_else(|e| (format!("Couldn't check for updates: {e}"), false)));
+                        this.update = Some(r.unwrap_or_else(|e| {
+                            (
+                                crate::presenters::notice::failure_line(
+                                    "Couldn't check for updates. Check your connection and try again",
+                                    &e.to_string(),
+                                ),
+                                false,
+                            )
+                        }));
                         cx.notify();
                     });
                 })
@@ -1078,7 +1268,7 @@ impl SettingsWindow {
         let shape_opts = [(S::Circle, "Circle"), (S::RoundedRectangle, "Rounded"), (S::Rectangle, "Rectangle")];
         let corner_opts =
             [(C::TopLeft, "Top left"), (C::TopRight, "Top right"), (C::BottomLeft, "Bottom left"), (C::BottomRight, "Bottom right")];
-        let backend_opts = [(B::Ffmpeg, "FFmpeg"), (B::Native, "Native (Windows)")];
+        let backend_opts = [(B::Ffmpeg, "FFmpeg"), (B::Native, "Native")];
         let shape_reset = self.value_reset(
             "cam-shape-reset",
             &shape_opts,
@@ -1149,14 +1339,23 @@ impl SettingsWindow {
                         &self.rec.gif_fps,
                         |d| &d.rec_gif_fps,
                         cx,
+                    ))
+                    .child(self.input_row(
+                        "rec-gif-max-width-reset",
+                        "Maximum width",
+                        Some("Wider recordings are scaled down to this many pixels, so they save faster and stay small. 0 keeps the full size."),
+                        Slot::Number,
+                        &self.rec.gif_max_width,
+                        |d| &d.rec_gif_max_width,
+                        cx,
                     )),
             )
             .child(
                 widgets::section("While recording", cx)
                     .child(self.sw(
                         "rec-cursor",
-                        "Record the mouse cursor",
-                        None,
+                        "Show the cursor in videos",
+                        Some("Screenshots have their own setting under Capture."),
                         |s| s.defaults.recording.show_cursor,
                         rec(|r, c| r.show_cursor = c),
                         cx,
@@ -1172,7 +1371,7 @@ impl SettingsWindow {
                     .child(self.sw(
                         "rec-highlight",
                         "Highlight the mouse",
-                        Some("X11 and Windows."),
+                        Some("Not available on Wayland."),
                         |s| s.defaults.recording.highlight_mouse,
                         rec(|r, c| r.highlight_mouse = c),
                         cx,
@@ -1257,14 +1456,17 @@ impl SettingsWindow {
             )
             .child(
                 widgets::section("Advanced", cx)
-                    .child(widgets::row_full(
-                        "Recorder",
-                        Some("Native uses Windows' own recorder; FFmpeg works everywhere."),
-                        Slot::Hug,
-                        backend_reset,
-                        widgets::choice("backend", backends, cx),
-                        cx,
-                    ))
+                    // Only Windows has a native recorder; elsewhere the choice would do nothing.
+                    .when(cfg!(windows), |section| {
+                        section.child(widgets::row_full(
+                            "Recorder",
+                            Some("Native uses Windows' own recorder for H.264 without a microphone, camera or extra arguments. Anything else records with FFmpeg."),
+                            Slot::Hug,
+                            backend_reset,
+                            widgets::choice("backend", backends, cx),
+                            cx,
+                        ))
+                    })
                     .child(self.input_row(
                         "rec-args-reset",
                         "Extra FFmpeg arguments",
@@ -1311,8 +1513,10 @@ impl SettingsWindow {
             (ScrollMethod::MouseWheel, "Mouse wheel"),
             (ScrollMethod::DownArrow, "Down arrow"),
             (ScrollMethod::PageDown, "Page Down"),
-            (ScrollMethod::ScrollMessage, "Scroll command (Windows only)"),
+            (ScrollMethod::ScrollMessage, "Scroll command"),
         ];
+        // The scroll command is a Windows message; elsewhere it only fails at capture time.
+        let method_opts: Vec<_> = method_opts.into_iter().filter(|(m, _)| cfg!(windows) || *m != ScrollMethod::ScrollMessage).collect();
         let method_reset = self.value_reset(
             "scroll-method-reset",
             &method_opts,
@@ -1330,7 +1534,7 @@ impl SettingsWindow {
         let toggle = widgets::pill(
             "auto-toggle",
             if running { "Stop" } else { "Start" },
-            if running { Pill::Default } else { Pill::Dark },
+            if running { Pill::Default } else { Pill::Primary },
             false,
             cx.listener(move |this, _, _, cx| {
                 if !running {
@@ -1438,9 +1642,9 @@ impl SettingsWindow {
                     .child(widgets::action_row(
                         if running { "Timed capture is running" } else { "Timed capture is off" },
                         Some(if running && cfg!(target_os = "macos") {
-                            "Stop it here, from the menu bar or with its hotkey."
+                            "Stop it here, from the menu bar or with its shortcut."
                         } else if running {
-                            "Stop it here, from the tray or with its hotkey."
+                            "Stop it here, from the tray or with its shortcut."
                         } else {
                             "Start saves these settings first."
                         }),
@@ -1575,7 +1779,11 @@ impl SettingsWindow {
                     let services = cx.global::<UiState>().services.clone();
                     let r = std::env::current_exe()
                         .map_err(|e| e.to_string())
-                        .and_then(|exe| services.autostart.set_enabled(*c, &exe).map_err(|e| e.to_string()));
+                        // An administrator Laqta starts from a scheduled task, so sign-in doesn't ask UAC each time.
+                        .and_then(|exe| {
+                            let elevated = services.app.settings().run_as_admin;
+                            services.autostart.set_enabled_elevated(*c, elevated, &exe).map_err(|e| e.to_string())
+                        });
                     this.report(
                         r.map(
                             |()| if *c { "Laqta will start when you sign in.".into() } else { "Laqta will not start at sign-in.".into() },
@@ -1623,8 +1831,26 @@ impl SettingsWindow {
         } else {
             ("File manager", file_manager)
         };
-        page().child(widgets::section("Startup", cx).child(startup)).child(widgets::section(files_title, cx).child(file_manager)).child(
-            widgets::section("Browser", cx).child(widgets::action_row(
+        let startup = widgets::section("Startup", cx).child(startup).when(cfg!(windows), |s| {
+            s.child(self.sw(
+                "run-as-admin",
+                "Run as administrator",
+                Some("Windows asks for administrator rights (UAC) when Laqta starts, so its shortcuts and captures also work in apps and games that run as administrator. Laqta then takes no files or links from other programs. Only turn it on if you need it: Laqta offers a one-time restart as administrator when such an app is in front. Applies after Laqta restarts."),
+                |s| s.run_as_admin,
+                |this, v| this.draft.run_as_admin = v,
+                cx,
+            ))
+            .child(self.sw(
+                "hotkeys-via-hook",
+                "Shortcuts work in games",
+                Some("Catches Laqta's shortcuts with a keyboard hook before other apps see them, for games that take the keyboard for themselves. Those keys then no longer reach the app in front. Games that run as administrator stay out of reach unless Laqta does too."),
+                |s| s.hotkeys_via_hook,
+                |this, v| this.draft.hotkeys_via_hook = v,
+                cx,
+            ))
+        });
+        page().child(startup).child(widgets::section(files_title, cx).child(file_manager)).child(widgets::section("Browser", cx).child(
+            widgets::action_row(
                 "Browser extension",
                 Some("Lets the ShareX browser extension (Chrome, Firefox) send pages, images and links to Laqta."),
                 widgets::pill(
@@ -1646,8 +1872,8 @@ impl SettingsWindow {
                     cx,
                 ),
                 cx,
-            )),
-        )
+            ),
+        ))
     }
     fn data(&self, cx: &mut Context<Self>) -> gpui::Div {
         let changed = settings_reset::changed(Scope::All, &self.draft, &self.defaults);
@@ -1672,9 +1898,9 @@ impl SettingsWindow {
                         "ShareX setup",
                         Some("Shortcuts, custom uploaders, accounts, effect presets and history. Pick the ShareX folder (Documents\\ShareX) or a .sxb backup."),
                         two(
-                            widgets::pill("sharex-folder", "Folder…", Pill::Default, false, cx.listener(|this, _, _, cx| this.import_sharex_config(true, cx)), cx)
+                            widgets::pill("sharex-folder", "Folder…", Pill::Default, false, cx.listener(|this, _, window, cx| this.import_sharex_config(true, window, cx)), cx)
                                 .into_any_element(),
-                            widgets::pill("sharex-backup", "Backup…", Pill::Default, false, cx.listener(|this, _, _, cx| this.import_sharex_config(false, cx)), cx)
+                            widgets::pill("sharex-backup", "Backup…", Pill::Default, false, cx.listener(|this, _, window, cx| this.import_sharex_config(false, window, cx)), cx)
                                 .into_any_element(),
                         ),
                         cx,
@@ -1698,7 +1924,7 @@ impl SettingsWindow {
                 cx,
             )))
     }
-    fn import_sharex_config(&mut self, folder: bool, cx: &mut Context<Self>) {
+    fn import_sharex_config(&mut self, folder: bool, window: &mut Window, cx: &mut Context<Self>) {
         let services = cx.global::<UiState>().services.clone();
         let task = cx.background_spawn(async move {
             let picked = if folder {
@@ -1709,13 +1935,15 @@ impl SettingsWindow {
             let Some(path) = picked else { return Ok(None) };
             (services.import_sharex)(path.path().to_path_buf()).map(Some)
         });
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let r = task.await;
-            let _ = this.update(cx, |this, cx| match r {
+            let _ = this.update_in(cx, |this, window, cx| match r {
                 Ok(Some(summary)) => {
                     this.draft = cx.global::<UiState>().services.app.settings();
                     this.opened = this.draft.clone();
                     this.claimed = settings_reset::Claimed::default();
+                    // The inputs hold the old text until rebuilt, and the next Save would write it back.
+                    this.reload_inputs(window, cx);
                     this.report(Ok(summary), cx);
                 }
                 Ok(None) => {}
@@ -1951,10 +2179,11 @@ impl SettingsWindow {
     }
 
     fn report(&mut self, result: Result<String, String>, cx: &mut Context<Self>) {
-        self.message = Some(match result {
+        let said = match result {
             Ok(m) => (true, m),
             Err(e) => (false, e),
-        });
+        };
+        self.say(said, cx);
         cx.notify();
     }
 
@@ -1986,12 +2215,20 @@ impl SettingsWindow {
             let Some(file) = rfd::AsyncFileDialog::new().add_filter("Zip", &["zip"]).pick_file().await else {
                 return Ok(None);
             };
-            laqta_library::import_archive(file.path(), &services.data_dir).map(|written| Some(written.len())).map_err(|e| e.to_string())
+            // Staged, not written: the running app holds the history database open (and on Windows
+            // cannot replace it), and its next save would overwrite the imported settings.
+            laqta_library::stage_archive(file.path(), &services.data_dir).map(Some).map_err(|e| e.to_string())
         });
         cx.spawn(async move |this, cx| {
             let r = task.await;
             let _ = this.update(cx, |this, cx| match r {
-                Ok(Some(n)) => this.report(Ok(format!("Imported {n} files. Restart Laqta to use them.")), cx),
+                Ok(Some(n)) => this.report(
+                    Ok(format!(
+                        "Backup ready ({n} file{}). It replaces your settings and history the next time Laqta starts.",
+                        if n == 1 { "" } else { "s" }
+                    )),
+                    cx,
+                ),
                 Ok(None) => {}
                 Err(e) => this.report(Err(format!("Import failed: {e}")), cx),
             });
@@ -2158,8 +2395,8 @@ impl SettingsWindow {
                     ))
                     .child(self.sw(
                         "cursor",
-                        "Show the mouse cursor",
-                        None,
+                        "Show the cursor in screenshots",
+                        Some("Also covers scrolling capture. Videos have their own setting under Recording."),
                         |s| s.defaults.capture.show_cursor,
                         |this, v| this.draft.defaults.capture.show_cursor = v,
                         cx,
@@ -2167,9 +2404,17 @@ impl SettingsWindow {
                     .child(self.sw(
                         "transparent",
                         "Keep window transparency",
-                        Some("Keeps rounded corners and shadows when capturing a window."),
+                        Some("Keeps rounded corners and shadows when capturing a window. Not available on Wayland."),
                         |s| s.defaults.capture.transparent_window,
                         |this, v| this.draft.defaults.capture.transparent_window = v,
+                        cx,
+                    ))
+                    .child(self.sw(
+                        "include-own-windows",
+                        "Include Laqta's own windows",
+                        Some("Lets you capture Laqta's windows: they stay on screen and can be picked as a window. Off: they hide while you capture."),
+                        |s| s.defaults.capture.include_own_windows,
+                        |this, v| this.draft.defaults.capture.include_own_windows = v,
                         cx,
                     )),
             )
@@ -2186,7 +2431,7 @@ impl SettingsWindow {
                     .child(self.sw(
                         "mode-bar",
                         "Show the mode bar",
-                        Some("The bar at the top of the screen: screenshot or video, full screen, monitor, edit after capture, colour picker and text capture."),
+                        Some("The bar at the top of the screen: screenshot or video, full screen, monitor, edit after capture, color picker and text capture."),
                         |s| s.defaults.capture.region.show_mode_bar,
                         |this, v| this.draft.defaults.capture.region.show_mode_bar = v,
                         cx,
@@ -2194,7 +2439,7 @@ impl SettingsWindow {
                     .child(self.sw(
                         "multi",
                         "Allow several regions",
-                        Some("Select more than one area in one capture."),
+                        Some("Draw several areas, then press Enter or Capture to take them together in one image. Tools that need one area, such as recording and text capture, still take one."),
                         |s| s.defaults.capture.region.multi_region,
                         |this, v| this.draft.defaults.capture.region.multi_region = v,
                         cx,
@@ -2202,7 +2447,7 @@ impl SettingsWindow {
                     .child(self.sw(
                         "snap",
                         "Snap to windows",
-                        None,
+                        Some("Hover a window to select all of it with one click."),
                         |s| s.defaults.capture.region.snap_to_windows,
                         |this, v| this.draft.defaults.capture.region.snap_to_windows = v,
                         cx,
@@ -2210,7 +2455,11 @@ impl SettingsWindow {
                     .child(self.sw(
                         "regions",
                         "Detect regions inside windows",
-                        Some("Hover a sidebar, panel or text box to select just that part. Scroll to grow to the enclosing one."),
+                        Some(if r.snap_to_windows {
+                            "Hover a sidebar, panel or text box to select just that part. Scroll to grow to the enclosing one."
+                        } else {
+                            "Needs Snap to windows, which is off."
+                        }),
                         |s| s.defaults.capture.region.detect_regions,
                         |this, v| this.draft.defaults.capture.region.detect_regions = v,
                         cx,
@@ -2233,7 +2482,7 @@ impl SettingsWindow {
                     ))
                     .child(self.sw(
                         "info",
-                        "Show position and colour",
+                        "Show position and color",
                         None,
                         |s| s.defaults.capture.region.show_info,
                         |this, v| this.draft.defaults.capture.region.show_info = v,
@@ -2513,7 +2762,7 @@ impl SettingsWindow {
                         .child(widgets::badge(headline, tone, cx))
                         .child(widgets::muted(detail, cx)),
                 )
-                .when_some(configure, |d, configure| {
+                .when_some(configure.clone(), |d, configure| {
                     d.child(widgets::pill(
                         "open-desktop-shortcuts",
                         "Open shortcut settings",
@@ -2533,7 +2782,24 @@ impl SettingsWindow {
                 }))),
         );
 
+        let pending = statuses.iter().filter(|s| matches!(s, RowStatus::Pending)).count();
         let mut list = div().flex().flex_col().rounded(crate::theme::radius::CARD).border_1().border_color(x.ring).overflow_hidden();
+        if pending > 0 {
+            let line = if pending == 1 {
+                "1 shortcut takes effect when you save.".to_string()
+            } else {
+                format!("{pending} shortcuts take effect when you save. A grey dot marks them.")
+            };
+            list = list.child(
+                div()
+                    .px(space::S4)
+                    .py(space::S2)
+                    .border_b_1()
+                    .border_color(x.ring)
+                    .bg(t.foreground.opacity(0.03))
+                    .child(widgets::muted(line, cx)),
+            );
+        }
         if self.draft.workflows.is_empty() {
             list = list.child(widgets::empty_state(
                 IconName::Keyboard,
@@ -2546,12 +2812,16 @@ impl SettingsWindow {
             let (dot, note): (Option<gpui::Hsla>, Option<String>) = match &st {
                 // A working shortcut needs no marker; only problems and pending changes get one.
                 RowStatus::Active => (None, None),
-                RowStatus::Pending => (Some(t.muted_foreground), Some("Not active yet: save to apply.".into())),
+                // One line above the list says it, rather than the same note on every row.
+                RowStatus::Pending => (Some(t.muted_foreground), None),
                 RowStatus::Conflict(why) => (Some(t.danger), Some(why.clone())),
                 RowStatus::Failed(why) => (Some(t.danger), Some(format!("The system refused it: {why}"))),
-                RowStatus::DesktopKey(key) => {
-                    (Some(t.warning), Some(format!("Your desktop uses {key} for this. Change it in the desktop's shortcut settings.")))
-                }
+                RowStatus::DesktopKey(key) => (
+                    Some(t.warning),
+                    Some(format!(
+                        "Your desktop assigned {key} instead, because it keeps the key it stored first. Change it in the desktop's shortcut settings, or remove Laqta's entry there and save again."
+                    )),
+                ),
                 RowStatus::NoKey => (
                     Some(t.danger),
                     Some("Your desktop gave this shortcut no key, so it won't work. Set one in the desktop's shortcut settings.".into()),
@@ -2573,7 +2843,7 @@ impl SettingsWindow {
                         true,
                         cx.listener(move |this, _, _, cx| {
                             let services = cx.global::<UiState>().services.clone();
-                            this.message = Some(match free() {
+                            let said = match free() {
                                 // Saving the stored settings registers the shortcuts again.
                                 Ok(()) => match (services.save_settings)(services.app.settings()) {
                                     Ok(()) => {
@@ -2582,12 +2852,24 @@ impl SettingsWindow {
                                     Err(e) => (false, format!("Couldn't register the shortcuts again: {e}")),
                                 },
                                 Err(e) => (false, format!("Couldn't change the Windows setting: {e}")),
-                            });
+                            };
+                            this.say(said, cx);
                             cx.notify();
                         }),
                         cx,
                     )
                 });
+            // The desktop keeps its own key for this row: send people straight to where they change it.
+            let desktop_fix = configure.clone().filter(|_| matches!(st, RowStatus::DesktopKey(_) | RowStatus::NoKey)).map(|open| {
+                widgets::pill(
+                    SharedString::from(format!("wf-desktop-{i}")),
+                    "Open shortcut settings",
+                    Pill::Default,
+                    true,
+                    cx.listener(move |_, _, _, _| open()),
+                    cx,
+                )
+            });
             let recording_here = self.recording == Some(i);
             let note = if recording_here {
                 Some(self.rec_error.unwrap_or("Press the keys, Esc to keep the old shortcut, Backspace to remove it.").to_owned())
@@ -2712,7 +2994,8 @@ impl SettingsWindow {
                         || (recording_here && self.rec_error.is_some());
                     d.child(div().pl(px(48.)).child(widgets::notice(n, !danger, cx)))
                 })
-                .when_some(snipping_fix, |d, button| d.child(div().pl(px(48.)).child(button)));
+                .when_some(snipping_fix, |d, button| d.child(div().pl(px(48.)).child(button)))
+                .when_some(desktop_fix, |d, button| d.child(div().pl(px(48.)).child(button)));
             let row = match w.patch.after_capture {
                 Some(flags) => row.child(div().pl(px(48.)).child(self.after_capture_list(
                     &format!("wf-{i}"),
@@ -2792,37 +3075,35 @@ impl Render for SettingsWindow {
         for (page, label, glyph) in PAGES {
             let listener = cx.listener(move |this, _, window, cx| {
                 this.page = page;
+                this.highlight = None;
+                if !this.query.is_empty() {
+                    this.query.clear();
+                    this.search.update(cx, |s, cx| s.set_value("", window, cx));
+                }
                 // Leaving the page ends a recording, so the global shortcuts work again.
                 this.recording = None;
                 this.sync_key_hook(window, cx);
                 cx.notify();
             });
-            nav = nav.child(widgets::nav_row(SharedString::from(format!("nav-{label}")), glyph, label, self.page == page, listener, cx));
+            // While searching, no page is the current one: the results stand in for a page.
+            let current = self.page == page && self.query.trim().is_empty();
+            nav = nav.child(widgets::nav_row(SharedString::from(format!("nav-{label}")), glyph, label, current, listener, cx));
         }
-        let (title, description) = page_header(self.page);
-        let content = match self.page {
-            Page::General => self.general(cx),
-            Page::AfterCapture => {
-                let flags = self.draft.defaults.after_capture;
-                self.after_capture_list(
-                    "ac",
-                    flags,
-                    Some(self.defaults.defaults.after_capture),
-                    |this, f, on| this.draft.defaults.after_capture.set(f, on),
-                    cx,
-                )
-            }
-            Page::Image => self.image(cx),
-            Page::Naming => self.naming(cx),
-            Page::Capture => self.capture(cx),
-            Page::Workflows => self.workflows_page(cx),
-            Page::Uploads => self.uploads(window, cx),
-            Page::Recording => self.recording(cx),
-            Page::Automation => self.automation(cx),
-            Page::Models => self.models_page(cx),
-            Page::Integration => self.integration(cx),
-            Page::Data => self.data(cx),
+        let searching = !self.query.trim().is_empty();
+        let (title, description, content) = if searching {
+            let (heading, results) = self.search_results(window, cx);
+            ("Search".to_owned(), heading, results)
+        } else {
+            let (title, description) = page_header(self.page);
+            let content = widgets::with_highlight(self.highlight.clone(), || self.page_content(self.page, window, cx));
+            (title.to_owned(), description.to_owned(), content)
         };
+        let search_box = div()
+            .px(space::S3)
+            .pt(space::S1)
+            .pb(space::S2)
+            .debug_selector(|| "settings-search".into())
+            .child(Input::new(&self.search).cleanable(true).prefix(widgets::icon(IconName::Search, cx.theme().muted_foreground)));
         let mut footer = div()
             .flex()
             .flex_row()
@@ -2834,11 +3115,9 @@ impl Render for SettingsWindow {
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
             .rounded_br(crate::chrome::corners(window).bottom_right);
-        footer = match &self.message {
-            Some((ok, msg)) => footer.child(widgets::notice(msg.clone(), *ok, cx).flex_1().min_w_0().truncate()),
-            None => footer.child(div().flex_1()),
-        };
-        footer = footer.child(widgets::pill("save", "Save", Pill::Dark, false, cx.listener(|this, _, _, cx| this.save(cx)), cx));
+        let line = self.flash.render(cx.listener(|this, _, _, cx| crate::flash::Flash::dismiss(this, cx)), cx);
+        footer = footer.child(div().flex_1().min_w_0().children(line));
+        footer = footer.child(widgets::pill("save", "Save", Pill::Primary, false, cx.listener(|this, _, _, cx| this.save(cx)), cx));
         let settings_label =
             div().font_family(text::HEADING_FONT).font_weight(FontWeight::SEMIBOLD).text_size(text::SECTION).child("Settings");
         let body = div()
@@ -2847,7 +3126,8 @@ impl Render for SettingsWindow {
             .flex()
             .flex_col()
             .child(
-                div().id("settings-scroll").flex_1().overflow_y_scrollbar().child(
+                // One scroll position per page: a page opens at its top, not where the last one was left.
+                div().id("settings-scroll").flex_1().overflow_y_scrollbar().id(("settings-scroll", self.page as usize)).child(
                     div()
                         .max_w(px(780.))
                         .mx_auto()
@@ -2862,20 +3142,40 @@ impl Render for SettingsWindow {
                                 .items_start()
                                 .gap(space::S4)
                                 .child(widgets::settings_header(title, description, cx).flex_1().min_w_0())
-                                .children(self.page_reset(cx)),
+                                .when(!searching, |d| d.children(self.page_reset(cx))),
                         )
+                        .when(!searching, |d| d.children(self.override_note(cx)))
                         .child(content),
                 ),
             )
             .child(footer);
+        // Ctrl+F (Cmd+F on macOS) jumps to the search field; Escape there empties it.
+        let find_keys = cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
+            let k = &ev.keystroke;
+            let chord = if cfg!(target_os = "macos") { k.modifiers.platform } else { k.modifiers.control };
+            if chord && k.key == "f" {
+                let handle = gpui::Focusable::focus_handle(this.search.read(cx), cx);
+                window.focus(&handle, cx);
+                cx.stop_propagation();
+            } else if k.key == "escape"
+                && !this.query.is_empty()
+                && gpui::Focusable::focus_handle(this.search.read(cx), cx).is_focused(window)
+            {
+                this.query.clear();
+                this.search.update(cx, |s, cx| s.set_value("", window, cx));
+                cx.notify();
+                cx.stop_propagation();
+            }
+        });
         widgets::tab_keys(crate::chrome::rounded(widgets::page(cx), window).bg(cx.theme().sidebar), &self.focus)
+            .capture_key_down(find_keys)
             .child(crate::chrome::TitleBar::new().leading(settings_label, px(232.)))
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(nav)
+                    .child(div().flex_none().flex().flex_col().child(search_box).child(nav))
                     .child(crate::chrome::sheet(window, cx).flex_1().min_w_0().h_full().flex().child(body)),
             )
     }
@@ -2905,7 +3205,8 @@ fn page_scope(page: Page) -> Option<Scope> {
         Page::Recording => Scope::Recording,
         Page::Automation => Scope::Automation,
         Page::Models => Scope::Models,
-        Page::Integration | Page::Data => return None,
+        Page::Integration => Scope::Integration,
+        Page::Data => return None,
     })
 }
 
@@ -2925,24 +3226,4 @@ fn page_header(page: Page) -> (&'static str, &'static str) {
         Page::Integration => ("Integration", "Start-up, the file manager menu and the browser extension."),
         Page::Data => ("Backup and import", "Back up your settings or bring them over from ShareX."),
     }
-}
-
-/// "x, y, width, height" → a rect; empty → None.
-fn parse_region(text: &str) -> Result<Option<PhysRect>, String> {
-    if text.trim().is_empty() {
-        return Ok(None);
-    }
-    let parts: Vec<&str> = text.split(',').map(str::trim).collect();
-    let bad = || "Custom region must be four numbers: x, y, width, height".to_string();
-    if parts.len() != 4 {
-        return Err(bad());
-    }
-    let x = parts[0].parse::<i32>().map_err(|_| bad())?;
-    let y = parts[1].parse::<i32>().map_err(|_| bad())?;
-    let width = parts[2].parse::<u32>().map_err(|_| bad())?;
-    let height = parts[3].parse::<u32>().map_err(|_| bad())?;
-    if width == 0 || height == 0 {
-        return Err(bad());
-    }
-    Ok(Some(PhysRect { x, y, width, height }))
 }

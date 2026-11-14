@@ -11,7 +11,7 @@ mod paths;
 mod settings_store;
 mod watch;
 
-pub use archive::{export_archive, import_archive};
+pub use archive::{apply_staged_import, export_archive, has_staged_import, import_archive, stage_archive};
 pub use error::LibraryError;
 pub use history::{History, record_task_events};
 pub use legacy::{ImportReport, import_sharex_history, import_sharex_history_file};

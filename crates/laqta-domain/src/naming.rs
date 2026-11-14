@@ -110,9 +110,16 @@ pub fn file_name(pattern: &str, ctx: &mut NameContext<'_>) -> String {
 }
 
 /// Candidate paths in order: `<dir>/<sub>/<stem>.<ext>`, then `_2`, `_3`, … up to 999. An empty
-/// `sub` means no subfolder. Pure: it never checks the file system.
+/// `sub` means no subfolder; `sub` may hold several folders separated by `/` or `\`. Pure: it never checks the file system.
 pub fn candidates(dir: &Path, sub: &str, stem: &str, ext: &str) -> impl Iterator<Item = PathBuf> {
-    let folder = if sub.is_empty() { dir.to_path_buf() } else { dir.join(sub) };
+    let mut folder = dir.to_path_buf();
+    // `sub` is split on both separators and joined one component at a time, so the path carries only the
+    // platform's own separator. Only plain folder names are kept: `.`, `..` and a drive (`D:`) never lead
+    // out of `dir`.
+    let plain = |s: &&str| Path::new(s).components().all(|c| matches!(c, std::path::Component::Normal(_)));
+    for segment in sub.split(['/', '\\']).filter(|s| !s.is_empty()).filter(plain) {
+        folder.push(segment);
+    }
     let stem = stem.to_owned();
     let ext = ext.to_owned();
     (1u32..=999).map(move |n| if n == 1 { folder.join(format!("{stem}.{ext}")) } else { folder.join(format!("{stem}_{n}.{ext}")) })
@@ -445,6 +452,17 @@ fn pick(ctx: &mut NameContext<'_>, items: &[&'static str]) -> &'static str {
 /// An index below `len`, which must be non-zero.
 fn pick_index(ctx: &mut NameContext<'_>, len: usize) -> usize {
     ((ctx.rng)() % len as u64) as usize
+}
+
+/// What "Copy the link" puts on the clipboard unless the user chose another text.
+pub const DEFAULT_CLIPBOARD_FORMAT: &str = "$url";
+
+/// The text template for "Copy the link". An empty one means the default. The default follows the shortener:
+/// when the link was shortened it is `$shorturl`, so the short link is what gets copied. Any other template
+/// is the user's own and is used as written.
+pub fn clipboard_template(format: &str, shortened: bool) -> &str {
+    let format = if format.trim().is_empty() { DEFAULT_CLIPBOARD_FORMAT } else { format };
+    if shortened && format == DEFAULT_CLIPBOARD_FORMAT { "$shorturl" } else { format }
 }
 
 /// What the upload-info tokens (`$url` and the rest) read. An empty string is an absent value, so
@@ -931,6 +949,14 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    /// A drive in the subfolder setting is dropped, not taken as a new drive-relative root.
+    #[cfg(windows)]
+    #[test]
+    fn candidates_keep_a_drive_in_the_subfolder_inside_the_folder() {
+        let first = candidates(Path::new(r"C:\Pics"), r"D:\shots", "a", "png").next().expect("a first candidate");
+        assert_eq!(first, PathBuf::from(r"C:\Pics\shots\a.png"));
+    }
+
     #[test]
     fn candidates_without_subfolder() {
         let all: Vec<PathBuf> = candidates(Path::new("/out"), "", "Laqta", "png").collect();
@@ -938,6 +964,28 @@ mod tests {
         assert_eq!(all[0], PathBuf::from("/out/Laqta.png"));
         assert_eq!(all[1], PathBuf::from("/out/Laqta_2.png"));
         assert_eq!(all[998], PathBuf::from("/out/Laqta_999.png"));
+    }
+
+    #[test]
+    fn candidates_split_the_subfolder_on_both_separators() {
+        let expected: PathBuf = ["/out", "2026", "11", "Laqta.png"].iter().collect();
+        for sub in ["2026/11", "2026\\11", "/2026//11/", "2026/./11/../.."] {
+            let first = candidates(Path::new("/out"), sub, "Laqta", "png").next().expect("a first candidate");
+            if sub.contains("..") {
+                assert_eq!(first, PathBuf::from("/out/2026/11/Laqta.png".replace('/', std::path::MAIN_SEPARATOR_STR)), "{sub}");
+            } else {
+                assert_eq!(first, expected, "{sub}");
+            }
+        }
+    }
+
+    #[test]
+    fn clipboard_template_follows_the_shortener_and_fills_in_empty() {
+        assert_eq!(clipboard_template("$url", false), "$url");
+        assert_eq!(clipboard_template("$url", true), "$shorturl");
+        assert_eq!(clipboard_template("  ", false), "$url");
+        assert_eq!(clipboard_template("", true), "$shorturl");
+        assert_eq!(clipboard_template("[$url]", true), "[$url]");
     }
 
     #[test]

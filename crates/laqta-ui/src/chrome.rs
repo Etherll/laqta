@@ -186,10 +186,12 @@ fn controls(window: &Window, cx: &App) -> impl IntoElement {
         .flex()
         .when(supported.minimize, |d| d.child(control(Control::Minimize, cx)))
         .when(supported.maximize, |d| d.child(control(if window.is_maximized() { Control::Restore } else { Control::Maximize }, cx)))
-        .child(control(Control::Close, cx))
+        .child(control(Control::Close, cx).rounded_tr(corners(window).top_right))
 }
 
-fn control(kind: Control, cx: &App) -> impl IntoElement {
+/// One caption button. Close sits in the window's top right corner, so its caller rounds that
+/// corner of it to the frame's and the red hover stays inside the window.
+fn control(kind: Control, cx: &App) -> gpui::Stateful<gpui::Div> {
     let t = cx.theme();
     let (id, glyph, label, area) = match kind {
         Control::Minimize => ("win-min", IconName::WindowMinimize, "Minimize", WindowControlArea::Min),
@@ -254,7 +256,7 @@ pub(crate) fn sheet(window: &Window, cx: &App) -> gpui::Div {
 /// its title bar and bottom buttons stay on the screen.
 pub(crate) fn centered(width: f32, height: f32, cx: &gpui::App) -> gpui::WindowBounds {
     let wanted = gpui::size(gpui::px(width), gpui::px(height));
-    let Some(area) = cx.primary_display().map(|display| display.visible_bounds()) else {
+    let Some(area) = crate::placement::main_display(cx).map(|display| display.visible_bounds()) else {
         return gpui::WindowBounds::centered(wanted, cx);
     };
     let margin = gpui::px(16.);

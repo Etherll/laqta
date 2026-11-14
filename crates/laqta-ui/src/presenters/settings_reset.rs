@@ -19,10 +19,13 @@ pub enum Scope {
     Recording,
     Automation,
     Models,
+    /// The Windows start-up options (run as administrator, shortcuts through a keyboard hook).
+    /// Start at sign-in is not a setting: it is the OS entry itself, so no reset touches it.
+    Integration,
     All,
 }
 
-const PAGES: [Scope; 10] = [
+const PAGES: [Scope; 11] = [
     Scope::General,
     Scope::AfterCapture,
     Scope::Image,
@@ -33,6 +36,7 @@ const PAGES: [Scope; 10] = [
     Scope::Recording,
     Scope::Automation,
     Scope::Models,
+    Scope::Integration,
 ];
 
 /// The settings other windows write that a reset in the settings window made its own, until the
@@ -41,6 +45,8 @@ const PAGES: [Scope; 10] = [
 pub struct Claimed {
     pub capture_marks: bool,
     pub editor_hidden_tools: bool,
+    /// The shortcuts switch, which the tray and the "disable shortcuts" key also flip.
+    pub disable_hotkeys: bool,
 }
 
 /// Puts back into `draft` the settings other windows write while the settings window is open (the
@@ -54,6 +60,9 @@ pub fn keep_outside_edits(draft: &mut Settings, opened: &Settings, live: &Settin
     if !claimed.editor_hidden_tools && draft.editor_hidden_tools == opened.editor_hidden_tools {
         draft.editor_hidden_tools.clone_from(&live.editor_hidden_tools);
     }
+    if !claimed.disable_hotkeys && draft.disable_hotkeys == opened.disable_hotkeys {
+        draft.disable_hotkeys = live.disable_hotkeys;
+    }
 }
 
 /// A reset of `scope` is the window's own change to the settings other windows write, even when
@@ -64,6 +73,9 @@ pub fn claim_reset(scope: Scope, claimed: &mut Claimed) {
     }
     if scope == Scope::All {
         claimed.editor_hidden_tools = true;
+    }
+    if matches!(scope, Scope::Shortcuts | Scope::All) {
+        claimed.disable_hotkeys = true;
     }
 }
 
@@ -140,6 +152,10 @@ pub fn reset(scope: Scope, draft: &mut Settings, defaults: &Settings) {
             draft.models.clone_from(&defaults.models);
             draft.models.custom = custom;
             draft.cloud.clone_from(&defaults.cloud);
+        }
+        Scope::Integration => {
+            draft.run_as_admin = defaults.run_as_admin;
+            draft.hotkeys_via_hook = defaults.hotkeys_via_hook;
         }
         Scope::All => {
             for page in PAGES {
@@ -222,6 +238,7 @@ pub struct InputTexts {
     pub retries: String,
     pub rec_fps: String,
     pub rec_gif_fps: String,
+    pub rec_gif_max_width: String,
     pub rec_crf: String,
     pub rec_countdown: String,
     pub rec_duration: String,
@@ -267,6 +284,7 @@ impl InputTexts {
             retries: d.upload.retries.to_string(),
             rec_fps: d.recording.fps.to_string(),
             rec_gif_fps: d.recording.gif_fps.to_string(),
+            rec_gif_max_width: d.recording.gif_max_width.to_string(),
             rec_crf: match d.recording.quality {
                 laqta_domain::record::Quality::Crf(c) => c.to_string(),
                 _ => String::new(),
@@ -334,6 +352,18 @@ mod tests {
     }
 
     #[test]
+    fn the_integration_page_owns_the_windows_start_up_options() {
+        let d = defaults();
+        let mut s = d.clone();
+        s.run_as_admin = true;
+        s.hotkeys_via_hook = true;
+        assert_eq!(changed(Scope::Integration, &s, &d), 2);
+        assert_eq!(changed(Scope::All, &s, &d), 2, "Reset all counts them too");
+        reset(Scope::All, &mut s, &d);
+        assert!(!s.run_as_admin && !s.hotkeys_via_hook);
+    }
+
+    #[test]
     fn the_capture_page_owns_the_toolbar_colours() {
         let d = defaults();
         let mut s = d.clone();
@@ -391,6 +421,29 @@ mod tests {
         keep_outside_edits(&mut draft, &opened, &live, claimed);
         assert!(draft.capture_marks.is_empty(), "Save writes the reset");
         assert_eq!(draft.editor_hidden_tools, live.editor_hidden_tools, "a Capture reset claims only its own");
+    }
+
+    #[test]
+    fn a_shortcuts_switch_flipped_elsewhere_survives_a_save_unless_the_window_changed_it() {
+        let d = defaults();
+        let (opened, mut live) = (d.clone(), d.clone());
+        live.disable_hotkeys = true;
+
+        let mut untouched = opened.clone();
+        keep_outside_edits(&mut untouched, &opened, &live, Claimed::default());
+        assert!(untouched.disable_hotkeys, "the tray's switch is kept");
+
+        let mut changed_here = opened.clone();
+        changed_here.disable_hotkeys = true;
+        let live_off = opened.clone();
+        keep_outside_edits(&mut changed_here, &opened, &live_off, Claimed::default());
+        assert!(changed_here.disable_hotkeys, "the window's own change wins");
+
+        let mut claimed = Claimed::default();
+        claim_reset(Scope::Shortcuts, &mut claimed);
+        let mut reset_draft = opened.clone();
+        keep_outside_edits(&mut reset_draft, &opened, &live, claimed);
+        assert!(!reset_draft.disable_hotkeys, "a Shortcuts reset claims the switch");
     }
 
     #[test]

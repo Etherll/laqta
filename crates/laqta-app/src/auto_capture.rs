@@ -9,12 +9,12 @@ use std::time::Duration;
 use futures_lite::FutureExt;
 use laqta_domain::Action;
 use laqta_domain::settings::AutoCaptureOptions;
-use laqta_ports::AppError;
+use laqta_ports::{AppError, Toast};
 
 use crate::dispatcher::{App, Dispatched};
 
-/// The shortest gap between two auto captures.
-const MIN_INTERVAL: Duration = Duration::from_millis(1000);
+/// Runs in a row that fail before auto capture gives up, so a capture that cannot work does not repeat forever.
+const MAX_FAILURES_IN_A_ROW: u32 = 3;
 
 impl App {
     /// `Some(true)` starts, `Some(false)` stops, `None` toggles. Starting while one runs does nothing.
@@ -53,7 +53,9 @@ impl App {
     }
 
     fn spawn_auto_capture(self: &Arc<Self>, stop: Arc<AtomicBool>, options: AutoCaptureOptions) {
-        let interval = Duration::from_millis(u64::from(options.interval_ms)).max(MIN_INTERVAL);
+        let interval = Duration::from_millis(u64::from(
+            options.interval_ms.clamp(AutoCaptureOptions::MIN_INTERVAL_MS, AutoCaptureOptions::MAX_INTERVAL_MS),
+        ));
         let app = Arc::clone(self);
         self.ports.spawner.spawn(Box::pin(async move {
             // A panic in a run ends the loop and frees the slot (ADR 020).
@@ -67,17 +69,43 @@ impl App {
     /// The loop: one run, then a wait, `count` times (0 = until stopped). The stop flag is checked before each run.
     async fn run_auto_capture(self: &Arc<Self>, stop: &AtomicBool, options: AutoCaptureOptions, interval: Duration) {
         let mut runs = 0u32;
+        let mut failures = 0u32;
         while !stop.load(Ordering::Acquire) {
             match self.dispatch(options.action, options.workflow).await {
-                Ok(_) => {}
+                Ok(_) => failures = 0,
                 Err(AppError::Cancelled) => break,
-                Err(error) => tracing::warn!(%error, action = ?options.action, "auto capture run failed"),
+                // Another selection is open: this run is skipped. It is no failure, and it does not clear the
+                // failures before it either.
+                Err(AppError::Busy) => tracing::debug!(action = ?options.action, "auto capture run skipped: a selection is open"),
+                Err(error) => {
+                    tracing::warn!(%error, action = ?options.action, "auto capture run failed");
+                    failures += 1;
+                    if failures >= MAX_FAILURES_IN_A_ROW {
+                        self.auto_capture_gave_up(&error);
+                        break;
+                    }
+                }
             }
             runs += 1;
             if options.count != 0 && runs >= options.count {
                 break;
             }
             self.ports.clock.sleep(interval).await;
+        }
+    }
+
+    /// Tells the user that the loop stopped on its own, and why.
+    fn auto_capture_gave_up(&self, error: &AppError) {
+        let toast = Toast {
+            title: Action::AutoCapture.label().to_owned(),
+            body: format!("Stopped after {MAX_FAILURES_IN_A_ROW} captures in a row failed: {error}"),
+            image: None,
+            path: None,
+            url: None,
+            options: self.settings.get().defaults.general.toast.clone(),
+        };
+        if let Err(error) = self.ports.notifier.toast(toast) {
+            tracing::warn!(%error, "auto capture: the stop notice was not shown");
         }
     }
 

@@ -24,6 +24,9 @@ pub struct CaptureOptions {
     pub show_cursor: bool,
     pub transparent_window: bool,
     pub hdr_tonemap: bool,
+    /// Keep Laqta's own windows in captures: they stay up while a capture starts, and the region
+    /// overlay can snap to them. Off, Laqta hides itself and is left out.
+    pub include_own_windows: bool,
     pub region: RegionCaptureOptions,
     /// For `Action::CustomRegion` (physical desktop pixels).
     pub custom_region: Option<PhysRect>,
@@ -39,6 +42,7 @@ impl Default for CaptureOptions {
             show_cursor: false,
             transparent_window: false,
             hdr_tonemap: true,
+            include_own_windows: false,
             region: RegionCaptureOptions::default(),
             custom_region: None,
             custom_window_title: String::new(),
@@ -193,6 +197,21 @@ mod tests {
         let json = serde_json::to_string(&off).expect("serialises");
         let back: RegionCaptureOptions = serde_json::from_str(&json).expect("deserialises");
         assert_eq!(back, off);
+    }
+
+    #[test]
+    fn including_own_windows_is_off_by_default_and_round_trips() {
+        assert!(!CaptureOptions::default().include_own_windows);
+
+        let old: CaptureOptions = serde_json::from_str(r#"{"delay_ms": 250}"#).expect("old settings still load");
+        assert_eq!(old.delay_ms, 250);
+        assert!(!old.include_own_windows, "settings saved before the option existed leave Laqta out");
+
+        let on = CaptureOptions { include_own_windows: true, ..CaptureOptions::default() };
+        let json = serde_json::to_string(&on).expect("serialises");
+        let back: CaptureOptions = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(back, on);
+        assert!(back.include_own_windows);
     }
 
     #[test]

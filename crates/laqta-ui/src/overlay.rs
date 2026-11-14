@@ -5,9 +5,9 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Context, Div, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
-    KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage,
-    ScrollDelta, ScrollEvent, Styled as _, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, img, point,
+    AnyWindowHandle, App, AppContext as _, Context, Div, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent,
+    KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage, ScrollDelta,
+    ScrollEvent, Styled as _, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, img,
     prelude::FluentBuilder as _, px, size,
 };
 use laqta_domain::geometry::PhysRect;
@@ -20,6 +20,7 @@ use crate::mark_chrome::pointer_style;
 use crate::presenters::capture_pointer::{self, Route};
 use crate::presenters::capture_toolbar as bar;
 use crate::presenters::mark_pointer::Pointer;
+use crate::presenters::monitor_placement::{Slot, chrome_owner};
 use crate::runtime::UiState;
 
 #[derive(Default)]
@@ -56,6 +57,8 @@ struct MonitorImage {
 
 pub(crate) struct OverlayModel {
     monitors: Vec<MonitorImage>,
+    /// Each monitor's display, index for index with `monitors`.
+    slots: Vec<Slot>,
     pub(crate) view: RegionView,
     pub(crate) on_input: InputCallback,
     /// The editor engine over the settled selection (`overlay_tools`).
@@ -115,38 +118,28 @@ pub(crate) fn render_images(frames: &[Frame]) -> Vec<Option<Arc<RenderImage>>> {
 
 use crate::gpu_image::render_image;
 
-/// Pairs each frame with a display. Windows and X11 put a display at its physical origin divided
-/// by its scale, so a frame's monitor names its display exactly, whatever the mix of scales. Where
-/// that doesn't hold for every frame (Wayland lays displays out itself), both are sorted by
-/// position (left to right, then top to bottom).
-fn match_displays(frames: &[Frame], cx: &App) -> Vec<Option<Bounds<Pixels>>> {
-    let mut displays: Vec<_> = cx.displays().into_iter().map(|d| (d.bounds(), d.id())).collect();
-    let exact: Vec<_> = frames
-        .iter()
-        .filter_map(|f| {
-            let scale = f.monitor.scale.max(0.1);
-            let (x, y) = (f.monitor.rect.x as f32 / scale, f.monitor.rect.y as f32 / scale);
-            displays.iter().find(|(b, _)| (f32::from(b.origin.x) - x).abs() < 1.0 && (f32::from(b.origin.y) - y).abs() < 1.0).copied()
-        })
-        .collect();
-    let distinct = exact.iter().enumerate().all(|(i, a)| exact[..i].iter().all(|b| b.1 != a.1));
-    if exact.len() == frames.len() && distinct {
-        return exact.into_iter().map(|(bounds, _)| Some(bounds)).collect();
+/// Whether a window position lies inside the window's content.
+fn in_window(window: &Window, at: gpui::Point<gpui::Pixels>) -> bool {
+    let size = window.viewport_size();
+    at.x >= px(0.) && at.y >= px(0.) && at.x < size.width && at.y < size.height
+}
+
+/// The smallest rect holding every rect; None for none.
+fn union(rects: &[PhysRect]) -> Option<PhysRect> {
+    let first = *rects.first()?;
+    let (mut l, mut t, mut r, mut b) = (first.x, first.y, first.right(), first.bottom());
+    for x in &rects[1..] {
+        (l, t, r, b) = (l.min(x.x), t.min(x.y), r.max(x.right()), b.max(x.bottom()));
     }
-    displays.sort_by(|a, b| {
-        let (ax, ay) = (f32::from(a.0.origin.x), f32::from(a.0.origin.y));
-        let (bx, by) = (f32::from(b.0.origin.x), f32::from(b.0.origin.y));
-        ax.total_cmp(&bx).then(ay.total_cmp(&by))
-    });
-    let mut order: Vec<usize> = (0..frames.len()).collect();
-    order.sort_by_key(|&i| (frames[i].monitor.rect.x, frames[i].monitor.rect.y));
-    let mut out = vec![None; frames.len()];
-    if displays.len() == frames.len() {
-        for (slot, &i) in order.iter().enumerate() {
-            out[i] = Some(displays[slot].0);
-        }
-    }
-    out
+    Some(PhysRect { x: l, y: t, width: (r - l) as u32, height: (b - t) as u32 })
+}
+
+/// Pairs each frame with a display (`monitor_placement::pair`): one slot per frame, in order.
+fn match_displays(frames: &[Frame], cx: &App) -> Vec<Slot> {
+    let monitors: Vec<(PhysRect, f32)> = frames.iter().map(|f| (f.monitor.rect, f.monitor.scale)).collect();
+    let screens = crate::placement::screens(cx, &monitors);
+    let rects: Vec<PhysRect> = monitors.iter().map(|m| m.0).collect();
+    crate::presenters::monitor_placement::pair(&rects, &screens)
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -157,16 +150,17 @@ fn is_wayland() -> bool {
 /// `images` holds `render_images(&frames)`, converted before the command reached the GPUI thread.
 pub(crate) fn show(frames: Vec<Frame>, images: Vec<Option<Arc<RenderImage>>>, view: RegionView, on_input: InputCallback, cx: &mut App) {
     close(cx);
-    let display_bounds = match_displays(&frames, cx);
-    let monitors: Vec<MonitorImage> = frames
+    // A frame whose image didn't convert is left out together with its display, so the two stay paired.
+    let (monitors, slots): (Vec<MonitorImage>, Vec<Slot>) = frames
         .iter()
         .zip(images)
-        .filter_map(|(f, image)| Some(MonitorImage { rect: f.monitor.rect, image: image?, bitmap: f.image.clone() }))
-        .collect();
-    let count = monitors.len();
+        .zip(match_displays(&frames, cx))
+        .filter_map(|((f, image), slot)| Some((MonitorImage { rect: f.monitor.rect, image: image?, bitmap: f.image.clone() }, slot)))
+        .unzip();
     let marks = cx.global::<UiState>().services.app.settings().capture_marks;
     let model = cx.new(|_| OverlayModel {
         monitors,
+        slots: slots.clone(),
         view,
         on_input,
         annot: None,
@@ -187,14 +181,13 @@ pub(crate) fn show(frames: Vec<Frame>, images: Vec<Option<Arc<RenderImage>>>, vi
         space: crate::presenters::space_lend::SpaceLend::new(None),
     });
     let mut windows = Vec::new();
-    for index in 0..count {
-        let bounds = display_bounds.get(index).copied().flatten();
-        match open_window(model.clone(), index, bounds, overlay_kind(), cx) {
+    for (index, slot) in slots.iter().copied().enumerate() {
+        match open_window(model.clone(), index, slot, overlay_kind(), cx) {
             Ok(w) => windows.push(w),
             // A compositor without layer-shell (GNOME): fall back to a fullscreen window (ADR 019).
             Err(e) if !matches!(overlay_kind(), WindowKind::PopUp) => {
                 tracing::warn!("overlay layer surface {index} failed ({e:#}); using a fullscreen window");
-                match open_window(model.clone(), index, bounds, WindowKind::PopUp, cx) {
+                match open_window(model.clone(), index, slot, WindowKind::PopUp, cx) {
                     Ok(w) => windows.push(w),
                     Err(e) => tracing::error!("overlay window {index} failed: {e:#}"),
                 }
@@ -214,14 +207,12 @@ pub(crate) fn show(frames: Vec<Frame>, images: Vec<Option<Arc<RenderImage>>>, vi
 fn open_window(
     model: Entity<OverlayModel>,
     index: usize,
-    bounds: Option<Bounds<Pixels>>,
+    slot: Slot,
     kind: WindowKind,
     cx: &mut App,
 ) -> anyhow_like::Result<AnyWindowHandle> {
-    let bounds = bounds.unwrap_or_else(|| {
-        let r = model.read(cx).monitors[index].rect;
-        Bounds { origin: point(px(r.x as f32), px(r.y as f32)), size: size(px(r.width as f32), px(r.height as f32)) }
-    });
+    // A frame with no display keeps its physical rect (`pair` gives it scale 1).
+    let bounds = crate::placement::bounds(slot.logical);
     let wanted_y = matches!(kind, WindowKind::PopUp).then_some(bounds.origin.y);
     // macOS opens the overlay hidden: `NativeWindow::CoverScreen` restyles it and then shows it and
     // gives it the keyboard. Restyling a window that already has the keyboard crashes AppKit later
@@ -236,6 +227,9 @@ fn open_window(
         }),
         focus: shown_at_once,
         show: shown_at_once,
+        // Without its display GPUI checks the bounds against the primary one and, off it, opens a
+        // default-sized window there.
+        display_id: slot.screen.map(crate::placement::display_id),
         kind,
         is_movable: false,
         is_resizable: false,
@@ -247,6 +241,11 @@ fn open_window(
     let handle = cx
         .open_window(options, |window, cx| {
             crate::perf::first_frame("overlay", window);
+            // The window exists but isn't shown yet, so the other program still has the keyboard.
+            if index == 0 {
+                let native = cx.global::<UiState>().services.native_window.clone();
+                native(window, crate::runtime::NativeWindow::RememberForeground);
+            }
             let view = cx.new(|cx| OverlayView::new(model, index, wanted_y, cx));
             // Space let go in another window never comes back as a key-up here: losing activation
             // gives the lent tool back.
@@ -263,6 +262,17 @@ fn open_window(
             });
             let focus = view.read(cx).focus.clone();
             window.focus(&focus, cx);
+            // Alt+F4 or another close request from the OS: end the selection, as Escape does. Removing
+            // only the window would leave the session waiting, and its place in the one-session guard
+            // would refuse every later capture as busy. The session closes the overlay itself.
+            window.on_window_should_close(cx, |window, cx| {
+                let handle = window.window_handle();
+                if !cx.has_global::<UiState>() || !cx.global::<UiState>().overlay.holds(handle) {
+                    return true;
+                }
+                crate::runtime::close_window(handle, cx);
+                false
+            });
             view
         })
         .map_err(|e| anyhow_like::Error(format!("{e:#}")))?;
@@ -344,6 +354,12 @@ pub(crate) fn close(cx: &mut App) {
             tracing::warn!("saving the capture toolbar's colours failed: {e}");
         }
     }
+    // The keyboard goes back to the window that had it before the overlay opened (Windows), while
+    // the overlay still holds the foreground so Windows allows the switch.
+    if let Some(first) = windows.windows.first() {
+        let native = cx.global::<UiState>().services.native_window.clone();
+        let _ = first.update(cx, |_, window, _| native(window, crate::runtime::NativeWindow::RestoreForeground));
+    }
     for w in windows.windows {
         let _ = w.update(cx, |_, window, _| window.remove_window());
     }
@@ -390,7 +406,7 @@ fn wheel_steps(acc: &mut f32, delta: f32) -> i32 {
     steps as i32
 }
 
-const SELECTION: u32 = 0x3d8bfd;
+const SELECTION: u32 = crate::theme::INFO;
 const HOVER: u32 = 0x8ab4f8;
 
 fn color(rgb: u32, alpha: f32) -> Hsla {
@@ -458,10 +474,14 @@ impl Render for OverlayView {
         if let Some(wanted_y) = self.wanted_y.take() {
             crate::popup::observe(window, wanted_y);
         }
-        // Once, when the overlay is on screen: Esc and the tool keys must reach it.
+        // Once, when the overlay is on screen: Esc and the tool keys must reach it. Only the window
+        // under the pointer takes the keyboard; each one raising itself left it on whichever came last.
         if !std::mem::replace(&mut self.raised, true) {
-            let native = cx.global::<UiState>().services.native_window.clone();
-            native(window, crate::runtime::NativeWindow::BringToFront);
+            let m = self.model.read(cx);
+            if self.index == chrome_owner(&m.slots, m.view.cursor, None) {
+                let native = cx.global::<UiState>().services.native_window.clone();
+                native(window, crate::runtime::NativeWindow::BringToFront);
+            }
         }
         let s = window.scale_factor();
         let model = self.model.read(cx);
@@ -610,7 +630,9 @@ impl Render for OverlayView {
             );
         }
 
-        let (cx_phys, cy_phys) = view.cursor;
+        // This window's own pointer, so the magnifier keeps up with the mouse instead of waiting for
+        // the session's cursor to come back; the session's cursor still decides which monitor shows it.
+        let (cx_phys, cy_phys) = self.pointer.filter(|p| contains(origin, *p) && contains(origin, view.cursor)).unwrap_or(view.cursor);
         let cursor_here = cx_phys >= origin.x && cx_phys < origin.right() && cy_phys >= origin.y && cy_phys < origin.bottom();
         if cursor_here && !settled {
             let lx = (cx_phys - origin.x) as f32 / s;
@@ -621,9 +643,11 @@ impl Render for OverlayView {
                     .child(div().absolute().left_0().top(px(ly)).w(px(win_w)).h(px(1.)).bg(line))
                     .child(div().absolute().left(px(lx)).top_0().w(px(1.)).h(px(win_h)).bg(line));
             }
-            root = root.child(magnifier_and_info(view, mon, lx, ly, win_w, win_h, s));
+            root = root.child(magnifier_and_info(view, &model.monitors, (cx_phys, cy_phys), lx, ly, win_w, win_h));
         }
 
+        // The hint and the toolbar go on one monitor: the selection's (or the regions'), else the pointer's.
+        let owner = chrome_owner(&model.slots, view.cursor, view.selected.or_else(|| union(&view.regions)));
         // In-place annotation and the capture toolbar, on the monitor that holds the selection.
         if let Some(sel) = view.selected {
             let to_local = |r: PhysRect| {
@@ -632,7 +656,7 @@ impl Render for OverlayView {
             };
             let (cx_sel, cy_sel) = (sel.x + sel.width as i32 / 2, sel.y + sel.height as i32 / 2);
             let holds = cx_sel >= origin.x && cx_sel < origin.right() && cy_sel >= origin.y && cy_sel < origin.bottom();
-            if holds || (self.index == 0 && !model.monitors.iter().any(|m| contains(m.rect, (cx_sel, cy_sel)))) {
+            if holds || self.index == owner {
                 let sel_l = to_local(sel);
                 let screen = (win_w, win_h);
                 // While the text shows, its bar takes the toolbar's place.
@@ -656,6 +680,12 @@ impl Render for OverlayView {
                         root = root.child(strip);
                     }
                 }
+                // The keys that finish, at the top while the selection and its bars stay clear of it
+                // (no hint over the area being captured, or over a bar placed above it).
+                let clear_of_hint = sel_l.y > 64.0 && at.y > 64.0;
+                if self.index == owner && !view.gesture && model.text.is_none() && !view.mode_bar && clear_of_hint {
+                    root = root.child(crate::overlay_tools::hint(win_w, "Enter captures  ·  Esc cancels"));
+                }
                 // Beside the toolbar, where the eye already is; the mode bar covers the screen's top.
                 if let Some(text) = model.discard_notice() {
                     let (w, h) = (crate::overlay_tools::notice_width(&text), crate::overlay_tools::NOTICE_H);
@@ -667,169 +697,152 @@ impl Render for OverlayView {
             if contains(origin, view.cursor) {
                 root = root.child(crate::overlay_tools::hint(
                     win_w,
-                    "Click to pick a color  ·  Arrow keys move one pixel  ·  Enter picks  ·  Esc closes",
+                    "Click to pick a color  ·  Arrow keys move one pixel  ·  Enter picks  ·  Esc cancels",
                 ));
             }
-        } else if self.index == 0 && view.regions.is_empty() && view.drawing.is_none() && !view.mode_bar {
+        } else if let Some(strip) =
+            view.multi_strip.filter(|s| s.count > 0 && self.index == owner && view.drawing.is_none() && !view.gesture)
+        {
+            // Several regions (multi-region mode): nothing is selected, so no capture toolbar. The
+            // strip finishes the selection with the mouse; Enter and Esc still work.
+            root = root.child(crate::overlay_tools::multi_strip(
+                &self.model,
+                win_w,
+                crate::overlay_tools::multi_strip_top(view.mode_bar),
+                strip,
+            ));
+        } else if self.index == owner && view.regions.is_empty() && view.drawing.is_none() && !view.mode_bar {
             root = root.child(crate::overlay_tools::hint(
                 win_w,
                 if view.text_only {
-                    "Drag over the text you want  ·  Click a window to read all of it  ·  Esc to close"
+                    "Drag over the text you want  ·  Click a window to read all of it  ·  Esc cancels"
                 } else {
-                    "Drag to select, or click a window or a part of one  ·  Scroll to grow  ·  Esc to cancel"
+                    "Drag to select, or click a window or a part of one  ·  Scroll to grow  ·  Esc cancels"
                 },
             ));
         }
         // The mode bar sits at the top of the monitor under the pointer (the first one otherwise).
-        let pointer_here = contains(origin, view.cursor);
-        let pointer_anywhere = model.monitors.iter().any(|m| contains(m.rect, view.cursor));
         // It steps aside while a rectangle is being drawn, so it never covers the selection.
-        if view.mode_bar && view.drawing.is_none() && (pointer_here || (self.index == 0 && !pointer_anywhere)) {
+        if view.mode_bar && view.drawing.is_none() && self.index == chrome_owner(&model.slots, view.cursor, None) {
             root = root.child(crate::overlay_tools::mode_bar(&self.model, win_w, cx));
             if view.regions.is_empty() && view.selected.is_none() {
                 root = root.child(crate::overlay_tools::mode_hint(win_w));
             }
         }
 
-        // Every press goes where `capture_pointer::route` says, and its moves and release follow it.
-        root.on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
-            let (x, y) = this.to_phys(ev.position, window, cx);
-            this.model.update(cx, |m, _| m.set_grab_scale(window.scale_factor()));
-            let before = this.pointer_shape(this.model.read(cx));
-            this.alt = ev.modifiers.alt;
-            this.pointer = Some((x, y));
-            if this.pointer_shape(this.model.read(cx)) != before {
-                cx.notify();
-            }
-            this.send(RegionInput::PointerMove { x, y }, cx);
-            if this.model.update(cx, |m, _| m.hover((x, y))) {
-                cx.notify();
-            }
-            // A drag over the text picks words, wherever the pointer goes.
-            if this.model.update(cx, |m, cx| m.text_drag(x, y, cx)) {
-                return;
-            }
-            // The engine follows its own drags, and the hover while a tool is out.
-            let to_editor = match this.model.read(cx).pressed {
-                Some(route) => route == Route::Editor,
-                None => this.model.read(cx).tool.is_some(),
-            };
-            if to_editor && let Some((ix, iy)) = this.model.read(cx).canvas_point(x, y) {
-                let mods = crate::editor_window::mods(&ev.modifiers);
-                this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerMove { x: ix, y: iy, mods }, cx));
-            }
-        }))
-        .on_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| {
-            let (x, y) = this.to_phys(ev.position, window, cx);
-            let Some(pressed) = button(ev.button) else { return };
-            // Another button mid-drag keeps the drag's route. A selection drag still hands it to the
-            // session, where a right or middle click cancels the gesture. The same button again
-            // means its release was lost (outside the overlay), so this press starts afresh.
-            let m = this.model.read(cx);
-            if m.finishing {
-                return;
-            }
-            if m.pressed_button.is_some_and(|b| b != ev.button) {
-                if m.pressed == Some(Route::Session) {
-                    this.send(RegionInput::PointerDown { x, y, button: pressed }, cx);
-                }
-                return;
-            }
-            let mut scene = this.model.read(cx).pointer_scene((x, y), true);
-            scene.frame_only = ev.modifiers.alt;
-            let route = capture_pointer::route(&scene, (x, y), pressed);
-            // A press the overlay sees is not on a bar: a bar press whose release never came back
-            // can't swallow this one's release and leave the drag running.
-            this.model.update(cx, |m, _| {
-                m.pressed = Some(route);
-                m.pressed_button = Some(ev.button);
-                m.chrome_press = None;
-            });
-            match route {
-                Route::Text => {
-                    if let Some(at) = this.model.read(cx).text_point(x, y) {
-                        let (extend, clicks) = (ev.modifiers.shift, ev.click_count);
-                        this.model.update(cx, |m, cx| m.text_press(at, extend, clicks, cx));
-                    }
-                }
-                Route::Editor => {
-                    if let (Some((ix, iy)), Some(button)) =
-                        (this.model.read(cx).canvas_point(x, y), crate::editor_window::button(ev.button))
-                    {
-                        let mods = crate::editor_window::mods(&ev.modifiers);
-                        this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerDown { x: ix, y: iy, button, mods }, cx));
-                    }
-                }
-                Route::Session => {
-                    let alt = ev.modifiers.alt;
-                    this.model.update(cx, |m, cx| {
-                        m.frame_only = alt;
-                        m.let_go_of_mark(cx);
+        // While a button is held the platform keeps sending this window the pointer's moves and its
+        // release even past the window's edge (onto another monitor), but GPUI hands an element only
+        // the events over it. These listeners take the ones outside, so a drag across monitors goes on
+        // and its release is never lost.
+        let me = cx.entity().downgrade();
+        root = root.child(
+            gpui::canvas(
+                |_, _, _| {},
+                move |_, _, window, _| {
+                    let moves = me.clone();
+                    window.on_mouse_event(move |ev: &MouseMoveEvent, phase, window, cx| {
+                        if phase == gpui::DispatchPhase::Bubble && !in_window(window, ev.position) {
+                            let _ = moves.update(cx, |this, cx| {
+                                if this.model.read(cx).pressed_button.is_some() {
+                                    this.mouse_moved(ev, window, cx);
+                                }
+                            });
+                        }
                     });
-                    this.send(RegionInput::PointerDown { x, y, button: pressed }, cx);
+                    let ups = me.clone();
+                    window.on_mouse_event(move |ev: &MouseUpEvent, phase, window, cx| {
+                        if phase == gpui::DispatchPhase::Capture && !in_window(window, ev.position) {
+                            let _ = ups.update(cx, |this, cx| {
+                                if this.model.read(cx).pressed_button.is_some() {
+                                    this.mouse_released(ev, window, cx);
+                                }
+                            });
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .size_full(),
+        );
+
+        // Every press goes where `capture_pointer::route` says, and its moves and release follow it.
+        root.on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| this.mouse_moved(ev, window, cx)))
+            .on_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                let (x, y) = this.to_phys(ev.position, window, cx);
+                let Some(pressed) = button(ev.button) else { return };
+                // Another button mid-drag keeps the drag's route. A selection drag still hands it to the
+                // session, where a right or middle click cancels the gesture. The same button again
+                // means its release was lost (outside the overlay), so this press starts afresh.
+                let m = this.model.read(cx);
+                if m.finishing {
+                    return;
                 }
-                Route::Ignore => {}
-            }
-        }))
-        .capture_any_mouse_up(cx.listener(|this, ev: &MouseUpEvent, window, cx| {
-            if this.model.update(cx, |m, _| m.chrome_press.take_if(|b| *b == ev.button).is_some()) {
-                return;
-            }
-            if this.model.read(cx).pressed_button.is_some_and(|b| b != ev.button) {
-                return;
-            }
-            let (x, y) = this.to_phys(ev.position, window, cx);
-            let route = this.model.update(cx, |m, _| {
-                m.pressed_button = None;
-                m.pressed.take()
-            });
-            if ev.button == MouseButton::Left && this.model.update(cx, |m, cx| m.text_release(cx)) {
-                return;
-            }
-            match route {
-                Some(Route::Editor) => {
-                    if let (Some((ix, iy)), Some(button)) =
-                        (this.model.read(cx).canvas_point(x, y), crate::editor_window::button(ev.button))
-                    {
-                        let mods = crate::editor_window::mods(&ev.modifiers);
-                        this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerUp { x: ix, y: iy, button, mods }, cx));
+                if m.pressed_button.is_some_and(|b| b != ev.button) {
+                    if m.pressed == Some(Route::Session) {
+                        this.send(RegionInput::PointerDown { x, y, button: pressed }, cx);
                     }
+                    return;
                 }
-                Some(Route::Ignore | Route::Text) => {}
-                // A release with no press seen (it began outside the overlay) still ends the gesture.
-                Some(Route::Session) | None => {
-                    if let Some(button) = button(ev.button) {
-                        this.send(RegionInput::PointerUp { x, y, button }, cx);
+                let mut scene = this.model.read(cx).pointer_scene((x, y), true);
+                scene.frame_only = ev.modifiers.alt;
+                let route = capture_pointer::route(&scene, (x, y), pressed);
+                // A press the overlay sees is not on a bar: a bar press whose release never came back
+                // can't swallow this one's release and leave the drag running.
+                this.model.update(cx, |m, _| {
+                    m.pressed = Some(route);
+                    m.pressed_button = Some(ev.button);
+                    m.chrome_press = None;
+                });
+                match route {
+                    Route::Text => {
+                        if let Some(at) = this.model.read(cx).text_point(x, y) {
+                            let (extend, clicks) = (ev.modifiers.shift, ev.click_count);
+                            this.model.update(cx, |m, cx| m.text_press(at, extend, clicks, cx));
+                        }
                     }
+                    Route::Editor => {
+                        if let (Some((ix, iy)), Some(button)) =
+                            (this.model.read(cx).canvas_point(x, y), crate::editor_window::button(ev.button))
+                        {
+                            let mods = crate::editor_window::mods(&ev.modifiers);
+                            this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerDown { x: ix, y: iy, button, mods }, cx));
+                        }
+                    }
+                    Route::Session => {
+                        let alt = ev.modifiers.alt;
+                        this.model.update(cx, |m, cx| {
+                            m.frame_only = alt;
+                            m.let_go_of_mark(cx);
+                        });
+                        this.send(RegionInput::PointerDown { x, y, button: pressed }, cx);
+                    }
+                    Route::Ignore => {}
                 }
-            }
-            // Space came up during the drag: the drawing tool comes back now it is over.
-            this.model.update(cx, |m, cx| m.after_release(cx));
-            cx.notify();
-        }))
-        // Scrolling up grows the hover to the enclosing region, down shrinks it back.
-        .on_scroll(cx.listener(|this, ev: &ScrollEvent, _, cx| {
-            let notches = match ev.delta {
-                ScrollDelta::Lines(d) => d.y,
-                ScrollDelta::Pixels(d) => f32::from(d.y) / PIXELS_PER_NOTCH,
-            };
-            let steps = wheel_steps(&mut this.wheel, notches);
-            if steps != 0 {
-                this.send(RegionInput::Wheel(steps), cx);
-            }
-        }))
-        .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| this.key(ev, cx)))
-        .on_modifiers_changed(cx.listener(|this, ev: &gpui::ModifiersChangedEvent, _, cx| {
-            if this.alt != ev.modifiers.alt {
-                this.alt = ev.modifiers.alt;
-                cx.notify();
-            }
-        }))
-        .on_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| {
-            if ev.keystroke.key == "space" {
-                this.model.update(cx, |m, cx| m.return_pointer(cx));
-            }
-        }))
+            }))
+            .capture_any_mouse_up(cx.listener(|this, ev: &MouseUpEvent, window, cx| this.mouse_released(ev, window, cx)))
+            // Scrolling up grows the hover to the enclosing region, down shrinks it back.
+            .on_scroll(cx.listener(|this, ev: &ScrollEvent, _, cx| {
+                let notches = match ev.delta {
+                    ScrollDelta::Lines(d) => d.y,
+                    ScrollDelta::Pixels(d) => f32::from(d.y) / PIXELS_PER_NOTCH,
+                };
+                let steps = wheel_steps(&mut this.wheel, notches);
+                if steps != 0 {
+                    this.send(RegionInput::Wheel(steps), cx);
+                }
+            }))
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| this.key(ev, cx)))
+            .on_modifiers_changed(cx.listener(|this, ev: &gpui::ModifiersChangedEvent, _, cx| {
+                if this.alt != ev.modifiers.alt {
+                    this.alt = ev.modifiers.alt;
+                    cx.notify();
+                }
+            }))
+            .on_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| {
+                if ev.keystroke.key == "space" {
+                    this.model.update(cx, |m, cx| m.return_pointer(cx));
+                }
+            }))
     }
 }
 
@@ -846,6 +859,71 @@ fn outset(l: Local, by: f32) -> Local {
 }
 
 impl OverlayView {
+    fn mouse_moved(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let this = self;
+        let (x, y) = this.to_phys(ev.position, window, cx);
+        this.model.update(cx, |m, _| m.set_grab_scale(window.scale_factor()));
+        let before = this.pointer_shape(this.model.read(cx));
+        this.alt = ev.modifiers.alt;
+        this.pointer = Some((x, y));
+        if this.pointer_shape(this.model.read(cx)) != before || this.model.read(cx).view.magnifier.is_some() {
+            cx.notify();
+        }
+        this.send(RegionInput::PointerMove { x, y }, cx);
+        if this.model.update(cx, |m, _| m.hover((x, y))) {
+            cx.notify();
+        }
+        // A drag over the text picks words, wherever the pointer goes.
+        if this.model.update(cx, |m, cx| m.text_drag(x, y, cx)) {
+            return;
+        }
+        // The engine follows its own drags, and the hover while a tool is out.
+        let to_editor = match this.model.read(cx).pressed {
+            Some(route) => route == Route::Editor,
+            None => this.model.read(cx).tool.is_some(),
+        };
+        if to_editor && let Some((ix, iy)) = this.model.read(cx).canvas_point(x, y) {
+            let mods = crate::editor_window::mods(&ev.modifiers);
+            this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerMove { x: ix, y: iy, mods }, cx));
+        }
+    }
+
+    fn mouse_released(&mut self, ev: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let this = self;
+        if this.model.update(cx, |m, _| m.chrome_press.take_if(|b| *b == ev.button).is_some()) {
+            return;
+        }
+        if this.model.read(cx).pressed_button.is_some_and(|b| b != ev.button) {
+            return;
+        }
+        let (x, y) = this.to_phys(ev.position, window, cx);
+        let route = this.model.update(cx, |m, _| {
+            m.pressed_button = None;
+            m.pressed.take()
+        });
+        if ev.button == MouseButton::Left && this.model.update(cx, |m, cx| m.text_release(cx)) {
+            return;
+        }
+        match route {
+            Some(Route::Editor) => {
+                if let (Some((ix, iy)), Some(button)) = (this.model.read(cx).canvas_point(x, y), crate::editor_window::button(ev.button)) {
+                    let mods = crate::editor_window::mods(&ev.modifiers);
+                    this.model.update(cx, |m, cx| m.editor_input(EditorInput::PointerUp { x: ix, y: iy, button, mods }, cx));
+                }
+            }
+            Some(Route::Ignore | Route::Text) => {}
+            // A release with no press seen (it began outside the overlay) still ends the gesture.
+            Some(Route::Session) | None => {
+                if let Some(button) = button(ev.button) {
+                    this.send(RegionInput::PointerUp { x, y, button }, cx);
+                }
+            }
+        }
+        // Space came up during the drag: the drawing tool comes back now it is over.
+        this.model.update(cx, |m, cx| m.after_release(cx));
+        cx.notify();
+    }
+
     /// The pointer shape at this window's pointer, or at the session's cursor for a window the
     /// pointer is not over (a resize shows its arrow on every monitor).
     fn pointer_shape(&self, model: &OverlayModel) -> Pointer {
@@ -980,8 +1058,7 @@ const CARD_W: f32 = 168.0;
 
 /// The magnifier and the pixel info as one card beside the cursor: a zoomed grid with faint
 /// pixel lines and the centre pixel marked, then the coordinates and colour with a swatch.
-fn magnifier_and_info(view: &RegionView, mon: &MonitorImage, lx: f32, ly: f32, win_w: f32, win_h: f32, scale: f32) -> Div {
-    let _ = scale;
+fn magnifier_and_info(view: &RegionView, monitors: &[MonitorImage], at: (i32, i32), lx: f32, ly: f32, win_w: f32, win_h: f32) -> Div {
     let mut card = div()
         .flex()
         .flex_col()
@@ -1003,7 +1080,8 @@ fn magnifier_and_info(view: &RegionView, mon: &MonitorImage, lx: f32, ly: f32, w
         let mut grid = div().relative().w(px(gw)).h(px(gh));
         for row in 0..n_h {
             for col in 0..n_w {
-                let c = sample(&mon.bitmap, m.x + col as i32 - mon.rect.x, m.y + row as i32 - mon.rect.y);
+                // Centred on `at`; a pixel past this monitor's edge comes from the monitor next to it.
+                let c = sample_at(monitors, at.0 - (n_w / 2) as i32 + col as i32, at.1 - (n_h / 2) as i32 + row as i32);
                 if row == n_h / 2 && col == n_w / 2 {
                     centre = c;
                 }
@@ -1014,7 +1092,7 @@ fn magnifier_and_info(view: &RegionView, mon: &MonitorImage, lx: f32, ly: f32, w
         }
         // Faint pixel lines through the centre row and column, then the centre pixel's frame.
         let (mx, my) = ((n_w / 2) as f32 * cell, (n_h / 2) as f32 * cell);
-        let guide = color(0x3d8bfd, 0.25);
+        let guide = color(SELECTION, 0.25);
         grid = grid
             .child(div().absolute().left_0().top(px(my)).w(px(gw)).h(px(cell)).bg(guide))
             .child(div().absolute().left(px(mx)).top_0().w(px(cell)).h(px(gh)).bg(guide))
@@ -1025,7 +1103,14 @@ fn magnifier_and_info(view: &RegionView, mon: &MonitorImage, lx: f32, ly: f32, w
         card = card.child(grid);
     }
     if let Some(info) = &view.info_text {
-        let mut text = div().flex().flex_col().gap(px(1.)).px(px(8.)).py(px(6.)).text_color(color(0xffffff, 0.92)).text_size(px(11.5));
+        let mut text = div()
+            .flex()
+            .flex_col()
+            .gap(px(1.))
+            .px(px(8.))
+            .py(px(6.))
+            .text_color(color(0xffffff, 0.92))
+            .text_size(crate::theme::text::CAPTION);
         for line in info.lines() {
             text = text.child(div().child(line.to_string()));
         }
@@ -1047,6 +1132,11 @@ fn magnifier_and_info(view: &RegionView, mon: &MonitorImage, lx: f32, ly: f32, w
     let x = if lx + gap + width > win_w { lx - gap - width } else { lx + gap };
     let y = if ly + gap + height > win_h { ly - gap - height } else { ly + gap };
     div().absolute().left(px(x.max(4.0))).top(px(y.max(4.0))).child(card)
+}
+
+/// 0xRRGGBB of the desktop pixel at a physical point, from whichever monitor holds it; black off every one.
+fn sample_at(monitors: &[MonitorImage], x: i32, y: i32) -> u32 {
+    monitors.iter().find(|m| contains(m.rect, (x, y))).map_or(0, |m| sample(&m.bitmap, x - m.rect.x, y - m.rect.y))
 }
 
 /// 0xRRGGBB of a pixel; black outside the bitmap.

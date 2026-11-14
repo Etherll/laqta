@@ -126,7 +126,7 @@ struct EffectsWindow {
     preview: Option<Arc<RenderImage>>,
     show_original: bool,
     /// A message and whether it is good news.
-    message: Option<(String, bool)>,
+    flash: crate::flash::Flash,
 }
 
 /// A checkerboard-and-gradient sample, used until the user opens an image.
@@ -164,7 +164,18 @@ fn category_of(e: &Effect) -> &'static str {
     }
 }
 
+impl crate::flash::HasFlash for EffectsWindow {
+    fn flash(&mut self) -> &mut crate::flash::Flash {
+        &mut self.flash
+    }
+}
+
 impl EffectsWindow {
+    /// The footer line: a passing note when `ok`, else a failure that stays until dismissed.
+    fn say(&mut self, (msg, ok): (String, bool), cx: &mut Context<Self>) {
+        if ok { crate::flash::Flash::show(self, msg, cx) } else { crate::flash::Flash::fail(self, msg, cx) }
+    }
+
     fn new(path: Option<PathBuf>, opened: Option<(Bitmap, Option<Arc<RenderImage>>)>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let services = cx.global::<UiState>().services.clone();
         let settings = services.app.settings();
@@ -234,7 +245,7 @@ impl EffectsWindow {
             original,
             preview: None,
             show_original: false,
-            message: None,
+            flash: Default::default(),
         };
         if !this.presets[0].effects.is_empty() {
             this.select_effect(0, window, cx);
@@ -337,10 +348,10 @@ impl EffectsWindow {
                 if let Some(item) = self.preset().effects.get_mut(i) {
                     item.effect = changed;
                 }
-                self.message = None;
+                crate::flash::Flash::dismiss(self, cx);
                 self.render_preview(cx);
             }
-            None => self.message = Some((format!("{} can't take that value.", ui.field.label), false)),
+            None => self.say((format!("{} can't take that value.", ui.field.label), false), cx),
         }
         cx.notify();
     }
@@ -353,10 +364,10 @@ impl EffectsWindow {
                 if let Some(item) = self.preset().effects.get_mut(i) {
                     item.effect = e;
                 }
-                self.message = None;
+                crate::flash::Flash::dismiss(self, cx);
                 self.render_preview(cx);
             }
-            Err(e) => self.message = Some((format!("JSON: {e}"), false)),
+            Err(e) => self.say((crate::presenters::notice::failure_line("The JSON isn't valid", &e.to_string()), false), cx),
         }
         cx.notify();
     }
@@ -410,7 +421,7 @@ impl EffectsWindow {
                 match result {
                     Ok(img) => this.preview = crate::toast::render_image(&img),
                     Err(laqta_ports::AppError::Cancelled) => {}
-                    Err(e) => this.message = Some((format!("Preview: {e}"), false)),
+                    Err(e) => this.say((crate::presenters::notice::failure_line("Couldn't draw the preview", &e.to_string()), false), cx),
                 }
                 cx.notify();
             });
@@ -449,13 +460,14 @@ impl EffectsWindow {
         let mut settings = services.app.settings();
         settings.effect_presets = self.presets.clone();
         settings.defaults.effect_preset = self.after_capture.clone();
-        self.message = Some(match (services.save_settings)(settings) {
+        let said = match (services.save_settings)(settings) {
             Ok(()) => {
                 self.saved = (self.presets.clone(), self.after_capture.clone());
                 ("Presets saved.".into(), true)
             }
-            Err(e) => (format!("Couldn't save: {e}"), false),
-        });
+            Err(e) => (crate::presenters::notice::failure_line("Couldn't save the effects", &e.to_string()), false),
+        };
+        self.say(said, cx);
         cx.notify();
     }
 
@@ -471,7 +483,7 @@ impl EffectsWindow {
             let _ = this.update(cx, |this, cx| {
                 match r {
                     Ok(Some(preset)) => {
-                        this.message = Some((format!("Imported \"{}\". Save to keep it.", preset.name), true));
+                        this.say((format!("Imported \"{}\". Save to keep it.", preset.name), true), cx);
                         this.presets.retain(|p| p.name != preset.name);
                         this.presets.push(preset);
                         this.selected = this.presets.len() - 1;
@@ -479,7 +491,7 @@ impl EffectsWindow {
                         this.render_preview(cx);
                     }
                     Ok(None) => {}
-                    Err(e) => this.message = Some((format!("Import failed: {e}"), false)),
+                    Err(e) => this.say((crate::presenters::notice::failure_line("Couldn't import the effect", &e.to_string()), false), cx),
                 }
                 cx.notify();
             });
@@ -502,9 +514,9 @@ impl EffectsWindow {
             let r = task.await;
             let _ = this.update(cx, |this, cx| {
                 match r {
-                    Ok(Some(path)) => this.message = Some((format!("Exported to {path}."), true)),
+                    Ok(Some(path)) => this.say((format!("Exported to {path}."), true), cx),
                     Ok(None) => {}
-                    Err(e) => this.message = Some((format!("Export failed: {e}"), false)),
+                    Err(e) => this.say((crate::presenters::notice::failure_line("Couldn't export the effect", &e.to_string()), false), cx),
                 }
                 cx.notify();
             });
@@ -699,7 +711,11 @@ impl EffectsWindow {
                 cx,
             )
         };
-        let mut actions = div().flex().items_center().opacity(if selected { 1. } else { 0. }).group_hover(group.clone(), |s| s.opacity(1.));
+        let mut actions = div()
+            .flex()
+            .items_center()
+            .opacity(if selected { 1. } else { crate::theme::QUIET_OPACITY })
+            .group_hover(group.clone(), |s| s.opacity(1.));
         if i > 0 {
             actions = actions.child(small(
                 format!("fx-up-{i}"),
@@ -1152,8 +1168,9 @@ impl Render for EffectsWindow {
         let pane = self.pane(cx);
         let preview = self.preview_pane(cx);
 
-        let status = match (&self.message, self.dirty()) {
-            (Some((m, ok)), _) => widgets::notice(m.clone(), *ok, cx).flex_1().min_w_0().truncate(),
+        let line = self.flash.render(cx.listener(|this, _, _, cx| crate::flash::Flash::dismiss(this, cx)), cx);
+        let status = match (line, self.dirty()) {
+            (Some(line), _) => div().flex_1().min_w_0().child(line),
             (None, true) => div()
                 .flex_1()
                 .flex()

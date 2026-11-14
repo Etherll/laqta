@@ -11,10 +11,26 @@ use laqta_domain::Action;
 
 /// Blanks `window`, and once the blank frame is drawn, takes it off the screen and dispatches
 /// `action`. Where the platform can remove the window without an animation it does (Windows);
-/// elsewhere the window is minimized. On macOS nothing is hidden.
+/// elsewhere the window is minimized. On macOS nothing is hidden, and nothing is hidden anywhere
+/// when the capture includes Laqta's own windows: the setting of the workflow `action` runs under,
+/// which is the one its capture reads.
 pub(crate) fn then_dispatch(action: Action, dispatch: Arc<dyn Fn(Action) + Send + Sync>, window: &mut Window, cx: &mut App) {
-    // macOS captures leave Laqta's own windows out (ADR 030), so the window stays where it is.
-    if cfg!(target_os = "macos") {
+    let include_own_windows = cx.try_global::<crate::runtime::UiState>().is_some_and(|state| {
+        let settings = state.services.app.settings();
+        settings.task_settings(settings.workflow_for_action(action).map(|w| w.id)).capture.include_own_windows
+    });
+    dispatch_for(include_own_windows, action, dispatch, window, cx);
+}
+
+/// Whether the window leaves the screen before a capture starts. macOS captures leave Laqta's own
+/// windows out (ADR 030), so the window stays where it is; and when the capture includes them it
+/// must stay on any platform.
+fn hides_before_capture(include_own_windows: bool) -> bool {
+    !include_own_windows && !cfg!(target_os = "macos")
+}
+
+fn dispatch_for(include_own_windows: bool, action: Action, dispatch: Arc<dyn Fn(Action) + Send + Sync>, window: &mut Window, cx: &mut App) {
+    if !hides_before_capture(include_own_windows) {
         dispatch(action);
         return;
     }
@@ -57,6 +73,39 @@ mod tests {
     impl Render for Probe {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div()
+        }
+    }
+
+    fn counting(counter: &Arc<AtomicUsize>) -> Arc<dyn Fn(Action) + Send + Sync> {
+        let counter = counter.clone();
+        Arc::new(move |_| _ = counter.fetch_add(1, Ordering::SeqCst))
+    }
+
+    #[test]
+    fn including_own_windows_never_hides() {
+        assert!(!hides_before_capture(true));
+        assert_eq!(hides_before_capture(false), !cfg!(target_os = "macos"));
+    }
+
+    #[gpui::test]
+    fn the_window_stays_up_when_captures_include_it_and_hides_when_they_do_not(cx: &mut TestAppContext) {
+        let (_, vcx) = cx.add_window_view(|window, cx| {
+            restore_on_activation(window, cx).detach();
+            Probe
+        });
+        let dispatched = Arc::new(AtomicUsize::new(0));
+
+        vcx.update(|window, cx| dispatch_for(true, Action::RectangleRegion, counting(&dispatched), window, cx));
+        assert_eq!(dispatched.load(Ordering::SeqCst), 1, "the capture starts at once");
+        assert!(!vcx.update(|window, cx| is_window_blank(window, cx)), "the window is left as it is");
+
+        vcx.update(|window, cx| dispatch_for(false, Action::RectangleRegion, counting(&dispatched), window, cx));
+        if cfg!(target_os = "macos") {
+            assert_eq!(dispatched.load(Ordering::SeqCst), 2, "macOS never hides the window");
+            assert!(!vcx.update(|window, cx| is_window_blank(window, cx)));
+        } else {
+            assert_eq!(dispatched.load(Ordering::SeqCst), 1, "the capture waits for the blank frame");
+            assert!(vcx.update(|window, cx| is_window_blank(window, cx)), "the window is blanked before it hides");
         }
     }
 

@@ -19,6 +19,9 @@ pub enum CodecError {
     Unknown,
     #[error("encode: {0}")]
     Encode(String),
+    /// The format stores each side in 16 bits (JPEG, GIF) and the image has a side over 65535 pixels.
+    #[error("{width}x{height} exceeds 65535 pixels per side")]
+    TooLarge { width: u32, height: u32 },
     #[error("decode: {0}")]
     Decode(String),
 }
@@ -144,8 +147,10 @@ fn encode_jpeg(img: &Bitmap, quality: u8) -> Result<Vec<u8>, CodecError> {
         PixelFormat::Rgba8 => jpeg_encoder::ColorType::Rgba,
         PixelFormat::Bgra8 => jpeg_encoder::ColorType::Bgra,
     };
+    // JPEG has no alpha: transparent pixels go onto white, not onto whatever colour they hold.
+    let flat = crate::ops::flatten_alpha(img, [255, 255, 255]);
     let mut out = Vec::new();
-    jpeg_encoder::Encoder::new(&mut out, quality.clamp(1, 100)).encode(img.pixels(), w, h, color).map_err(enc_err)?;
+    jpeg_encoder::Encoder::new(&mut out, quality.clamp(1, 100)).encode(flat.pixels(), w, h, color).map_err(enc_err)?;
     Ok(out)
 }
 
@@ -286,7 +291,7 @@ fn dims16(img: &Bitmap) -> Result<(u16, u16), CodecError> {
     if img.width() == 0 || img.height() == 0 {
         return Err(CodecError::Encode("empty image".into()));
     }
-    let too_big = || CodecError::Encode(format!("{}x{} exceeds 65535 pixels per side", img.width(), img.height()));
+    let too_big = || CodecError::TooLarge { width: img.width(), height: img.height() };
     let w = u16::try_from(img.width()).map_err(|_| too_big())?;
     let h = u16::try_from(img.height()).map_err(|_| too_big())?;
     Ok((w, h))
@@ -425,6 +430,28 @@ mod tests {
             for format in ImageFormat::ALL {
                 assert_eq!(encode(&rgba, format), encode(&bgra, format), "{format:?}");
             }
+        });
+    }
+
+    #[test]
+    fn jpeg_and_gif_over_65535_pixels_are_too_large() {
+        let tall = Bitmap::new(1, 65_536, PixelFormat::Rgba8, vec![255; 4 * 65_536].into()).unwrap();
+        pool().install(|| {
+            for format in [ImageFormat::Jpeg, ImageFormat::Gif] {
+                let error = Codecs::builtin().encode(&tall, &opts(format)).unwrap_err();
+                assert!(matches!(error, CodecError::TooLarge { width: 1, height: 65_536 }), "{format:?}: {error}");
+            }
+            assert!(Codecs::builtin().encode(&tall, &opts(ImageFormat::Png)).is_ok());
+        });
+    }
+
+    #[test]
+    fn jpeg_puts_transparent_pixels_on_white() {
+        let clear = Bitmap::new(8, 8, PixelFormat::Rgba8, vec![0; 4 * 64].into()).unwrap();
+        pool().install(|| {
+            let codecs = Codecs::builtin();
+            let out = codecs.decode(&codecs.encode(&clear, &opts(ImageFormat::Jpeg)).unwrap()).unwrap();
+            assert!(out.pixels().as_chunks::<4>().0.iter().all(|p| p[..3].iter().all(|c| *c >= 250)));
         });
     }
 

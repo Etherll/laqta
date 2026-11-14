@@ -6,9 +6,11 @@
 //! One recording runs at a time. Its slot is claimed before the area is chosen, so a second start stops the
 //! recording instead of starting another one.
 //!
-//! After the claim, every start ends in a `RecordingFailed` or a `RecordingStarted`, and the slot is always freed. A
-//! stop or abort that arrives while the area is chosen or the stream opens (a portal dialog nobody answers) cancels
-//! that step instead of waiting for it.
+//! After the claim, every start ends in a `RecordingFailed` or a running recording, and the slot is always freed.
+//! `RecordingStarted` comes as soon as the countdown is over, before the stream opens: it is the event that closes the
+//! countdown window, which must be gone before anything is captured. A start that fails after it ends in
+//! `RecordingFailed`. A stop or abort that arrives while the area is chosen or the stream opens (a portal dialog nobody
+//! answers) cancels that step instead of waiting for it.
 
 mod drive;
 
@@ -23,7 +25,7 @@ use futures_lite::{FutureExt, StreamExt, future};
 use laqta_domain::geometry::PhysRect;
 use laqta_domain::record::{AudioDevice, RecordSpec};
 use laqta_domain::workflow::{TaskSettings, ToastOptions};
-use laqta_ports::{AppError, RecordingHandle, TaskEvent, TaskId, Toast};
+use laqta_ports::{AppError, PortError, RecordingHandle, TaskEvent, TaskId, Toast};
 
 use crate::dispatcher::{App, Dispatched};
 use crate::files;
@@ -181,12 +183,15 @@ impl App {
             return Ok(None);
         }
         for seconds_left in (1..=ts.recording.countdown_secs).rev() {
-            self.emit(TaskEvent::RecordingCountdown { id, seconds_left });
+            self.emit(TaskEvent::RecordingCountdown { id, seconds_left, area: rect });
             self.ports.clock.sleep(SECOND).await;
             if stop_requested(&mut commands) {
                 return Ok(None);
             }
         }
+        // This closes the countdown window, so it goes before the stream opens: the countdown must be gone before the
+        // first frame is captured.
+        self.emit(TaskEvent::RecordingStarted { id, area: rect, show_border: ts.recording.show_border });
         // The output is prepared before the stream opens, so no error path below drops an open stream.
         let dir = self.settings.get().screenshots_dir_for(&ts);
         let output = self.task.recording_output(&ts, &dir, (rect.width, rect.height), codec.extension()).await?;
@@ -197,14 +202,39 @@ impl App {
         }
         let opened = unless_stopped(&mut commands, async {
             let devices = self.audio_devices(&ts).await;
-            let input = self.ports.stream.open(rect, ts.recording.show_cursor, fps, &devices).await.map_err(AppError::from)?;
-            Ok::<_, AppError>((devices, input))
+            let mut clipped = None;
+            let input = match self.ports.stream.open(rect, ts.recording.show_cursor, fps, &devices).await {
+                // A stream that cannot take an area over several monitors says so: the part on the monitor that holds
+                // most of it is recorded instead, and the user is told.
+                Err(PortError::Unsupported(why)) => {
+                    let Some(part) = self.largest_monitor_part(rect).await.filter(|part| *part != rect) else {
+                        return Err(AppError::from(PortError::Unsupported(why)));
+                    };
+                    let part = even(part)?;
+                    let input = self.ports.stream.open(part, ts.recording.show_cursor, fps, &devices).await.map_err(AppError::from)?;
+                    clipped = Some(part);
+                    input
+                }
+                other => other.map_err(AppError::from)?,
+            };
+            Ok::<_, AppError>((devices, input, clipped))
         })
         .await;
         let Some(opened) = opened else {
             return Ok(None);
         };
-        let (devices, input) = opened?;
+        let (devices, input, clipped) = opened?;
+        let rect = match clipped {
+            Some(part) => {
+                self.emit(TaskEvent::StepFailed {
+                    id,
+                    step: "recording area",
+                    reason: "The area spans more than one monitor, so only the part on the largest one is recorded.".to_owned(),
+                });
+                part
+            }
+            None => rect,
+        };
         if stop_requested(&mut commands) {
             // Closing a stream blocks (PipeWire, the portal), so it is dropped off the async worker.
             self.ports.spawner.run_blocking(Box::new(move || drop(input))).await;
@@ -219,6 +249,8 @@ impl App {
             audio: devices,
             custom_args: ts.recording.custom_args.clone(),
             camera: self.camera(&ts).await,
+            gif_max_width: ts.recording.gif_max_width,
+            backend: ts.recording.backend,
         };
         let handle = self.ports.media.start(input, spec, output.clone()).await.map_err(AppError::from)?;
         if stop_requested(&mut commands) {
@@ -226,7 +258,6 @@ impl App {
             let _ = handle.abort().await;
             return Ok(None);
         }
-        self.emit(TaskEvent::RecordingStarted { id, area: rect });
         *self.last_recording_area.lock().unwrap_or_else(PoisonError::into_inner) = Some(rect);
         let fixed_secs = ts.recording.fixed_duration_secs;
         Ok(Some(Live { handle, output, commands, ts, fixed_secs }))
@@ -252,6 +283,13 @@ impl App {
             }
         };
         even(rect)
+    }
+
+    /// `area` clipped to the monitor it overlaps most. `None` when the monitors cannot be listed or none overlaps it.
+    async fn largest_monitor_part(&self, area: PhysRect) -> Option<PhysRect> {
+        let frames = self.ports.screen.capture_all().await.ok()?;
+        let monitors: Vec<PhysRect> = frames.iter().map(|frame| frame.monitor.rect).collect();
+        laqta_domain::geometry::largest_overlap(area, &monitors)
     }
 
     /// An area the user draws. Several drawn rects give their bounding box.

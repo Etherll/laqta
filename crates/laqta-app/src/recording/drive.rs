@@ -88,6 +88,8 @@ async fn drive(app: &Arc<App>, id: TaskId, mut live: Live) {
 /// Finishes the file, reports it and hands it to Task with the settings the recording started with.
 async fn stop_recording(app: &App, id: TaskId, live: Live) {
     let Live { handle, output, ts, .. } = live;
+    // Finishing a GIF, WebP or APNG converts the whole recording and takes a while, so say so before it starts.
+    app.emit(TaskEvent::RecordingFinishing { id });
     match handle.stop().await {
         Ok(path) => {
             app.release(id);

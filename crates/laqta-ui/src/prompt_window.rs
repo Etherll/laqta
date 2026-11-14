@@ -6,13 +6,12 @@ use gpui::{
     App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
     Window, WindowKind, WindowOptions, div, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::ScrollableElement as _;
-use gpui_component::{ActiveTheme as _, Root, Selectable as _};
+use gpui_component::{ActiveTheme as _, Root};
 use laqta_ports::PortError;
 
-use crate::widgets;
+use crate::widgets::{self, Pill};
 
 pub(crate) enum PromptKind {
     Text { default: String },
@@ -34,10 +33,11 @@ pub(crate) enum Answer {
 pub(crate) type Reply = oneshot::Sender<Result<Answer, PortError>>;
 
 /// A confirm prompt tall enough for its text, so the buttons never fall off the bottom: title
-/// bar 36, heading and padding 64, footer 57, and about 60 characters per 20 px line.
+/// bar 36, heading and padding 80, footer 60, and about 50 characters per 22 px line (kept on
+/// the generous side: a line too many is space, a line too few hides the question).
 fn confirm_height(text: &str) -> f32 {
-    let lines: usize = text.lines().map(|l| l.chars().count().div_ceil(60).max(1)).sum();
-    (36.0 + 64.0 + 57.0 + 20.0 * lines.max(1) as f32 + 12.0).min(520.0)
+    let lines: usize = text.lines().map(|l| l.chars().count().div_ceil(50).max(1)).sum();
+    (36.0 + 80.0 + 60.0 + 22.0 * lines.max(1) as f32 + 16.0).min(520.0)
 }
 
 pub(crate) fn open(title: String, kind: PromptKind, reply: Reply, cx: &mut App) {
@@ -119,41 +119,74 @@ impl Render for PromptWindow {
             .overflow_y_scrollbar()
             .flex()
             .flex_col()
-            .gap(px(8.))
-            .p(px(12.))
-            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(self.title.clone()));
-        let mut footer =
-            div().flex_none().flex().flex_row().gap(px(8.)).p(px(12.)).border_t_1().border_color(cx.theme().border).child(div().flex_1());
+            .gap(crate::theme::space::S3)
+            .px(crate::theme::space::S5)
+            .pt(crate::theme::space::S4)
+            .pb(crate::theme::space::S3)
+            .child(
+                div()
+                    .font_family(crate::theme::text::HEADING_FONT)
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_size(crate::theme::text::HEADING)
+                    .child(self.title.clone()),
+            );
+        let mut footer = div()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(crate::theme::space::S2)
+            .px(crate::theme::space::S4)
+            .py(crate::theme::space::S3)
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(div().flex_1());
         match &self.kind {
             PromptKind::Text { .. } => {
                 if let Some(i) = &self.input {
                     body = body.child(Input::new(i));
                 }
                 footer = footer
-                    .child(
-                        Button::new("cancel")
-                            .label("Cancel")
-                            .on_click(cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w))),
-                    )
-                    .child(Button::new("ok").label("OK").primary().on_click(cx.listener(|this, _, w, cx| {
-                        let v = this.input.as_ref().map(|i| i.read(cx).value().to_string()).unwrap_or_default();
-                        this.answer(Ok(Answer::Text(v)), w);
-                    })));
+                    .child(widgets::pill(
+                        "cancel",
+                        "Cancel",
+                        Pill::Ghost,
+                        false,
+                        cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w)),
+                        cx,
+                    ))
+                    .child(widgets::pill_click(
+                        "ok",
+                        "OK",
+                        Pill::Primary,
+                        cx.listener(|this, _, w, cx| {
+                            let v = this.input.as_ref().map(|i| i.read(cx).value().to_string()).unwrap_or_default();
+                            this.answer(Ok(Answer::Text(v)), w);
+                        }),
+                    ));
             }
             PromptKind::Choose { options } => {
                 let mut list = div().flex().flex_col().gap(px(4.));
                 for (i, o) in options.iter().enumerate() {
-                    list = list.child(
-                        Button::new(SharedString::from(format!("opt-{i}")))
-                            .label(o.clone())
-                            .w_full()
-                            .on_click(cx.listener(move |this, _, w, _| this.answer(Ok(Answer::Index(i)), w))),
-                    );
+                    list = list.child(widgets::option_row(
+                        SharedString::from(format!("opt-{i}")),
+                        o.clone(),
+                        "",
+                        false,
+                        None,
+                        Some(Box::new(cx.listener(move |this, _, w, _| this.answer(Ok(Answer::Index(i)), w)))),
+                        cx,
+                    ));
                 }
                 body = body.child(div().flex_1().overflow_y_scrollbar().child(list));
-                footer = footer.child(
-                    Button::new("cancel").label("Cancel").on_click(cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w))),
-                );
+                footer = footer.child(widgets::pill(
+                    "cancel",
+                    "Cancel",
+                    Pill::Ghost,
+                    false,
+                    cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w)),
+                    cx,
+                ));
             }
             PromptKind::Show { text } => {
                 body = body.child(
@@ -165,9 +198,12 @@ impl Render for PromptWindow {
                         .bg(cx.theme().secondary)
                         .child(text.clone()),
                 );
-                footer = footer.child(
-                    Button::new("ok").label("Close").primary().on_click(cx.listener(|this, _, w, _| this.answer(Ok(Answer::Ok), w))),
-                );
+                footer = footer.child(widgets::pill_click(
+                    "ok",
+                    "Close",
+                    Pill::Primary,
+                    cx.listener(|this, _, w, _| this.answer(Ok(Answer::Ok), w)),
+                ));
             }
             PromptKind::AfterCapture { image, after_capture, after_upload } => {
                 if let Some(img) = image {
@@ -205,60 +241,85 @@ impl Render for PromptWindow {
                 );
                 body = body.child(flags);
                 footer = footer
-                    .child(
-                        Button::new("cancel")
-                            .label("Cancel")
-                            .on_click(cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w))),
-                    )
-                    .child(Button::new("ok").label("Continue").primary().on_click(cx.listener(move |this, _, w, _| {
-                        let r = match &this.kind {
-                            PromptKind::AfterCapture { after_capture, after_upload, .. } => (*after_capture, *after_upload),
-                            _ => (ac, au),
-                        };
-                        this.answer(Ok(Answer::Flags(r.0, r.1)), w);
-                    })));
+                    .child(widgets::pill(
+                        "cancel",
+                        "Cancel",
+                        Pill::Ghost,
+                        false,
+                        cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w)),
+                        cx,
+                    ))
+                    .child(widgets::pill_click(
+                        "ok",
+                        "Continue",
+                        Pill::Primary,
+                        cx.listener(move |this, _, w, _| {
+                            let r = match &this.kind {
+                                PromptKind::AfterCapture { after_capture, after_upload, .. } => (*after_capture, *after_upload),
+                                _ => (ac, au),
+                            };
+                            this.answer(Ok(Answer::Flags(r.0, r.1)), w);
+                        }),
+                    ));
             }
             PromptKind::BeforeUpload { file_name, destinations, current } => {
                 body = body.child(widgets::muted(format!("Upload {file_name} to:"), cx));
                 let mut list = div().flex().flex_col().gap(px(4.));
                 for (i, (id, name)) in destinations.iter().enumerate() {
                     let id2 = id.clone();
-                    list = list.child(
-                        Button::new(SharedString::from(format!("bu-{i}"))).label(name.clone()).w_full().selected(id == current).on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                if let PromptKind::BeforeUpload { current, .. } = &mut this.kind {
-                                    *current = id2.clone();
-                                }
-                                cx.notify();
-                            }),
-                        ),
-                    );
+                    list = list.child(widgets::option_row(
+                        SharedString::from(format!("bu-{i}")),
+                        name.clone(),
+                        "",
+                        id == current,
+                        None,
+                        Some(Box::new(cx.listener(move |this, _, _, cx| {
+                            if let PromptKind::BeforeUpload { current, .. } = &mut this.kind {
+                                *current = id2.clone();
+                            }
+                            cx.notify();
+                        }))),
+                        cx,
+                    ));
                 }
                 body = body.child(div().flex_1().overflow_y_scrollbar().child(list));
                 footer = footer
-                    .child(
-                        Button::new("cancel")
-                            .label("Cancel")
-                            .on_click(cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w))),
-                    )
-                    .child(Button::new("ok").label("Upload").primary().on_click(cx.listener(|this, _, w, _| {
-                        let id = match &this.kind {
-                            PromptKind::BeforeUpload { current, .. } => current.clone(),
-                            _ => String::new(),
-                        };
-                        this.answer(Ok(Answer::Text(id)), w);
-                    })));
+                    .child(widgets::pill(
+                        "cancel",
+                        "Cancel",
+                        Pill::Ghost,
+                        false,
+                        cx.listener(|this, _, w, _| this.answer(Err(PortError::Cancelled), w)),
+                        cx,
+                    ))
+                    .child(widgets::pill_click(
+                        "ok",
+                        "Upload",
+                        Pill::Primary,
+                        cx.listener(|this, _, w, _| {
+                            let id = match &this.kind {
+                                PromptKind::BeforeUpload { current, .. } => current.clone(),
+                                _ => String::new(),
+                            };
+                            this.answer(Ok(Answer::Text(id)), w);
+                        }),
+                    ));
             }
             PromptKind::Confirm { text } => {
                 body = body.child(widgets::muted(text.clone(), cx));
                 footer = footer
-                    .child(Button::new("no").label("No").on_click(cx.listener(|this, _, w, _| this.answer(Ok(Answer::Bool(false)), w))))
-                    .child(
-                        Button::new("yes")
-                            .label("Yes")
-                            .primary()
-                            .on_click(cx.listener(|this, _, w, _| this.answer(Ok(Answer::Bool(true)), w))),
-                    );
+                    .child(widgets::pill_click(
+                        "no",
+                        "No",
+                        Pill::Ghost,
+                        cx.listener(|this, _, w, _| this.answer(Ok(Answer::Bool(false)), w)),
+                    ))
+                    .child(widgets::pill_click(
+                        "yes",
+                        "Yes",
+                        Pill::Primary,
+                        cx.listener(|this, _, w, _| this.answer(Ok(Answer::Bool(true)), w)),
+                    ));
             }
         }
         crate::chrome::rounded(widgets::page(cx), window)

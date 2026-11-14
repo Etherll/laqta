@@ -8,19 +8,21 @@ use std::sync::Arc;
 use futures_lite::future::block_on;
 use laqta_app::{App, Dispatched, Ports};
 use laqta_domain::{Action, Bitmap, Frame, Monitor, MonitorId, PhysRect, PixelFormat, Settings};
-use laqta_ports::fakes::{ClipboardBehaviour, FakeClipboard, FakeScreen, FakeShell, InlineSpawner, ManualClock};
+use laqta_ports::fakes::{ClipboardBehaviour, FakeClipboard, FakeHoverSource, FakeScreen, FakeShell, InlineSpawner, ManualClock};
 use laqta_ports::{AppError, PortError, TaskEvent, TaskId, TaskStatus};
 use tempfile::TempDir;
 
 struct Harness {
     app: Arc<App>,
     screen: Arc<FakeScreen>,
+    hover: Arc<FakeHoverSource>,
     shell: Arc<FakeShell>,
     spawner: Arc<InlineSpawner>,
 }
 
 fn harness(screenshots_dir: &Path, screen: FakeScreen) -> Harness {
     let screen = Arc::new(screen);
+    let hover = Arc::new(FakeHoverSource::new(Vec::new()));
     let shell = Arc::new(FakeShell::default());
     let spawner = Arc::new(InlineSpawner::default());
     let ports = Ports {
@@ -44,14 +46,14 @@ fn harness(screenshots_dir: &Path, screen: FakeScreen) -> Harness {
         inpainter: Arc::new(laqta_ports::fakes::FakeInpainter),
         watcher: Arc::new(laqta_ports::fakes::FakeFileWatcher::default()),
         uploaders: Arc::new(laqta_ports::fakes::FakeUploaders::default()),
-        hover: Arc::new(laqta_ports::fakes::FakeHoverSource::new(Vec::new())),
+        hover: hover.clone(),
         notifier: Arc::new(laqta_ports::fakes::FakeNotifier::default()),
         rng: Arc::new(laqta_ports::fakes::CountingRng::default()),
         host: laqta_ports::HostInfo::default(),
         codecs: laqta_imaging::Codecs::builtin(),
     };
     let settings = Settings { screenshots_dir: screenshots_dir.to_path_buf(), ..Settings::default_for(screenshots_dir.to_path_buf()) };
-    Harness { app: App::new(ports, settings), screen, shell, spawner }
+    Harness { app: App::new(ports, settings), screen, hover, shell, spawner }
 }
 
 fn frame(x: i32) -> Frame {
@@ -77,6 +79,23 @@ fn print_screen_submits_a_capture_and_reports_in_queue_at_once() {
     assert_eq!(*h.screen.calls.lock().unwrap(), 1);
     assert_eq!(h.spawner.spawned.lock().unwrap().len(), 1);
     assert!(matches!(events.try_recv(), Ok(TaskEvent::StatusChanged { id: TaskId(1), status: TaskStatus::InQueue })));
+}
+
+#[test]
+fn a_capture_passes_include_own_windows_to_the_screen_and_the_hover_source() {
+    let tmp = TempDir::new().unwrap();
+    let h = harness(tmp.path(), FakeScreen::new(vec![frame(0)]));
+
+    block_on(h.app.dispatch(Action::PrintScreen, None)).unwrap();
+    assert!(!h.screen.requests.lock().unwrap()[0].include_own_windows, "off by default");
+    assert_eq!(*h.hover.own_windows.lock().unwrap(), vec![false]);
+
+    let mut settings = h.app.settings();
+    settings.defaults.capture.include_own_windows = true;
+    h.app.set_settings(settings);
+    block_on(h.app.dispatch(Action::PrintScreen, None)).unwrap();
+    assert!(h.screen.requests.lock().unwrap()[1].include_own_windows, "the setting reaches the capture request");
+    assert_eq!(*h.hover.own_windows.lock().unwrap(), vec![false, true], "and the hover source, before the capture");
 }
 
 #[test]

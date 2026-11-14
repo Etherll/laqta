@@ -65,6 +65,10 @@ fn harness_with_watcher(
         codecs: laqta_imaging::Codecs::builtin(),
     };
     let mut settings = Settings { screenshots_dir: dir.join("shots"), ..Settings::default_for(dir.to_path_buf()) };
+    // An Imgur account with a client id: without one an upload to `imgur` is refused before any request.
+    let mut imgur = laqta_domain::hosts::HostAccount::new(laqta_domain::hosts::HostKind::Imgur);
+    imgur.values.insert("client_id".into(), "test-client-id".into());
+    settings.hosts.push(imgur);
     edit(&mut settings);
     H { app: App::new(ports, settings), fake, uploaders, spawner }
 }
@@ -192,6 +196,29 @@ fn watch_passes_the_include_subfolders_flag_to_the_watcher() {
 }
 
 #[test]
+fn watch_skips_the_screenshots_folder_and_what_is_saved_below_a_watched_parent() {
+    let tmp = TempDir::new().unwrap();
+    let shots = tmp.path().join("shots");
+    let other = tmp.path().join("other");
+    std::fs::create_dir_all(shots.join("2026")).unwrap();
+    std::fs::create_dir(&other).unwrap();
+    // The screenshots folder itself is not watched. The parent is, with its subfolders.
+    let h = harness(tmp.path(), |s| {
+        s.watch_folders = vec![folder(&shots, "*"), WatchFolder { include_subfolders: true, ..folder(tmp.path(), "*") }];
+    });
+    let uploads = host(&h, "imgur", 2);
+    h.app.start_watch_folders();
+    assert_eq!(live_folders(&h), vec![tmp.path().to_path_buf()]);
+
+    h.fake.emit(&file(&shots.join("2026").join("own.png")));
+    h.fake.emit(&file(&other.join("theirs.png")));
+    drain(&h.spawner);
+
+    let names: Vec<String> = uploads.requests.lock().unwrap().iter().map(|r| r.file_name.clone()).collect();
+    assert_eq!(names, vec!["theirs.png"]);
+}
+
+#[test]
 fn watch_move_puts_the_file_in_the_screenshots_folder_and_uploads_it_there() {
     let tmp = TempDir::new().unwrap();
     let watched = tmp.path().join("watched");
@@ -236,7 +263,7 @@ fn watch_move_takes_the_next_free_name() {
 }
 
 #[test]
-fn watch_move_into_its_own_folder_leaves_the_file_where_it_is() {
+fn watch_of_the_screenshots_folder_itself_does_nothing_and_leaves_files_alone() {
     let tmp = TempDir::new().unwrap();
     let shots = tmp.path().join("shots");
     std::fs::create_dir(&shots).unwrap();
@@ -247,13 +274,14 @@ fn watch_move_into_its_own_folder_leaves_the_file_where_it_is() {
     let uploads = host(&h, "imgur", 1);
     h.app.start_watch_folders();
 
+    // Laqta saves here itself, so the folder is not watched: nothing it writes comes back as a new file.
+    assert!(live_folders(&h).is_empty());
     let original = file(&shots.join("a.png"));
     h.fake.emit(&original);
     drain(&h.spawner);
 
-    // A rename inside the watched folder would raise a new event for the same file, so nothing is renamed.
     assert_eq!(std::fs::read_dir(&shots).unwrap().count(), 1);
-    assert_eq!(uploads.requests.lock().unwrap()[0].data, UploadData::Path(original));
+    assert!(uploads.requests.lock().unwrap().is_empty());
 }
 
 #[test]

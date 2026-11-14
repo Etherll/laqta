@@ -2,6 +2,7 @@
 //! back, plus the UI elements of the focused window and the focused window itself.
 
 use std::mem::size_of;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use laqta_domain::PhysRect;
 use laqta_domain::region::{HoverTarget, TargetKind};
@@ -23,6 +24,10 @@ use crate::window_rules::{exe_name, is_snap_candidate, window_rect};
 /// subtree, so this bounds the cross-process calls made per hover refresh.
 const MAX_ELEMENTS: i32 = 400;
 
+/// Whether Laqta's own windows are snap targets, set through `HoverSource::set_include_own_windows`.
+/// A process-wide flag, so `WindowsHover` stays a unit struct.
+static INCLUDE_OWN_WINDOWS: AtomicBool = AtomicBool::new(false);
+
 #[derive(Debug, Default)]
 pub struct WindowsHover;
 
@@ -33,6 +38,10 @@ impl HoverSource for WindowsHover {
 
     fn active_window(&self) -> BoxFuture<'_, Result<Option<HoverTarget>, PortError>> {
         Box::pin(blocking::unblock(foreground_target))
+    }
+
+    fn set_include_own_windows(&self, include: bool) {
+        INCLUDE_OWN_WINDOWS.store(include, Ordering::Relaxed);
     }
 }
 
@@ -75,7 +84,8 @@ fn foreground_target() -> Result<Option<HoverTarget>, PortError> {
 }
 
 /// The hover target for `hwnd`, if it is a snap candidate. Windows of this process are skipped, so
-/// the region overlay never snaps to itself.
+/// the region overlay never snaps to itself, unless captures include Laqta's own windows. Even then
+/// its tool and popup windows (the overlay, toasts, the recording bar) are skipped.
 fn describe(hwnd: HWND) -> Option<HoverTarget> {
     // SAFETY: read-only queries on a window handle; an invalid handle yields false or zero.
     let (visible, iconic, style) =
@@ -88,7 +98,7 @@ fn describe(hwnd: HWND) -> Option<HoverTarget> {
     let mut pid = 0u32;
     // SAFETY: `pid` is a valid out-parameter.
     unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut pid)) };
-    if pid == std::process::id() {
+    if pid == std::process::id() && (tool || !INCLUDE_OWN_WINDOWS.load(Ordering::Relaxed)) {
         return None;
     }
     let rect = frame_rect(hwnd)?;

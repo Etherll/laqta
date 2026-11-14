@@ -94,7 +94,7 @@ impl SettingsWindow {
         let mut saved = services.app.settings();
         change(&mut saved);
         if let Err(e) = (services.save_settings)(saved) {
-            self.message = Some((false, format!("Couldn't save the choice: {e}")));
+            self.say((false, crate::presenters::notice::failure_line("Couldn't save the choice", &e.to_string())), cx);
         }
         cx.notify();
     }
@@ -134,11 +134,12 @@ impl SettingsWindow {
 
     /// Downloads `ids` (and ONNX Runtime) for `card`, then puts `apply` in use. A newer download
     /// for the same card cancels this one.
-    fn fetch(&mut self, card: Card, ids: Vec<String>, apply: Option<Apply>, cx: &mut Context<Self>) {
+    /// `expected` is the size the Download button showed: progress counts against it, across all files.
+    fn fetch(&mut self, card: Card, ids: Vec<String>, apply: Option<Apply>, expected: Option<u64>, cx: &mut Context<Self>) {
         // ONNX Runtime is shared: two downloads at once would both fetch it into the same place.
         let other = self.ai.jobs.iter().any(|(c, j)| *c != card && matches!(j.download, Download::Running { .. }));
         if other && !self.ai.runtime_ready {
-            self.message = Some((false, "Wait for the other download to finish first: it also fetches ONNX Runtime.".into()));
+            self.say((false, "Wait for the other download to finish first: it also fetches ONNX Runtime.".into()), cx);
             cx.notify();
             return;
         }
@@ -153,13 +154,23 @@ impl SettingsWindow {
         cx.notify();
         let models = cx.global::<UiState>().services.models.clone();
         let (tx, mut rx) = futures_channel::mpsc::unbounded::<(u64, Option<u64>)>();
-        let progress: ModelProgress = Arc::new(move |a, b| {
-            let _ = tx.unbounded_send((a, b));
-        });
         let stop = cancel.clone();
         let work = cx.background_spawn(async move {
+            // Each file reports its own bytes; the bar shows the whole download, so files already
+            // fetched are added in, and the total is never less than what the button promised.
+            let base = Arc::new(std::sync::atomic::AtomicU64::new(0));
             for id in ids {
-                models.install(id, progress.clone(), stop.clone()).await?;
+                let (tx, base_now) = (tx.clone(), base.clone());
+                let last = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                let seen = last.clone();
+                let progress: ModelProgress = Arc::new(move |done, total: Option<u64>| {
+                    let b = base_now.load(Ordering::Relaxed);
+                    seen.store(total.unwrap_or(done), Ordering::Relaxed);
+                    let whole = total.map(|t| expected.unwrap_or(0).max(b + t)).or(expected);
+                    let _ = tx.unbounded_send((b + done, whole));
+                });
+                models.install(id, progress, stop.clone()).await?;
+                base.fetch_add(last.load(Ordering::Relaxed), Ordering::Relaxed);
             }
             Ok::<(), String>(())
         });
@@ -220,7 +231,7 @@ impl SettingsWindow {
             }
             self.apply_now(move |s| apply(s), cx);
         } else {
-            self.fetch(card, ids, Some(apply), cx);
+            self.fetch(card, ids, Some(apply), None, cx);
         }
     }
 
@@ -235,17 +246,18 @@ impl SettingsWindow {
         };
         let id = |what: &str| SharedString::from(format!("{card:?}-{what}"));
         let action: Option<AnyElement> = match &status {
-            Status::Missing { bytes } => Some(
+            Status::Missing { bytes } => Some({
+                let bytes = *bytes;
                 widgets::pill(
                     id("download"),
-                    format!("Download {}", format_size(*bytes)),
+                    format!("Download {}", format_size(bytes)),
                     Pill::Primary,
                     true,
-                    cx.listener(move |this, _, _, cx| this.fetch(card, ids.clone(), None, cx)),
+                    cx.listener(move |this, _, _, cx| this.fetch(card, ids.clone(), None, Some(bytes), cx)),
                     cx,
                 )
-                .into_any_element(),
-            ),
+                .into_any_element()
+            }),
             Status::Downloading(_) => Some(
                 widgets::pill(
                     id("cancel"),
@@ -272,16 +284,23 @@ impl SettingsWindow {
                     cx.listener(move |this, _, _, cx| {
                         let (ids, apply) =
                             this.ai.jobs.get(&card).map_or_else(|| (ids.clone(), None), |j| (j.ids.clone(), j.apply.clone()));
-                        this.fetch(card, ids, apply, cx);
+                        this.fetch(card, ids, apply, None, cx);
                     }),
                     cx,
                 )
                 .into_any_element(),
             ),
+            // A custom model whose file is gone: the one thing to do is take it out.
+            Status::FileMissing => ids
+                .iter()
+                .filter_map(|id| self.row(id))
+                .find(|row| row.custom && !row.installed)
+                .map(|row| self.remove_button(row, true, cx).into_any_element()),
             _ => None,
         };
         let detail = match &status {
-            Status::Failed(e) => Some(e.clone()),
+            // The reason in plain words; the raw error is cut to a sentence (`Notice::failure_text`).
+            Status::Failed(e) => crate::presenters::notice::Notice::failure_text("", e).reason.or_else(|| Some(e.clone())),
             Status::FileMissing => Some("Remove it, or add the file again under Advanced.".into()),
             Status::Missing { .. } if !self.ai.runtime_ready => Some("Includes ONNX Runtime, which every local model uses.".into()),
             _ => None,
@@ -362,7 +381,7 @@ impl SettingsWindow {
                     let _ = this.update(cx, |this, cx| {
                         let services = cx.global::<UiState>().services.clone();
                         if let Err(e) = services.models.remove(&id) {
-                            this.message = Some((false, format!("Couldn't remove the model: {e}")));
+                            this.say((false, crate::presenters::notice::failure_line("Couldn't remove the model", &e.to_string())), cx);
                             this.refresh_models(cx);
                             return;
                         }
@@ -771,7 +790,7 @@ impl SettingsWindow {
                 let services = cx.global::<UiState>().services.clone();
                 let dir = services.models.models_dir();
                 if let Err(e) = services.shell.open_path(&dir) {
-                    this.message = Some((false, format!("Couldn't open the models folder: {e}")));
+                    this.say((false, crate::presenters::notice::failure_line("Couldn't open the models folder", &e.to_string())), cx);
                     cx.notify();
                 }
             }),

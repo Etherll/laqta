@@ -250,6 +250,16 @@ ADR 029).
 - The session holds no Editor engine and no `Fonts`. Tools that act on an area at once
   (recording, scrolling capture, OCR, QR, colour picker, ruler, pin from screen) go through
   `region::pick`, which confirms on release with no toolbar.
+- One session at a time. The guard lives in the Region module and keys on the overlay, so a
+  request that arrives while a session is open returns `AppError::Busy` without touching the
+  overlay, and the open session keeps running. The dispatcher passes `Busy` through; callers drop
+  it without a toast. The guard is released as soon as the overlay closes, before the final crop.
+- Multi-region: `RegionView::multi_strip` (`Option<MultiStrip { count, enabled }>`, from
+  `RegionState::multi_strip`) tells the overlay to show a Capture and Cancel strip. Capture sends
+  `RegionCommand::Confirm` (it does nothing until a region is drawn), Cancel sends
+  `RegionCommand::Cancel`. The final crop of several rects runs on the compute pool.
+- `RegionConfig::mode_bar` says whether the mode bar is on screen. With it off and both
+  `right_click` and `middle_click` set to `None`, a right press cancels, so a mouse exit always exists.
 
 **Recording session.** Owns a recording from start to file.
 
@@ -257,8 +267,11 @@ ADR 029).
   resume, stop or abort; receive recording events. The finished file goes to Task as an upload
   job of the saved file.
 - A **record spec** holds the area, codec (the container follows from it), frame rate, quality
-  (CRF or bitrate), cursor on or off, the audio devices to record, custom encoder arguments and
-  an optional camera overlay.
+  (CRF or bitrate), cursor on or off, the audio devices to record, custom encoder arguments, an
+  optional camera overlay and the recorder backend (FFmpeg or the native Windows recorder). The
+  session fills the backend from the effective task settings of that recording, so a shortcut with
+  its own recording section picks its own recorder; the `Media` adapter in `apps/laqta` reads
+  `spec.backend` and holds no copy of the setting.
 - Inside: region selection through the Region session (for the region area only; the other
   areas use the active window, the custom region or the last area), the countdown, the
   fixed-duration stop, opening a `ScreenStream` on one rect (several selected rects are
@@ -475,7 +488,9 @@ platform hotkey ─▶ dispatch(Action::RectangleRegion, workflow)
 ```
 
 With `show_tools_after_select` off, or for a tool that acts on an area at once (`region::pick`),
-the region confirms on release and no toolbar appears.
+the region confirms on release and no toolbar appears. A second request while a session is open
+returns `AppError::Busy` (§2.2); in multi-region mode the overlay shows a Capture and Cancel strip
+(`RegionView::multi_strip`) in place of the toolbar.
 
 ### 4.2 Task
 
@@ -515,6 +530,16 @@ dispatch(Action::ScreenRecorder) ─▶ Recording session
 FFmpeg is found on `PATH`, at a configured path, or downloaded on first use and checked against
 a pinned hash (§6). If FFmpeg exits partway, the session emits a failure event and keeps the
 partial file, because the container survives a crash.
+
+A `ScreenStream` that cannot take an area over more than one monitor (the Windows stream) answers
+`PortError::Unsupported`; the adapter does not choose. The Recording session then clips the area to
+the monitor it overlaps most (`geometry::largest_overlap`), opens the stream again with that part, and
+emits a `StepFailed` warning event ("recording area") so the UI can tell the user. If no monitor
+overlaps the area, the refusal stands and the recording fails.
+
+The recording bar, its border and the countdown are left out of the video through the native-window
+hook (`NativeWindow::ExcludeFromCapture`, `WDA_EXCLUDEFROMCAPTURE` on Windows; other platforms
+answer false).
 
 ---
 

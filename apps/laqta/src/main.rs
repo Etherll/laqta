@@ -66,7 +66,52 @@ fn main() -> ExitCode {
     if args.startup_delay_secs > 0 {
         std::thread::sleep(std::time::Duration::from_secs(args.startup_delay_secs as u64));
     }
-    let claim = if args.multi { None } else { Some(laqta_ipc::claim()) };
+    // The pipe grants the current user (see `laqta_ipc::claim_for_user`), so a copy started without
+    // administrator rights can still hand its request to one started with them.
+    #[cfg(windows)]
+    let user_sid = laqta_platform_windows::elevation::current_user_sid();
+    #[cfg(not(windows))]
+    let user_sid: Option<String> = None;
+    let claim_instance = || if args.multi { None } else { Some(laqta_ipc::claim_for_user(user_sid.as_deref())) };
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut claim = claim_instance();
+    // The copy that asked for administrator rights may still hold the endpoint for a moment while it
+    // exits; the elevated copy waits for it instead of taking it for a running Laqta and quitting.
+    #[cfg(windows)]
+    if args.relaunched {
+        for _ in 0..25 {
+            if !matches!(claim, Some(Ok(laqta_ipc::Claim::Secondary(_)))) {
+                break;
+            }
+            drop(claim.take());
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            claim = claim_instance();
+        }
+    }
+    // Only the copy that would serve the instance asks for administrator rights; one that forwards
+    // its request to a running copy does not, so a shortcut or `--action` call raises no prompt.
+    #[cfg(windows)]
+    let mut elevation_note = None;
+    // A staged backup lands first, so a run-as-administrator setting it brings is read below. Only the
+    // copy that serves the instance applies it: a running copy has the files open.
+    #[cfg(windows)]
+    if matches!(claim, Some(Ok(laqta_ipc::Claim::Primary(_)))) || (claim.is_none() && !args.multi) {
+        wiring::apply_staged_import(&args);
+    }
+    #[cfg(windows)]
+    if matches!(claim, None | Some(Ok(laqta_ipc::Claim::Primary(_)))) && should_run_as_admin(&args) {
+        // Let go of the endpoint first, so the elevated copy can claim it.
+        drop(claim.take());
+        let mut forward = without_startup_delay(std::env::args().skip(1).collect());
+        // Marks the elevated copy, so a copy that still reads as not elevated can't prompt again and again.
+        forward.push("-Elevated".to_owned());
+        match laqta_platform_windows::elevation::relaunch_elevated(&forward) {
+            Ok(true) => return ExitCode::SUCCESS,
+            Ok(false) => elevation_note = Some("administrator rights were declined; running without them".to_owned()),
+            Err(e) => elevation_note = Some(format!("cannot start with administrator rights: {e}; running without them")),
+        }
+        claim = claim_instance();
+    }
     let server = match claim {
         None => None,
         Some(Ok(laqta_ipc::Claim::Primary(server))) => Some(server),
@@ -102,6 +147,10 @@ fn main() -> ExitCode {
     };
 
     let _log_guard = logging::init();
+    #[cfg(windows)]
+    if let Some(note) = elevation_note {
+        tracing::warn!("{note}");
+    }
     match wiring::run(server, args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {
@@ -110,6 +159,33 @@ fn main() -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+/// Whether the settings ask for administrator rights that this process lacks. The settings are not
+/// loaded yet, and loading them is the work this check comes before, so the file is read here. A
+/// `-sandbox` run starts from defaults, so it never asks.
+#[cfg(windows)]
+fn should_run_as_admin(args: &cli::Args) -> bool {
+    if args.sandbox || args.relaunched || laqta_platform_windows::elevation::is_elevated() {
+        return false;
+    }
+    wiring::load_settings(&laqta_library::SettingsStore::new(wiring::data_dir(args))).run_as_admin
+}
+
+/// The command line without `-StartupDelay <seconds>`: this copy already waited, and the elevated
+/// one should not wait again.
+#[cfg(any(windows, test))]
+pub(crate) fn without_startup_delay(args: Vec<String>) -> Vec<String> {
+    let mut kept = Vec::with_capacity(args.len());
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        if matches!(arg.to_ascii_lowercase().as_str(), "-startupdelay" | "--startup-delay") {
+            args.next();
+        } else {
+            kept.push(arg);
+        }
+    }
+    kept
 }
 
 /// Appends the folders of helper programs (FFmpeg, `pactl`) that a distribution package named at
@@ -124,5 +200,21 @@ fn append_packaged_tools_to_path() {
         // SAFETY: called first thing in `main`, before any thread exists that could read the
         // environment concurrently.
         unsafe { std::env::set_var("PATH", path) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::without_startup_delay;
+
+    #[test]
+    fn the_elevated_copy_does_not_wait_again() {
+        let args = |list: &[&str]| list.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            without_startup_delay(args(&["-silent", "-StartupDelay", "30", "--action", "open-settings"])),
+            args(&["-silent", "--action", "open-settings"])
+        );
+        assert_eq!(without_startup_delay(args(&["--startup-delay", "5"])), args(&[]));
+        assert_eq!(without_startup_delay(args(&["-silent"])), args(&["-silent"]));
     }
 }

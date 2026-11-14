@@ -9,6 +9,9 @@ use crate::PortError;
 pub enum AppError {
     #[error("cancelled")]
     Cancelled,
+    /// A region session is already open; the request was dropped.
+    #[error("busy: a region session is already open")]
+    Busy,
     #[error("permission denied")]
     PermissionDenied,
     #[error("unsupported: {0}")]
@@ -195,10 +198,16 @@ pub enum TaskEvent {
     RecordingCountdown {
         id: TaskId,
         seconds_left: u32,
+        /// The area about to be recorded, so the countdown shows on its monitor.
+        area: laqta_domain::geometry::PhysRect,
     },
+    /// The recording is under way: the countdown is over and its window can go. It comes before the stream opens,
+    /// so a start that fails after it ends in `RecordingFailed`.
     RecordingStarted {
         id: TaskId,
         area: laqta_domain::geometry::PhysRect,
+        /// Whether to draw the border around `area`: the started task's own setting, not the defaults.
+        show_border: bool,
     },
     RecordingPaused {
         id: TaskId,
@@ -209,6 +218,11 @@ pub enum TaskEvent {
     RecordingTick {
         id: TaskId,
         elapsed_secs: u32,
+    },
+    /// A stop is under way: the encoder is finishing the file, which can take a while for a GIF. `RecordingStopped`
+    /// follows when the file is done.
+    RecordingFinishing {
+        id: TaskId,
     },
     RecordingStopped {
         id: TaskId,
@@ -256,6 +270,7 @@ impl TaskEvent {
             | TaskEvent::RecordingPaused { id }
             | TaskEvent::RecordingResumed { id }
             | TaskEvent::RecordingTick { id, .. }
+            | TaskEvent::RecordingFinishing { id }
             | TaskEvent::RecordingStopped { id, .. }
             | TaskEvent::RecordingFailed { id, .. } => *id,
         }

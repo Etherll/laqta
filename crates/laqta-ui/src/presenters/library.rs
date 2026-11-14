@@ -58,6 +58,45 @@ pub fn keep(tab: LibraryTab, item: &HistoryItem) -> bool {
     tab != LibraryTab::Uploads || item.url.is_some()
 }
 
+/// What a library list shows in place of its cards.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ListState {
+    /// The query has not returned yet.
+    Loading,
+    /// Nothing is saved yet; `hint` says how to start.
+    Empty {
+        hint: String,
+    },
+    /// The search matched nothing.
+    NoMatch,
+    /// The query failed: the reason, shown with a Try again action.
+    Error(String),
+    Rows,
+}
+
+/// The state of a list. `loaded` is whether the current query has returned, `rows` how many rows it
+/// returned, `query` the search text and `error` why it failed. `shortcut` is the capture shortcut the
+/// empty hint names. A failure replaces the rows, so the list never shows stale results under an error.
+pub fn list_state(loaded: bool, rows: usize, query: &str, error: Option<&str>, shortcut: Option<&str>) -> ListState {
+    if !loaded {
+        return ListState::Loading;
+    }
+    if let Some(error) = error {
+        return ListState::Error(error.to_string());
+    }
+    if rows > 0 {
+        return ListState::Rows;
+    }
+    if !query.trim().is_empty() {
+        return ListState::NoMatch;
+    }
+    let hint = match shortcut.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(key) => format!("Press {key} or pick a capture above."),
+        None => "Pick a capture above.".into(),
+    };
+    ListState::Empty { hint }
+}
+
 /// What a card shows in place of a thumbnail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardGlyph {
@@ -72,7 +111,7 @@ pub struct LibraryCard {
     pub id: i64,
     /// The file name, or the link for link-only items.
     pub name: String,
-    /// "Today 21:35", "Yesterday 09:12", "Wednesday", "8 Nov", "8 Nov 2025".
+    /// "Today 21:35", "Yesterday 09:12", "Wednesday 14:05", "8 Nov", "8 Nov 2025".
     pub when: String,
     /// The grid card's label: how long ago for a file ("2 min ago", "Today 14:03"), since every
     /// capture's name starts the same; the name for a link. The full name goes in the tooltip.
@@ -86,6 +125,8 @@ pub struct LibraryCard {
     pub short_url: Option<String>,
     pub thumbnail: Option<PathBuf>,
     pub is_image: bool,
+    /// The file was moved or deleted since the capture. Filled in by the caller, which can check.
+    pub missing: bool,
 }
 
 pub fn card(item: &HistoryItem, now: DateTime) -> LibraryCard {
@@ -108,6 +149,7 @@ pub fn card(item: &HistoryItem, now: DateTime) -> LibraryCard {
         short_url: row.short_url,
         thumbnail: row.thumbnail,
         is_image: item.kind == HistoryKind::Image,
+        missing: false,
     }
 }
 
@@ -123,14 +165,14 @@ pub fn ago(time: DateTime, now: DateTime) -> String {
     }
 }
 
-/// A short, human time: today and yesterday with the time, the past week by weekday, then a date.
+/// A short, human time: today and yesterday with the time, the past week by weekday and time, then a date.
 pub fn relative_when(time: DateTime, now: DateTime) -> String {
     let hm = format!("{:02}:{:02}", time.hour(), time.minute());
     let days = now.date().since(time.date()).map(|span| span.get_days()).unwrap_or(i32::MAX);
     match days {
         0 => format!("Today {hm}"),
         1 => format!("Yesterday {hm}"),
-        2..=6 => weekday(time).to_string(),
+        2..=6 => format!("{} {hm}", weekday(time)),
         _ if time.year() == now.year() => format!("{} {}", time.day(), MONTHS[time.month() as usize - 1]),
         _ => format!("{} {} {}", time.day(), MONTHS[time.month() as usize - 1], time.year()),
     }
@@ -167,9 +209,30 @@ mod tests {
         let now = date(2026, 11, 8).at(21, 40, 0, 0);
         assert_eq!(relative_when(date(2026, 11, 8).at(21, 35, 0, 0), now), "Today 21:35");
         assert_eq!(relative_when(date(2026, 11, 7).at(9, 5, 0, 0), now), "Yesterday 09:05");
-        assert_eq!(relative_when(date(2026, 11, 4).at(12, 0, 0, 0), now), "Wednesday");
+        assert_eq!(relative_when(date(2026, 11, 4).at(12, 0, 0, 0), now), "Wednesday 12:00");
         assert_eq!(relative_when(date(2026, 10, 2).at(12, 0, 0, 0), now), "2 Oct");
         assert_eq!(relative_when(date(2025, 10, 2).at(12, 0, 0, 0), now), "2 Oct 2025");
+    }
+
+    #[test]
+    fn list_state_follows_load_rows_query_and_error() {
+        assert_eq!(list_state(false, 0, "", None, Some("PrintScreen")), ListState::Loading);
+        assert_eq!(list_state(false, 0, "cat", None, None), ListState::Loading);
+        assert_eq!(
+            list_state(true, 0, "", None, Some("PrintScreen")),
+            ListState::Empty { hint: "Press PrintScreen or pick a capture above.".into() }
+        );
+        assert_eq!(list_state(true, 0, "  cat ", None, None), ListState::NoMatch);
+        assert_eq!(list_state(true, 0, "   ", None, None), ListState::Empty { hint: "Pick a capture above.".into() });
+        assert_eq!(list_state(true, 0, "", Some("disk full"), None), ListState::Error("disk full".into()));
+        assert_eq!(list_state(true, 2, "", Some("disk full"), None), ListState::Error("disk full".into()));
+        assert_eq!(list_state(true, 3, "cat", None, None), ListState::Rows);
+    }
+
+    #[test]
+    fn the_empty_hint_drops_a_blank_shortcut() {
+        assert_eq!(list_state(true, 0, "", None, Some("  ")), ListState::Empty { hint: "Pick a capture above.".into() });
+        assert_eq!(list_state(true, 0, "", None, Some(" ⌘⇧4 ")), ListState::Empty { hint: "Press ⌘⇧4 or pick a capture above.".into() });
     }
 
     #[test]

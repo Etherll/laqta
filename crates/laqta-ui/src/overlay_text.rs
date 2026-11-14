@@ -21,7 +21,7 @@ use laqta_ports::{OcrResult, TextLayer};
 
 use crate::assets::IconName;
 use crate::overlay::OverlayModel;
-use crate::overlay_tools::{ACCENT, BAR_H};
+use crate::overlay_tools::{BAR_H, SELECTION};
 use crate::presenters::capture_toolbar as bar;
 use crate::presenters::text_layer::{Layout, Notice, Pick, Rect, motion};
 use crate::theme::radius;
@@ -325,7 +325,7 @@ pub(crate) fn layer(text: &TextUi, at: bar::Rect, s: f32, now: Instant, still: b
                         .h(px(at.h + 6.0))
                         .rounded(px(5.))
                         .border_3()
-                        .border_color(rgba(ACCENT, glow))
+                        .border_color(rgba(SELECTION, glow))
                         .into_any_element(),
                 );
             }
@@ -351,7 +351,7 @@ pub(crate) fn layer(text: &TextUi, at: bar::Rect, s: f32, now: Instant, still: b
             }
             if let Some(picked) = &picked {
                 for line in layout.bars(picked) {
-                    inside = inside.child(boxed(line, s, 0.0).bg(rgba(ACCENT, PICKED + 0.35 * flash)).cursor_text());
+                    inside = inside.child(boxed(line, s, 0.0).bg(rgba(SELECTION, PICKED + 0.35 * flash)).cursor_text());
                 }
             }
         }
@@ -398,7 +398,7 @@ pub(crate) fn bar(model: &Entity<OverlayModel>, at: bar::Rect, now: Instant, sti
     let elapsed = if still { f32::MAX } else { ms(text.since, now) };
     let enter = motion::ease_out(elapsed / motion::ENTER_MS);
     let (icon, tint, breath) = match &notice {
-        Notice::Reading => (IconName::Sparkles, ACCENT, if still { 1.0 } else { 0.45 + 0.55 * motion::breath(elapsed) }),
+        Notice::Reading => (IconName::Sparkles, SELECTION, if still { 1.0 } else { 0.45 + 0.55 * motion::breath(elapsed) }),
         Notice::NoText => (IconName::ScanLine, 0xffffff, 0.7),
         Notice::Failed(_) | Notice::CopyFailed => (IconName::CircleX, FAILED, 1.0),
         _ if notice.done() => (IconName::Check, DONE, 1.0),
@@ -493,7 +493,7 @@ fn button(
     act: fn(&mut OverlayModel, &mut Context<OverlayModel>),
 ) -> AnyElement {
     let (bg, fg, hover) = if primary {
-        (rgba(ACCENT, 1.0), rgba(0xffffff, 1.0), rgba(ACCENT, 0.85))
+        (rgba(crate::theme::PRIMARY, 1.0), rgba(crate::theme::INK, 1.0), rgba(crate::theme::PRIMARY, 0.85))
     } else {
         (gpui::transparent_black(), rgba(0xffffff, 0.88), rgba(0xffffff, 0.12))
     };

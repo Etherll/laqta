@@ -40,6 +40,18 @@ so `gpui-component` icons did not draw.
 - View logic that decides what to show (a status's tone, a hotkey's label) lives in presenters, as
   for every view (ADR 017).
 
+**Amendment (2026-11-14): contrast, motion and icon tokens.** A WCAG 2.2 AA pass (`.claude/ui-polish/RESEARCH.md`) measured the palette and changed it so that each pair meets its target:
+
+| Pair | Light | Dark | Target |
+| - | - | - | - |
+| Text on the primary green (ink `#0F1114`, was white at 2.54) | 7.44 | 7.44 | 4.5 |
+| Muted text on muted / accent (`#6A6A6A`, was `#717171`) | 4.96 / 4.58 | 6.09 | 4.5 |
+| Focus `ring` on page (`#8A8A8B` / `#7A7A7A`) | 3.42 | 4.14 | 3 |
+| Text field edge `input` on page (`#8F8F8F` / `#707070`, was the 1.25:1 hairline) | 3.20 | 3.59 | 3 |
+| Text on dark-mode danger (ink, was white at 2.93) | 4.76 (white) | 6.46 | 4.5 |
+
+`warning` (1.9:1 on the light page) and `info` are never text colours, only dots, borders and fills. A `success` colour joins `Extra` on the same terms. New tokens: `motion::{FAST, BASE, SLOW}` (150/200/300 ms, skipped under reduced motion), `icon::{SM, MD, LG}` (14/16/18 px), `DISABLED_OPACITY` (a disabled control keeps its tab stop and gives its reason in its tooltip) and `focus_ring`. Selections on the capture overlay use `info`, and its Done button uses `primary`, so the overlay no longer has an accent of its own.
+
 **Rejected.**
 - Inline styling per window: the windows drift apart, and dark mode has to be fixed in each one.
 - A separate design-system crate: one user (`laqta-ui`) and GPUI types throughout, so it would add
