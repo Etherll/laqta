@@ -1534,7 +1534,7 @@ impl SettingsWindow {
         let toggle = widgets::pill(
             "auto-toggle",
             if running { "Stop" } else { "Start" },
-            if running { Pill::Default } else { Pill::Dark },
+            if running { Pill::Default } else { Pill::Primary },
             false,
             cx.listener(move |this, _, _, cx| {
                 if !running {
@@ -2782,7 +2782,24 @@ impl SettingsWindow {
                 }))),
         );
 
+        let pending = statuses.iter().filter(|s| matches!(s, RowStatus::Pending)).count();
         let mut list = div().flex().flex_col().rounded(crate::theme::radius::CARD).border_1().border_color(x.ring).overflow_hidden();
+        if pending > 0 {
+            let line = if pending == 1 {
+                "1 shortcut takes effect when you save.".to_string()
+            } else {
+                format!("{pending} shortcuts take effect when you save. A grey dot marks them.")
+            };
+            list = list.child(
+                div()
+                    .px(space::S4)
+                    .py(space::S2)
+                    .border_b_1()
+                    .border_color(x.ring)
+                    .bg(t.foreground.opacity(0.03))
+                    .child(widgets::muted(line, cx)),
+            );
+        }
         if self.draft.workflows.is_empty() {
             list = list.child(widgets::empty_state(
                 IconName::Keyboard,
@@ -2795,7 +2812,8 @@ impl SettingsWindow {
             let (dot, note): (Option<gpui::Hsla>, Option<String>) = match &st {
                 // A working shortcut needs no marker; only problems and pending changes get one.
                 RowStatus::Active => (None, None),
-                RowStatus::Pending => (Some(t.muted_foreground), Some("Not active yet: save to apply.".into())),
+                // One line above the list says it, rather than the same note on every row.
+                RowStatus::Pending => (Some(t.muted_foreground), None),
                 RowStatus::Conflict(why) => (Some(t.danger), Some(why.clone())),
                 RowStatus::Failed(why) => (Some(t.danger), Some(format!("The system refused it: {why}"))),
                 RowStatus::DesktopKey(key) => (
@@ -3099,7 +3117,7 @@ impl Render for SettingsWindow {
             .rounded_br(crate::chrome::corners(window).bottom_right);
         let line = self.flash.render(cx.listener(|this, _, _, cx| crate::flash::Flash::dismiss(this, cx)), cx);
         footer = footer.child(div().flex_1().min_w_0().children(line));
-        footer = footer.child(widgets::pill("save", "Save", Pill::Dark, false, cx.listener(|this, _, _, cx| this.save(cx)), cx));
+        footer = footer.child(widgets::pill("save", "Save", Pill::Primary, false, cx.listener(|this, _, _, cx| this.save(cx)), cx));
         let settings_label =
             div().font_family(text::HEADING_FONT).font_weight(FontWeight::SEMIBOLD).text_size(text::SECTION).child("Settings");
         let body = div()
@@ -3108,7 +3126,8 @@ impl Render for SettingsWindow {
             .flex()
             .flex_col()
             .child(
-                div().id("settings-scroll").flex_1().overflow_y_scrollbar().child(
+                // One scroll position per page: a page opens at its top, not where the last one was left.
+                div().id("settings-scroll").flex_1().overflow_y_scrollbar().id(("settings-scroll", self.page as usize)).child(
                     div()
                         .max_w(px(780.))
                         .mx_auto()
