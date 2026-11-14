@@ -111,7 +111,7 @@ pub struct LibraryCard {
     pub id: i64,
     /// The file name, or the link for link-only items.
     pub name: String,
-    /// "Today 21:35", "Yesterday 09:12", "Wednesday", "8 Nov", "8 Nov 2025".
+    /// "Today 21:35", "Yesterday 09:12", "Wednesday 14:05", "8 Nov", "8 Nov 2025".
     pub when: String,
     /// The grid card's label: how long ago for a file ("2 min ago", "Today 14:03"), since every
     /// capture's name starts the same; the name for a link. The full name goes in the tooltip.
@@ -125,6 +125,8 @@ pub struct LibraryCard {
     pub short_url: Option<String>,
     pub thumbnail: Option<PathBuf>,
     pub is_image: bool,
+    /// The file was moved or deleted since the capture. Filled in by the caller, which can check.
+    pub missing: bool,
 }
 
 pub fn card(item: &HistoryItem, now: DateTime) -> LibraryCard {
@@ -147,6 +149,7 @@ pub fn card(item: &HistoryItem, now: DateTime) -> LibraryCard {
         short_url: row.short_url,
         thumbnail: row.thumbnail,
         is_image: item.kind == HistoryKind::Image,
+        missing: false,
     }
 }
 
@@ -162,14 +165,14 @@ pub fn ago(time: DateTime, now: DateTime) -> String {
     }
 }
 
-/// A short, human time: today and yesterday with the time, the past week by weekday, then a date.
+/// A short, human time: today and yesterday with the time, the past week by weekday and time, then a date.
 pub fn relative_when(time: DateTime, now: DateTime) -> String {
     let hm = format!("{:02}:{:02}", time.hour(), time.minute());
     let days = now.date().since(time.date()).map(|span| span.get_days()).unwrap_or(i32::MAX);
     match days {
         0 => format!("Today {hm}"),
         1 => format!("Yesterday {hm}"),
-        2..=6 => weekday(time).to_string(),
+        2..=6 => format!("{} {hm}", weekday(time)),
         _ if time.year() == now.year() => format!("{} {}", time.day(), MONTHS[time.month() as usize - 1]),
         _ => format!("{} {} {}", time.day(), MONTHS[time.month() as usize - 1], time.year()),
     }
@@ -206,7 +209,7 @@ mod tests {
         let now = date(2026, 11, 8).at(21, 40, 0, 0);
         assert_eq!(relative_when(date(2026, 11, 8).at(21, 35, 0, 0), now), "Today 21:35");
         assert_eq!(relative_when(date(2026, 11, 7).at(9, 5, 0, 0), now), "Yesterday 09:05");
-        assert_eq!(relative_when(date(2026, 11, 4).at(12, 0, 0, 0), now), "Wednesday");
+        assert_eq!(relative_when(date(2026, 11, 4).at(12, 0, 0, 0), now), "Wednesday 12:00");
         assert_eq!(relative_when(date(2026, 10, 2).at(12, 0, 0, 0), now), "2 Oct");
         assert_eq!(relative_when(date(2025, 10, 2).at(12, 0, 0, 0), now), "2 Oct 2025");
     }

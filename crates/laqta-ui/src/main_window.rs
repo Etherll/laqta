@@ -25,7 +25,7 @@ use crate::thumbnails;
 use crate::widgets::{self, Pill, Tone};
 
 /// How many items the library shows; "See all" opens History for the rest.
-const LIBRARY_LIMIT: u32 = 24;
+const LIBRARY_LIMIT: u32 = 12;
 
 pub(crate) fn open(cx: &mut App) {
     if activate(cx.global::<UiState>().main, cx) {
@@ -132,7 +132,11 @@ impl MainWindow {
                     .iter()
                     .filter(|i| library::keep(tab, i))
                     .take(LIBRARY_LIMIT as usize)
-                    .map(|i| library::card(i, now))
+                    .map(|i| {
+                        let mut card = library::card(i, now);
+                        card.missing = card.path.as_ref().is_some_and(|p| !p.exists());
+                        card
+                    })
                     .collect::<Vec<_>>()
             })
         });
@@ -395,18 +399,50 @@ fn capture_card(c: &CaptureCard, featured: bool, hotkeys: &[(KeyChord, Action)],
     let wash = theme::extra(cx).wash;
     // A 32px tile: the shared 36px tile, shrunk for these compact cards.
     let tile = widgets::icon_tile(c.glyph, featured, cx).size(px(32.)).rounded(radius::SM + px(2.));
-    let mut top = div().flex().items_start().justify_between().child(tile);
+    let mut top = div().flex().items_start().justify_between().gap(space::S2).child(tile);
+    let group = SharedString::from(format!("{}-group", c.id));
     if let Some(keys) = hotkey_label(hotkeys, c.action, crate::host_os()) {
         top = top.child(widgets::kbd(keys, cx));
-    }
-    let el = widgets::card(cx).id(c.id).flex().flex_col().gap(space::S3).p(space::S4).hover(move |s| s.bg(wash)).child(top).child(
-        div()
+    } else {
+        // No shortcut yet: a quiet way to add one, shown when the card is hovered or reached by Tab.
+        let open = on_dispatch(Action::OpenSettings, cx);
+        let link = div()
+            .id(SharedString::from(format!("{}-set-key", c.id)))
+            .h(px(20.))
+            .px(px(6.))
             .flex()
-            .flex_col()
-            .gap(px(2.))
-            .child(div().text_size(text::BODY).font_weight(FontWeight::MEDIUM).child(c.title))
-            .child(div().truncate().text_size(text::LABEL).text_color(t.muted_foreground).child(c.hint)),
-    );
+            .items_center()
+            .rounded(radius::SM)
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .text_size(text::SMALL)
+            .text_color(t.muted_foreground)
+            .hover({
+                let fg = t.foreground;
+                move |s| s.text_color(fg)
+            })
+            .opacity(0.)
+            .group_hover(group.clone(), |s| s.opacity(1.))
+            .focus_visible(|s| s.opacity(1.))
+            .child("Set shortcut");
+        top = top.child(widgets::clickable(
+            link,
+            move |e, w, cx| {
+                cx.stop_propagation();
+                open(e, w, cx)
+            },
+            cx,
+        ));
+    }
+    let el =
+        widgets::card(cx).id(c.id).group(group).flex().flex_col().gap(space::S3).p(space::S4).hover(move |s| s.bg(wash)).child(top).child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(div().text_size(text::BODY).font_weight(FontWeight::MEDIUM).child(c.title))
+                .child(div().truncate().text_size(text::LABEL).text_color(t.muted_foreground).child(c.hint)),
+        );
     widgets::clickable(el, on_dispatch(c.action, cx), cx).into_any_element()
 }
 
@@ -436,6 +472,7 @@ fn glyph_icon(g: CardGlyph) -> IconName {
 
 /// A round icon button that sits on a thumbnail: dark glass, white glyph.
 fn overlay_button(
+    group: &SharedString,
     id: SharedString,
     glyph: IconName,
     tip: &'static str,
@@ -453,6 +490,11 @@ fn overlay_button(
         .border_color(gpui::transparent_black())
         .bg(gpui::black().opacity(0.62))
         .hover(|s| s.bg(gpui::black().opacity(0.8)))
+        // Out of the way until the card is hovered, so the thumbnails read as pictures; a button
+        // reached with Tab shows itself.
+        .opacity(0.)
+        .group_hover(group.clone(), |s| s.opacity(1.))
+        .focus_visible(|s| s.opacity(1.))
         .aria_label(tip)
         .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(tip).build(window, cx))
         .child(widgets::icon(glyph, gpui::white()).size(crate::theme::icon::SM));
@@ -628,10 +670,20 @@ impl MainWindow {
                 .flex()
                 .items_center()
                 .justify_center()
-                .when(image.is_none(), |d| d.bg(t.foreground.opacity(0.04)))
+                .when(image.is_none() || c.missing, |d| d.bg(t.foreground.opacity(0.04)))
                 .child(match image {
-                    Some(image) => img(image).size_full().rounded(radius::LG).object_fit(gpui::ObjectFit::Cover).into_any_element(),
-                    None => widgets::icon(glyph_icon(c.glyph), t.muted_foreground).size(px(28.)).into_any_element(),
+                    Some(image) if !c.missing => {
+                        img(image).size_full().rounded(radius::LG).object_fit(gpui::ObjectFit::Cover).into_any_element()
+                    }
+                    _ if c.missing => div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(space::S2)
+                        .child(widgets::icon(IconName::TriangleAlert, t.warning).size(px(24.)))
+                        .child(div().text_size(text::SMALL).text_color(t.muted_foreground).child("File not found"))
+                        .into_any_element(),
+                    _ => widgets::icon(glyph_icon(c.glyph), t.muted_foreground).size(px(28.)).into_any_element(),
                 })
                 .child(self.overlay_actions(c, &group, cx));
             let mut card = div()
@@ -663,7 +715,7 @@ impl MainWindow {
                 );
             let name = SharedString::from(c.name.clone());
             card = card.tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(name.clone()).build(window, cx));
-            if let Some(open) = open_card(c, cx) {
+            if let Some(open) = open_card(c, cx).filter(|_| !c.missing) {
                 card = widgets::clickable(card, open, cx);
             }
             grid = grid.child(card);
@@ -671,19 +723,58 @@ impl MainWindow {
         grid.into_any_element()
     }
 
+    /// Removes a history entry whose file is gone; nothing on disk changes.
+    fn remove(&mut self, id: i64, cx: &mut Context<Self>) {
+        let write = cx.global::<UiState>().services.app.history_delete(id);
+        let task = cx.background_spawn(async move { write.await.map_err(|e| e.to_string()) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => this.flash("Removed from history", cx),
+                    Err(e) => {
+                        tracing::warn!("remove from history: {e}");
+                        this.flash("Couldn't remove it from history", cx)
+                    }
+                }
+                this.reload(cx);
+            });
+        })
+        .detach();
+    }
+
     /// Hover actions in the corner of a thumbnail.
     fn overlay_actions(&self, c: &LibraryCard, group: &SharedString, cx: &mut Context<Self>) -> Div {
-        let mut bar = div()
-            .absolute()
-            .top(space::S2)
-            .right(space::S2)
-            .flex()
-            .gap(space::S1)
-            .opacity(crate::theme::QUIET_OPACITY)
-            .group_hover(group.clone(), |s| s.opacity(1.));
+        let mut bar = div().flex().gap(space::S1);
+        // The destructive button sits alone in the other corner, away from Copy and Edit.
+        let corner = |bar: Div, remove: Option<AnyElement>| {
+            div()
+                .absolute()
+                .top(space::S2)
+                .left(space::S2)
+                .right(space::S2)
+                .flex()
+                .justify_between()
+                .child(div().children(remove))
+                .child(bar)
+        };
+        // Removing only drops the history entry; the file stays on disk.
+        let id = c.id;
+        let remove = overlay_button(
+            group,
+            SharedString::from(format!("lib-remove-{}", c.id)),
+            IconName::Trash,
+            "Remove from history",
+            cx.listener(move |this, _, _, cx| this.remove(id, cx)),
+            cx,
+        );
+        if c.missing {
+            return corner(bar, Some(remove));
+        }
         if let Some(path) = c.path.clone() {
             let p = path.clone();
             bar = bar.child(overlay_button(
+                group,
                 SharedString::from(format!("lib-copy-{}", c.id)),
                 IconName::Copy,
                 if c.is_image { "Copy image" } else { "Copy path" },
@@ -694,6 +785,7 @@ impl MainWindow {
                 let (edit, text, pin) = (path.clone(), path.clone(), path.clone());
                 bar = bar
                     .child(overlay_button(
+                        group,
                         SharedString::from(format!("lib-edit-{}", c.id)),
                         IconName::SquarePen,
                         "Open in editor",
@@ -701,6 +793,7 @@ impl MainWindow {
                         cx,
                     ))
                     .child(overlay_button(
+                        group,
                         SharedString::from(format!("lib-text-{}", c.id)),
                         IconName::ScanText,
                         "Copy text",
@@ -708,6 +801,7 @@ impl MainWindow {
                         cx,
                     ))
                     .child(overlay_button(
+                        group,
                         SharedString::from(format!("lib-pin-{}", c.id)),
                         IconName::Pin,
                         "Pin to screen",
@@ -718,6 +812,7 @@ impl MainWindow {
                     ));
             }
             bar = bar.child(overlay_button(
+                group,
                 SharedString::from(format!("lib-folder-{}", c.id)),
                 IconName::FolderOpen,
                 "Show in folder",
@@ -729,6 +824,7 @@ impl MainWindow {
         if let Some(url) = c.short_url.clone().or_else(|| c.url.clone()) {
             let tip = if c.short_url.is_some() { "Copy short link" } else { "Copy link" };
             bar = bar.child(overlay_button(
+                group,
                 SharedString::from(format!("lib-link-{}", c.id)),
                 IconName::Link,
                 tip,
@@ -739,7 +835,7 @@ impl MainWindow {
                 cx,
             ));
         }
-        bar
+        corner(bar, Some(remove))
     }
 
     fn list_row(&self, c: &LibraryCard, cx: &mut Context<Self>) -> AnyElement {
@@ -815,8 +911,8 @@ impl Render for MainWindow {
         // Content width decides the grid columns, so a narrow window reflows instead of squeezing.
         let content_w = f32::from(window.viewport_size().width) - f32::from(theme::SIDEBAR_W) - 2. * f32::from(space::S10);
         let capture_cols = if content_w >= 700. { 4 } else { 2 };
-        // Library cards are at least 200px wide.
-        let library_cols = ((content_w.min(1040.) + 16.) / 216.).floor().clamp(2., 5.) as u16;
+        // Library cards are at least 200px wide; a wide window shows a sixth column, not wider cards.
+        let library_cols = ((content_w.min(1280.) + 16.) / 216.).floor().clamp(2., 6.) as u16;
 
         let settings = cx.global::<UiState>().services.app.settings();
         let hotkeys = settings.hotkey_bindings();
@@ -861,7 +957,7 @@ impl Render for MainWindow {
 
         let content = div().id("main-content").flex_1().min_w_0().h_full().overflow_y_scrollbar().child(
             div()
-                .max_w(px(1120.))
+                .max_w(px(1360.))
                 .mx_auto()
                 .px(space::S10)
                 .pt(space::S8)
