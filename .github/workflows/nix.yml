@@ -39,12 +39,12 @@ jobs:
     name: nix build (x86_64-linux)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
         with:
           # Fetching the flake inputs through GitHub's API without a token hits its rate limit.
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: cachix/cachix-action@v16
+      - uses: cachix/cachix-action@v17
         if: vars.CACHIX_CACHE != ''
         with:
           name: ${{ vars.CACHIX_CACHE }}

@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         # Only main saves: per-PR caches overflowed the 10 GB limit and evicted main's.
@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         # Only main saves: per-PR caches overflowed the 10 GB limit and evicted main's.
@@ -75,7 +75,7 @@ jobs:
         env: { DISPLAY: ":99" }
       - name: Keep the test report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: junit-linux-x11
           path: target/nextest/ci/junit.xml
@@ -88,7 +88,7 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         # Only main saves: per-PR caches overflowed the 10 GB limit and evicted main's.
@@ -106,7 +106,7 @@ jobs:
       - run: cargo nextest run -p laqta-platform-linux --profile ci
       - name: Keep the test report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: junit-linux-wayland
           path: target/nextest/ci/junit.xml
@@ -122,7 +122,7 @@ jobs:
     env:
       VCPKGRS_TRIPLET: x64-windows-static-md
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: samypr100/setup-dev-drive@v4
         with: { drive-size: 12GB, workspace-copy: true }
@@ -144,7 +144,7 @@ jobs:
     env:
       VCPKGRS_TRIPLET: x64-windows-static-md
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: samypr100/setup-dev-drive@v4
         with: { drive-size: 12GB, workspace-copy: true }
@@ -160,7 +160,7 @@ jobs:
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
       - name: Keep the test report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: junit-windows
           path: ${{ env.DEV_DRIVE_WORKSPACE }}/target/nextest/ci/junit.xml
@@ -175,7 +175,7 @@ jobs:
     timeout-minutes: 75
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         # Only main saves: per-PR caches overflowed the 10 GB limit and evicted main's.
@@ -205,7 +205,7 @@ jobs:
         run: ci/mac-smoke.sh target/mac/Laqta.app target/mac/smoke
       - name: Keep the screenshots, logs and test report
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-smoke
           path: |
