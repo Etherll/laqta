@@ -202,8 +202,14 @@ jobs:
           xcrun notarytool submit dist/laqta-macos-universal.dmg --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
           xcrun stapler staple dist/laqta-macos-universal.dmg
           spctl --assess --type open --context context:primary-signature -v dist/laqta-macos-universal.dmg
+      - name: Update bundle
+        # The in-app updater replaces an installed Laqta.app with this zip (ADR 033). ditto keeps
+        # the bundle's signature and symlinks; --keepParent puts Laqta.app at the zip's top level.
+        run: ditto -c -k --keepParent build/Laqta.app dist/laqta-macos-universal.app.zip
       - name: Checksum
-        run: cd dist && shasum -a 256 laqta-macos-universal.dmg > laqta-macos-universal.dmg.sha256
+        run: |
+          cd dist
+          for f in laqta-macos-universal.dmg laqta-macos-universal.app.zip; do shasum -a 256 "$f" > "$f.sha256"; done
       - uses: actions/upload-artifact@v4
         with:
           name: macos
@@ -221,7 +227,7 @@ jobs:
         # Only the packages: the CI checks above also upload test reports and macOS screenshots.
         with: { path: dist, merge-multiple: true, pattern: "{linux,windows,macos}" }
       - name: SHA256SUMS
-        # The in-app updater checks the Windows update package against this list.
+        # The in-app updater checks every package it downloads against this list.
         run: cd dist && sha256sum $(ls | grep -v '\.sha256$') > SHA256SUMS && cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:

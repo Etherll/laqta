@@ -866,7 +866,6 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             Arc::new(ui.clone()),
             model_options.clone(),
             platform.os_ocr.clone(),
-            system_ocr_name().unwrap_or_default(),
             releaser.clone(),
         )),
         window_ops: platform.window_ops.clone(),
@@ -1295,7 +1294,7 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
                 ui_quit.quit();
             })
             .map_err(|e| e.to_string())?;
-        let last_release: Arc<Mutex<Option<laqta_update::Release>>> = Arc::new(Mutex::new(None));
+        let updater = Arc::new(crate::updates::Updater::new(data.clone()));
         let quit_ui = quit_tx.clone();
         let services = UiServices {
             hotkey_report: Arc::new(|| hotkey_reports().lock().unwrap_or_else(|e| e.into_inner()).clone()),
@@ -1375,31 +1374,18 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             },
             models: Arc::new(crate::models::Models { data: data.clone(), options: model_options.clone(), system_ocr }),
             check_update: {
-                let last = last_release.clone();
+                let updater = updater.clone();
                 Arc::new(move || {
-                    let last = last.clone();
-                    Box::pin(async move {
-                        let found = laqta_http::run(crate::updates::check()).await?;
-                        let msg = crate::updates::describe(&found);
-                        let installable = found.is_some() && crate::updates::update_exe().is_some();
-                        if let Ok(mut l) = last.lock() {
-                            *l = found;
-                        }
-                        Ok((msg, installable))
-                    })
+                    let updater = updater.clone();
+                    Box::pin(async move { updater.check().await })
                 })
             },
             install_update: {
-                let last = last_release.clone();
-                let data = data.clone();
                 let quit = quit_ui.clone();
                 Arc::new(move || {
-                    let release = last.lock().ok().and_then(|l| l.clone());
-                    let data = data.clone();
-                    let quit = quit.clone();
+                    let (updater, quit) = (updater.clone(), quit.clone());
                     Box::pin(async move {
-                        let release = release.ok_or("check for updates first")?;
-                        laqta_http::run(crate::updates::install(release, data)).await?;
+                        updater.install().await?;
                         let _ = quit.send(());
                         Ok(())
                     })
