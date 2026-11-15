@@ -202,7 +202,8 @@ pub enum TaskEvent {
         area: laqta_domain::geometry::PhysRect,
     },
     /// The recording is under way: the countdown is over and its window can go. It comes before the stream opens,
-    /// so a start that fails after it ends in `RecordingFailed`.
+    /// so a start that fails after it ends in `RecordingFailed`. When the stream records only the part of the area
+    /// on one monitor, a second one follows once the stream is open, with that part as `area`.
     RecordingStarted {
         id: TaskId,
         area: laqta_domain::geometry::PhysRect,

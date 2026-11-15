@@ -70,7 +70,11 @@ fn encode_image(codecs: &Codecs, image: &Bitmap, settings: &ImageSettings) -> Re
         Ok(bytes) => (bytes, settings.format, None),
         Err(CodecError::TooLarge { width, height }) if settings.format != ImageFormat::Png => {
             let bytes = encode_as(codecs, image, ImageFormat::Png, settings.jpeg_quality).map_err(io_error)?;
-            (bytes, ImageFormat::Png, Some(format!("{width}x{height} is too large for {:?}; saved as PNG", settings.format)))
+            (
+                bytes,
+                ImageFormat::Png,
+                Some(format!("{width}x{height} is too large for {}; saved as PNG", settings.format.extension().to_uppercase())),
+            )
         }
         Err(error) => return Err(io_error(error)),
     };

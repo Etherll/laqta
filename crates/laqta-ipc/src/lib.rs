@@ -221,7 +221,7 @@ fn handle_request(line: &str, on_action: &impl Fn(Request) -> Result<(), String>
     match panic::catch_unwind(AssertUnwindSafe(|| on_action(request.clone()))) {
         Ok(result) => result,
         Err(_) => {
-            tracing::error!(?request, "ipc request handler panicked");
+            tracing::error!(request = %request.describe(), "ipc request handler panicked");
             Err("internal error".to_owned())
         }
     }

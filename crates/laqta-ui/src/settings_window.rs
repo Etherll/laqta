@@ -171,7 +171,7 @@ struct SettingsWindow {
     /// Every setting the pages show, collected on the first search (`search_index`).
     index: Option<Vec<crate::presenters::settings_search::Entry>>,
     /// The row a search result opened, drawn highlighted until the page changes.
-    highlight: Option<SharedString>,
+    highlight: Option<(String, SharedString)>,
 }
 
 struct RecordingInputs {
@@ -348,6 +348,19 @@ impl SettingsWindow {
     /// Copies text inputs into the draft. Returns the first validation error.
     fn collect(&mut self, cx: &App) -> Result<(), String> {
         self.collect_with(cx, true)
+    }
+
+    /// Stores the typed text before inputs are rebuilt from the draft. On a refused field it says what
+    /// to fix and returns false, so the rebuild does not throw the typed text away.
+    fn collect_before_rebuild(&mut self, cx: &mut Context<Self>) -> bool {
+        match self.collect(cx) {
+            Ok(()) => true,
+            Err(e) => {
+                self.say((false, crate::presenters::notice::failure_line("Fix this first", &e)), cx);
+                cx.notify();
+                false
+            }
+        }
     }
 
     /// The window's text fields, trimmed, in the shape `settings_form::apply` reads.
@@ -544,6 +557,9 @@ impl SettingsWindow {
             if matches!(ev, InputEvent::Change) {
                 this.query = input.read(cx).value().to_string();
                 this.highlight = None;
+                // Some descriptions follow the draft and the integration status, so each query reads
+                // the pages as they are now.
+                this.index = None;
                 cx.notify();
             }
         })
@@ -552,13 +568,13 @@ impl SettingsWindow {
     }
 
     /// Opens a search result: its page, with its row highlighted, and the search emptied.
-    fn open_hit(&mut self, page: usize, label: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_hit(&mut self, page: usize, section: String, label: String, window: &mut Window, cx: &mut Context<Self>) {
         self.page = PAGES[page].0;
         self.recording = None;
         self.sync_key_hook(window, cx);
         self.query.clear();
         self.search.update(cx, |s, cx| s.set_value("", window, cx));
-        self.highlight = Some(label.into());
+        self.highlight = Some((section, label.into()));
         cx.notify();
     }
 
@@ -589,8 +605,8 @@ impl SettingsWindow {
         }
     }
 
-    /// Every setting on every page, from the rows the pages build. Built once per window: labels
-    /// don't change while it is open.
+    /// Every setting on every page, from the rows the pages build. Built again for each query, as
+    /// rows and descriptions follow the draft and the integration status.
     fn search_index(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<crate::presenters::settings_search::Entry> {
         use crate::presenters::settings_search::Entry;
         let mut out = Vec::new();
@@ -633,7 +649,7 @@ impl SettingsWindow {
         // Pulled out by the row padding, so result text lines up with the heading above.
         let mut list = div().flex().flex_col().gap(px(2.)).mx(-space::S3);
         for (i, hit) in hits.into_iter().enumerate().take(60) {
-            let (page, label) = (hit.page, hit.label.clone());
+            let (page, section, label) = (hit.page, hit.section.clone(), hit.label.clone());
             let place = if hit.section.is_empty() || hit.section == hit.page_title {
                 hit.page_title.clone()
             } else {
@@ -673,7 +689,7 @@ impl SettingsWindow {
                     .items_center()
                     .child(widgets::icon(IconName::ChevronRight, muted)),
             );
-            let open = cx.listener(move |this, _, window, cx| this.open_hit(page, label.clone(), window, cx));
+            let open = cx.listener(move |this, _, window, cx| this.open_hit(page, section.clone(), label.clone(), window, cx));
             list = list.child(widgets::clickable(row, open, cx));
         }
         (heading, list)
@@ -691,6 +707,10 @@ impl SettingsWindow {
         fresh.search = self.search.clone();
         fresh.query = std::mem::take(&mut self.query);
         fresh.highlight = self.highlight.take();
+        // What the window opened with, and what a reset claimed, outlive the rebuild: Save compares
+        // against them.
+        fresh.opened = std::mem::take(&mut self.opened);
+        fresh.claimed = self.claimed;
         *self = fresh;
         // A reset mid-recording ends the recording: let the global hotkeys run again.
         self.sync_key_hook(window, cx);
@@ -707,7 +727,8 @@ impl SettingsWindow {
             Page::Image => &[Section::Image, Section::Effects, Section::Beautify],
             Page::Naming => &[Section::Naming],
             Page::Capture | Page::Automation => &[Section::Capture],
-            Page::Uploads => &[Section::Upload],
+            // The Uploads page edits the after-upload tasks too.
+            Page::Uploads => &[Section::Upload, Section::AfterUpload],
             Page::Recording => &[Section::Recording],
             _ => return None,
         };
@@ -1579,7 +1600,10 @@ impl SettingsWindow {
                         Pill::Ghost,
                         true,
                         cx.listener(move |this, _, window, cx| {
-                            let _ = this.collect(cx);
+                            // The watch inputs are rebuilt from the draft, so typed text is stored now or lost.
+                            if !this.collect_before_rebuild(cx) {
+                                return;
+                            }
                             this.draft.watch_folders.remove(i);
                             this.rebuild_watch_inputs(window, cx);
                             cx.notify();
@@ -1599,7 +1623,9 @@ impl SettingsWindow {
                 cx.spawn(async move |this, cx| {
                     if let Ok(folder) = task.await {
                         let _ = this.update_in(cx, |this, window, cx| {
-                            let _ = this.collect(cx);
+                            if !this.collect_before_rebuild(cx) {
+                                return;
+                            }
                             this.draft.watch_folders.push(laqta_domain::settings::WatchFolder { folder, ..Default::default() });
                             this.rebuild_watch_inputs(window, cx);
                             cx.notify();
@@ -2412,7 +2438,11 @@ impl SettingsWindow {
                     .child(self.sw(
                         "include-own-windows",
                         "Include Laqta's own windows",
-                        Some("Lets you capture Laqta's windows: they stay on screen and can be picked as a window. Off: they hide while you capture."),
+                        Some(if cfg!(target_os = "macos") {
+                            "Lets you capture Laqta's windows and pick them as a window. Off: they stay on screen but are left out of the capture."
+                        } else {
+                            "Lets you capture Laqta's windows: they stay on screen and can be picked as a window. Off: they hide while you capture."
+                        }),
                         |s| s.defaults.capture.include_own_windows,
                         |this, v| this.draft.defaults.capture.include_own_windows = v,
                         cx,

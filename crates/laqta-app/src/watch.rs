@@ -21,8 +21,10 @@ impl App {
         watches.clear();
         let outputs = screenshot_folders(&settings);
         for folder in settings.watch_folders.iter().filter(|f| f.enabled && !f.folder.as_os_str().is_empty()) {
-            // Laqta's own files must not come back as new ones, so its screenshots folder is not watched.
-            if is_inside_any(&folder.folder, &outputs) {
+            // Laqta's own files must not come back as new ones, so a folder it saves captures into (the
+            // screenshots folder, or a subfolder its naming makes) is not watched. Another folder below it
+            // (an "Inbox" inside the screenshots folder) is.
+            if saves_into(&folder.folder, &outputs, &subfolder_patterns(&settings)) {
                 tracing::warn!(folder = %folder.folder.display(), "watch folder skipped: it is a screenshots folder");
                 continue;
             }
@@ -58,8 +60,15 @@ impl App {
         if !matches_filter(&folder.filter, &name) {
             return;
         }
-        // A folder above the screenshots folder, with its subfolders, sees Laqta's own files arrive.
-        if is_inside_any(&path, &screenshot_folders(&self.settings.get())) {
+        // A folder above the screenshots folder, with its subfolders, sees Laqta's own files arrive. A
+        // watched folder below the screenshots folder is the user's own drop folder, so what lands in it
+        // counts.
+        let settings = self.settings.get();
+        let outputs = screenshot_folders(&settings);
+        let drop_folder = is_inside_any(&folder.folder, &outputs)
+            && !saves_into(&folder.folder, &outputs, &subfolder_patterns(&settings))
+            && is_inside(&path, &folder.folder);
+        if !drop_folder && is_inside_any(&path, &outputs) {
             return;
         }
         let path = if folder.move_to_screenshots {
@@ -90,6 +99,76 @@ fn screenshot_folders(settings: &laqta_domain::Settings) -> Vec<PathBuf> {
     folders
 }
 
+/// The naming subfolder patterns captures are saved under: the default one and the shortcuts' own.
+fn subfolder_patterns(settings: &laqta_domain::Settings) -> Vec<String> {
+    let mut patterns = vec![settings.defaults.naming.subfolder.clone()];
+    patterns.extend(settings.workflows.iter().filter_map(|w| w.patch.naming.as_ref().map(|n| n.subfolder.clone())));
+    patterns
+}
+
+/// Whether Laqta may save captures into `folder` or below it: it is one of `outputs`, or a subfolder of one
+/// that the start of a subfolder pattern could name ("2026-11" for `%y-%mo`, not "Inbox").
+fn saves_into(folder: &Path, outputs: &[PathBuf], patterns: &[String]) -> bool {
+    outputs.iter().filter(|output| is_inside(folder, output)).any(|output| {
+        let below: Vec<String> =
+            folder.components().skip(output.components().count()).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+        below.is_empty()
+            || patterns.iter().any(|pattern| {
+                let segments: Vec<&str> = pattern.split(['/', '\\']).filter(|s| !s.trim().is_empty()).collect();
+                below.len() <= segments.len() && below.iter().zip(&segments).all(|(name, segment)| could_name(segment, name))
+            })
+    })
+}
+
+/// Whether one segment of a subfolder pattern could expand to `name`: its literal text in order, with
+/// at least one character for each `%` token, and only digits for the number tokens (dates, times,
+/// counters), so "Inbox" is never a `%y` folder.
+fn could_name(segment: &str, name: &str) -> bool {
+    enum Part {
+        Text(String),
+        Digits,
+        Any,
+    }
+    const NUMBERS: &[&str] = &["y", "yy", "mo", "d", "h", "mi", "s", "ms", "wy", "unix", "i", "rn", "width", "height"];
+    let fold = |s: &str| if cfg!(any(windows, target_os = "macos")) { s.to_lowercase() } else { s.to_owned() };
+    // A token is `%`, its name, and an optional `{...}` argument; token names keep their case.
+    let mut parts = Vec::new();
+    let mut chars = segment.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            match parts.last_mut() {
+                Some(Part::Text(text)) => text.push_str(&fold(&c.to_string())),
+                _ => parts.push(Part::Text(fold(&c.to_string()))),
+            }
+            continue;
+        }
+        let mut token = String::new();
+        while let Some(&c) = chars.peek().filter(|c| c.is_ascii_alphanumeric()) {
+            token.push(c);
+            chars.next();
+        }
+        if chars.peek() == Some(&'{') {
+            for c in chars.by_ref() {
+                if c == '}' {
+                    break;
+                }
+            }
+        }
+        parts.push(if NUMBERS.contains(&token.as_str()) { Part::Digits } else { Part::Any });
+    }
+    fn fits(parts: &[Part], name: &str) -> bool {
+        let Some((part, rest)) = parts.split_first() else { return name.is_empty() };
+        match part {
+            Part::Text(text) => name.strip_prefix(text.as_str()).is_some_and(|tail| fits(rest, tail)),
+            Part::Digits | Part::Any => name.char_indices().skip(1).map(|(at, _)| at).chain([name.len()]).any(|at| {
+                let taken = &name[..at];
+                !taken.is_empty() && (matches!(part, Part::Any) || taken.chars().all(|c| c.is_ascii_digit())) && fits(rest, &name[at..])
+            }),
+        }
+    }
+    fits(&parts, &fold(name))
+}
+
 /// Whether `path` is one of `folders` or below one. A pure rule on the path's components; Windows paths
 /// ignore case.
 fn is_inside_any(path: &Path, folders: &[PathBuf]) -> bool {
@@ -97,6 +176,11 @@ fn is_inside_any(path: &Path, folders: &[PathBuf]) -> bool {
 }
 
 fn is_inside(path: &Path, folder: &Path) -> bool {
+    // macOS volumes ignore case by default as well; there only case is folded.
+    if cfg!(target_os = "macos") {
+        let fold_all = |p: &Path| PathBuf::from(fold(&p.to_string_lossy()).into_iter().collect::<String>());
+        return fold_all(path).starts_with(fold_all(folder));
+    }
     is_inside_with(path, folder, cfg!(windows))
 }
 
@@ -172,7 +256,23 @@ fn wildcard_matches(pattern: &[char], text: &[char]) -> bool {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{is_inside, is_inside_any, is_inside_with, matches_filter};
+    use super::{could_name, is_inside, is_inside_any, is_inside_with, matches_filter};
+
+    #[test]
+    fn a_subfolder_pattern_names_only_folders_its_literal_text_fits() {
+        assert!(could_name("%y-%mo", "2026-11"));
+        assert!(!could_name("%y-%mo", "Inbox"));
+        assert!(!could_name("%y-%mo", "-11"), "each token takes a character");
+        assert!(could_name("Shots %y", "Shots 2026"));
+        assert!(could_name("%rf{a/b.txt}", "anything"));
+        assert!(could_name("Inbox", "Inbox"));
+        assert!(!could_name("%y", "Inbox"), "a year is digits");
+        assert!(could_name("%y", "2026"));
+        assert!(could_name("%y%mo", "202611"));
+        assert!(could_name("%pn", "Inbox"), "a process name can be any text");
+        assert!(could_name("%mon %y", "November 2026"));
+        assert!(!could_name("Inbox", "Outbox"));
+    }
 
     #[test]
     fn windows_paths_ignore_case_and_a_verbatim_prefix() {

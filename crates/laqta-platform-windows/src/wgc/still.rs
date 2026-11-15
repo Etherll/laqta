@@ -70,7 +70,9 @@ mod imp {
         let _apartment = Apartment::enter();
         let mut frames = Vec::new();
         for handle in monitor_handles() {
-            let Some(monitor) = monitor_from_handle(handle) else { continue };
+            let Some(monitor) = monitor_from_handle(handle) else {
+                return Err(PortError::Failed("Windows.Graphics.Capture: a monitor could not be described".into()));
+            };
             frames.push(grab(handle, monitor, None)?);
         }
         if frames.is_empty() {

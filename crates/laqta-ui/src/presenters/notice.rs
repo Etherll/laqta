@@ -66,11 +66,16 @@ impl Notice {
 
 /// How long `n` stays up: info fades after five seconds; a failure stays until it is dismissed.
 pub fn lifetime(n: &Notice) -> Option<std::time::Duration> {
-    if n.error { None } else { Some(std::time::Duration::from_millis(5000)) }
+    if n.error { None } else { Some(std::time::Duration::from_millis(u64::from(INFO_MS))) }
 }
+
+/// How long an info notice stays up.
+const INFO_MS: u32 = 5000;
 
 /// The shortest an info notice may stay up: long enough to read its headline.
 pub const MIN_INFO_MS: u32 = 4000;
+
+const _: () = assert!(INFO_MS >= MIN_INFO_MS, "an info notice must stay long enough to read");
 
 /// The longest reason shown; the rest is in the detail.
 const REASON_MAX: usize = 140;

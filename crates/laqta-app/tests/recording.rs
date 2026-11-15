@@ -1025,6 +1025,13 @@ fn an_area_over_two_monitors_is_clipped_to_the_larger_part_with_a_warning() {
             seen.iter().any(|event| matches!(event, TaskEvent::StepFailed { step: "recording area", .. })),
             "the clip is reported: {seen:?}"
         );
+        let started: Vec<PhysRect> =
+            seen.iter().filter_map(|event| if let TaskEvent::RecordingStarted { area, .. } = event { Some(*area) } else { None }).collect();
+        assert_eq!(
+            started.last(),
+            Some(&PhysRect { x: 8, y: 0, width: 6, height: 6 }),
+            "the bar and border follow the recorded part: {seen:?}"
+        );
         assert!(h.app.is_recording());
     });
 }

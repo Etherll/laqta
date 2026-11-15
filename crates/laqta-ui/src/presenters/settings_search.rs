@@ -43,9 +43,9 @@ pub fn search<'a>(entries: &'a [Entry], query: &str) -> Vec<&'a Entry> {
         })
         .collect();
     hits.sort_by_key(|(rank, i, _)| (*rank, *i));
-    // The same label on the same page (a row built twice) shows once.
+    // The same row (one label in one section of one page, built twice) shows once.
     let mut seen = std::collections::HashSet::new();
-    hits.into_iter().filter(|(_, _, e)| seen.insert((e.page, e.label.clone()))).map(|(_, _, e)| e).collect()
+    hits.into_iter().filter(|(_, _, e)| seen.insert((e.page, e.section.clone(), e.label.clone()))).map(|(_, _, e)| e).collect()
 }
 
 /// "1 setting" / "12 settings" matching the query, for the results heading.

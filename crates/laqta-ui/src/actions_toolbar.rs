@@ -109,7 +109,12 @@ impl Render for ActionsToolbar {
                 .ghost()
                 .rounded(crate::theme::radius::PILL)
                 .tooltip("Close the toolbar")
-                .on_click(|_, _, cx| toggle(cx)),
+                // Closed here, not through `toggle`: from inside its own window the handle cannot be
+                // updated, and `toggle` would take that for no toolbar and open a second one.
+                .on_click(|_, window, cx| {
+                    cx.global_mut::<UiState>().actions_toolbar = None;
+                    window.remove_window();
+                }),
         );
         div().size_full().flex().items_center().justify_center().p(px(SHADOW_PAD)).child(bar)
     }

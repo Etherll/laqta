@@ -26,7 +26,13 @@ pub struct TaskList {
     rows: Vec<TaskRow>,
     /// Counts the events that can change the history library, so a view reloads it only then.
     library_generation: u64,
+    /// Tasks whose settled row the user dismissed: a late event for one (a delete, say) must not bring
+    /// it back as a new row. The newest few are kept.
+    dismissed: Vec<TaskId>,
 }
+
+/// How many dismissed tasks are remembered.
+const MAX_DISMISSED: usize = 64;
 
 /// Whether `event` can change what the history library holds: a save (the history writer records
 /// it), a delete, or a task settling. Progress, recording ticks and the rest only repaint.
@@ -93,6 +99,10 @@ impl TaskList {
             .position(|r| r.id == id && matches!(r.status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Stopped))
         {
             self.rows.remove(pos);
+            if self.dismissed.len() == MAX_DISMISSED {
+                self.dismissed.remove(0);
+            }
+            self.dismissed.push(id);
         }
     }
 
@@ -122,6 +132,9 @@ impl TaskList {
     pub fn apply(&mut self, event: &TaskEvent) {
         if changes_library(event) {
             self.library_generation += 1;
+        }
+        if self.dismissed.contains(&event.id()) {
+            return;
         }
         let row = self.row(event.id());
         match event {
@@ -193,7 +206,14 @@ impl TaskList {
                     row.path = partial.clone().or(row.path.take());
                 }
             }
-            TaskEvent::SaveSkipped { path, .. } => row.detail = format!("Skipped: a file named “{}” already exists", path.display()),
+            // Name and folder, as the toasts say it, not the full path.
+            TaskEvent::SaveSkipped { path, .. } => {
+                let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                row.detail = match path.parent().and_then(|p| p.file_name()) {
+                    Some(dir) => format!("Skipped: “{name}” already exists in {}", dir.to_string_lossy()),
+                    None => format!("Skipped: a file named “{name}” already exists"),
+                };
+            }
             TaskEvent::StepFailed { step, reason, .. } => row.detail = format!("{step} failed: {reason}"),
             _ => {}
         }
@@ -203,6 +223,17 @@ impl TaskList {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dismissed_row_stays_gone_when_a_late_event_arrives() {
+        let mut list = TaskList::default();
+        let id = TaskId(7);
+        list.apply(&TaskEvent::StatusChanged { id, status: TaskStatus::Completed });
+        list.dismiss(id);
+        list.apply(&TaskEvent::Deleted { id, path: PathBuf::from("a.png") });
+        assert!(list.rows.is_empty());
+        assert!(!list.is_running());
+    }
 
     #[test]
     fn tones_cover_every_status() {
@@ -264,7 +295,7 @@ mod tests {
     fn a_skipped_save_names_the_file() {
         let mut list = TaskList::default();
         list.apply(&TaskEvent::SaveSkipped { id: TaskId(5), path: "/s/a.png".into() });
-        assert_eq!(list.rows()[0].detail, "Skipped: a file named “/s/a.png” already exists");
+        assert_eq!(list.rows()[0].detail, "Skipped: “a.png” already exists in s");
     }
 
     #[test]

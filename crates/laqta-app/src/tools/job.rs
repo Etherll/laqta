@@ -184,6 +184,8 @@ impl App {
             ToolJob::Clipboard => O::Clipboard(ports.clipboard.get()?),
             ToolJob::Borderless { title, on } => {
                 let needle = title.to_lowercase();
+                // Laqta's own windows are never a window to make borderless.
+                ports.hover.set_include_own_windows(false);
                 let target =
                     ports.hover.targets().await?.into_iter().find(|w| !needle.is_empty() && w.title.to_lowercase().contains(&needle));
                 match target {

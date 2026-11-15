@@ -410,8 +410,9 @@ impl OverlayModel {
 
     /// A toolbar button or its shortcut.
     pub(crate) fn pick(&mut self, item: Item, cx: &mut Context<Self>) {
-        // The export under way is of the marks as they are.
-        if self.finishing {
+        // The export under way is of the marks as they are. Cancel still works, so an export that never
+        // ends does not leave the toolbar with no way out.
+        if self.finishing && item != Item::Cancel {
             return;
         }
         // A tool picked while Space is held is the one to keep; reading the text puts the tools
@@ -685,7 +686,7 @@ fn button(model: Entity<OverlayModel>, item: Item, active: bool, enabled: bool) 
         _ => (!enabled).then_some("Not available now"),
     };
     let tip = match reason {
-        Some(r) => format!("{}  ·  {r}", bar::label(item)),
+        Some(r) => format!("{tip}  ·  {r}"),
         None => tip,
     };
     let is_tool = matches!(item, Item::Pointer | Item::Tool(_));

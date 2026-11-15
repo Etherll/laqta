@@ -248,7 +248,7 @@ pub trait ToolHost: Send + Sync {
     /// Shows a colour picked from the screen in the colour picker.
     fn show_color(&self, color: laqta_domain::color::Rgba) -> Result<(), PortError> {
         let _ = color;
-        Err(PortError::Unsupported("the colour picker".into()))
+        Err(PortError::Unsupported("the color picker".into()))
     }
 
     /// Shows a tool's text result (OCR, QR decode, ruler, inspector) with a copy button.

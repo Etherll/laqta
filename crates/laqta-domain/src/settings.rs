@@ -49,7 +49,7 @@ pub struct Settings {
 }
 
 /// Bounds for numbers the settings window takes as text. The window shows an error for a value outside
-/// them and never changes it silently; the code that reads a setting clamps again as a last guard.
+/// them and never changes it silently; a settings file read at start-up is clamped to them.
 pub mod limits {
     /// JPEG quality, in percent.
     pub const JPEG_QUALITY: (u32, u32) = (1, 100);
@@ -69,6 +69,18 @@ pub mod limits {
     pub const SCROLL_FRAMES: (u32, u32) = (2, 500);
     pub const SCROLL_AMOUNT: (u32, u32) = (1, 50);
     pub const SCROLL_DELAY_MS: (u32, u32) = (50, 60_000);
+    /// Waits before a capture or a scrolling capture starts, in milliseconds.
+    pub const DELAY_MS: (u32, u32) = (0, 600_000);
+    /// Recording countdown, in seconds.
+    pub const COUNTDOWN_SECS: (u32, u32) = (0, 3_600);
+    /// Fixed recording length, in seconds (0: until stopped).
+    pub const FIXED_DURATION_SECS: (u32, u32) = (0, 86_400);
+    /// Largest GIF width, in pixels (0: no limit). Below the smallest a GIF is not worth keeping.
+    pub const GIF_MAX_WIDTH: (u32, u32) = (16, 7_680);
+    /// Thumbnail width or height, in pixels (0: follows the other side).
+    pub const THUMBNAIL_PX: (u32, u32) = (0, 4_096);
+    /// Scrolling capture: fixed rows at the top or bottom, in pixels.
+    pub const IGNORE_ROWS: (u32, u32) = (0, 10_000);
 }
 
 impl AutoCaptureOptions {
@@ -100,12 +112,18 @@ impl std::fmt::Display for SettingsIssue {
             SettingsIssue::AutoCaptureInterval { interval_ms } => write!(
                 f,
                 "The auto-capture interval must be between {} and {} seconds, not {}",
-                AutoCaptureOptions::MIN_INTERVAL_MS / 1000,
-                AutoCaptureOptions::MAX_INTERVAL_MS / 1000,
-                interval_ms / 1000
+                seconds(AutoCaptureOptions::MIN_INTERVAL_MS),
+                seconds(AutoCaptureOptions::MAX_INTERVAL_MS),
+                seconds(*interval_ms)
             ),
         }
     }
+}
+
+/// `ms` in seconds, with the fraction only when there is one ("1", "0.5", "1.25").
+fn seconds(ms: u32) -> String {
+    let (whole, part) = (ms / 1000, ms % 1000);
+    if part == 0 { whole.to_string() } else { format!("{whole}.{part:03}").trim_end_matches('0').to_owned() }
 }
 
 /// What is wrong with `settings`, in the order a person would fix it; empty when it can be saved.
@@ -434,8 +452,11 @@ mod tests {
         assert_eq!(Settings::default().tray_click, Action::OpenMainWindow);
     }
 
+    const PICS: &str = if cfg!(windows) { r"C:\pics" } else { "/pics" };
+
     fn settings() -> Settings {
-        Settings::default_for(PathBuf::from("/pics"))
+        // Absolute on every platform: "/pics" has no drive, so Windows calls it relative.
+        Settings::default_for(PathBuf::from(PICS))
     }
 
     #[test]
@@ -453,7 +474,7 @@ mod tests {
     fn default_for_builds_five_hotkey_workflows() {
         let s = settings();
         assert_eq!(s.version, SETTINGS_VERSION);
-        assert_eq!(s.screenshots_dir, PathBuf::from("/pics/Laqta"));
+        assert_eq!(s.screenshots_dir, PathBuf::from(PICS).join("Laqta"));
         let ids: Vec<u32> = s.workflows.iter().map(|w| w.id.0).collect();
         assert_eq!(ids, vec![1, 2, 3, 4, 5]);
         assert!(s.workflows.iter().all(|w| w.enabled && w.patch.is_empty() && w.hotkey.is_some()));
@@ -503,8 +524,8 @@ mod tests {
         let mut s = settings();
 
         let defaults = s.task_settings(None);
-        assert_eq!(defaults.screenshots_dir, Some(PathBuf::from("/pics/Laqta")));
-        assert_eq!(s.task_settings(Some(WorkflowId(999))).screenshots_dir, Some(PathBuf::from("/pics/Laqta")));
+        assert_eq!(defaults.screenshots_dir, Some(PathBuf::from(PICS).join("Laqta")));
+        assert_eq!(s.task_settings(Some(WorkflowId(999))).screenshots_dir, Some(PathBuf::from(PICS).join("Laqta")));
 
         s.workflows[0].patch.screenshots_dir = Some(PathBuf::from("/elsewhere"));
         let ts = s.task_settings(Some(WorkflowId(1)));

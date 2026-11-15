@@ -159,15 +159,18 @@ impl SettingsWindow {
             // Each file reports its own bytes; the bar shows the whole download, so files already
             // fetched are added in, and the total is never less than what the button promised.
             let base = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            // The largest whole seen: it never shrinks, and never falls below what is done.
+            let largest = Arc::new(std::sync::atomic::AtomicU64::new(expected.unwrap_or(0)));
             for id in ids {
-                let (tx, base_now) = (tx.clone(), base.clone());
+                let (tx, base_now, largest) = (tx.clone(), base.clone(), largest.clone());
                 let last = Arc::new(std::sync::atomic::AtomicU64::new(0));
                 let seen = last.clone();
                 let progress: ModelProgress = Arc::new(move |done, total: Option<u64>| {
                     let b = base_now.load(Ordering::Relaxed);
                     seen.store(total.unwrap_or(done), Ordering::Relaxed);
-                    let whole = total.map(|t| expected.unwrap_or(0).max(b + t)).or(expected);
-                    let _ = tx.unbounded_send((b + done, whole));
+                    let now = b + total.unwrap_or(done).max(done);
+                    let whole = largest.fetch_max(now, Ordering::Relaxed).max(now);
+                    let _ = tx.unbounded_send((b + done, (whole > 0).then_some(whole)));
                 });
                 models.install(id, progress, stop.clone()).await?;
                 base.fetch_add(last.load(Ordering::Relaxed), Ordering::Relaxed);

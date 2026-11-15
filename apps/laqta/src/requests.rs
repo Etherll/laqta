@@ -82,9 +82,42 @@ pub fn allowed_when_elevated(request: &Request) -> bool {
     }
 }
 
+/// Whether a request `allowed_when_elevated` lets through would start one of the user's external
+/// programs: its workflow runs Perform actions and a program is enabled. Sent by another program
+/// while Laqta has administrator rights, that would start the program as administrator without a
+/// prompt, so it is refused too.
+pub fn starts_programs(request: &Request, settings: &Settings) -> bool {
+    let workflow = match request {
+        Request::Action(action) => settings.workflow_for_action(*action).map(|w| w.id),
+        Request::Workflow(name) => match named(settings, name) {
+            Ok(w) => Some(w.id),
+            Err(_) => return false,
+        },
+        _ => return false,
+    };
+    settings.actions.iter().any(|a| a.enabled)
+        && settings.task_settings(workflow).after_capture.contains(laqta_domain::workflow::AfterCaptureTasks::PERFORM_ACTIONS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_whose_workflow_runs_an_enabled_program_starts_programs() {
+        use laqta_domain::workflow::{AfterCaptureTasks, ExternalAction};
+        let mut s = settings();
+        let request = Request::Workflow("Region to Imgur".into());
+        assert!(!starts_programs(&request, &s), "no program configured");
+        s.actions.push(ExternalAction { name: "x".into(), program: "x.exe".into(), enabled: true, ..Default::default() });
+        assert!(!starts_programs(&request, &s), "Perform actions is off");
+        s.workflows[0].patch.after_capture = Some(AfterCaptureTasks::PERFORM_ACTIONS);
+        assert!(starts_programs(&request, &s));
+        assert!(starts_programs(&Request::Action(Action::RectangleRegion), &s), "the action runs the same workflow");
+        assert!(!starts_programs(&Request::UploadText("hi".into()), &s));
+        s.actions[0].enabled = false;
+        assert!(!starts_programs(&request, &s), "the only program is off");
+    }
 
     #[test]
     fn an_elevated_copy_refuses_requests_that_name_files_or_urls_to_fetch() {

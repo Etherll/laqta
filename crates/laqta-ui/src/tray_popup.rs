@@ -67,7 +67,10 @@ impl Render for TrayPopup {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Close when the popup loses focus, like a menu.
         if !window.is_window_active() {
+            // The handle and the window go together: a window left open untracked would stay on
+            // screen, and the next tray click would open a second one.
             let _ = cx.global_mut::<UiState>().tray_popup.take();
+            window.remove_window();
         }
         let dispatch = cx.global::<UiState>().services.dispatch.clone();
         let t = cx.theme();

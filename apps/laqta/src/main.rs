@@ -93,13 +93,25 @@ fn main() -> ExitCode {
     #[cfg(windows)]
     let mut elevation_note = None;
     // A staged backup lands first, so a run-as-administrator setting it brings is read below. Only the
-    // copy that serves the instance applies it: a running copy has the files open.
+    // copy that serves the instance applies it: a running copy has the files open, and a `-multi` copy
+    // runs beside one.
     #[cfg(windows)]
-    if matches!(claim, Some(Ok(laqta_ipc::Claim::Primary(_)))) || (claim.is_none() && !args.multi) {
+    if matches!(claim, Some(Ok(laqta_ipc::Claim::Primary(_)))) {
         wiring::apply_staged_import(&args);
     }
+    // A start that opens files or URLs keeps the user's rights: an elevated copy takes none from its
+    // command line (another program may have written it), so it would drop them. The next plain start
+    // asks for administrator rights.
     #[cfg(windows)]
-    if matches!(claim, None | Some(Ok(laqta_ipc::Claim::Primary(_)))) && should_run_as_admin(&args) {
+    let opens_files = !args.import_uploaders.is_empty()
+        || !args.import_effects.is_empty()
+        || args.requests.iter().any(|request| !requests::allowed_when_elevated(request));
+    #[cfg(windows)]
+    if opens_files && should_run_as_admin(&args) {
+        elevation_note = Some("this start opens files, so it runs without administrator rights".to_owned());
+    }
+    #[cfg(windows)]
+    if !opens_files && matches!(claim, None | Some(Ok(laqta_ipc::Claim::Primary(_)))) && should_run_as_admin(&args) {
         // Let go of the endpoint first, so the elevated copy can claim it.
         drop(claim.take());
         let mut forward = without_startup_delay(std::env::args().skip(1).collect());

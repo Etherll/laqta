@@ -462,7 +462,7 @@ pub const DEFAULT_CLIPBOARD_FORMAT: &str = "$url";
 /// is the user's own and is used as written.
 pub fn clipboard_template(format: &str, shortened: bool) -> &str {
     let format = if format.trim().is_empty() { DEFAULT_CLIPBOARD_FORMAT } else { format };
-    if shortened && format == DEFAULT_CLIPBOARD_FORMAT { "$shorturl" } else { format }
+    if shortened && format.trim() == DEFAULT_CLIPBOARD_FORMAT { "$shorturl" } else { format }
 }
 
 /// What the upload-info tokens (`$url` and the rest) read. An empty string is an absent value, so

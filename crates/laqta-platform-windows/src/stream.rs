@@ -24,12 +24,23 @@ use crate::loopback::{WasapiLoopback, list_devices};
 /// corner. An area that runs past that display is `Unsupported`: one stream records one display, and the
 /// Recording session clips the area to a display itself. Each side is rounded down to an even count.
 pub(crate) fn screen_for_area(outputs: &[(u32, u32, PhysRect)], area: PhysRect) -> Result<OsScreen, PortError> {
-    let &(adapter_index, output_index, output) = outputs
-        .iter()
-        .find(|(_, _, rect)| holds_point(*rect, area.x, area.y))
-        .ok_or_else(|| PortError::Failed(format!("no display holds the point ({}, {})", area.x, area.y)))?;
+    let spans = || PortError::Unsupported("the area spans more than one display".into());
+    let Some(&(adapter_index, output_index, output)) = outputs.iter().find(|(_, _, rect)| holds_point(*rect, area.x, area.y)) else {
+        // A corner in a gap between displays: the area is on displays still, so the session can clip it.
+        if outputs.iter().any(|(_, _, rect)| overlaps(*rect, area)) {
+            return Err(spans());
+        }
+        return Err(PortError::Failed(format!("no display holds the point ({}, {})", area.x, area.y)));
+    };
+    let mut area = area;
     if area.right() > output.right() || area.bottom() > output.bottom() {
-        return Err(PortError::Unsupported("the area spans more than one display".into()));
+        // Past this display's edge onto another one: the session clips it. Past it onto nothing (off the
+        // desktop), there is only this display's part to record.
+        if outputs.iter().any(|(_, _, rect)| *rect != output && overlaps(*rect, area)) {
+            return Err(spans());
+        }
+        area.width = u32::try_from(i64::from(area.right().min(output.right())) - i64::from(area.x)).unwrap_or(0);
+        area.height = u32::try_from(i64::from(area.bottom().min(output.bottom())) - i64::from(area.y)).unwrap_or(0);
     }
     let width = even_extent(area.x, area.right());
     let height = even_extent(area.y, area.bottom());
@@ -46,6 +57,11 @@ pub(crate) fn screen_for_area(outputs: &[(u32, u32, PhysRect)], area: PhysRect) 
         desktop_x: area.x,
         desktop_y: area.y,
     })
+}
+
+/// True when `a` and `b` share at least one pixel.
+fn overlaps(a: PhysRect, b: PhysRect) -> bool {
+    a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()
 }
 
 /// True when the point is inside `rect`. The right and bottom edges are outside it.
@@ -203,10 +219,22 @@ mod tests {
     }
 
     #[test]
-    fn area_crossing_an_edge_is_unsupported() {
+    fn area_crossing_an_edge_onto_another_display_is_unsupported() {
         assert!(matches!(screen_for_area(&desktop(), rect(1800, 100, 400, 300)), Err(PortError::Unsupported(_))));
-        // Past the bottom edge of its display too.
-        assert!(matches!(screen_for_area(&desktop(), rect(0, 1000, 100, 200)), Err(PortError::Unsupported(_))));
+    }
+
+    #[test]
+    fn area_running_off_the_desktop_keeps_the_part_on_its_display() {
+        // Past the bottom edge of the first display, where no display is: 80 rows of it are on screen.
+        let screen = screen_for_area(&desktop(), rect(0, 1000, 100, 200));
+        assert!(matches!(screen, Ok(OsScreen::Windows { output_index: 0, width: 100, height: 80, .. })), "{screen:?}");
+    }
+
+    #[test]
+    fn area_whose_corner_is_in_a_gap_is_unsupported_so_the_session_clips_it() {
+        // Above the first display (y < 0) and left of the second: no display holds the corner, but the
+        // area reaches the first display.
+        assert!(matches!(screen_for_area(&desktop(), rect(100, -150, 400, 300)), Err(PortError::Unsupported(_))));
     }
 
     #[test]

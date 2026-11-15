@@ -69,6 +69,8 @@ struct MainWindow {
     focus: FocusHandle,
     /// `TaskList::library_generation` at the last reload.
     library_generation: u64,
+    /// Counts queries, so only the newest one fills the library when an older one answers late.
+    reloads: u64,
 }
 
 impl HasFlash for MainWindow {
@@ -112,6 +114,7 @@ impl MainWindow {
             load_error: None,
             focus,
             library_generation,
+            reloads: 0,
         };
         this.reload(cx);
         this
@@ -125,6 +128,8 @@ impl MainWindow {
         };
         let now = services.clock.now();
         let tab = self.tab;
+        self.reloads += 1;
+        let reload = self.reloads;
         let q = library::query(tab, &self.search.read(cx).value(), LIBRARY_LIMIT);
         let task = cx.background_spawn(async move {
             history.query(&q).map(|items| {
@@ -143,6 +148,10 @@ impl MainWindow {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
+                // A tab or search the window has moved on from.
+                if this.reloads != reload {
+                    return;
+                }
                 this.loaded = true;
                 match result {
                     Ok(cards) => {
@@ -175,12 +184,15 @@ impl MainWindow {
         then: impl FnOnce(&mut Self, Bitmap, &mut Context<Self>) + 'static,
     ) {
         let codecs = cx.global::<UiState>().services.codecs.clone();
-        let task = cx.background_spawn(async move { std::fs::read(&path).ok().and_then(|bytes| codecs.decode(&bytes).ok()) });
+        let task = cx.background_spawn(async move {
+            let bytes = std::fs::read(&path).map_err(|_| "Couldn't open the image. It may have been moved or deleted.")?;
+            codecs.decode(&bytes).map_err(|_| "Couldn't read the image. The file may be damaged or in a format Laqta can't open.")
+        });
         cx.spawn(async move |this, cx| {
             let image = task.await;
             let _ = this.update(cx, |this, cx| match image {
-                Some(image) => then(this, image, cx),
-                None => Flash::fail(this, "Couldn't open the image. It may have been moved or deleted.", cx),
+                Ok(image) => then(this, image, cx),
+                Err(why) => Flash::fail(this, why, cx),
             });
         })
         .detach();
@@ -401,7 +413,7 @@ fn capture_card(c: &CaptureCard, featured: bool, hotkeys: &[(KeyChord, Action)],
     let tile = widgets::icon_tile(c.glyph, featured, cx).size(px(32.)).rounded(radius::SM + px(2.));
     let mut top = div().flex().items_start().justify_between().gap(space::S2).child(tile);
     let group = SharedString::from(format!("{}-group", c.id));
-    if let Some(keys) = hotkey_label(hotkeys, c.action, crate::host_os()) {
+    if let Some(keys) = crate::presenters::hotkeys::hotkey_keys(hotkeys, c.action, crate::host_os()) {
         top = top.child(widgets::kbd(keys, cx));
     } else {
         // No shortcut yet: a quiet way to add one, shown when the card is hovered or reached by Tab.
@@ -723,7 +735,7 @@ impl MainWindow {
         grid.into_any_element()
     }
 
-    /// Removes a history entry whose file is gone; nothing on disk changes.
+    /// Removes a history entry; nothing on disk changes.
     fn remove(&mut self, id: i64, cx: &mut Context<Self>) {
         let write = cx.global::<UiState>().services.app.history_delete(id);
         let task = cx.background_spawn(async move { write.await.map_err(|e| e.to_string()) });
@@ -734,7 +746,8 @@ impl MainWindow {
                     Ok(()) => this.flash("Removed from history", cx),
                     Err(e) => {
                         tracing::warn!("remove from history: {e}");
-                        this.flash("Couldn't remove it from history", cx)
+                        let n = crate::presenters::notice::Notice::failure_text("Couldn't remove it from history", &e);
+                        Flash::notice(this, n, cx)
                     }
                 }
                 this.reload(cx);
@@ -881,7 +894,10 @@ impl MainWindow {
                     .child(div().truncate().text_size(text::SMALL).text_color(t.muted_foreground).child(when_meta(c))),
             )
             .child(self.overlay_actions(c, &group, cx).relative().top(px(0.)).right(px(0.)));
-        if let Some(open) = open_card(c, cx) {
+        // A card whose file is gone has nothing to open, as in the grid.
+        if !c.missing
+            && let Some(open) = open_card(c, cx)
+        {
             row = widgets::clickable(row, open, cx);
         }
         row.into_any_element()
@@ -991,9 +1007,15 @@ impl Render for MainWindow {
                     result.is_ok()
                 });
                 cx.spawn(async move |cx| {
-                    if !work.await {
-                        let _ = view.update(cx, |this, cx| Flash::fail(this, "Couldn't upload the dropped files", cx));
-                    }
+                    let ok = work.await;
+                    let _ = view.update(cx, |this, cx| {
+                        if ok {
+                            // A drop that worked answers an earlier one that failed.
+                            Flash::clear_failure(this, cx);
+                        } else {
+                            Flash::fail(this, "Couldn't upload the dropped files", cx);
+                        }
+                    });
                 })
                 .detach();
             })

@@ -240,6 +240,18 @@ fn update(cx: &mut App, f: impl FnOnce(&mut Bar)) {
     });
 }
 
+/// The open bar's state, if a bar is open.
+fn current_bar(cx: &mut App) -> Option<Bar> {
+    let h = cx.global::<UiState>().recording.bar?;
+    h.update(cx, |root, _, cx| {
+        let root = root.downcast::<Root>().ok()?;
+        let view = root.read(cx).view().clone().downcast::<Bar>().ok()?;
+        Some(*view.read(cx))
+    })
+    .ok()
+    .flatten()
+}
+
 /// The scale of a window that is already open: the best first guess for a new window's display.
 fn open_scale(cx: &mut App) -> f32 {
     cx.windows().into_iter().find_map(|w| w.update(cx, |_, window, _| window.scale_factor()).ok()).unwrap_or(1.0)
@@ -247,13 +259,12 @@ fn open_scale(cx: &mut App) -> f32 {
 
 /// `border` is the started task's own setting (a workflow can override the defaults).
 fn start(area: PhysRect, border: bool, cx: &mut App) {
-    if let Some(c) = cx.global_mut::<UiState>().recording.countdown.take() {
-        let _ = c.update(cx, |_, window, _| window.remove_window());
-    }
-    cx.global_mut::<UiState>().recording = RecordingWindows::default();
+    // A second start for the same recording (its area was clipped to one monitor) replaces the bar
+    // and border, so every window this recording opened is closed first. Its clock and pause carry over.
+    let (elapsed, paused) = current_bar(cx).map_or((0, false), |b| (b.elapsed, b.paused));
+    close_all(cx);
     let scale = open_scale(cx);
-    let bar =
-        Bar { elapsed: 0, paused: false, area, border, saving: false, border_scale: None, placed_scale: scale, moves: 0, wanted_y: None };
+    let bar = Bar { elapsed, paused, area, border, saving: false, border_scale: None, placed_scale: scale, moves: 0, wanted_y: None };
     open_bar(bar, cx);
 }
 
@@ -443,7 +454,12 @@ impl Render for Bar {
         // The bar landed on a display with another scale than its position assumed: place it again.
         if !is_wayland() && (scale - self.placed_scale).abs() > 0.01 && self.moves < 2 {
             let again = Bar { border_scale: None, placed_scale: scale, moves: self.moves + 1, ..*self };
-            cx.defer(move |cx| open_bar(again, cx));
+            // Only while the recording still has its bar: a stop before the deferred run closed it.
+            cx.defer(move |cx| {
+                if cx.global::<UiState>().recording.bar.is_some() {
+                    open_bar(again, cx);
+                }
+            });
         } else if self.border && self.border_scale != Some(scale) {
             self.border_scale = Some(scale);
             let bar = *self;

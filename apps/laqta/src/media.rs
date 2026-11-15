@@ -2,7 +2,7 @@
 //! otherwise Laqta asks once and downloads the pinned build through verified fetch.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use laqta_domain::record::RecordSpec;
@@ -15,6 +15,11 @@ pub struct LazyMedia {
     prompt: Arc<dyn Prompt>,
     /// The resolved FFmpeg, with the configured path it was resolved from.
     ready: Mutex<Option<(String, Arc<FfmpegMedia>)>>,
+    /// Held while one call resolves FFmpeg, so calls that start together ask and download once. It holds
+    /// how many attempts have ended, whether the last one was declined, and the path it was for.
+    resolving: async_lock::Mutex<(u64, bool, String)>,
+    /// The attempt count, readable without waiting for the lock.
+    attempts: std::sync::atomic::AtomicU64,
 }
 
 impl std::fmt::Debug for LazyMedia {
@@ -25,17 +30,52 @@ impl std::fmt::Debug for LazyMedia {
 
 impl LazyMedia {
     pub fn new(data: PathBuf, configured: Arc<dyn Fn() -> String + Send + Sync>, prompt: Arc<dyn Prompt>) -> Self {
-        LazyMedia { data, configured, prompt, ready: Mutex::new(None) }
+        LazyMedia {
+            data,
+            configured,
+            prompt,
+            ready: Mutex::new(None),
+            resolving: async_lock::Mutex::new((0, false, String::new())),
+            attempts: 0.into(),
+        }
+    }
+
+    /// The resolved FFmpeg when it was resolved from `configured`.
+    fn ready_for(&self, configured: &str) -> Option<Arc<FfmpegMedia>> {
+        self.ready.lock().ok().and_then(|g| g.clone()).filter(|(from, _)| from == configured).map(|(_, m)| m)
     }
 
     async fn get(&self) -> Result<Arc<FfmpegMedia>, PortError> {
         // A changed path in the settings resolves again, so the next recording uses it.
         let configured = (self.configured)();
-        if let Some((from, m)) = self.ready.lock().ok().and_then(|g| g.clone())
-            && from == configured
-        {
+        if let Some(m) = self.ready_for(&configured) {
             return Ok(m);
         }
+        let seen = self.attempts.load(Ordering::SeqCst);
+        let mut resolving = self.resolving.lock().await;
+        // Another call may have resolved it while this one waited.
+        if let Some(m) = self.ready_for(&configured) {
+            return Ok(m);
+        }
+        // Or tried and failed: the calls that waited for it share its outcome instead of asking again. A
+        // call for another path (the setting changed meanwhile) tries that one.
+        if resolving.0 != seen && resolving.2 == configured {
+            return Err(if resolving.1 {
+                PortError::Cancelled
+            } else {
+                PortError::Failed("FFmpeg could not be set up; try again, or choose its location in Settings > Recording.".into())
+            });
+        }
+        let result = self.resolve(&configured).await;
+        resolving.0 += 1;
+        resolving.1 = matches!(result, Err(PortError::Cancelled));
+        resolving.2.clone_from(&configured);
+        self.attempts.store(resolving.0, Ordering::SeqCst);
+        result
+    }
+
+    async fn resolve(&self, configured: &str) -> Result<Arc<FfmpegMedia>, PortError> {
+        let configured = configured.to_owned();
         let work = self.data.join("recordings-tmp");
         let paths = match laqta_media::find_ffmpeg(&configured, &self.data) {
             Some(p) => p,

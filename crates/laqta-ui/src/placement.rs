@@ -8,7 +8,8 @@ use crate::presenters::monitor_placement::{Rect, Screen};
 
 /// Every display GPUI knows. GPUI reports no scale, so a display takes the scale of the monitor in
 /// `monitors` (physical rect and scale) whose origin divided by its scale is the display's
-/// origin, as Windows and X11 lay them out; 1 where none is.
+/// origin, as Windows and X11 lay them out; else the one whose size divided by its scale is the
+/// display's size; 1 where none is.
 pub(crate) fn screens(cx: &App, monitors: &[(PhysRect, f32)]) -> Vec<Screen> {
     cx.displays()
         .into_iter()
@@ -19,6 +20,12 @@ pub(crate) fn screens(cx: &App, monitors: &[(PhysRect, f32)]) -> Vec<Screen> {
                 .find(|(r, s)| {
                     let s = s.max(0.1);
                     (r.x as f32 / s - bounds.x).abs() < 1.0 && (r.y as f32 / s - bounds.y).abs() < 1.0
+                })
+                .or_else(|| {
+                    monitors.iter().find(|(r, s)| {
+                        let s = s.max(0.1);
+                        (r.width as f32 / s - bounds.w).abs() < 1.0 && (r.height as f32 / s - bounds.h).abs() < 1.0
+                    })
                 })
                 .map_or(1.0, |(_, s)| *s);
             Screen { id: u64::from(d.id()), bounds, work: rect(d.visible_bounds()), scale }

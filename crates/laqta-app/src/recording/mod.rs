@@ -231,6 +231,8 @@ impl App {
                     step: "recording area",
                     reason: "The area spans more than one monitor, so only the part on the largest one is recorded.".to_owned(),
                 });
+                // The bar and border follow the area that is recorded, not the one that was asked for.
+                self.emit(TaskEvent::RecordingStarted { id, area: part, show_border: ts.recording.show_border });
                 part
             }
             None => rect,
@@ -268,6 +270,7 @@ impl App {
         let rect = match area {
             Area::Region => self.drawn_area(ts).await?,
             Area::ActiveWindow => {
+                self.ports.hover.set_include_own_windows(ts.capture.include_own_windows);
                 let target = self.ports.hover.active_window().await.map_err(AppError::from)?;
                 target.ok_or_else(|| AppError::Unsupported("no active window".to_owned()))?.rect
             }

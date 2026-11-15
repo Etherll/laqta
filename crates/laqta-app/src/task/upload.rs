@@ -198,10 +198,15 @@ impl Job {
         }
     }
 
-    /// Whether an Imgur account with a client id is saved. Without one Imgur uploads use a placeholder id.
+    /// Whether the Imgur account uploads use (the first one saved, as the uploader picks it) has a client
+    /// id. Without one Imgur uploads use a placeholder id.
     fn has_imgur_client_id(&self) -> bool {
         let settings = self.cx.settings.get();
-        settings.hosts.iter().any(|account| account.kind == HostKind::Imgur && !account.get("client_id").trim().is_empty())
+        settings
+            .hosts
+            .iter()
+            .find(|account| account.kind == HostKind::Imgur)
+            .is_some_and(|account| !account.get("client_id").trim().is_empty())
     }
 
     /// The progress callback for one attempt. Reports go through `progress_due`, so a busy adapter does not

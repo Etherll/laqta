@@ -60,6 +60,10 @@ struct HistoryWindow {
     images_only: bool,
     page: u32,
     rows: Vec<HistoryRow>,
+    /// Whether anything comes after this page.
+    more: bool,
+    /// Counts queries, so only the newest one fills the list when an older one answers late.
+    reloads: u64,
     error: Option<String>,
     /// History is turned off in Settings: nothing to load, and nothing failed.
     off: bool,
@@ -104,6 +108,8 @@ impl HistoryWindow {
             images_only,
             page: 0,
             rows: Vec::new(),
+            more: false,
+            reloads: 0,
             error: None,
             off: false,
             loaded: false,
@@ -121,6 +127,9 @@ impl HistoryWindow {
             self.loaded = true;
             return;
         };
+        self.off = false;
+        self.reloads += 1;
+        let reload = self.reloads;
         let q = history::page_query(&self.search.read(cx).value(), self.images_only, self.page);
         let task = cx.background_spawn(async move {
             let rows = store.query(&q).map(|items| items.iter().map(history::row).collect::<Vec<_>>());
@@ -131,9 +140,20 @@ impl HistoryWindow {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
+                // A search or page the window has moved on from.
+                if this.reloads != reload {
+                    return;
+                }
                 this.loaded = true;
                 match result {
-                    Ok((rows, stats)) => {
+                    // A removal emptied the last page: show the page before it instead.
+                    Ok((rows, _)) if rows.is_empty() && this.page > 0 => {
+                        this.page -= 1;
+                        return this.reload(cx);
+                    }
+                    Ok((mut rows, stats)) => {
+                        this.more = rows.len() > PAGE_SIZE as usize;
+                        rows.truncate(PAGE_SIZE as usize);
                         this.rows = rows;
                         this.stats = stats;
                         this.error = None;
@@ -155,7 +175,8 @@ impl HistoryWindow {
 
     fn save_tags(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.editing_tags.take() else { return };
-        let tags = history::parse_tags(&self.tags.read(cx).value());
+        let typed = self.tags.read(cx).value().to_string();
+        let tags = history::parse_tags(&typed);
         // The write goes through the app (off the UI thread); the list reloads once it is in.
         let write = cx.global::<UiState>().services.app.history_set_tags(id, tags);
         let task = cx.background_spawn(async move { write.await.map_err(|e| e.to_string()) });
@@ -164,6 +185,10 @@ impl HistoryWindow {
             let _ = this.update(cx, |this, cx| {
                 if let Err(e) = result {
                     Flash::notice(this, crate::presenters::notice::Notice::failure_text("Couldn't save the tags", &e), cx);
+                    // The editor opens again with what was typed, so a retry need not retype it.
+                    if this.editing_tags.is_none() {
+                        this.editing_tags = Some(id);
+                    }
                 }
                 this.reload(cx);
             });
@@ -650,7 +675,7 @@ impl Render for HistoryWindow {
         }
 
         // Paging: hidden when everything fits on the first page.
-        let more = self.rows.len() as u32 == PAGE_SIZE;
+        let more = self.more;
         let first = self.page == 0;
         let pager = (!first || more).then(|| {
             let (can_prev, can_next) = history::page_reason(first, more);

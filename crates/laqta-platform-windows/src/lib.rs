@@ -324,14 +324,36 @@ mod imp {
     /// The window `remember_foreground` stored, as a raw `HWND` value; 0 when there is none.
     static REMEMBERED_FOREGROUND: AtomicIsize = AtomicIsize::new(0);
 
+    /// A rect in physical desktop pixels as `[x, y, width, height]` in GPUI's logical pixels. GPUI lays
+    /// each display out at its physical origin divided by its own scale, so the rect is divided by the
+    /// scale of the monitor under its centre, not by the scale of whichever window is open.
+    pub fn logical_rect(rect: laqta_domain::geometry::PhysRect) -> Option<[f32; 4]> {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint};
+        use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+        let centre = POINT { x: rect.x + (rect.width / 2) as i32, y: rect.y + (rect.height / 2) as i32 };
+        let (mut dpi_x, mut dpi_y) = (0u32, 0u32);
+        // SAFETY: plain Win32 queries with valid out-pointers.
+        unsafe {
+            let monitor = MonitorFromPoint(centre, MONITOR_DEFAULTTONEAREST);
+            GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y).ok()?;
+        }
+        let scale = dpi_x.max(1) as f32 / 96.0;
+        Some([rect.x as f32 / scale, rect.y as f32 / scale, rect.width as f32 / scale, rect.height as f32 / scale])
+    }
+
     /// Remembers the foreground window, to give the keyboard back to it with `restore_foreground`
     /// when a capture ends. A foreground window that belongs to Laqta's own process (or no
-    /// foreground window at all) is skipped, and the window remembered before stays.
+    /// foreground window at all) is not remembered, and whatever an earlier capture remembered is
+    /// forgotten.
     pub fn remember_foreground() {
         use windows::Win32::System::Threading::GetCurrentProcessId;
         use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
         // SAFETY: plain Win32 calls; they only read, and fail harmlessly for a window that is gone.
         unsafe {
+            // Whatever an earlier capture noted is forgotten first: with no window to note now, a later
+            // restore would bring that old one to the front.
+            REMEMBERED_FOREGROUND.store(0, Ordering::Release);
             let foreground = GetForegroundWindow();
             if foreground.0.is_null() {
                 return;
@@ -464,7 +486,10 @@ mod imp {
                     for (baked, retaken) in baked.iter_mut().zip(retaken) {
                         *baked &= !retaken;
                     }
-                    let replaced = retake_black_frames(&mut frames);
+                    // An HDR monitor was just taken through Windows.Graphics.Capture already; a second try
+                    // in the same capture would see what the first saw.
+                    let tried: Vec<bool> = captured.hdr_white.iter().map(Option::is_some).collect();
+                    let replaced = retake_black_frames(&mut frames, &tried);
                     for (baked, replaced) in baked.iter_mut().zip(replaced) {
                         *baked &= !replaced;
                     }
@@ -494,20 +519,43 @@ mod imp {
 
     /// Takes each HDR monitor again through Windows.Graphics.Capture with the pointer left out. On an
     /// HDR desktop Windows often draws the pointer into the picture itself, so duplication holds it
-    /// whatever `show_cursor` says. A retake that fails keeps the duplication frame.
+    /// whatever `show_cursor` says. A retake that fails keeps the duplication frame. Every capture
+    /// tries again, with or without the pointer wanted: a kept frame may hold the pointer or miss it,
+    /// so it ships only when that capture's own retake failed and it is the only picture there is.
+    /// A monitor whose retake failed or came back black is not tried again for a moment (as in
+    /// `retake_black_frames`), so a monitor Windows.Graphics.Capture cannot take does not add its wait to
+    /// every capture; one that succeeded is tried every time.
     /// Returns, for each frame, whether it was replaced.
     fn retake_hdr_without_pointer(frames: &mut [Frame], hdr_white: &[Option<f32>], hdr_tonemap: bool) -> Vec<bool> {
+        use crate::retake_throttle::Throttle;
+        static THROTTLE: Mutex<Throttle> = Mutex::new(Throttle::new());
         let mut retaken_flags = vec![false; frames.len()];
         for ((frame, white), flag) in frames.iter_mut().zip(hdr_white).zip(retaken_flags.iter_mut()) {
             let Some(white) = *white else { continue };
-            match wgc::still::capture_monitor(&frame.monitor, hdr_tonemap.then_some(white)) {
-                Ok(retaken) if !wgc::still::is_all_black(&retaken.image) => {
-                    tracing::debug!(monitor = %frame.monitor.name, "HDR monitor taken again without the pointer");
-                    *frame = retaken;
-                    *flag = true;
+            let name = frame.monitor.name.clone();
+            if !THROTTLE.lock().unwrap_or_else(PoisonError::into_inner).due(&name, Instant::now()) {
+                tracing::debug!(monitor = %name, "HDR retake failed a moment ago; keeping the duplication frame");
+                continue;
+            }
+            let retaken = match wgc::still::capture_monitor(&frame.monitor, hdr_tonemap.then_some(white)) {
+                Ok(retaken) if !wgc::still::is_all_black(&retaken.image) => Some(retaken),
+                Ok(_) => {
+                    tracing::debug!(monitor = %name, "HDR retake was black; keeping the duplication frame");
+                    None
                 }
-                Ok(_) => tracing::debug!(monitor = %frame.monitor.name, "HDR retake was black; keeping the duplication frame"),
-                Err(e) => tracing::info!(monitor = %frame.monitor.name, "HDR retake without the pointer failed ({e})"),
+                Err(e) => {
+                    tracing::info!(monitor = %name, "HDR retake without the pointer failed ({e})");
+                    None
+                }
+            };
+            let mut throttle = THROTTLE.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(retaken) = retaken {
+                tracing::debug!(monitor = %name, "HDR monitor taken again without the pointer");
+                throttle.fruitful(&name);
+                *frame = retaken;
+                *flag = true;
+            } else {
+                throttle.barren(&name, Instant::now());
             }
         }
         retaken_flags
@@ -519,13 +567,15 @@ mod imp {
     ///
     /// A monitor whose retake came back black or failed is not retaken again for 2 seconds, so a
     /// black screen does not add the wait for Windows.Graphics.Capture to every capture.
+    /// A frame marked in `tried` was taken through Windows.Graphics.Capture in this capture already.
     /// Returns, for each frame, whether it was replaced.
-    fn retake_black_frames(frames: &mut [Frame]) -> Vec<bool> {
+    fn retake_black_frames(frames: &mut [Frame], tried: &[bool]) -> Vec<bool> {
         use crate::retake_throttle::Throttle;
         static THROTTLE: Mutex<Throttle> = Mutex::new(Throttle::new());
         let mut replaced = vec![false; frames.len()];
-        for (frame, flag) in frames.iter_mut().zip(replaced.iter_mut()) {
-            if !wgc::still::is_all_black(&frame.image) {
+        for ((frame, flag), tried) in frames.iter_mut().zip(replaced.iter_mut()).zip(tried.iter().copied().chain(std::iter::repeat(false)))
+        {
+            if tried || !wgc::still::is_all_black(&frame.image) {
                 continue;
             }
             let name = frame.monitor.name.clone();

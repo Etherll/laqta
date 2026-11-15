@@ -207,6 +207,9 @@ struct PhotoWindow {
     /// Which adjustment "+ Adjustment" adds (an index into `Adjust::defaults()`).
     adjustment: usize,
     flash: crate::flash::Flash,
+    /// The failure shown is an edit's: the next edit that works takes it away. Any other failure
+    /// (a save, say) stays until the user dismisses it.
+    edit_failed: bool,
     busy: bool,
     /// The document revision the file on disk holds.
     saved_revision: u64,
@@ -223,13 +226,25 @@ impl crate::flash::HasFlash for PhotoWindow {
 }
 
 impl PhotoWindow {
-    /// A passing note in the status line.
+    /// A passing hint in the status line. A save or fill failure on show stays: a hint is not the
+    /// answer to it, and it would vanish unread.
     fn say(&mut self, msg: String, cx: &mut Context<Self>) {
+        let sticky = self.flash.current().is_some_and(|n| crate::presenters::notice::lifetime(n).is_none());
+        if sticky && !self.edit_failed {
+            return;
+        }
+        crate::flash::Flash::show(self, msg, cx);
+    }
+
+    /// The outcome of a save or a fill that worked: it replaces whatever is shown, a failure included.
+    fn done(&mut self, msg: String, cx: &mut Context<Self>) {
+        self.edit_failed = false;
         crate::flash::Flash::show(self, msg, cx);
     }
 
     /// A failure in the status line; it stays until dismissed.
     fn fail(&mut self, msg: String, cx: &mut Context<Self>) {
+        self.edit_failed = false;
         crate::flash::Flash::fail(self, msg, cx);
     }
 
@@ -261,6 +276,7 @@ impl PhotoWindow {
             text: input("Text", cx),
             adjustment: 0,
             flash: Default::default(),
+            edit_failed: false,
             busy: false,
             saved_revision: 0,
             close_after_save: false,
@@ -301,9 +317,17 @@ impl PhotoWindow {
             let r = run.await;
             let _ = this.update(cx, |this, cx| {
                 match r {
+                    // An edit that worked takes away the failure of an earlier one.
+                    Some(Ok(())) if std::mem::take(&mut this.edit_failed) => crate::flash::Flash::clear_failure(this, cx),
                     Some(Ok(())) => {}
-                    Some(Err(e)) => this.fail(e, cx),
-                    None => this.fail("The edit failed.".into(), cx),
+                    Some(Err(e)) => {
+                        this.fail(e, cx);
+                        this.edit_failed = true;
+                    }
+                    None => {
+                        this.fail("The edit failed.".into(), cx);
+                        this.edit_failed = true;
+                    }
                 }
                 let render = this.interaction.command_finished();
                 if render || std::mem::take(&mut this.render_deferred) {
@@ -498,7 +522,7 @@ impl PhotoWindow {
                 match r {
                     Ok((bitmap, fallback)) => {
                         this.exec(Command::InpaintResult { layer, bitmap }, cx);
-                        this.say(
+                        this.done(
                             if fallback { "Filled with the classic method (no model).".into() } else { "Filled with the model.".into() },
                             cx,
                         );
@@ -629,7 +653,7 @@ impl PhotoWindow {
                         if let Some(revision) = revision {
                             this.saved_revision = revision;
                         }
-                        this.say(format!("Saved {}", p.display()), cx);
+                        this.done(format!("Saved {}", p.display()), cx);
                         this.path = Some(p);
                     }
                     Ok(None) => {}
@@ -728,7 +752,7 @@ impl PhotoWindow {
                     .child(
                         Button::new(SharedString::from(format!("op-{}", id.0)))
                             .label(format!("{:.0}%", opacity * 100.0))
-                            .tooltip("Opacity: click for 25% less")
+                            .tooltip("Opacity: click for 25% less (from 25% back to 100%)")
                             .xsmall()
                             .ghost()
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -940,7 +964,7 @@ impl PhotoWindow {
             .child(
                 widgets::pill_with(
                     "inpaint",
-                    "Fill selection with AI",
+                    "Fill selection",
                     Pill::Primary,
                     false,
                     if self.busy { Err("Wait for this to finish".into()) } else { has_selection },

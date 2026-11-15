@@ -117,12 +117,30 @@ pub(crate) enum Verdict {
 pub(crate) struct Interceptor {
     chords: Vec<(i32, KeyChord)>,
     /// The keys whose press was taken and that have not been released yet, with their shortcut.
-    down: Vec<(u32, i32, KeyChord)>,
+    down: Vec<Taken>,
     /// The keys whose press went on to the window (no shortcut matched), so their release does too.
     passed: Vec<u32>,
     /// The modifier keys that are down, one bit each (see `MODIFIER_KEYS`).
     held: u8,
 }
+
+/// A key whose press a shortcut took.
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug)]
+struct Taken {
+    vk: u32,
+    id: i32,
+    chord: KeyChord,
+    /// When its last press or repeat came.
+    last: std::time::Instant,
+    /// The key state says it is down. A taken press never shows in the key state, so after a
+    /// `sync` this is false even for a key still held; only a repeat soon after confirms it.
+    confirmed: bool,
+}
+
+/// The longest wait for a held key's next repeat: the longest keyboard repeat delay, plus room.
+#[cfg(any(windows, test))]
+const REPEAT_GAP: std::time::Duration = std::time::Duration::from_millis(1_100);
 
 #[cfg(any(windows, test))]
 impl Interceptor {
@@ -142,7 +160,11 @@ impl Interceptor {
     /// never came (the hook was gone for a moment) so it cannot swallow that key later.
     pub(crate) fn sync(&mut self, is_down: impl Fn(u32) -> bool) {
         self.held = MODIFIER_KEYS.iter().filter(|&&vk| is_down(vk)).filter_map(|&vk| modifier_bit(vk)).fold(0, |bits, bit| bits | bit);
-        self.down.retain(|&(vk, ..)| is_down(vk));
+        // A taken key never reads as down, held or not: it stays, unconfirmed, and its next repeat
+        // tells (see `event_at`). Keys passed on read true while held.
+        for taken in &mut self.down {
+            taken.confirmed = is_down(taken.vk);
+        }
         self.passed.retain(|&vk| is_down(vk));
     }
 
@@ -157,6 +179,11 @@ impl Interceptor {
 
     /// The verdict on a key event: `vk` went down (`pressed`) or up.
     pub(crate) fn event(&mut self, vk: u32, pressed: bool) -> Verdict {
+        self.event_at(vk, pressed, std::time::Instant::now())
+    }
+
+    /// `event` at `now`.
+    fn event_at(&mut self, vk: u32, pressed: bool, now: std::time::Instant) -> Verdict {
         if let Some(bit) = modifier_bit(vk) {
             if pressed {
                 self.held |= bit;
@@ -166,19 +193,27 @@ impl Interceptor {
             return Verdict::Pass;
         }
         let modifiers = self.modifiers();
-        if let Some(at) = self.down.iter().position(|&(held, ..)| held == vk) {
-            let (_, id, chord) = self.down[at];
+        if let Some(at) = self.down.iter().position(|t| t.vk == vk) {
+            let Taken { id, chord, last, confirmed, .. } = self.down[at];
             if !pressed {
                 self.down.swap_remove(at);
                 // The modifiers may have been let go first, so the release does not look at them.
                 return if counts_on_release(chord.key) { Verdict::Fire { id, chord } } else { Verdict::Swallow };
             }
-            // A repeat only belongs to the shortcut while its modifiers are still down. Otherwise the
-            // release of that press was lost, and this is a new press that is not ours to take.
-            if chord.modifiers == modifiers {
+            // A repeat only belongs to the shortcut while its modifiers are still down, and, after a
+            // `sync` that could not see the key, when it comes as soon as a repeat would. Otherwise the
+            // release of that press was lost, and this is a new press.
+            if chord.modifiers == modifiers && (confirmed || now.saturating_duration_since(last) <= REPEAT_GAP) {
+                self.down[at].last = now;
+                self.down[at].confirmed = true;
                 return Verdict::Swallow;
             }
             self.down.swap_remove(at);
+        }
+        // A repeat of a key that went on to the window stays there, even once modifiers make it look
+        // like a shortcut: `RegisterHotKey` would not fire on it either.
+        if pressed && self.passed.contains(&vk) {
+            return Verdict::Pass;
         }
         if !pressed && let Some(at) = self.passed.iter().position(|&k| k == vk) {
             self.passed.swap_remove(at);
@@ -194,11 +229,11 @@ impl Interceptor {
         };
         match (pressed, counts_on_release(chord.key)) {
             (true, false) => {
-                self.down.push((vk, id, chord));
+                self.down.push(Taken { vk, id, chord, last: now, confirmed: true });
                 Verdict::Fire { id, chord }
             }
             (true, true) => {
-                self.down.push((vk, id, chord));
+                self.down.push(Taken { vk, id, chord, last: now, confirmed: true });
                 Verdict::Hold(chord)
             }
             // Windows sometimes sends Print Screen as a release with no press.
@@ -396,8 +431,9 @@ pub(crate) mod hotkey_hook {
             watch.on_lost = Some(on_lost);
         }
         let mut runner = lock(&RUNNER);
-        // A thread that ended on its own (the hook was lost) is replaced by a new one.
-        if runner.as_ref().is_some_and(|running| running.handle.is_finished())
+        // A thread that ended on its own (the hook was lost) is replaced by a new one. One that lost
+        // its hook and is still on its way out is waited for, or this would return with no hook.
+        if runner.as_ref().is_some_and(|running| running.handle.is_finished() || LOST.load(Ordering::SeqCst))
             && let Some(ended) = runner.take()
         {
             let _ = ended.handle.join();
@@ -422,12 +458,13 @@ pub(crate) mod hotkey_hook {
             watch.interceptor.set(Vec::new());
             watch.on_lost = None;
         }
-        LOST.store(false, Ordering::SeqCst);
         if let Some(runner) = lock(&RUNNER).take() {
             // SAFETY: posting WM_QUIT to the hook thread ends its message loop.
             let _ = unsafe { PostThreadMessageW(runner.thread, WM_QUIT, WPARAM(0), LPARAM(0)) };
             let _ = runner.handle.join();
         }
+        // After the join: a reinstall that failed while the thread was ending must not report later.
+        LOST.store(false, Ordering::SeqCst);
     }
 
     fn install() -> windows::core::Result<HHOOK> {
@@ -724,16 +761,46 @@ mod tests {
         let mut hook = interceptor(&[(7, ctrl_s)]);
         hook.event(VK_LCONTROL, true);
         assert_eq!(hook.event(s, true), Verdict::Fire { id: 7, chord: ctrl_s });
-        // The release of S was lost while the hook was away; Ctrl is still down.
+        // The release of S was lost while the hook was away; Ctrl is still down. The next press comes
+        // later than any repeat would.
         hook.sync(|vk| vk == VK_LCONTROL);
-        assert_eq!(hook.event(s, true), Verdict::Fire { id: 7, chord: ctrl_s });
+        let later = std::time::Instant::now() + REPEAT_GAP + std::time::Duration::from_millis(50);
+        assert_eq!(hook.event_at(s, true, later), Verdict::Fire { id: 7, chord: ctrl_s });
         // A key that is still down keeps being taken.
         hook.sync(|vk| vk == VK_LCONTROL || vk == s);
         assert_eq!(hook.event(s, true), Verdict::Swallow);
         // Modifiers that came up unseen are forgotten, and ones pressed unseen are known.
         hook.sync(|vk| vk == VK_RSHIFT);
-        assert_eq!(hook.event(s, false), Verdict::Pass);
+        // The release of the taken S is taken too, as the window never saw its press.
+        assert_eq!(hook.event(s, false), Verdict::Swallow);
         assert_eq!(hook.event(s, true), Verdict::Pass);
+    }
+
+    #[test]
+    fn a_held_shortcut_is_not_fired_again_by_its_repeats_after_a_sync() {
+        let s = keys::vk(Key::S).unwrap();
+        let ctrl_s = chord(Modifiers::CTRL, Key::S);
+        let mut hook = interceptor(&[(7, ctrl_s)]);
+        hook.event(VK_LCONTROL, true);
+        let start = std::time::Instant::now();
+        assert_eq!(hook.event_at(s, true, start), Verdict::Fire { id: 7, chord: ctrl_s });
+        // The hook is installed again; the taken S never shows in the key state.
+        hook.sync(|vk| vk == VK_LCONTROL);
+        assert_eq!(hook.event_at(s, true, start + std::time::Duration::from_millis(500)), Verdict::Swallow);
+        assert_eq!(hook.event_at(s, true, start + std::time::Duration::from_millis(533)), Verdict::Swallow);
+        assert_eq!(hook.event_at(s, false, start + std::time::Duration::from_millis(600)), Verdict::Swallow);
+    }
+
+    #[test]
+    fn a_key_pressed_before_its_modifiers_is_not_a_shortcut_when_it_repeats() {
+        let s = keys::vk(Key::S).unwrap();
+        let ctrl_s = chord(Modifiers::CTRL, Key::S);
+        let mut hook = interceptor(&[(7, ctrl_s)]);
+        assert_eq!(hook.event(s, true), Verdict::Pass);
+        hook.event(VK_LCONTROL, true);
+        assert_eq!(hook.event(s, true), Verdict::Pass, "a repeat of the plain S");
+        assert_eq!(hook.event(s, false), Verdict::Pass);
+        assert_eq!(hook.event(s, true), Verdict::Fire { id: 7, chord: ctrl_s }, "a fresh press with Ctrl held");
     }
 
     #[test]

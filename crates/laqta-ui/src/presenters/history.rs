@@ -111,7 +111,8 @@ pub fn page_query(text: &str, images_only: bool, page: u32) -> HistoryQuery {
         tag,
         kind: images_only.then_some(HistoryKind::Image),
         offset: page * PAGE_SIZE,
-        limit: PAGE_SIZE,
+        // One past the page, so the window knows whether a next page has anything on it.
+        limit: PAGE_SIZE + 1,
         ..HistoryQuery::default()
     }
 }
@@ -148,7 +149,7 @@ mod tests {
         let q = page_query("  cat ", true, 2);
         assert_eq!(q.text.as_deref(), Some("cat"));
         assert_eq!(q.kind, Some(HistoryKind::Image));
-        assert_eq!((q.offset, q.limit), (100, PAGE_SIZE));
+        assert_eq!((q.offset, q.limit), (100, PAGE_SIZE + 1));
         assert_eq!(page_query("", false, 0).text, None);
     }
 }

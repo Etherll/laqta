@@ -32,6 +32,7 @@ pub(crate) fn section(title: impl Into<SharedString>, cx: &App) -> Div {
             rows.section = title.to_string();
         }
     });
+    SECTION.with(|s| s.borrow_mut().clone_from(&title));
     div().flex().flex_col().gap(px(2.)).child(
         div()
             .pb(space::S2)
@@ -53,23 +54,39 @@ pub(crate) struct CollectedRows {
 
 thread_local! {
     static SEARCH_ROWS: std::cell::RefCell<Option<CollectedRows>> = const { std::cell::RefCell::new(None) };
-    static HIGHLIGHT: std::cell::RefCell<Option<SharedString>> = const { std::cell::RefCell::new(None) };
+    /// The row to highlight, as (section, label); an empty section matches any.
+    static HIGHLIGHT: std::cell::RefCell<Option<(String, SharedString)>> = const { std::cell::RefCell::new(None) };
+    /// The section heading built last, so a row knows which section it is in.
+    static SECTION: std::cell::RefCell<SharedString> = const { std::cell::RefCell::new(SharedString::new_static("")) };
+}
+
+/// Clears the search and highlight state when dropped, so a build that panics does not leave it set
+/// for the next render on this thread.
+struct ClearOnDrop;
+
+impl Drop for ClearOnDrop {
+    fn drop(&mut self) {
+        SEARCH_ROWS.with(|rows| *rows.borrow_mut() = None);
+        HIGHLIGHT.with(|h| *h.borrow_mut() = None);
+        SECTION.with(|s| *s.borrow_mut() = SharedString::new_static(""));
+    }
 }
 
 /// Runs `build` (a settings page) and returns the rows it built as (section, label, description).
 pub(crate) fn collect_rows<R>(build: impl FnOnce() -> R) -> Vec<(String, String, String)> {
+    let _clear = ClearOnDrop;
     SEARCH_ROWS.with(|rows| *rows.borrow_mut() = Some(CollectedRows::default()));
     drop(build());
     SEARCH_ROWS.with(|rows| rows.borrow_mut().take().map(|c| c.rows).unwrap_or_default())
 }
 
-/// Runs `build` with the row labelled `label` drawn highlighted (a settings search result the
-/// user just opened).
-pub(crate) fn with_highlight<R>(label: Option<SharedString>, build: impl FnOnce() -> R) -> R {
-    HIGHLIGHT.with(|h| *h.borrow_mut() = label);
-    let out = build();
-    HIGHLIGHT.with(|h| *h.borrow_mut() = None);
-    out
+/// Runs `build` with the row `target` (section, label) drawn highlighted: a settings search result
+/// the user just opened. Two rows with one label in different sections light up only the one meant.
+pub(crate) fn with_highlight<R>(target: Option<(String, SharedString)>, build: impl FnOnce() -> R) -> R {
+    let _clear = ClearOnDrop;
+    SECTION.with(|s| *s.borrow_mut() = SharedString::new_static(""));
+    HIGHLIGHT.with(|h| *h.borrow_mut() = target);
+    build()
 }
 
 /// How wide a row's control is. Controls sit right-aligned in a fixed slot so rows line up.
@@ -119,7 +136,11 @@ pub(crate) fn row_full(
             c.rows.push(entry);
         }
     });
-    let highlighted = HIGHLIGHT.with(|h| h.borrow().as_ref() == Some(&label));
+    let highlighted = HIGHLIGHT.with(|h| {
+        h.borrow().as_ref().is_some_and(|(section, wanted)| {
+            *wanted == label && (section.is_empty() || SECTION.with(|s| s.borrow().as_ref() == section.as_str()))
+        })
+    });
     let mut text_col = div()
         .flex_1()
         .min_w_0()
@@ -503,12 +524,11 @@ pub(crate) fn badge(label: impl Into<SharedString>, tone: Tone, cx: &App) -> Div
 }
 
 /// A key-chord hint, such as a hotkey: quiet text, so it never competes with the label.
-/// A shortcut as keycaps: "Ctrl+PrtSc" becomes two small bordered keys.
-pub(crate) fn kbd(keys: impl Into<SharedString>, cx: &App) -> Div {
+/// A shortcut as keycaps, one small bordered key per entry ("Ctrl", "PrtSc").
+pub(crate) fn kbd(keys: Vec<String>, cx: &App) -> Div {
     let t = cx.theme();
-    let keys: SharedString = keys.into();
     let mut row = div().flex_none().flex().items_center().gap(px(3.));
-    for key in keys.split('+').filter(|k| !k.is_empty()) {
+    for key in keys.into_iter().filter(|k| !k.is_empty()) {
         row = row.child(
             div()
                 .h(px(20.))
@@ -524,7 +544,7 @@ pub(crate) fn kbd(keys: impl Into<SharedString>, cx: &App) -> Div {
                 .text_size(text::SMALL)
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(t.muted_foreground)
-                .child(key.to_string()),
+                .child(key),
         );
     }
     row

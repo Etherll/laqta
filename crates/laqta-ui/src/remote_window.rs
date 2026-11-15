@@ -46,8 +46,10 @@ struct RemoteWindow {
     entries: Vec<RemoteEntry>,
     name: Entity<InputState>,
     flash: Flash,
-    /// What is running ("Upload"), so the buttons it blocks can say why.
+    /// What is running ("Upload"), so the buttons it blocks can say why. One job runs at a time.
     busy: Option<&'static str>,
+    /// Counts listings, so only the newest one fills the list when an older one answers late.
+    listing: u64,
 }
 
 fn parent(dir: &str) -> String {
@@ -72,8 +74,16 @@ impl RemoteWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let stores = (cx.global::<UiState>().services.remote_storages)();
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("New name or folder name"));
-        let mut this =
-            RemoteWindow { stores, current: 0, dir: String::new(), entries: Vec::new(), name, flash: Flash::default(), busy: None };
+        let mut this = RemoteWindow {
+            stores,
+            current: 0,
+            dir: String::new(),
+            entries: Vec::new(),
+            name,
+            flash: Flash::default(),
+            busy: None,
+            listing: 0,
+        };
         this.refresh(cx);
         this
     }
@@ -82,13 +92,25 @@ impl RemoteWindow {
         self.stores.get(self.current).map(|(_, s)| s.clone())
     }
 
-    /// Runs `job` on the background executor, then lists the folder again.
+    /// Says to wait, and returns true, while a job runs.
+    fn refuse_while_busy(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(running) = self.busy else { return false };
+        Flash::show(self, format!("Wait for the current {} to finish", running.to_lowercase()), cx);
+        cx.notify();
+        true
+    }
+
+    /// Runs `job` on the background executor, then lists the folder again. Refused while another runs:
+    /// each job ends by clearing `busy`, which must not free the buttons while a second still runs.
     fn run(
         &mut self,
         label: &'static str,
         job: impl std::future::Future<Output = Result<String, String>> + Send + 'static,
         cx: &mut Context<Self>,
     ) {
+        if self.refuse_while_busy(cx) {
+            return;
+        }
         self.busy = Some(label);
         cx.notify();
         let task = cx.background_spawn(job);
@@ -112,10 +134,16 @@ impl RemoteWindow {
             return cx.notify();
         };
         let dir = self.dir.clone();
+        self.listing += 1;
+        let listing = self.listing;
         let task = cx.background_spawn(async move { store.list(dir).await });
         cx.spawn(async move |this, cx| {
             let r = task.await;
             let _ = this.update(cx, |this, cx| {
+                // A listing of a folder or account the window has left since.
+                if this.listing != listing {
+                    return;
+                }
                 match r {
                     Ok(mut entries) => {
                         entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
@@ -141,7 +169,10 @@ impl RemoteWindow {
                 let Some(files) = rfd::AsyncFileDialog::new().pick_files().await else { return Ok("Nothing uploaded.".into()) };
                 let mut n = 0;
                 for f in files {
-                    store.upload(f.path().to_path_buf(), dir.clone()).await.map_err(|e| e.to_string())?;
+                    store.upload(f.path().to_path_buf(), dir.clone()).await.map_err(|e| match n {
+                        0 => e.to_string(),
+                        _ => format!("{e} ({} uploaded before it)", crate::presenters::copy::count(n, "file", "files")),
+                    })?;
                     n += 1;
                 }
                 Ok(format!("Uploaded {}.", crate::presenters::copy::count(n, "file", "files")))
@@ -156,7 +187,7 @@ impl RemoteWindow {
             "Download",
             async move {
                 let Some(f) = rfd::AsyncFileDialog::new().set_file_name(entry.name.clone()).save_file().await else {
-                    return Ok(String::new());
+                    return Ok("Nothing downloaded.".into());
                 };
                 let dest = f.path().to_path_buf();
                 store.download(entry.path, dest.clone()).await.map_err(|e| e.to_string())?;
@@ -222,6 +253,10 @@ impl Render for RemoteWindow {
             accounts = accounts.child(
                 Button::new(SharedString::from(format!("acct-{i}"))).label(label.clone()).small().selected(self.current == i).on_click(
                     cx.listener(move |this, _, _, cx| {
+                        // A running job's result and listing belong to the account it started on.
+                        if this.current != i && this.refuse_while_busy(cx) {
+                            return;
+                        }
                         this.current = i;
                         this.dir.clear();
                         this.refresh(cx);

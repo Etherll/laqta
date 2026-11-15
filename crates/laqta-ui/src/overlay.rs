@@ -217,7 +217,9 @@ fn open_window(
     // macOS opens the overlay hidden: `NativeWindow::CoverScreen` restyles it and then shows it and
     // gives it the keyboard. Restyling a window that already has the keyboard crashes AppKit later
     // (its Touch Bar observer still watches the frame view the restyle threw away).
-    let shown_at_once = !cfg!(target_os = "macos");
+    // Tests have no `CoverScreen` (their native hook does nothing), and a window left hidden takes no
+    // clicks there, so they open it shown on every platform.
+    let shown_at_once = !cfg!(target_os = "macos") || cfg!(test);
     let options = WindowOptions {
         titlebar: None,
         window_bounds: Some(if matches!(kind, WindowKind::PopUp) {
@@ -390,6 +392,9 @@ struct OverlayView {
     /// Where the pointer last moved over this window, in desktop pixels. The hover cursor reads it
     /// here rather than waiting for the session to echo the move back.
     pointer: Option<(i32, i32)>,
+    /// The session's cursor when `pointer` was recorded. Once the session's cursor is neither that
+    /// nor `pointer`, something else moved it (an arrow key), and it is the one to show.
+    pointer_from: (i32, i32),
     /// Alt is held: the cursor shows the frame move an Alt press makes.
     alt: bool,
 }
@@ -418,7 +423,17 @@ fn color(rgb: u32, alpha: f32) -> Hsla {
 impl OverlayView {
     fn new(model: Entity<OverlayModel>, index: usize, wanted_y: Option<Pixels>, cx: &mut Context<Self>) -> Self {
         cx.observe(&model, |_, _, cx| cx.notify()).detach();
-        OverlayView { model, index, focus: cx.focus_handle(), wheel: 0.0, wanted_y, raised: false, pointer: None, alt: false }
+        OverlayView {
+            model,
+            index,
+            focus: cx.focus_handle(),
+            wheel: 0.0,
+            wanted_y,
+            raised: false,
+            pointer: None,
+            pointer_from: (0, 0),
+            alt: false,
+        }
     }
 
     fn send(&self, input: RegionInput, cx: &App) {
@@ -632,7 +647,9 @@ impl Render for OverlayView {
 
         // This window's own pointer, so the magnifier keeps up with the mouse instead of waiting for
         // the session's cursor to come back; the session's cursor still decides which monitor shows it.
-        let (cx_phys, cy_phys) = self.pointer.filter(|p| contains(origin, *p) && contains(origin, view.cursor)).unwrap_or(view.cursor);
+        let fresh = |p: &(i32, i32)| view.cursor == *p || view.cursor == self.pointer_from;
+        let (cx_phys, cy_phys) =
+            self.pointer.filter(|p| fresh(p) && contains(origin, *p) && contains(origin, view.cursor)).unwrap_or(view.cursor);
         let cursor_here = cx_phys >= origin.x && cx_phys < origin.right() && cy_phys >= origin.y && cy_phys < origin.bottom();
         if cursor_here && !settled {
             let lx = (cx_phys - origin.x) as f32 / s;
@@ -656,7 +673,10 @@ impl Render for OverlayView {
             };
             let (cx_sel, cy_sel) = (sel.x + sel.width as i32 / 2, sel.y + sel.height as i32 / 2);
             let holds = cx_sel >= origin.x && cx_sel < origin.right() && cy_sel >= origin.y && cy_sel < origin.bottom();
-            if holds || self.index == owner {
+            // One window draws the selection's chrome: the one holding its centre, or the owner when
+            // none does (the centre in a gap between monitors).
+            let held = model.slots.iter().any(|s| contains(s.phys, (cx_sel, cy_sel)));
+            if holds || (!held && self.index == owner) {
                 let sel_l = to_local(sel);
                 let screen = (win_w, win_h);
                 // While the text shows, its bar takes the toolbar's place.
@@ -866,6 +886,7 @@ impl OverlayView {
         let before = this.pointer_shape(this.model.read(cx));
         this.alt = ev.modifiers.alt;
         this.pointer = Some((x, y));
+        this.pointer_from = this.model.read(cx).view.cursor;
         if this.pointer_shape(this.model.read(cx)) != before || this.model.read(cx).view.magnifier.is_some() {
             cx.notify();
         }

@@ -69,6 +69,14 @@ impl Flash {
         }
     }
 
+    /// Clears a failure, which would otherwise stay: the thing that failed has since worked. A passing
+    /// note is left to its timer.
+    pub(crate) fn clear_failure<V: HasFlash>(view: &mut V, cx: &mut Context<V>) {
+        if view.flash().shown.as_ref().is_some_and(|n| notice::lifetime(n).is_none()) {
+            Self::dismiss(view, cx);
+        }
+    }
+
     /// The notice shown now, if any.
     pub(crate) fn current(&self) -> Option<&Notice> {
         self.shown.as_ref()

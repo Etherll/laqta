@@ -285,16 +285,20 @@ fn a_staged_archive_that_fails_to_apply_is_dropped_so_the_next_start_is_not_bloc
 fn an_io_error_keeps_the_staged_import_for_the_next_start() {
     let out = TempDir::new().unwrap();
     let zip_path = out.path().join("laqta.zip");
-    write_zip(&zip_path, &[("settings.json", SETTINGS.as_bytes()), ("uploaders/a.sxcu", b"{}")]);
+    write_zip(&zip_path, &[("settings.json", SETTINGS.as_bytes()), ("history.db", b"imported"), ("uploaders/a.sxcu", b"{}")]);
 
     let data = TempDir::new().unwrap();
     fs::write(data.path().join("settings.json"), "old").unwrap();
+    fs::write(data.path().join("history.db"), "old history").unwrap();
+    fs::write(data.path().join("history.db-wal"), "old log").unwrap();
     fs::write(data.path().join("uploaders"), "a file where the folder goes").unwrap();
     stage_archive(&zip_path, data.path()).unwrap();
 
     assert!(matches!(apply_staged_import(data.path()), Err(LibraryError::Io(_))));
     assert!(has_staged_import(data.path()), "kept for a retry");
     assert_eq!(fs::read_to_string(data.path().join("settings.json")).unwrap(), "old", "the settings are moved last, so nothing changed");
+    assert_eq!(fs::read_to_string(data.path().join("history.db")).unwrap(), "old history", "a file already moved is put back");
+    assert_eq!(fs::read_to_string(data.path().join("history.db-wal")).unwrap(), "old log", "and keeps its log");
     assert!(!data.path().join("import-unpacking").exists(), "no scratch files left behind");
 
     fs::remove_file(data.path().join("uploaders")).unwrap();
@@ -319,4 +323,15 @@ fn the_history_log_goes_after_the_imported_database_is_in_place() {
     apply_staged_import(data.path()).unwrap();
     assert!(!data.path().join("history.db-wal").exists());
     assert_eq!(all(&History::open(&data.path().join("history.db")).unwrap()), all(&history));
+}
+
+#[test]
+fn an_archive_naming_one_file_twice_is_refused_before_it_is_staged() {
+    let out = TempDir::new().unwrap();
+    let zip_path = out.path().join("laqta.zip");
+    // One path on Windows and macOS, which fold case.
+    write_zip(&zip_path, &[("settings.json", SETTINGS.as_bytes()), ("Settings.json", SETTINGS.as_bytes())]);
+    let data = TempDir::new().unwrap();
+    assert!(stage_archive(&zip_path, data.path()).is_err());
+    assert!(!has_staged_import(data.path()));
 }

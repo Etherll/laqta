@@ -219,6 +219,45 @@ fn watch_skips_the_screenshots_folder_and_what_is_saved_below_a_watched_parent()
 }
 
 #[test]
+fn a_watch_folder_inside_the_screenshots_folder_is_watched_and_moves_its_files_out() {
+    let tmp = TempDir::new().unwrap();
+    let shots = tmp.path().join("shots");
+    let inbox = shots.join("Inbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+    let h = harness(tmp.path(), |s| {
+        s.watch_folders = vec![WatchFolder { move_to_screenshots: true, ..folder(&inbox, "*") }];
+    });
+    let uploads = host(&h, "imgur", 1);
+    h.app.start_watch_folders();
+    assert_eq!(live_folders(&h), vec![inbox.clone()]);
+
+    h.fake.emit(&file(&inbox.join("a.png")));
+    drain(&h.spawner);
+
+    assert!(!inbox.join("a.png").exists());
+    assert_eq!(uploads.requests.lock().unwrap()[0].data, UploadData::Path(shots.join("a.png")));
+}
+
+#[test]
+fn a_watch_folder_laqta_saves_captures_into_is_not_watched() {
+    let tmp = TempDir::new().unwrap();
+    let shots = tmp.path().join("shots");
+    let month = shots.join("2026-11");
+    let year = shots.join("2026");
+    std::fs::create_dir_all(&month).unwrap();
+    std::fs::create_dir_all(year.join("11")).unwrap();
+    let h = harness(tmp.path(), |s| {
+        s.defaults.naming.subfolder = "%y-%mo".into();
+        let shortcut = s.workflows.first_mut().expect("the default shortcuts");
+        shortcut.patch.naming = Some(laqta_domain::workflow::NamingSettings { subfolder: "%y/%mo".into(), ..Default::default() });
+        s.watch_folders = vec![folder(&month, "*"), WatchFolder { include_subfolders: true, ..folder(&year, "*") }];
+    });
+    host(&h, "imgur", 1);
+    h.app.start_watch_folders();
+    assert!(live_folders(&h).is_empty(), "both are folders Laqta saves into");
+}
+
+#[test]
 fn watch_move_puts_the_file_in_the_screenshots_folder_and_uploads_it_there() {
     let tmp = TempDir::new().unwrap();
     let watched = tmp.path().join("watched");

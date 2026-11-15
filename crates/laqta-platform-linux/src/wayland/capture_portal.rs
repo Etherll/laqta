@@ -109,10 +109,11 @@ pub(crate) fn split(w: u32, h: u32, format: PixelFormat, rgba: Vec<u8>, layout: 
         if cw == 0 || ch == 0 {
             continue;
         }
-        let mut px = Vec::with_capacity((cw * ch * 4) as usize);
+        let (cw_px, w_px) = (cw as usize, w as usize);
+        let mut px = Vec::with_capacity(cw_px * ch as usize * 4);
         for row in y0..y0 + ch {
-            let s = ((row * w + x0) * 4) as usize;
-            px.extend_from_slice(&rgba[s..s + (cw * 4) as usize]);
+            let s = (row as usize * w_px + x0 as usize) * 4;
+            px.extend_from_slice(&rgba[s..s + cw_px * 4]);
         }
         let Ok(image) = Bitmap::new(cw, ch, format, Arc::from(px)) else { continue };
         let at = to_physical(o.logical, f as f32);

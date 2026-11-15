@@ -277,6 +277,9 @@ struct ToolsWindow {
     fields: Vec<Entity<InputState>>,
     choice: usize,
     output: String,
+    /// The choice the shown output was made with: Save names the index after it, not after the
+    /// radio, which can change after Run.
+    output_choice: usize,
     image: Option<Arc<RenderImage>>,
     busy: bool,
     /// The output is a failure line, drawn in the danger colour.
@@ -298,6 +301,7 @@ impl ToolsWindow {
             fields,
             choice: 0,
             output: String::new(),
+            output_choice: 0,
             image: None,
             busy: false,
             failed: false,
@@ -506,7 +510,11 @@ impl ToolsWindow {
             cx.spawn(async move |this, cx| {
                 let r = task.await;
                 let _ = this.update(cx, |this, cx| match r {
-                    Ok(None) => this.finish(Ok((String::new(), None)), cx),
+                    // The picker was cancelled: nothing ran, so the last result stays.
+                    Ok(None) => {
+                        this.busy = false;
+                        cx.notify();
+                    }
                     Ok(Some(codes)) if codes.is_empty() => this.finish(Ok(("No code found.".into(), None)), cx),
                     Ok(Some(codes)) => this.finish(Ok((codes.join("\n\n"), None)), cx),
                     Err(e) => this.finish(Err(e), cx),
@@ -518,6 +526,9 @@ impl ToolsWindow {
         }
         self.busy = true;
         self.output = "Working…".into();
+        // The last run's failure tone goes with its output.
+        self.failed = false;
+        self.output_choice = choice;
         cx.notify();
         let task = cx.background_spawn(async move { job.run(&app, &codecs).await });
         cx.spawn(async move |this, cx| {
@@ -673,8 +684,25 @@ impl Job {
                 })
             }
             Job::Strip(paths) => {
-                let dir = dir_of(paths.first().ok_or("choose files first")?);
-                text(list(&run!(J::StripMetadata { paths, out_dir: dir }, O::Paths)))
+                if paths.is_empty() {
+                    return Err("choose files first".into());
+                }
+                // Each copy goes next to its own original, so files from several folders run per folder.
+                let mut by_dir: std::collections::BTreeMap<PathBuf, Vec<PathBuf>> = std::collections::BTreeMap::new();
+                for path in paths {
+                    by_dir.entry(dir_of(&path)).or_default().push(path);
+                }
+                let mut written = Vec::new();
+                for (dir, paths) in by_dir {
+                    match app.run_tool(J::StripMetadata { paths, out_dir: dir.clone() }).await {
+                        Ok(O::Paths(paths)) => written.extend(paths),
+                        Ok(other) => return Err(format!("unexpected tool output: {other:?}")),
+                        // The copies made in the folders before stay, so the error lists them too.
+                        Err(e) if written.is_empty() => return Err(e.to_string()),
+                        Err(e) => return Err(format!("{e} (in {})\n\nCopies made before it:\n{}", dir.display(), list(&written))),
+                    }
+                }
+                text(list(&written))
             }
             Job::Index(dir, choice, depth) => {
                 let format = [t::IndexFormat::Text, t::IndexFormat::Html, t::IndexFormat::Json, t::IndexFormat::Xml][choice];
@@ -873,14 +901,14 @@ impl Render for ToolsWindow {
 
         // Footer: secondary actions, then the one primary that names what it does.
         let mut actions: Vec<widgets::FooterAction> = Vec::new();
-        if !self.output.is_empty() && !self.failed {
+        if !self.output.is_empty() && !self.failed && !self.busy {
             let out = self.output.clone();
             actions.push(widgets::FooterAction::new("copy", "Copy result", Pill::Ghost, move |_, _, cx| {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(out.clone()));
             }));
             if self.kind == ToolKind::IndexFolder {
                 let out = self.output.clone();
-                let ext = ["txt", "html", "json", "xml"][self.choice];
+                let ext = ["txt", "html", "json", "xml"].get(self.output_choice).copied().unwrap_or("txt");
                 actions.push(widgets::FooterAction::new("save", "Save…", Pill::Default, move |_, _, cx| {
                     let out = out.clone();
                     cx.background_spawn(async move {

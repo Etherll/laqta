@@ -37,10 +37,13 @@ pub fn apply(texts: &InputTexts, s: &mut Settings) -> Result<(), FieldError> {
     d.naming.subfolder = texts.subfolder.clone();
     d.image.jpeg_quality = bounded(&texts.jpeg_quality, "JPEG quality", limits::JPEG_QUALITY, 90)? as u8;
     let kb = whole(&texts.auto_jpeg, "The JPEG size threshold")?;
-    d.image.auto_jpeg_above_bytes = (kb > 0).then_some(kb as u64 * 1024);
-    d.image.thumbnail_width = whole(&texts.thumb_w, "Thumbnail width")?;
-    d.image.thumbnail_height = whole(&texts.thumb_h, "Thumbnail height")?;
-    d.capture.delay_ms = whole(&texts.delay, "Capture delay")?;
+    // The field shows whole KiB: a stored size it rounds to the same number stays as it was.
+    if d.image.auto_jpeg_above_bytes.map(|b| b / 1024) != (kb > 0).then_some(u64::from(kb)) {
+        d.image.auto_jpeg_above_bytes = (kb > 0).then_some(kb as u64 * 1024);
+    }
+    d.image.thumbnail_width = bounded(&texts.thumb_w, "Thumbnail width", limits::THUMBNAIL_PX, 0)?;
+    d.image.thumbnail_height = bounded(&texts.thumb_h, "Thumbnail height", limits::THUMBNAIL_PX, 0)?;
+    d.capture.delay_ms = bounded(&texts.delay, "Capture delay", limits::DELAY_MS, 0)?;
     d.capture.custom_window_title = texts.window_title.clone();
     d.capture.custom_region = parse_region(&texts.custom_region).map_err(|message| FieldError { field: "Custom region", message })?;
     d.general.custom_capture_sound = path(&texts.sound_capture);
@@ -50,31 +53,40 @@ pub fn apply(texts: &InputTexts, s: &mut Settings) -> Result<(), FieldError> {
     let r = &mut d.recording;
     r.fps = bounded(&texts.rec_fps, "Frame rate", limits::FPS, 30)?;
     r.gif_fps = bounded(&texts.rec_gif_fps, "GIF frame rate", limits::GIF_FPS, 15)?;
-    r.gif_max_width = whole(&texts.rec_gif_max_width, "GIF maximum width")?;
+    // 0 (or nothing) keeps the recorded width.
+    r.gif_max_width = match texts.rec_gif_max_width.trim() {
+        "" | "0" => 0,
+        text => bounded(text, "GIF maximum width", limits::GIF_MAX_WIDTH, 0)?,
+    };
     r.quality = if texts.rec_crf.trim().is_empty() {
-        Quality::Default
+        // The field edits CRF only; a bitrate set in the file has no field and stays.
+        if matches!(r.quality, Quality::Bitrate(_)) { r.quality } else { Quality::Default }
     } else {
         Quality::Crf(parse_bounded(&texts.rec_crf, limits::CRF.0, limits::CRF.1).map_err(|e| refused("Quality (CRF)", e))? as u8)
     };
-    r.countdown_secs = whole(&texts.rec_countdown, "Countdown")?;
-    r.fixed_duration_secs = whole(&texts.rec_duration, "Fixed duration")?;
+    r.countdown_secs = bounded(&texts.rec_countdown, "Countdown", limits::COUNTDOWN_SECS, 0)?;
+    r.fixed_duration_secs = bounded(&texts.rec_duration, "Fixed duration", limits::FIXED_DURATION_SECS, 0)?;
     r.microphone = (!texts.rec_microphone.is_empty()).then(|| texts.rec_microphone.clone());
     r.custom_args = texts.rec_args.clone();
     r.ffmpeg_path = texts.rec_ffmpeg.clone();
     r.camera.device = texts.rec_camera_device.clone();
     r.camera.size_percent = bounded(&texts.rec_camera_size, "Camera size", limits::CAMERA_SIZE_PERCENT, 25)? as u8;
     let o = &mut d.capture.scrolling;
-    o.start_delay_ms = whole(&texts.scroll[0], "Start delay")?;
+    o.start_delay_ms = bounded(&texts.scroll[0], "Start delay", limits::DELAY_MS, 0)?;
     o.scroll_delay_ms = bounded(&texts.scroll[1], "Scroll delay", limits::SCROLL_DELAY_MS, 300)?;
     o.max_frames = bounded(&texts.scroll[2], "Maximum frames", limits::SCROLL_FRAMES, 50)?;
     o.scroll_amount = bounded(&texts.scroll[3], "Scroll amount", limits::SCROLL_AMOUNT, 2)?;
-    o.ignore_top = whole(&texts.scroll[4], "Fixed rows at the top")?;
-    o.ignore_bottom = whole(&texts.scroll[5], "Fixed rows at the bottom")?;
+    o.ignore_top = bounded(&texts.scroll[4], "Fixed rows at the top", limits::IGNORE_ROWS, 0)?;
+    o.ignore_bottom = bounded(&texts.scroll[5], "Fixed rows at the bottom", limits::IGNORE_ROWS, 0)?;
     s.cloud.analyzer.base_url = texts.cloud[0].clone();
     s.cloud.analyzer.model = texts.cloud[1].clone();
     s.cloud.analyzer.prompt = texts.cloud[2].clone();
     let (min_s, max_s) = (AutoCaptureOptions::MIN_INTERVAL_MS / 1000, AutoCaptureOptions::MAX_INTERVAL_MS / 1000);
-    s.auto_capture.interval_ms = bounded(&texts.auto_interval, "Capture every (seconds)", (min_s, max_s), 60)? * 1000;
+    let secs = bounded(&texts.auto_interval, "Capture every (seconds)", (min_s, max_s), 60)?;
+    // The field shows whole seconds: a stored interval it rounds to the same number stays as it was.
+    if secs != s.auto_capture.interval_ms / 1000 {
+        s.auto_capture.interval_ms = secs * 1000;
+    }
     s.auto_capture.count = whole(&texts.auto_count, "Auto-capture count")?;
     d.upload.clipboard_format = texts.clipboard_format.clone();
     d.upload.retries = bounded(&texts.retries, "Retries", limits::RETRIES, 2)?;
@@ -258,6 +270,31 @@ mod tests {
         assert_eq!(d.capture.custom_region, None);
         assert_eq!(d.recording.microphone, None);
         assert_eq!(d.general.custom_capture_sound, None);
+    }
+
+    #[test]
+    fn values_the_window_cannot_show_exactly_survive_a_save_of_other_fields() {
+        let mut s = Settings::default();
+        s.defaults.recording.quality = Quality::Bitrate(8000);
+        s.auto_capture.interval_ms = 1500;
+        s.defaults.image.auto_jpeg_above_bytes = Some(1500);
+        let mut back = s.clone();
+        apply(&InputTexts::of(&s), &mut back).unwrap();
+        assert_eq!(back.defaults.recording.quality, Quality::Bitrate(8000));
+        assert_eq!(back.auto_capture.interval_ms, 1500);
+        assert_eq!(back.defaults.image.auto_jpeg_above_bytes, Some(1500));
+    }
+
+    #[test]
+    fn a_gif_width_is_none_or_at_least_the_smallest() {
+        let base = InputTexts { dir: "/home/u/Shots".into(), ..InputTexts::default() };
+        for (text, width) in [("", 0), ("0", 0), ("640", 640)] {
+            let mut s = Settings::default();
+            apply(&InputTexts { rec_gif_max_width: text.into(), ..base.clone() }, &mut s).unwrap();
+            assert_eq!(s.defaults.recording.gif_max_width, width, "{text:?}");
+        }
+        let err = apply(&InputTexts { rec_gif_max_width: "1".into(), ..base }, &mut Settings::default()).expect_err("too small");
+        assert!(err.to_string().starts_with("GIF maximum width"), "{err}");
     }
 
     #[test]

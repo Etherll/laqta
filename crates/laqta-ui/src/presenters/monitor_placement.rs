@@ -135,9 +135,12 @@ fn assign(frames: &[PhysRect], screens: &[Screen]) -> Vec<Option<usize>> {
     if !frames.is_empty() && frames.len() == screens.len() {
         let mut by_frame: Vec<usize> = (0..frames.len()).collect();
         by_frame.sort_by_key(|&i| (frames[i].x, frames[i].y));
+        // Both sides in physical pixels: with mixed scales the logical order can differ from it.
         let mut by_screen: Vec<usize> = (0..screens.len()).collect();
+        let phys = |s: &Screen| (s.bounds.x * s.scale(), s.bounds.y * s.scale());
         by_screen.sort_by(|&a, &b| {
-            screens[a].bounds.x.total_cmp(&screens[b].bounds.x).then(screens[a].bounds.y.total_cmp(&screens[b].bounds.y))
+            let (pa, pb) = (phys(&screens[a]), phys(&screens[b]));
+            pa.0.total_cmp(&pb.0).then(pa.1.total_cmp(&pb.1))
         });
         let mut out = vec![None; frames.len()];
         for (frame, screen) in by_frame.into_iter().zip(by_screen) {

@@ -11,6 +11,12 @@ pub fn hotkey_label(bindings: &[(KeyChord, Action)], action: Action, os: Os) -> 
     Some(keycaps(*chord, os).join(if os == Os::MacOs { "" } else { "+" }))
 }
 
+/// The keys of `action`'s shortcut, one per keycap.
+pub fn hotkey_keys(bindings: &[(KeyChord, Action)], action: Action, os: Os) -> Option<Vec<String>> {
+    let (chord, _) = bindings.iter().find(|(_, a)| *a == action)?;
+    Some(keycaps(*chord, os))
+}
+
 /// What one key press does while a shortcut is being recorded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Recorded {
@@ -301,6 +307,14 @@ mod tests {
         assert_eq!(keycaps(chord("Ctrl+Shift+PrintScreen"), Os::Windows), ["Ctrl", "Shift", "PrtSc"]);
         assert_eq!(keycaps(chord("Ctrl+Alt+Super+1"), Os::MacOs), ["⌃", "⌥", "⌘", "1"]);
         assert_eq!(keycaps(chord("Shift+PrintScreen"), Os::MacOs), ["⇧", "F13"]);
+    }
+
+    #[test]
+    fn hotkey_keys_are_one_entry_per_key_on_every_os() {
+        let b = [(chord("Ctrl+Shift+PrintScreen"), Action::RectangleRegion)];
+        assert_eq!(hotkey_keys(&b, Action::RectangleRegion, Os::MacOs).unwrap(), ["⌃", "⇧", "F13"]);
+        assert_eq!(hotkey_keys(&b, Action::RectangleRegion, Os::Windows).unwrap(), ["Ctrl", "Shift", "PrtSc"]);
+        assert_eq!(hotkey_keys(&b, Action::PrintScreen, Os::Linux), None);
     }
 
     #[test]

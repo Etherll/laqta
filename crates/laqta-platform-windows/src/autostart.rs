@@ -93,13 +93,15 @@ pub(crate) fn task_xml(executable: &Path, user: &str) -> String {
     )
 }
 
-/// Who may read and change the task: full access for SYSTEM, the Administrators group and the user
-/// it is for, when `user` is a SID (the non-elevated copy removes the task when sign-in start is
-/// turned off). Nobody else gets any.
+/// Who may read and change the task: full access for SYSTEM and the Administrators group. The user it
+/// is for, when `user` is a SID, may only read and delete it (the non-elevated copy removes the task
+/// when sign-in start is turned off): with write access, any program running as the user could point
+/// the task at its own executable and have it run with administrator rights at the next sign-in.
+/// Nobody else gets any.
 fn task_sddl(user: &str) -> String {
     let mut sddl = "D:(A;;FA;;;SY)(A;;FA;;;BA)".to_owned();
     if user.starts_with("S-1-") && user[2..].chars().all(|c| c.is_ascii_digit() || c == '-') {
-        sddl.push_str(&format!("(A;;FA;;;{user})"));
+        sddl.push_str(&format!("(A;;FRSD;;;{user})"));
     }
     sddl
 }
@@ -175,14 +177,26 @@ pub(crate) fn query_task_args() -> Vec<String> {
 fn schtasks(args: &[String]) -> Result<std::process::Output, PortError> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let program = std::env::var_os("SystemRoot")
-        .map(|root| std::path::Path::new(&root).join("System32").join("schtasks.exe"))
-        .unwrap_or_else(|| "schtasks.exe".into());
+    // The system folder as Windows reports it: the SystemRoot variable is the caller's to change.
+    let program = system_directory()
+        .map(|dir| dir.join("schtasks.exe"))
+        .ok_or_else(|| PortError::Failed("schtasks: the system folder could not be found".into()))?;
     std::process::Command::new(program)
         .args(args)
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| PortError::Failed(format!("schtasks: {e}")))
+}
+
+/// The System32 folder, from `GetSystemDirectoryW`.
+#[cfg(windows)]
+fn system_directory() -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut buffer = [0u16; 260];
+    // SAFETY: the buffer is valid for its length, and the call writes at most that many characters.
+    let len = unsafe { GetSystemDirectoryW(Some(&mut buffer)) } as usize;
+    (len > 0 && len < buffer.len()).then(|| std::ffi::OsString::from_wide(&buffer[..len]).into())
 }
 
 /// Runs `schtasks` and turns a non-zero exit into an error that carries its message.
@@ -250,6 +264,29 @@ fn create_task(executable: &Path) -> Result<(), PortError> {
 #[cfg(windows)]
 fn task_exists() -> bool {
     schtasks(&query_task_args()).is_ok_and(|output| output.status.success())
+}
+
+/// Whether the task definition `xml` (as `schtasks /Query /XML` prints it) starts `executable`.
+pub(crate) fn task_starts(xml: &str, executable: &Path) -> bool {
+    let wanted = format!("<Command>{}</Command>", xml_escape(&executable.display().to_string())).to_lowercase();
+    xml.to_lowercase().contains(&wanted)
+}
+
+/// Whether the logon task exists and starts `executable`. An unreadable task counts as not.
+#[cfg(windows)]
+fn task_starts_executable(executable: &Path) -> bool {
+    let args: Vec<String> = ["/Query", "/TN", TASK_NAME, "/XML"].into_iter().map(str::to_owned).collect();
+    schtasks(&args).is_ok_and(|output| output.status.success() && task_starts(&decode_output(&output.stdout), executable))
+}
+
+/// `schtasks` output as text: UTF-16 (with or without its byte order mark) or 8-bit.
+pub(crate) fn decode_output(bytes: &[u8]) -> String {
+    let bytes = bytes.strip_prefix(&[0xFF, 0xFE]).unwrap_or(bytes);
+    if bytes.len() >= 2 && bytes.len().is_multiple_of(2) && bytes[1] == 0 {
+        let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|&p| u16::from_le_bytes(p)).collect();
+        return String::from_utf16_lossy(&units);
+    }
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 #[cfg(windows)]
@@ -333,9 +370,9 @@ impl WindowsAutostart {
         let protected = in_protected_folder(executable, &protected_folders());
         match choose_entry(elevated, protected, process_elevated) {
             Entry::Task => {
-                // Already the logon task alone: nothing to rewrite. The installed copy keeps one path
-                // (`current\laqta.exe`), so a task that exists points at it.
-                if !self.run_value_present()? && task_exists() {
+                // Already the logon task alone, starting this copy: nothing to rewrite. A task left by a
+                // copy installed elsewhere is written again.
+                if !self.run_value_present()? && task_starts_executable(executable) {
                     return Ok(());
                 }
                 create_task(executable)?;
@@ -391,9 +428,26 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        Entry, choose_entry, create_task_args, delete_task_args, in_protected_folder, query_task_args, run_command, task_file_bytes,
-        task_user, task_xml, xml_escape,
+        Entry, choose_entry, create_task_args, decode_output, delete_task_args, in_protected_folder, query_task_args, run_command,
+        task_file_bytes, task_starts, task_user, task_xml, xml_escape,
     };
+
+    #[test]
+    fn schtasks_output_reads_in_utf16_or_8_bit() {
+        let text = "<Command>C:\\x.exe</Command>";
+        let utf16: Vec<u8> = [0xFF, 0xFE].into_iter().chain(text.encode_utf16().flat_map(u16::to_le_bytes)).collect();
+        assert_eq!(decode_output(&utf16), text);
+        assert_eq!(decode_output(text.as_bytes()), text);
+    }
+
+    #[test]
+    fn a_task_is_matched_to_the_copy_it_starts() {
+        let exe = Path::new(r"C:\Program Files\Laqta\laqta.exe");
+        let xml = task_xml(exe, "S-1-5-21-1-2-3-1001");
+        assert!(task_starts(&xml, exe));
+        assert!(task_starts(&xml.to_uppercase(), exe), "paths on Windows ignore case");
+        assert!(!task_starts(&xml, Path::new(r"C:\Program Files\Other\laqta.exe")));
+    }
 
     /// A Program Files install with run-as-administrator on, toggled from a Laqta without administrator
     /// rights, falls back to the Run value instead of failing with "access denied".
@@ -420,7 +474,10 @@ mod tests {
     #[test]
     fn only_system_administrators_and_the_user_may_change_the_task() {
         let xml = task_xml(Path::new(r"C:\Program Files\Laqta\laqta.exe"), "S-1-5-21-1-2-3-1001");
-        assert!(xml.contains("<SecurityDescriptor>D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;S-1-5-21-1-2-3-1001)</SecurityDescriptor>"), "{xml}");
+        assert!(
+            xml.contains("<SecurityDescriptor>D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;FRSD;;;S-1-5-21-1-2-3-1001)</SecurityDescriptor>"),
+            "{xml}"
+        );
         let xml = task_xml(Path::new(r"C:\Program Files\Laqta\laqta.exe"), r"HOME\me");
         assert!(xml.contains("<SecurityDescriptor>D:(A;;FA;;;SY)(A;;FA;;;BA)</SecurityDescriptor>"), "{xml}");
     }

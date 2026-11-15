@@ -82,7 +82,8 @@ mod tests {
         }
     }
 
-    /// 4294968 seconds is 4294968000 ms, one past u32::MAX: converting it in the window overflowed.
+    /// 4294968 seconds is 4294968000 ms, the first whole second past u32::MAX (by 705 ms). The interval
+    /// is bounded in seconds before `settings_form::apply` multiplies, so the bound refuses it first.
     #[test]
     fn seconds_that_would_overflow_milliseconds_are_over_the_interval_maximum() {
         let (min, max) = (AutoCaptureOptions::MIN_INTERVAL_MS / 1000, AutoCaptureOptions::MAX_INTERVAL_MS / 1000);

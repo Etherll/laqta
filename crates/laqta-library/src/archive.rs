@@ -98,10 +98,40 @@ const STAGED: &str = "import-pending.zip";
 /// Returns how many known entries the archive holds; an archive with none, or one with an unsafe
 /// entry name, is refused and nothing is staged. A second call replaces the staged archive.
 pub fn stage_archive(zip_path: &Path, data_dir: &Path) -> Result<usize, LibraryError> {
+    // The copy is the one checked, so what the next start applies is what was checked.
+    fs::create_dir_all(data_dir)?;
+    let staged = data_dir.join(STAGED);
+    let part = part_path(&staged);
+    fs::copy(zip_path, &part)?;
+    let known = match check_archive(&part) {
+        Ok(known) => known,
+        Err(error) => {
+            let _ = fs::remove_file(&part);
+            return Err(error);
+        }
+    };
+    // Stamped now: a copy on Windows keeps the source zip's time, and the pre-import backup is judged
+    // against the staging time (see `apply_archive`).
+    let copy = File::options().write(true).open(&part)?;
+    copy.set_modified(std::time::SystemTime::now())?;
+    copy.sync_all()?;
+    drop(copy);
+    fs::rename(&part, &staged)?;
+    Ok(known)
+}
+
+/// Opens `zip_path` and reads every entry, as an import would. Returns how many known entries it holds.
+fn check_archive(zip_path: &Path) -> Result<usize, LibraryError> {
     let mut archive = ZipArchive::new(BufReader::new(File::open(zip_path)?))?;
     let names = archive.file_names().map(|name| name.map(Cow::into_owned)).collect::<Result<Vec<String>, ZipError>>()?;
     if let Some(name) = names.iter().find(|name| !is_safe(name)) {
         return Err(io::Error::new(io::ErrorKind::InvalidData, format!("archive entry {name:?} would leave the data folder")).into());
+    }
+    // Two entries for one file would land on the same path: the second would fail after the first was
+    // applied, and the import would be tried again at every start. Windows and macOS fold case.
+    let mut seen = std::collections::HashSet::new();
+    if let Some(name) = names.iter().filter(|name| !name.ends_with('/')).find(|name| !seen.insert(name.to_lowercase())) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("the archive holds {name:?} twice")).into());
     }
     let known = names.iter().filter(|name| !name.ends_with('/') && is_known(name)).count();
     if known == 0 {
@@ -111,12 +141,6 @@ pub fn stage_archive(zip_path: &Path, data_dir: &Path) -> Result<usize, LibraryE
     for index in 0..archive.len() {
         io::copy(&mut archive.by_index(index)?, &mut io::sink())?;
     }
-    fs::create_dir_all(data_dir)?;
-    let staged = data_dir.join(STAGED);
-    let part = part_path(&staged);
-    fs::copy(zip_path, &part)?;
-    File::open(&part)?.sync_all()?;
-    fs::rename(&part, &staged)?;
     Ok(known)
 }
 
@@ -146,20 +170,39 @@ pub fn apply_staged_import(data_dir: &Path) -> Result<Option<Vec<PathBuf>>, Libr
     let result = apply_archive(&staged, data_dir);
     let _ = fs::remove_dir_all(data_dir.join(UNPACKING));
     match &result {
-        Ok(_) => {
-            let _ = fs::remove_file(&staged);
-        }
-        Err(error) if is_bad_archive(error) => {
-            let _ = fs::remove_file(&staged);
-        }
+        Ok(_) => retire_staged(&staged),
+        Err(error) if is_bad_archive(error) => retire_staged(&staged),
         Err(_) => {}
     }
     result.map(Some)
 }
 
+/// Takes the staged archive out of the way. One that cannot be removed is renamed instead, since left
+/// in place it would be applied again at the next start, over whatever changed since.
+fn retire_staged(staged: &Path) {
+    if let Err(error) = fs::remove_file(staged) {
+        let applied = staged.with_extension("applied");
+        let _ = fs::remove_file(&applied);
+        if let Err(rename) = fs::rename(staged, &applied) {
+            tracing::error!(%error, %rename, path = %staged.display(), "archive: the applied import could not be removed and will be applied again");
+        }
+    }
+}
+
+/// Where the replaced files are kept when a rollback could not put them all back, so none is lost.
+const KEPT: &str = "import-kept";
+
+/// Whether `path` exists and was modified no earlier than `than`.
+fn is_newer(path: &Path, than: &Path) -> bool {
+    let modified = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
+    matches!((modified(path), modified(than)), (Some(a), Some(b)) if a >= b)
+}
+
 /// Whether `error` says the archive itself cannot be applied, as opposed to the folder it goes to.
 fn is_bad_archive(error: &LibraryError) -> bool {
     match error {
+        // A read error under the zip reader is about the disk, not the archive: it is judged as one.
+        LibraryError::Zip(ZipError::Io(error)) => matches!(error.kind(), io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof),
         LibraryError::Zip(_) => true,
         // A truncated entry ends early; reading it again at the next start would end the same way.
         LibraryError::Io(error) => matches!(error.kind(), io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof),
@@ -189,21 +232,82 @@ fn apply_archive(zip_path: &Path, data_dir: &Path) -> Result<Vec<PathBuf>, Libra
     if data_dir.join(SETTINGS).is_file() {
         fs::create_dir_all(data_dir.join(BACKUPS))?;
         let backup = data_dir.join(SETTINGS_BEFORE_IMPORT);
-        fs::copy(data_dir.join(SETTINGS), &backup)?;
+        // A backup newer than the staged archive was made for this import by a start that stopped
+        // before it finished; the settings now may be the imported ones, so that backup stays.
+        if !is_newer(&backup, zip_path) {
+            fs::copy(data_dir.join(SETTINGS), &backup)?;
+        }
         written.push(backup);
     }
-    for index in plan {
-        let name = &names[index];
+    // Each file a rename replaces is set aside first, so a rename that fails halfway puts every
+    // replaced file back: the profile is either the imported one or the one it was, never a mix.
+    let previous = unpacking.join(".previous");
+    let mut moved: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
+    let mut history = false;
+    let mut place = |name: &str| -> io::Result<()> {
         let dest = data_dir.join(name);
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
         }
+        let old = if dest.is_file() {
+            let old = previous.join(name);
+            if let Some(parent) = old.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::rename(&dest, &old)?;
+            Some(old)
+        } else {
+            None
+        };
+        moved.push((dest.clone(), old));
         fs::rename(unpacking.join(name), &dest)?;
-        if name == HISTORY_DB {
-            remove_history_sidecars(data_dir)?;
+        history |= name == HISTORY_DB;
+        Ok(())
+    };
+    let placed = plan.iter().try_for_each(|index| place(&names[*index])).and_then(|()| {
+        // The old database's log would be read into the imported one, so it is set aside too, and
+        // put back like the rest if anything failed.
+        if !history {
+            return Ok(());
         }
-        written.push(dest);
+        for suffix in ["-wal", "-shm"] {
+            let name = format!("{HISTORY_DB}{suffix}");
+            let dest = data_dir.join(&name);
+            if dest.is_file() {
+                fs::create_dir_all(&previous)?;
+                let old = previous.join(&name);
+                fs::rename(&dest, &old)?;
+                moved.push((dest, Some(old)));
+            }
+        }
+        Ok(())
+    });
+    if let Err(error) = placed {
+        let mut kept = false;
+        for (dest, old) in moved.into_iter().rev() {
+            let _ = fs::remove_file(&dest);
+            if let Some(old) = old
+                && let Err(rename) = fs::rename(&old, &dest)
+            {
+                tracing::error!(%rename, path = %dest.display(), "archive: a replaced file could not be put back");
+                kept = true;
+            }
+        }
+        // The unpacking folder is removed next; what could not go back moves out of it first.
+        if kept {
+            // A set kept by an earlier failed import stays: this one takes the next free name.
+            let keep = (1..)
+                .map(|n| if n == 1 { data_dir.join(KEPT) } else { data_dir.join(format!("{KEPT}-{n}")) })
+                .find(|p| !p.exists())
+                .expect("a free name");
+            if let Err(rename) = fs::rename(&previous, keep) {
+                tracing::error!(%rename, "archive: the replaced files could not be kept");
+            }
+        }
+        return Err(error.into());
     }
+    // The set-aside files (the old log included) go with the unpacking folder.
+    written.extend(moved.into_iter().filter(|(dest, _)| dest.is_file()).map(|(dest, _)| dest));
     Ok(written)
 }
 
@@ -267,7 +371,7 @@ fn is_known(name: &str) -> bool {
     if name == SETTINGS || name == HISTORY_DB {
         return true;
     }
-    if name == SETTINGS_BEFORE_IMPORT {
+    if name.eq_ignore_ascii_case(SETTINGS_BEFORE_IMPORT) {
         // The importer writes this file itself. An archived copy must not replace the backup it just made.
         return false;
     }
@@ -278,9 +382,22 @@ fn is_known(name: &str) -> bool {
 }
 
 /// A relative name with `/` separators only, no `.` or `..` part, and no backslash, colon or NUL.
-/// Joined to a folder, such a name stays inside it on every platform.
+/// Joined to a folder, such a name stays inside it on every platform. No part ends in a dot or a space
+/// either: Windows drops those, so `settings.json.` would be written as `settings.json`.
 fn is_safe(name: &str) -> bool {
-    !name.starts_with('/') && !name.contains(['\\', ':', '\0']) && name.split('/').all(|part| part != ".." && part != ".")
+    !name.starts_with('/')
+        && !name.contains(['\\', ':', '\0'])
+        && name.split('/').all(|part| part != ".." && part != "." && !part.ends_with(['.', ' ']) && !is_device_name(part))
+}
+
+/// A Windows device name (`CON`, `NUL`, `COM1`…), with or without an extension: written to, it is the
+/// device and not a file.
+fn is_device_name(part: &str) -> bool {
+    let stem = part.split('.').next().unwrap_or_default().trim_end().to_ascii_uppercase();
+    // COM and LPT take a digit or a superscript one, two or three.
+    let port = stem.strip_prefix("COM").or_else(|| stem.strip_prefix("LPT"));
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || port.is_some_and(|n| matches!(n.chars().collect::<Vec<_>>()[..], [c] if c.is_ascii_digit() || matches!(c, '¹' | '²' | '³')))
 }
 
 fn is_sxcu(name: &str) -> bool {
@@ -304,4 +421,21 @@ fn part_path(dest: &Path) -> PathBuf {
     let mut part = dest.as_os_str().to_owned();
     part.push(".part");
     PathBuf::from(part)
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::{is_device_name, is_safe};
+
+    #[test]
+    fn names_windows_would_change_or_open_as_devices_are_refused() {
+        assert!(!is_safe("backups/settings-before-import.json."), "Windows drops the trailing dot");
+        assert!(!is_safe("uploaders/a.sxcu "), "and a trailing space");
+        assert!(!is_safe("backups/COM¹.txt"));
+        assert!(is_device_name("lpt³"));
+        assert!(is_device_name("COM1.json"));
+        assert!(!is_device_name("COM10"));
+        assert!(!is_device_name("COMPUTER.txt"));
+        assert!(is_safe("backups/settings-2026.json"));
+    }
 }

@@ -45,8 +45,17 @@ pub(crate) fn open(result: TextResult, cx: &mut App) {
         crate::runtime::dismiss_on_escape(window, cx);
         let editor = cx.new(|cx| TextareaState::new(window, cx).default_value(result.text.clone()));
         let clip = result.copied.then(|| result.text.clone());
-        let view =
-            cx.new(|_| TextWindow { title: result.title, preview, editor, original: result.text, joined: false, clip, notice: None });
+        let view = cx.new(|_| TextWindow {
+            title: result.title,
+            preview,
+            editor,
+            original: result.text,
+            joined: false,
+            joined_text: None,
+            clip,
+            notice: None,
+            saved: None,
+        });
         cx.new(|cx| Root::new(view, window, cx))
     }) {
         tracing::warn!("text window failed: {e:#}");
@@ -57,13 +66,18 @@ struct TextWindow {
     title: String,
     preview: Option<Arc<RenderImage>>,
     editor: Entity<TextareaState>,
-    /// The text as read, so "Keep lines" can bring it back after joining.
+    /// The lines as read (with any edits made before joining), so "Lines as read" can bring them back.
     original: String,
     joined: bool,
+    /// What "Join lines" put in the editor: unjoining restores `original` only while the editor still
+    /// holds exactly this, so edits made after joining are never thrown away.
+    joined_text: Option<String>,
     /// What this window last put on the clipboard: the footer says whether the editor still matches it.
     clip: Option<String>,
     /// A short confirmation after Save.
     notice: Option<&'static str>,
+    /// The text the last Save wrote: "Saved" shows only while the editor still holds it.
+    saved: Option<String>,
 }
 
 impl TextWindow {
@@ -84,8 +98,25 @@ impl TextWindow {
         if self.joined == joined {
             return;
         }
+        let current = self.text(cx);
+        // Join what is in the editor now, so a word fixed before joining stays fixed.
+        let next = if joined {
+            self.original = current;
+            let next = join_lines(&self.original);
+            self.joined_text = Some(next.clone());
+            next
+        } else if self.joined_text.as_deref() == Some(current.as_str()) {
+            self.joined_text = None;
+            self.original.clone()
+        } else {
+            // Edited after joining: the line breaks can't come back without losing the edit, so the
+            // text stays joined and says why.
+            self.notice = Some("Edited after joining, so the lines stay joined");
+            cx.notify();
+            return;
+        };
         self.joined = joined;
-        let next = if joined { join_lines(&self.original) } else { self.original.clone() };
+        self.notice = None;
         self.editor.update(cx, |s, cx| s.replace_all(next, window, cx));
         cx.notify();
     }
@@ -98,8 +129,10 @@ impl TextWindow {
             let Some(file) = picked else { return };
             let path = file.path().to_path_buf();
             // Off the UI thread: the write never blocks a frame.
+            let written = text.clone();
             let saved = cx.background_spawn(async move { fs::write(&path, text) }).await;
             let _ = this.update(cx, |this, cx| {
+                this.saved = saved.is_ok().then_some(written);
                 this.notice = Some(if saved.is_ok() { "Saved" } else { "Couldn't save the file" });
                 cx.notify();
             });
@@ -135,7 +168,10 @@ fn join_lines(text: &str) -> String {
             continue;
         }
         let next_lower = line.chars().next().is_some_and(char::is_lowercase);
-        if cur.ends_with('-') && next_lower {
+        // A word broken at a line end: a hyphen after a letter, before a lowercase letter. A hyphen
+        // after a number or a space is a dash or a range, and stays.
+        let broken_word = cur.ends_with('-') && cur.chars().rev().nth(1).is_some_and(char::is_alphabetic);
+        if broken_word && next_lower {
             cur.pop();
         } else if !(cur.chars().last().is_some_and(wide) && line.chars().next().is_some_and(wide)) {
             cur.push(' ');
@@ -235,7 +271,9 @@ impl Render for TextWindow {
 
         // The footer says where the text stands: on the clipboard, changed since, or not copied.
         let in_sync = self.clip.as_deref() == Some(value.as_str());
-        let note: SharedString = match (self.notice, &self.clip) {
+        // "Saved" is about the file: once the editor holds something else it no longer is.
+        let notice = self.notice.filter(|n| *n != "Saved" || self.saved.as_deref() == Some(value.as_str()));
+        let note: SharedString = match (notice, &self.clip) {
             (Some(n), _) => n.into(),
             _ if empty => "Nothing to copy".into(),
             (None, Some(_)) if in_sync => "✓ On the clipboard".into(),

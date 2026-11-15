@@ -239,6 +239,39 @@ fn autostart_first_run(
     }
 }
 
+/// The sign-in entry as the settings window sees it: a change made there is the user's own, so the
+/// first-run default is done and never tried again.
+struct UserAutostart {
+    inner: Arc<dyn laqta_ports::Autostart>,
+    marker: std::path::PathBuf,
+}
+
+impl UserAutostart {
+    fn settled(&self, result: Result<(), laqta_ports::PortError>) -> Result<(), laqta_ports::PortError> {
+        if result.is_ok()
+            && let Err(error) = std::fs::write(&self.marker, b"")
+        {
+            tracing::warn!(%error, "could not record the sign-in choice");
+        }
+        result
+    }
+}
+
+impl laqta_ports::Autostart for UserAutostart {
+    fn is_enabled(&self) -> Result<bool, laqta_ports::PortError> {
+        self.inner.is_enabled()
+    }
+    fn set_enabled(&self, enabled: bool, executable: &std::path::Path) -> Result<(), laqta_ports::PortError> {
+        self.settled(self.inner.set_enabled(enabled, executable))
+    }
+    fn set_enabled_elevated(&self, enabled: bool, elevated: bool, executable: &std::path::Path) -> Result<(), laqta_ports::PortError> {
+        self.settled(self.inner.set_enabled_elevated(enabled, elevated, executable))
+    }
+    fn migrate(&self, executable: &std::path::Path) -> Result<(), laqta_ports::PortError> {
+        self.inner.migrate(executable)
+    }
+}
+
 /// `-sandbox`: a fresh temporary folder, removed on exit. `-portable`: `LaqtaData` next to the
 /// binary, as the `portable` marker file or a "portable" executable name does.
 pub(crate) fn data_dir(args: &crate::cli::Args) -> std::path::PathBuf {
@@ -305,29 +338,37 @@ fn native_window(window: &gpui::Window, what: laqta_ui::NativeWindow) -> bool {
     false
 }
 
-/// The platform's mapping from physical to logical desktop pixels, where it has one (macOS).
+/// The platform's mapping from physical to logical desktop pixels, where it has one (macOS, and
+/// Windows, where each monitor has its own scale).
 fn logical_rect() -> Option<laqta_ui::LogicalRectHook> {
     #[cfg(target_os = "macos")]
     {
         Some(Arc::new(laqta_platform_macos::logical_rect))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        Some(Arc::new(laqta_platform_windows::logical_rect))
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         None
     }
 }
 
 /// The privacy permissions the onboarding window lists, where the platform has them (macOS).
-/// Opens the app bundle again once this copy has quit (the shell waits a second for that).
+/// Opens the app bundle again once this copy has quit (the shell waits for its process to end).
 #[cfg(target_os = "macos")]
 fn relaunch_app() {
     let Ok(exe) = std::env::current_exe() else { return };
-    // …/Laqta.app/Contents/MacOS/laqta
-    let Some(bundle) = exe.ancestors().nth(3).filter(|p| p.extension().is_some_and(|e| e == "app")) else {
-        tracing::warn!("relaunch: {} is not inside an app bundle", exe.display());
-        return;
+    // The new copy starts once this one has exited, or it would find it running and quit. A bundle is
+    // opened (…/Laqta.app/Contents/MacOS/laqta); a bare binary (a dev build) is run again.
+    let wait = "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done";
+    let (script, target) = match exe.ancestors().nth(3).filter(|p| p.extension().is_some_and(|e| e == "app")) {
+        Some(bundle) => (format!("{wait}; /usr/bin/open \"$0\""), bundle.to_path_buf()),
+        None => (format!("{wait}; exec \"$0\""), exe.clone()),
     };
-    if let Err(e) = std::process::Command::new("/bin/sh").arg("-c").arg("sleep 1; /usr/bin/open \"$0\"").arg(bundle).spawn() {
+    let spawned = std::process::Command::new("/bin/sh").arg("-c").arg(script).arg(target).arg(std::process::id().to_string()).spawn();
+    if let Err(e) = spawned {
         tracing::warn!("relaunch failed: {e}");
     }
 }
@@ -439,8 +480,10 @@ pub(crate) fn load_settings(store: &SettingsStore) -> Settings {
 /// the serde default, a relative path that would put captures wherever Laqta was started from, and that
 /// becomes the default folder. Any other relative folder is taken from the home folder (the default one
 /// when that is not a full path either); an override's or a shortcut's relative or empty folder is
-/// dropped. An interval out of bounds goes back to the nearest bound.
+/// dropped. An interval out of bounds goes back to the nearest bound, and so does every number the
+/// settings window bounds (`laqta_domain::settings::limits`).
 fn repair_loaded(s: &mut Settings) {
+    clamp_limits(s);
     let relative = |path: &std::path::Path| !path.is_absolute();
     if relative(&s.screenshots_dir) {
         // The serde default (no folder in the file) becomes the platform default; a folder the user wrote
@@ -470,6 +513,44 @@ fn repair_loaded(s: &mut Settings) {
         tracing::warn!(was = *interval, now = bounded, "the auto-capture interval was out of bounds; adjusted");
         *interval = bounded;
     }
+}
+
+/// Brings each bounded number of the defaults back inside its `limits` range, so a hand-edited or
+/// imported file cannot hand a reader a value the window would refuse.
+fn clamp_limits(s: &mut Settings) {
+    use laqta_domain::settings::limits;
+    fn clamp(name: &str, value: &mut u32, (min, max): (u32, u32)) {
+        let bounded = (*value).clamp(min, max);
+        if bounded != *value {
+            tracing::warn!(setting = name, was = *value, now = bounded, "a setting was out of bounds; adjusted");
+            *value = bounded;
+        }
+    }
+    let d = &mut s.defaults;
+    clamp("fps", &mut d.recording.fps, limits::FPS);
+    clamp("gif_fps", &mut d.recording.gif_fps, limits::GIF_FPS);
+    if d.recording.gif_max_width != 0 {
+        clamp("gif_max_width", &mut d.recording.gif_max_width, limits::GIF_MAX_WIDTH);
+    }
+    clamp("countdown_secs", &mut d.recording.countdown_secs, limits::COUNTDOWN_SECS);
+    clamp("fixed_duration_secs", &mut d.recording.fixed_duration_secs, limits::FIXED_DURATION_SECS);
+    clamp("toast.duration_ms", &mut d.general.toast.duration_ms, limits::TOAST_DURATION_MS);
+    clamp("delay_ms", &mut d.capture.delay_ms, limits::DELAY_MS);
+    clamp("thumbnail_width", &mut d.image.thumbnail_width, limits::THUMBNAIL_PX);
+    clamp("thumbnail_height", &mut d.image.thumbnail_height, limits::THUMBNAIL_PX);
+    clamp("retries", &mut d.upload.retries, limits::RETRIES);
+    // The window refuses an empty region, and an untouched one would block every later Save.
+    if d.capture.custom_region.is_some_and(|r| r.width == 0 || r.height == 0) {
+        tracing::warn!("the custom region had no size; dropped");
+        d.capture.custom_region = None;
+    }
+    let o = &mut d.capture.scrolling;
+    clamp("scrolling.start_delay_ms", &mut o.start_delay_ms, limits::DELAY_MS);
+    clamp("scrolling.scroll_delay_ms", &mut o.scroll_delay_ms, limits::SCROLL_DELAY_MS);
+    clamp("scrolling.max_frames", &mut o.max_frames, limits::SCROLL_FRAMES);
+    clamp("scrolling.scroll_amount", &mut o.scroll_amount, limits::SCROLL_AMOUNT);
+    clamp("scrolling.ignore_top", &mut o.ignore_top, limits::IGNORE_ROWS);
+    clamp("scrolling.ignore_bottom", &mut o.ignore_bottom, limits::IGNORE_ROWS);
 }
 
 /// Saves the settings after `Action::DisableHotkeys` flipped them in memory. False when the save failed: the
@@ -668,6 +749,19 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
     startup.extend(args.import_uploaders.iter().map(import));
     startup.extend(args.import_effects.iter().map(import));
     startup.extend(args.requests.iter().cloned());
+    // A copy relaunched with administrator rights got its command line from a program running as the
+    // user, so it refuses files and URLs exactly as the request server does. main.rs does not relaunch
+    // a start that opens files, so this only stops a command line that asked for -Elevated itself.
+    #[cfg(windows)]
+    if args.relaunched && laqta_platform_windows::elevation::is_elevated() {
+        startup.retain(|request| {
+            let allowed = crate::requests::allowed_when_elevated(request);
+            if !allowed {
+                tracing::warn!("startup request refused: Laqta runs as administrator and takes no files or URLs from the command line");
+            }
+            allowed
+        });
+    }
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let spawner = AppSpawner::start(clock.clone()).map_err(|e| format!("cannot start the app worker: {e}"))?;
     // Releases the AI models' sessions after 60 s without use (ARCHITECTURE §1.4).
@@ -982,17 +1076,20 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             let (app_b, hotkeys, registered, hotkey_dispatch) = (app.clone(), hotkeys.clone(), registered.clone(), hotkey_dispatch.clone());
             let (uploaders, host_deps, accounts) = (uploaders.clone(), host_deps.clone(), accounts.clone());
             let blocking = spawner.clone();
-            let (autostart, run_as_admin) = (autostart.clone(), s.run_as_admin);
+            let autostart = autostart.clone();
             spawner.spawn(Box::pin(async move {
                 blocking
                     .run_blocking(Box::new(move || {
                         // Only Windows has an elevated kind of entry. It is a process call, so it stays off the UI thread.
+                        // Serialized, and from the latest settings: two quick saves that flip it back and forth
+                        // must leave the entry of the last one, whichever thread runs first.
                         if cfg!(windows)
                             && admin_changed
                             && installed
                             && let Ok(exe) = std::env::current_exe()
                         {
-                            sync_autostart_kind(autostart.as_ref(), run_as_admin, &exe);
+                            let _one_at_a_time = accounts.lock().unwrap_or_else(|e| e.into_inner());
+                            sync_autostart_kind(autostart.as_ref(), app_b.settings().run_as_admin, &exe);
                         }
                         // Serialized, and from the latest settings, so two quick saves can't leave the older accounts.
                         {
@@ -1033,13 +1130,18 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         #[cfg(not(windows))]
         let elevated = false;
         server.serve_requests(move |request| {
-            tracing::info!(?request, source = "ipc", "request");
+            let kind = request.describe();
+            tracing::info!(request = %kind, source = "ipc", "request");
             if elevated && !crate::requests::allowed_when_elevated(&request) {
-                tracing::warn!(?request, "refused: Laqta runs as administrator and takes no files or URLs from other programs");
+                tracing::warn!(request = %kind, "refused: Laqta runs as administrator and takes no files or URLs from other programs");
                 return Err(
                     "Laqta runs as administrator, so it takes no files or URLs from other programs. Open the file from Laqta's own window."
                         .to_owned(),
                 );
+            }
+            if elevated && crate::requests::starts_programs(&request, &app.settings()) {
+                tracing::warn!(request = %kind, "refused: it would start an external program as administrator");
+                return Err("Laqta runs as administrator, so another program can't start a capture that runs your external programs. Use the hotkey or the tray instead.".to_owned());
             }
             match futures_lite::future::block_on(run_request(&app, &importer, request)) {
                 Ok(None) => {
@@ -1312,7 +1414,8 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
             },
             sxie_read: Arc::new(|bytes: &[u8]| laqta_import::parse_sxie(bytes).map_err(|e| e.to_string())),
             sxie_write: Arc::new(|preset: &laqta_domain::effects::Preset| laqta_import::write_sxie(preset).map_err(|e| e.to_string())),
-            autostart: platform.autostart.clone(),
+            // A switch the user flips settles the first-run default: a retry must not undo their choice.
+            autostart: Arc::new(UserAutostart { inner: platform.autostart.clone(), marker: data.join(AUTOSTART_MARKER) }),
             integration: platform.integration.clone(),
             add_custom_uploader: {
                 let uploaders = uploaders.clone();

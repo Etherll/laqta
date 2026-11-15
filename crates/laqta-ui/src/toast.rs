@@ -88,9 +88,11 @@ const OFFER_SECONDS: u64 = 20;
 pub(crate) fn offer_admin_restart(app: String, restart: Arc<dyn Fn() + Send + Sync>, cx: &mut App) {
     let Some(display) = crate::placement::main_display(cx) else { return };
     let area = display.visible_bounds();
+    // The same panel room as `show` leaves where the platform reports no work area.
+    let panel = if area == display.bounds() { 40.0 } else { 0.0 };
     let (w, h) = (380.0, 128.0);
     let x = f32::from(area.origin.x) + f32::from(area.size.width) - w - MARGIN;
-    let y = f32::from(area.origin.y) + f32::from(area.size.height) - h - MARGIN;
+    let y = f32::from(area.origin.y) + f32::from(area.size.height) - h - MARGIN - panel;
     let options = WindowOptions {
         titlebar: None,
         window_bounds: Some(WindowBounds::Windowed(Bounds { origin: point(px(x), px(y)), size: size(px(w), px(h)) })),
