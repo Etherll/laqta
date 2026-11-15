@@ -788,6 +788,18 @@ pub fn run(server: Option<laqta_ipc::Server>, args: crate::cli::Args) -> Result<
         autostart_first_run(platform.autostart.as_ref(), &data, eligible, new_profile, &exe);
     }
     let settings = load_settings(&store);
+    // As the request server does: a command line, which any program can write, does not get to start
+    // one of the user's external programs with administrator rights.
+    #[cfg(windows)]
+    if laqta_platform_windows::elevation::is_elevated() {
+        startup.retain(|request| {
+            let starts = crate::requests::starts_programs(request, &settings);
+            if starts {
+                tracing::warn!("startup request refused: it would start an external program as administrator");
+            }
+            !starts
+        });
+    }
     // Started with administrator rights and asked to: make sure sign-in start is the elevated kind.
     // This is where a change made while not elevated, which could not create the task, lands.
     #[cfg(windows)]

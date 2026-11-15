@@ -387,7 +387,10 @@ fn is_known(name: &str) -> bool {
 fn is_safe(name: &str) -> bool {
     !name.starts_with('/')
         && !name.contains(['\\', ':', '\0'])
-        && name.split('/').all(|part| part != ".." && part != "." && !part.ends_with(['.', ' ']) && !is_device_name(part))
+        // `a//b` is `a/b`: an empty part would let two names land on one file. A folder entry ends in `/`.
+        && name.strip_suffix('/').unwrap_or(name).split('/').all(|part| {
+            !part.is_empty() && part != ".." && part != "." && !part.ends_with(['.', ' ']) && !is_device_name(part)
+        })
 }
 
 /// A Windows device name (`CON`, `NUL`, `COM1`…), with or without an extension: written to, it is the
@@ -437,5 +440,7 @@ mod name_tests {
         assert!(!is_device_name("COM10"));
         assert!(!is_device_name("COMPUTER.txt"));
         assert!(is_safe("backups/settings-2026.json"));
+        assert!(!is_safe("backups//a.json"), "an empty part names the same file as backups/a.json");
+        assert!(is_safe("backups/"), "a folder entry");
     }
 }

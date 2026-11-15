@@ -1014,8 +1014,14 @@ fn an_area_over_two_monitors_is_clipped_to_the_larger_part_with_a_warning() {
         let stream = Arc::new(OneMonitorStream { inner: FakeScreenStream::default() });
         let swap = Swap { stream: Some(stream.clone()), ..Swap::default() };
         // The monitors are 8x8 at x = 0 and x = 8. The area has 4 columns on the first and 6 on the second.
-        let mut h =
-            harness_with(tmp.path(), |s| s.defaults.capture.custom_region = Some(PhysRect { x: 4, y: 0, width: 10, height: 6 }), swap);
+        let mut h = harness_with(
+            tmp.path(),
+            |s| {
+                s.defaults.capture.custom_region = Some(PhysRect { x: 4, y: 0, width: 10, height: 6 });
+                s.defaults.naming.pattern = "rec-%widthx%height".into();
+            },
+            swap,
+        );
         assert_eq!(start(&h, Action::ScreenRecorderCustomRegion).unwrap(), Dispatched::Done);
 
         assert_eq!(*stream.inner.opened.lock().unwrap(), vec![PhysRect { x: 8, y: 0, width: 6, height: 6 }]);
@@ -1033,6 +1039,14 @@ fn an_area_over_two_monitors_is_clipped_to_the_larger_part_with_a_warning() {
             "the bar and border follow the recorded part: {seen:?}"
         );
         assert!(h.app.is_recording());
+        h.app.recording_stop();
+        settle(&mut h);
+        let stopped = events(&mut h).iter().find_map(|e| match e {
+            TaskEvent::RecordingStopped { path, .. } => Some(path.clone()),
+            _ => None,
+        });
+        let name = stopped.expect("RecordingStopped").file_stem().unwrap().to_string_lossy().into_owned();
+        assert_eq!(name, "rec-6x6", "the file is named from the recorded size, not the 10x6 that was asked for");
     });
 }
 

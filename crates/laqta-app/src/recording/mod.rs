@@ -224,6 +224,18 @@ impl App {
             return Ok(None);
         };
         let (devices, input, clipped) = opened?;
+        // Nothing is written to `output` until the encoder starts, so a clipped area names its file again
+        // from the size that is recorded (`%width`, `%height`).
+        let output = match clipped {
+            Some(part) => match self.clipped_output(&ts, &dir, part, codec.extension()).await {
+                Ok(path) => path,
+                Err(error) => {
+                    self.ports.spawner.run_blocking(Box::new(move || drop(input))).await;
+                    return Err(error);
+                }
+            },
+            None => output,
+        };
         let rect = match clipped {
             Some(part) => {
                 self.emit(TaskEvent::StepFailed {
@@ -286,6 +298,23 @@ impl App {
             }
         };
         even(rect)
+    }
+
+    /// The output path for a recording clipped to `part`, with its folder made.
+    async fn clipped_output(
+        &self,
+        ts: &TaskSettings,
+        dir: &std::path::Path,
+        part: PhysRect,
+        ext: &str,
+    ) -> Result<std::path::PathBuf, AppError> {
+        let output = self.task.recording_output(ts, dir, (part.width, part.height), ext).await?;
+        if let Some(folder) = output.parent() {
+            files::create_dir_all(self.ports.spawner.as_ref(), folder.to_path_buf())
+                .await
+                .map_err(|error| AppError::Io(error.to_string()))?;
+        }
+        Ok(output)
     }
 
     /// `area` clipped to the monitor it overlaps most. `None` when the monitors cannot be listed or none overlaps it.
