@@ -3,7 +3,8 @@
 //! Each call runs on a blocking-pool thread: ScreenCaptureKit answers on its own queues, and the
 //! completion handlers hand their result back over a channel, so no Objective-C object is held
 //! across an await. Laqta's own application is left out of display captures with the content
-//! filter, so its overlays and toasts never show up in a screenshot.
+//! filter, so its overlays and toasts never show up in a screenshot, unless the request asks to
+//! include Laqta's own windows.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -69,7 +70,7 @@ fn capture_displays(request: CaptureRequest) -> Result<Vec<Frame>, PortError> {
     let content = shareable_content()?;
     // SAFETY: a plain getter on a live object.
     let sc_displays = unsafe { content.displays() }.to_vec();
-    let own_apps = NSArray::from_retained_slice(&own_applications(&content));
+    let own_apps = NSArray::from_retained_slice(&if request.include_own_windows { Vec::new() } else { own_applications(&content) });
     let no_windows = NSArray::from_retained_slice(&[]);
 
     let mut frames = Vec::with_capacity(displays.len());

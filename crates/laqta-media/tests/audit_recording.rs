@@ -28,6 +28,8 @@ fn spec(codec: VideoCodec, quality: Quality) -> RecordSpec {
         audio: Vec::new(),
         custom_args: String::new(),
         camera: None,
+        gif_max_width: 0,
+        backend: laqta_domain::record::RecorderBackend::Ffmpeg,
     }
 }
 

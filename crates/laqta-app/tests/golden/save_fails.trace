@@ -1,5 +1,7 @@
 status InQueue
 status Preparing
 status Working
-failed io
-status Failed
+step_failed save
+copied
+notified
+status Completed

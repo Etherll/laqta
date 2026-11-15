@@ -1,6 +1,23 @@
 //! HDR readback math: FP16 scRGB desktop pixels to 8-bit sRGB. Pure,
 //! so it builds and is tested on every target.
 
+/// `DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709`: linear scRGB, the colour space of an HDR desktop that
+/// Windows composes in FP16.
+const COLOR_SPACE_SCRGB: i32 = 1;
+
+/// `DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020`: HDR10, the colour space a display in HDR mode
+/// reports for its output.
+const COLOR_SPACE_HDR10: i32 = 12;
+
+/// `DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020`: HDR10 in studio range, which some displays report.
+const COLOR_SPACE_HDR10_STUDIO: i32 = 14;
+
+/// Whether an output with this raw `DXGI_COLOR_SPACE_TYPE` is duplicated as FP16 and tonemapped.
+/// The scRGB and both HDR10 colour spaces are HDR: an 8-bit duplication of any is a washed-out image.
+pub(crate) fn wants_fp16(color_space: i32) -> bool {
+    matches!(color_space, COLOR_SPACE_SCRGB | COLOR_SPACE_HDR10 | COLOR_SPACE_HDR10_STUDIO)
+}
+
 /// Luminance (in SDR-white units) where the highlight roll-off starts. Everything below it is left alone.
 const SHOULDER: f32 = 0.9;
 
@@ -55,6 +72,10 @@ pub(crate) fn tonemap_scrgb_to_srgb8(px: [f32; 4], sdr_white: f32) -> [u8; 4] {
     let normalised = [px[0], px[1], px[2]].map(|c| normalised_channel(c / white));
     let luma = 0.2126 * normalised[0] + 0.7152 * normalised[1] + 0.0722 * normalised[2];
     let scale = if luma > 0.0 { shoulder(luma) / luma } else { 0.0 };
+    // A saturated colour can pass 1.0 in one channel while its luminance is below white; scaling all
+    // three by that channel keeps the hue instead of clipping it alone.
+    let peak = normalised.iter().fold(0.0f32, |m, c| m.max(c * scale));
+    let scale = if peak > 1.0 { scale / peak } else { scale };
     let rgb = normalised.map(|c| to_u8(srgb_encode((c * scale).clamp(0.0, 1.0))));
     [rgb[0], rgb[1], rgb[2], 255]
 }
@@ -78,6 +99,28 @@ pub(crate) fn tonemap_frame(raw: &[u8], sdr_white: f32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saturated_highlight_keeps_its_hue() {
+        // Bright pure red with some green: clipping red alone would turn it yellow.
+        let [r, g, b, _] = tonemap_scrgb_to_srgb8([8.0, 2.0, 0.0, 1.0], 1.0);
+        assert_eq!((r, b), (255, 0));
+        assert!(g < 160, "green stays in proportion, not pushed towards red: {g}");
+    }
+
+    #[test]
+    fn wants_fp16_for_scrgb_and_hdr10() {
+        assert!(wants_fp16(1), "G10_NONE_P709 (scRGB)");
+        assert!(wants_fp16(12), "G2084_NONE_P2020 (HDR10)");
+    }
+
+    #[test]
+    fn wants_fp16_is_false_for_sdr_colour_spaces() {
+        assert!(!wants_fp16(0), "RGB_FULL_G22_NONE_P709 (sRGB)");
+        assert!(!wants_fp16(2), "RGB_STUDIO_G22_NONE_P709");
+        assert!(!wants_fp16(3), "RGB_STUDIO_G22_NONE_P2020 (wide-gamut SDR)");
+        assert!(!wants_fp16(-1), "out of range");
+    }
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-6

@@ -235,8 +235,7 @@ impl Quarters {
 }
 
 /// A `Progress` for the first-use download of `what` (ADR 022: "with progress shown"). No window starts
-/// these downloads, so the report goes through the `Notifier`: a toast under `title` at the start, at each
-/// quarter and at the end.
+/// these downloads, so the report goes through the `Notifier`: one toast under `title` when the file is in.
 pub fn toast_progress(notifier: &Arc<dyn Notifier>, title: &str, what: &str) -> laqta_ml::Progress {
     let (notifier, title, what) = (Arc::clone(notifier), title.to_owned(), what.to_owned());
     let quarters = Mutex::new(Quarters::default());
@@ -244,11 +243,12 @@ pub fn toast_progress(notifier: &Arc<dyn Notifier>, title: &str, what: &str) -> 
         let Some(percent) = quarters.lock().ok().and_then(|mut q| q.advance(done, total)) else {
             return;
         };
-        let body = match percent {
-            0 => format!("Downloading {what}"),
-            100 => format!("Downloaded {what}, checking it"),
-            percent => format!("Downloading {what}: {percent} %"),
-        };
+        // One notice when the file is in, not one every quarter: progress toasts are noise.
+        if percent < 100 {
+            return;
+        }
+        // The file is in but not yet checked: a failed check still reports itself after this.
+        let body = format!("Downloaded {what}, checking it");
         let options = ToastOptions { duration_ms: 1500, fade_ms: 300, ..ToastOptions::default() };
         if let Err(error) = notifier.toast(Toast { title: title.clone(), body, image: None, path: None, url: None, options }) {
             tracing::warn!(%error, "the download notice was not shown");
@@ -458,23 +458,14 @@ mod tests {
     }
 
     #[test]
-    fn the_progress_posts_a_toast_per_quarter_under_the_title() {
+    fn the_progress_posts_one_toast_when_the_file_is_in_under_the_title() {
         let recorder = Arc::new(Recorder::default());
         let notifier: Arc<dyn Notifier> = recorder.clone();
         let progress = toast_progress(&notifier, "Background removal", "BiRefNet lite, fp16");
         for done in (1..=115).map(|i| i * MB) {
             progress(done, Some(115 * MB));
         }
-        assert_eq!(
-            bodies(&recorder),
-            [
-                "Downloading BiRefNet lite, fp16",
-                "Downloading BiRefNet lite, fp16: 25 %",
-                "Downloading BiRefNet lite, fp16: 50 %",
-                "Downloading BiRefNet lite, fp16: 75 %",
-                "Downloaded BiRefNet lite, fp16, checking it",
-            ]
-        );
+        assert_eq!(bodies(&recorder), ["Downloaded BiRefNet lite, fp16, checking it"]);
         assert!(recorder.0.lock().expect("lock").iter().all(|t| t.title == "Background removal"));
     }
 

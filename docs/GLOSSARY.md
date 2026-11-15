@@ -56,3 +56,18 @@ adapter, leverage, locality) follow the deep-module design vocabulary and are no
 | **Verified fetch** | `laqta-http`'s download function: pinned SHA-256, progress, cancellation. Used for FFmpeg, onnxruntime, models and updates. An update's expected hash comes from its own release's `SHA256SUMS`, and the update download passes no progress and a cancel flag nobody sets |
 | **Seam rule** | A port exists only with two production adapters (platforms count), or one plus a fake that a deep module's tests need (ADR 021) |
 | **Unsupported** | The error a port returns when the current platform cannot do something |
+
+## Words the UI uses
+
+Visible text uses one word for each idea (ADR 028). Names in code may differ.
+
+| Say | Not | Meaning |
+| - | - | - |
+| **Region** | area, selection (in labels) | A capture of a rectangle the user drags. A hint may still say "the area you drag" |
+| **Full screen** | screen, every monitor | A capture of all monitors |
+| **Window** | | A capture of one window |
+| **Upload** | share (for this) | Sending a file to a host |
+| **Share** | | Copying or opening a link, nothing else |
+| **Shortcut** | hotkey | A key chord. `HotkeyType_*` stays as an i18n key |
+| **Color** | colour | US spelling, matching the English locale |
+| **Esc cancels** | Esc closes, Esc to close | The hint for Escape. The overlay's staged Escape says "Esc steps back" |

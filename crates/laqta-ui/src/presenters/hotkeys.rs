@@ -11,6 +11,12 @@ pub fn hotkey_label(bindings: &[(KeyChord, Action)], action: Action, os: Os) -> 
     Some(keycaps(*chord, os).join(if os == Os::MacOs { "" } else { "+" }))
 }
 
+/// The keys of `action`'s shortcut, one per keycap.
+pub fn hotkey_keys(bindings: &[(KeyChord, Action)], action: Action, os: Os) -> Option<Vec<String>> {
+    let (chord, _) = bindings.iter().find(|(_, a)| *a == action)?;
+    Some(keycaps(*chord, os))
+}
+
 /// What one key press does while a shortcut is being recorded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Recorded {
@@ -20,7 +26,7 @@ pub enum Recorded {
     Waiting,
     /// Esc on its own: stop recording, keep the old shortcut.
     Cancel,
-    /// Backspace or Delete on its own: remove the shortcut.
+    /// Backspace on its own: remove the shortcut. Delete is a key like any other (it can be bound).
     Clear,
     /// A key a global shortcut can't use.
     Unusable,
@@ -41,7 +47,7 @@ pub fn record(key: &str, mods: Mods) -> Recorded {
     match key {
         "control" | "shift" | "alt" | "super" | "platform" | "function" | "" => return Recorded::Waiting,
         "escape" if plain => return Recorded::Cancel,
-        "backspace" | "delete" if plain => return Recorded::Clear,
+        "backspace" if plain => return Recorded::Clear,
         _ => {}
     }
     let name = match key {
@@ -140,7 +146,8 @@ pub enum RowStatus {
 }
 
 /// Whether the desktop's key text (KDE: "Ctrl+'", "Print", "Meta+Shift+S") names `chord`.
-/// Spelling differs between desktops, so names are compared loosely, in any order.
+/// Spelling differs between desktops, so names are compared loosely, in any order. A portal lists
+/// every key an action has, separated by ", " ("Print, Ctrl+Print"): any one of them may match.
 pub fn same_key(chord: KeyChord, desktop: &str) -> bool {
     /// One spelling per key: Laqta's names (`Minus`, `Numpad1`, `VolumeUp`) and the desktop's
     /// (Qt/KDE: `-`, `Num+1`, `Volume Up`) meet here.
@@ -207,7 +214,8 @@ pub fn same_key(chord: KeyChord, desktop: &str) -> bool {
         out.sort();
         out
     }
-    parts(&chord.to_string()) == parts(desktop)
+    let wanted = parts(&chord.to_string());
+    desktop.split(", ").any(|key| parts(key) == wanted)
 }
 
 /// The status of each row, from the draft (`(name, chord, enabled)` per row), the last
@@ -226,9 +234,13 @@ pub fn row_status(
             if !enabled {
                 return RowStatus::Disabled;
             }
-            if let Some((other, _, _)) = rows.iter().enumerate().find(|(j, (_, c, e))| *j != i && *e && *c == Some(*chord)).map(|(_, r)| r)
-            {
-                return RowStatus::Conflict(format!("Also used by “{other}”"));
+            // The first enabled row with a key wins (`Settings::workflow_for_hotkey`), so say which one never runs.
+            let same = |j: &usize, (_, c, e): &&(String, Option<KeyChord>, bool)| *j != i && *e && *c == Some(*chord);
+            if let Some((_, (first, _, _))) = rows.iter().enumerate().find(|(j, r)| *j < i && same(j, r)) {
+                return RowStatus::Conflict(format!("Never runs: “{first}” has the same key"));
+            }
+            if let Some((_, (later, _, _))) = rows.iter().enumerate().find(|(j, r)| same(j, r)) {
+                return RowStatus::Conflict(format!("Also used by “{later}”, which never runs"));
             }
             if let Some((_, why)) = failed.iter().find(|(c, _)| c == chord) {
                 return RowStatus::Failed(why.clone());
@@ -284,6 +296,8 @@ mod tests {
         assert_eq!(record("shift", ctrl_shift), Recorded::Waiting);
         assert_eq!(record("escape", Mods::default()), Recorded::Cancel);
         assert_eq!(record("backspace", Mods::default()), Recorded::Clear);
+        assert_eq!(record("delete", Mods::default()), Recorded::Chord(chord("Delete")));
+        assert_eq!(record("delete", Mods { ctrl: true, ..Mods::default() }), Recorded::Chord(chord("Ctrl+Delete")));
         assert_eq!(record("é", Mods::default()), Recorded::Unusable);
     }
 
@@ -293,6 +307,14 @@ mod tests {
         assert_eq!(keycaps(chord("Ctrl+Shift+PrintScreen"), Os::Windows), ["Ctrl", "Shift", "PrtSc"]);
         assert_eq!(keycaps(chord("Ctrl+Alt+Super+1"), Os::MacOs), ["⌃", "⌥", "⌘", "1"]);
         assert_eq!(keycaps(chord("Shift+PrintScreen"), Os::MacOs), ["⇧", "F13"]);
+    }
+
+    #[test]
+    fn hotkey_keys_are_one_entry_per_key_on_every_os() {
+        let b = [(chord("Ctrl+Shift+PrintScreen"), Action::RectangleRegion)];
+        assert_eq!(hotkey_keys(&b, Action::RectangleRegion, Os::MacOs).unwrap(), ["⌃", "⇧", "F13"]);
+        assert_eq!(hotkey_keys(&b, Action::RectangleRegion, Os::Windows).unwrap(), ["Ctrl", "Shift", "PrtSc"]);
+        assert_eq!(hotkey_keys(&b, Action::PrintScreen, Os::Linux), None);
     }
 
     #[test]
@@ -314,7 +336,8 @@ mod tests {
             ("Taken".to_owned(), Some(chord("F8")), true),
         ];
         let status = row_status(&rows, &[chord("PrintScreen")], &[(chord("F8"), "in use".into())], &[]);
-        assert_eq!(status[0], RowStatus::Conflict("Also used by “Window”".into()));
+        assert_eq!(status[0], RowStatus::Conflict("Also used by “Window”, which never runs".into()));
+        assert_eq!(status[1], RowStatus::Conflict("Never runs: “Region” has the same key".into()));
         assert_eq!(status[2], RowStatus::Active);
         assert_eq!(status[3], RowStatus::Disabled);
         assert_eq!(status[4], RowStatus::Unset);
@@ -357,6 +380,15 @@ mod tests {
         assert!(same_key(chord("Ctrl+Numpad1"), "Ctrl+Num+1"));
         assert!(same_key(chord("Ctrl+NumpadAdd"), "Ctrl+Num++"));
         assert!(!same_key(chord("Ctrl+1"), "Ctrl+Num+1"), "the keypad 1 is not the top-row 1");
+    }
+
+    #[test]
+    fn a_portal_description_with_several_keys_matches_any_of_them() {
+        assert!(same_key(chord("Ctrl+PrintScreen"), "Print, Ctrl+Print"));
+        assert!(same_key(chord("PrintScreen"), "Print, Ctrl+Print"));
+        assert!(!same_key(chord("Alt+PrintScreen"), "Print, Ctrl+Print"));
+        assert!(same_key(chord("Ctrl+Comma"), "Ctrl+,, Print"), "a comma key is not a separator");
+        assert!(same_key(chord("Ctrl+NumpadAdd"), "Print, Ctrl+Num++"));
     }
     use laqta_domain::settings::Settings;
 

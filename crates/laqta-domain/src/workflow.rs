@@ -357,7 +357,7 @@ impl Default for UploadSettings {
             file_destination: "sxcu:uguu".into(),
             url_shortener: "sxcu:is-gd".into(),
             url_sharer: "reddit".into(),
-            clipboard_format: "$url".into(),
+            clipboard_format: crate::naming::DEFAULT_CLIPBOARD_FORMAT.into(),
             retries: 2,
             large_file_warning_bytes: 0,
         }

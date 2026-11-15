@@ -1,7 +1,7 @@
 //! Watch folders: each enabled `WatchFolder` gets a `FileWatcher` watch; matching files are
 //! (optionally moved into the screenshots folder and) uploaded with the folder's workflow.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError};
 
 use laqta_domain::Action;
@@ -19,7 +19,15 @@ impl App {
         let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
         // Dropping the old handles stops their watches before the new ones start.
         watches.clear();
+        let outputs = screenshot_folders(&settings);
         for folder in settings.watch_folders.iter().filter(|f| f.enabled && !f.folder.as_os_str().is_empty()) {
+            // Laqta's own files must not come back as new ones, so a folder it saves captures into (the
+            // screenshots folder, or a subfolder its naming makes) is not watched. Another folder below it
+            // (an "Inbox" inside the screenshots folder) is.
+            if saves_into(&folder.folder, &outputs, &subfolder_patterns(&settings)) {
+                tracing::warn!(folder = %folder.folder.display(), "watch folder skipped: it is a screenshots folder");
+                continue;
+            }
             let on_file = self.watch_callback(folder.clone());
             match self.ports.watcher.watch(&folder.folder, folder.include_subfolders, on_file) {
                 Ok(handle) => watches.push(handle),
@@ -52,6 +60,17 @@ impl App {
         if !matches_filter(&folder.filter, &name) {
             return;
         }
+        // A folder above the screenshots folder, with its subfolders, sees Laqta's own files arrive. A
+        // watched folder below the screenshots folder is the user's own drop folder, so what lands in it
+        // counts.
+        let settings = self.settings.get();
+        let outputs = screenshot_folders(&settings);
+        let drop_folder = is_inside_any(&folder.folder, &outputs)
+            && !saves_into(&folder.folder, &outputs, &subfolder_patterns(&settings))
+            && is_inside(&path, &folder.folder);
+        if !drop_folder && is_inside_any(&path, &outputs) {
+            return;
+        }
         let path = if folder.move_to_screenshots {
             let dir = self.settings.get().screenshots_dir.clone();
             match files::move_to_free_name(self.ports.spawner.as_ref(), path.clone(), dir).await {
@@ -68,6 +87,125 @@ impl App {
         if let Err(error) = self.dispatch_with(Action::FileUpload, ActionInput::Files(vec![path.clone()]), folder.workflow).await {
             tracing::warn!(file = %path.display(), %error, "watched file not uploaded");
         }
+    }
+}
+
+/// Every folder Laqta saves captures to: the default one, and the ones shortcuts override it with.
+fn screenshot_folders(settings: &laqta_domain::Settings) -> Vec<PathBuf> {
+    let mut folders = vec![settings.screenshots_dir.clone()];
+    folders.extend(settings.defaults.screenshots_dir.clone());
+    folders.extend(settings.workflows.iter().filter_map(|workflow| workflow.patch.screenshots_dir.clone()));
+    folders.retain(|folder| !folder.as_os_str().is_empty());
+    folders
+}
+
+/// The naming subfolder patterns captures are saved under: the default one and the shortcuts' own.
+fn subfolder_patterns(settings: &laqta_domain::Settings) -> Vec<String> {
+    let mut patterns = vec![settings.defaults.naming.subfolder.clone()];
+    patterns.extend(settings.workflows.iter().filter_map(|w| w.patch.naming.as_ref().map(|n| n.subfolder.clone())));
+    patterns
+}
+
+/// Whether Laqta may save captures into `folder` or below it: it is one of `outputs`, or a subfolder of one
+/// that the start of a subfolder pattern could name ("2026-11" for `%y-%mo`, not "Inbox").
+fn saves_into(folder: &Path, outputs: &[PathBuf], patterns: &[String]) -> bool {
+    outputs.iter().filter(|output| is_inside(folder, output)).any(|output| {
+        let below: Vec<String> =
+            folder.components().skip(output.components().count()).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+        below.is_empty()
+            || patterns.iter().any(|pattern| {
+                let segments: Vec<&str> = pattern.split(['/', '\\']).filter(|s| !s.trim().is_empty()).collect();
+                below.len() <= segments.len() && below.iter().zip(&segments).all(|(name, segment)| could_name(segment, name))
+            })
+    })
+}
+
+/// Whether one segment of a subfolder pattern could expand to `name`: its literal text in order, with
+/// at least one character for each `%` token, and only digits for the number tokens (dates, times,
+/// counters), so "Inbox" is never a `%y` folder.
+fn could_name(segment: &str, name: &str) -> bool {
+    enum Part {
+        Text(String),
+        Digits,
+        Any,
+    }
+    const NUMBERS: &[&str] = &["y", "yy", "mo", "d", "h", "mi", "s", "ms", "wy", "unix", "i", "rn", "width", "height"];
+    let fold = |s: &str| if cfg!(any(windows, target_os = "macos")) { s.to_lowercase() } else { s.to_owned() };
+    // A token is `%`, its name, and an optional `{...}` argument; token names keep their case.
+    let mut parts = Vec::new();
+    let mut chars = segment.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            match parts.last_mut() {
+                Some(Part::Text(text)) => text.push_str(&fold(&c.to_string())),
+                _ => parts.push(Part::Text(fold(&c.to_string()))),
+            }
+            continue;
+        }
+        let mut token = String::new();
+        while let Some(&c) = chars.peek().filter(|c| c.is_ascii_alphanumeric()) {
+            token.push(c);
+            chars.next();
+        }
+        if chars.peek() == Some(&'{') {
+            for c in chars.by_ref() {
+                if c == '}' {
+                    break;
+                }
+            }
+        }
+        parts.push(if NUMBERS.contains(&token.as_str()) { Part::Digits } else { Part::Any });
+    }
+    fn fits(parts: &[Part], name: &str) -> bool {
+        let Some((part, rest)) = parts.split_first() else { return name.is_empty() };
+        match part {
+            Part::Text(text) => name.strip_prefix(text.as_str()).is_some_and(|tail| fits(rest, tail)),
+            Part::Digits | Part::Any => name.char_indices().skip(1).map(|(at, _)| at).chain([name.len()]).any(|at| {
+                let taken = &name[..at];
+                !taken.is_empty() && (matches!(part, Part::Any) || taken.chars().all(|c| c.is_ascii_digit())) && fits(rest, &name[at..])
+            }),
+        }
+    }
+    fits(&parts, &fold(name))
+}
+
+/// Whether `path` is one of `folders` or below one. A pure rule on the path's components; Windows paths
+/// ignore case.
+fn is_inside_any(path: &Path, folders: &[PathBuf]) -> bool {
+    folders.iter().any(|folder| is_inside(path, folder))
+}
+
+fn is_inside(path: &Path, folder: &Path) -> bool {
+    // macOS volumes ignore case by default as well; there only case is folded.
+    if cfg!(target_os = "macos") {
+        let fold_all = |p: &Path| PathBuf::from(fold(&p.to_string_lossy()).into_iter().collect::<String>());
+        return fold_all(path).starts_with(fold_all(folder));
+    }
+    is_inside_with(path, folder, cfg!(windows))
+}
+
+/// `is_inside`, with the Windows rules on or off: a `\\?\` verbatim prefix on either side is dropped, and
+/// components compare with Unicode lowercasing.
+fn is_inside_with(path: &Path, folder: &Path, windows: bool) -> bool {
+    if !windows {
+        return path.starts_with(folder);
+    }
+    let (path, folder) = (without_verbatim(path), without_verbatim(folder));
+    let mut below = path.components();
+    folder
+        .components()
+        .all(|part| below.next().is_some_and(|c| fold(&c.as_os_str().to_string_lossy()) == fold(&part.as_os_str().to_string_lossy())))
+}
+
+/// `path` without a leading `\\?\` (or `\\?\UNC\` as `\\`), which `canonicalize` adds and a typed path lacks.
+fn without_verbatim(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path.to_path_buf()
     }
 }
 
@@ -116,7 +254,47 @@ fn wildcard_matches(pattern: &[char], text: &[char]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::matches_filter;
+    use std::path::{Path, PathBuf};
+
+    use super::{could_name, is_inside, is_inside_any, is_inside_with, matches_filter};
+
+    #[test]
+    fn a_subfolder_pattern_names_only_folders_its_literal_text_fits() {
+        assert!(could_name("%y-%mo", "2026-11"));
+        assert!(!could_name("%y-%mo", "Inbox"));
+        assert!(!could_name("%y-%mo", "-11"), "each token takes a character");
+        assert!(could_name("Shots %y", "Shots 2026"));
+        assert!(could_name("%rf{a/b.txt}", "anything"));
+        assert!(could_name("Inbox", "Inbox"));
+        assert!(!could_name("%y", "Inbox"), "a year is digits");
+        assert!(could_name("%y", "2026"));
+        assert!(could_name("%y%mo", "202611"));
+        assert!(could_name("%pn", "Inbox"), "a process name can be any text");
+        assert!(could_name("%mon %y", "November 2026"));
+        assert!(!could_name("Inbox", "Outbox"));
+    }
+
+    #[test]
+    fn windows_paths_ignore_case_and_a_verbatim_prefix() {
+        let shots = Path::new("C:/Users/Ä/Shots");
+        assert!(is_inside_with(Path::new("c:/users/ä/shots/2026/a.png"), shots, true));
+        assert!(is_inside_with(Path::new(r"\\?\C:/Users/Ä/Shots/a.png"), shots, true));
+        assert!(is_inside_with(Path::new("C:/Users/Ä/Shots/a.png"), Path::new(r"\\?\c:/users/ä/shots"), true));
+        assert!(!is_inside_with(Path::new("C:/Users/Ä/Shots2/a.png"), shots, true));
+        // Other systems compare exactly.
+        assert!(!is_inside_with(Path::new("c:/users/ä/shots/a.png"), shots, false));
+    }
+
+    #[test]
+    fn a_path_is_inside_a_folder_by_its_components() {
+        let shots = Path::new("/data/shots");
+        assert!(is_inside(Path::new("/data/shots"), shots));
+        assert!(is_inside(Path::new("/data/shots/2026/a.png"), shots));
+        assert!(!is_inside(Path::new("/data/shots2/a.png"), shots), "a name that only starts with it is another folder");
+        assert!(!is_inside(Path::new("/data"), shots));
+        assert!(!is_inside_any(Path::new("/data/x"), &[]));
+        assert!(is_inside_any(Path::new("/b/a.png"), &[PathBuf::from("/a"), PathBuf::from("/b")]));
+    }
 
     #[test]
     fn empty_filter_matches_everything() {

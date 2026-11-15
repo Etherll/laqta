@@ -213,12 +213,19 @@ impl App {
     }
 
     pub(crate) async fn frames(&self, ts: &TaskSettings) -> Result<Vec<Frame>, AppError> {
+        // Every capture that snaps to windows starts here, so the hover source follows the setting.
+        self.ports.hover.set_include_own_windows(ts.capture.include_own_windows);
         if ts.capture.delay_ms > 0 {
             self.ports.clock.sleep(std::time::Duration::from_millis(ts.capture.delay_ms as u64)).await;
         }
         self.ports
             .screen
-            .capture(CaptureRequest { show_cursor: ts.capture.show_cursor, hdr_tonemap: ts.capture.hdr_tonemap })
+            .capture(CaptureRequest {
+                show_cursor: ts.capture.show_cursor,
+                hdr_tonemap: ts.capture.hdr_tonemap,
+                include_own_windows: ts.capture.include_own_windows,
+                in_series: false,
+            })
             .await
             .map_err(AppError::from)
     }
@@ -245,7 +252,12 @@ impl App {
     /// shadow included) when the platform can take it. Otherwise the crop of `frames` to the window's rect.
     async fn window(&self, frames: Vec<Frame>, target: HoverTarget, ts: TaskSettings) -> Result<Dispatched, AppError> {
         if ts.capture.transparent_window {
-            let request = CaptureRequest { show_cursor: ts.capture.show_cursor, hdr_tonemap: ts.capture.hdr_tonemap };
+            let request = CaptureRequest {
+                show_cursor: ts.capture.show_cursor,
+                hdr_tonemap: ts.capture.hdr_tonemap,
+                include_own_windows: ts.capture.include_own_windows,
+                in_series: false,
+            };
             match self.ports.screen.capture_window(&target, request).await {
                 Ok(bitmap) => return Ok(self.submit(CaptureImage::Image(bitmap), ts, Some(&target))),
                 Err(PortError::Unsupported(_)) => {}

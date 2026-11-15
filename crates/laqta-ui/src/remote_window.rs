@@ -10,10 +10,12 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::ScrollableElement as _;
-use gpui_component::{ActiveTheme as _, Disableable as _, Icon, Root, Selectable as _, Sizable as _};
+use gpui_component::{ActiveTheme as _, Icon, Root, Selectable as _, Sizable as _};
 use laqta_ports::{RemoteEntry, RemoteStorage};
 
 use crate::assets::IconName;
+use crate::flash::{Flash, HasFlash};
+use crate::presenters::notice::Notice;
 use crate::runtime::UiState;
 use crate::widgets;
 
@@ -28,6 +30,7 @@ pub(crate) fn open(cx: &mut App) {
         ..Default::default()
     };
     if let Err(e) = cx.open_window(options, |window, cx| {
+        crate::runtime::dismiss_on_escape(window, cx);
         let view = cx.new(|cx| RemoteWindow::new(window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     }) {
@@ -42,8 +45,11 @@ struct RemoteWindow {
     dir: String,
     entries: Vec<RemoteEntry>,
     name: Entity<InputState>,
-    message: Option<String>,
-    busy: bool,
+    flash: Flash,
+    /// What is running ("Upload"), so the buttons it blocks can say why. One job runs at a time.
+    busy: Option<&'static str>,
+    /// Counts listings, so only the newest one fills the list when an older one answers late.
+    listing: u64,
 }
 
 fn parent(dir: &str) -> String {
@@ -58,11 +64,26 @@ fn join(dir: &str, name: &str) -> String {
     if dir.is_empty() { name.to_owned() } else { format!("{}/{name}", dir.trim_end_matches('/')) }
 }
 
+impl HasFlash for RemoteWindow {
+    fn flash(&mut self) -> &mut Flash {
+        &mut self.flash
+    }
+}
+
 impl RemoteWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let stores = (cx.global::<UiState>().services.remote_storages)();
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("New name or folder name"));
-        let mut this = RemoteWindow { stores, current: 0, dir: String::new(), entries: Vec::new(), name, message: None, busy: false };
+        let mut this = RemoteWindow {
+            stores,
+            current: 0,
+            dir: String::new(),
+            entries: Vec::new(),
+            name,
+            flash: Flash::default(),
+            busy: None,
+            listing: 0,
+        };
         this.refresh(cx);
         this
     }
@@ -71,22 +92,36 @@ impl RemoteWindow {
         self.stores.get(self.current).map(|(_, s)| s.clone())
     }
 
-    /// Runs `job` on the background executor, then lists the folder again.
+    /// Says to wait, and returns true, while a job runs.
+    fn refuse_while_busy(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(running) = self.busy else { return false };
+        Flash::show(self, format!("Wait for the current {} to finish", running.to_lowercase()), cx);
+        cx.notify();
+        true
+    }
+
+    /// Runs `job` on the background executor, then lists the folder again. Refused while another runs:
+    /// each job ends by clearing `busy`, which must not free the buttons while a second still runs.
     fn run(
         &mut self,
         label: &'static str,
         job: impl std::future::Future<Output = Result<String, String>> + Send + 'static,
         cx: &mut Context<Self>,
     ) {
-        self.busy = true;
-        self.message = Some(format!("{label}…"));
+        if self.refuse_while_busy(cx) {
+            return;
+        }
+        self.busy = Some(label);
         cx.notify();
         let task = cx.background_spawn(job);
         cx.spawn(async move |this, cx| {
             let r = task.await;
             let _ = this.update(cx, |this, cx| {
-                this.busy = false;
-                this.message = Some(r.unwrap_or_else(|e| format!("{label} failed: {e}")));
+                this.busy = None;
+                match r {
+                    Ok(done) => Flash::show(this, done, cx),
+                    Err(e) => Flash::notice(this, Notice::failure_text(format!("{label} failed"), &e), cx),
+                }
                 this.refresh(cx);
             });
         })
@@ -95,14 +130,20 @@ impl RemoteWindow {
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(store) = self.store() else {
-            self.message = Some("Add an S3, FTP or SFTP account under Settings → Uploads first.".into());
+            // The window shows an empty state with a way to Settings.
             return cx.notify();
         };
         let dir = self.dir.clone();
+        self.listing += 1;
+        let listing = self.listing;
         let task = cx.background_spawn(async move { store.list(dir).await });
         cx.spawn(async move |this, cx| {
             let r = task.await;
             let _ = this.update(cx, |this, cx| {
+                // A listing of a folder or account the window has left since.
+                if this.listing != listing {
+                    return;
+                }
                 match r {
                     Ok(mut entries) => {
                         entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
@@ -110,7 +151,7 @@ impl RemoteWindow {
                     }
                     Err(e) => {
                         this.entries.clear();
-                        this.message = Some(format!("Couldn't list the folder: {e}"));
+                        Flash::notice(this, Notice::failure_text("Couldn't list the folder", &e.to_string()), cx);
                     }
                 }
                 cx.notify();
@@ -128,10 +169,13 @@ impl RemoteWindow {
                 let Some(files) = rfd::AsyncFileDialog::new().pick_files().await else { return Ok("Nothing uploaded.".into()) };
                 let mut n = 0;
                 for f in files {
-                    store.upload(f.path().to_path_buf(), dir.clone()).await.map_err(|e| e.to_string())?;
+                    store.upload(f.path().to_path_buf(), dir.clone()).await.map_err(|e| match n {
+                        0 => e.to_string(),
+                        _ => format!("{e} ({} uploaded before it)", crate::presenters::copy::count(n, "file", "files")),
+                    })?;
                     n += 1;
                 }
-                Ok(format!("Uploaded {n} file(s)."))
+                Ok(format!("Uploaded {}.", crate::presenters::copy::count(n, "file", "files")))
             },
             cx,
         );
@@ -143,7 +187,7 @@ impl RemoteWindow {
             "Download",
             async move {
                 let Some(f) = rfd::AsyncFileDialog::new().set_file_name(entry.name.clone()).save_file().await else {
-                    return Ok(String::new());
+                    return Ok("Nothing downloaded.".into());
                 };
                 let dest = f.path().to_path_buf();
                 store.download(entry.path, dest.clone()).await.map_err(|e| e.to_string())?;
@@ -157,7 +201,7 @@ impl RemoteWindow {
         let Some(store) = self.store() else { return };
         let name = self.name.read(cx).value().trim().to_string();
         if name.is_empty() || name.contains('/') {
-            self.message = Some("Type the new name in the box first.".into());
+            Flash::fail(self, "Type the new name in the box first", cx);
             return cx.notify();
         }
         let to = join(&parent(&entry.path), &name);
@@ -173,7 +217,7 @@ impl RemoteWindow {
         let Some(store) = self.store() else { return };
         let name = self.name.read(cx).value().trim().to_string();
         if name.is_empty() {
-            self.message = Some("Type the folder name in the box first.".into());
+            Flash::fail(self, "Type the folder name in the box first", cx);
             return cx.notify();
         }
         let path = join(&self.dir, &name);
@@ -183,11 +227,36 @@ impl RemoteWindow {
 
 impl Render for RemoteWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.stores.is_empty() {
+            let dispatch = cx.global::<UiState>().services.dispatch.clone();
+            return crate::chrome::rounded(widgets::page(cx), window)
+                .child(crate::chrome::TitleBar::new().title("Remote storage").flat())
+                .child(
+                    widgets::empty_state(
+                        IconName::CloudUpload,
+                        "No remote storage yet",
+                        "Add an S3, FTP or SFTP account in Settings → Uploads.",
+                        cx,
+                    )
+                    .child(div().pt(crate::theme::space::S3).child(widgets::pill(
+                        "remote-settings",
+                        "Open settings",
+                        widgets::Pill::Default,
+                        false,
+                        move |_, _, _| dispatch(laqta_domain::Action::OpenSettings),
+                        cx,
+                    ))),
+                );
+        }
         let mut accounts = div().flex().flex_wrap().gap(px(4.));
         for (i, (label, _)) in self.stores.iter().enumerate() {
             accounts = accounts.child(
                 Button::new(SharedString::from(format!("acct-{i}"))).label(label.clone()).small().selected(self.current == i).on_click(
                     cx.listener(move |this, _, _, cx| {
+                        // A running job's result and listing belong to the account it started on.
+                        if this.current != i && this.refuse_while_busy(cx) {
+                            return;
+                        }
                         this.current = i;
                         this.dir.clear();
                         this.refresh(cx);
@@ -195,32 +264,55 @@ impl Render for RemoteWindow {
                 ),
             );
         }
+        // A disabled button says what it is waiting for.
+        let busy_tip: Option<SharedString> =
+            self.busy.map(|label| format!("Wait for the current {} to finish", label.to_lowercase()).into());
         let bar = div()
             .flex()
             .items_center()
             .gap(px(6.))
-            .child(Button::new("up").label("Up").small().disabled(self.dir.is_empty()).on_click(cx.listener(|this, _, _, cx| {
-                this.dir = parent(&this.dir);
-                this.refresh(cx);
-            })))
+            .child(widgets::pill_with(
+                "up",
+                "Up",
+                widgets::Pill::Default,
+                true,
+                if self.dir.is_empty() { Err("Already at the account's top folder".into()) } else { Ok(()) },
+                cx.listener(|this, _, _, cx| {
+                    this.dir = parent(&this.dir);
+                    this.refresh(cx);
+                }),
+                cx,
+            ))
             .child(Button::new("refresh").label("Refresh").small().on_click(cx.listener(|this, _, _, cx| this.refresh(cx))))
-            .child(
-                Button::new("upload")
-                    .label("Upload…")
-                    .small()
-                    .primary()
-                    .disabled(self.busy)
-                    .on_click(cx.listener(|this, _, _, cx| this.upload(cx))),
-            )
+            .child(widgets::pill_with(
+                "upload",
+                "Upload…",
+                widgets::Pill::Primary,
+                true,
+                busy_tip.clone().map_or(Ok(()), Err),
+                cx.listener(|this, _, _, cx| this.upload(cx)),
+                cx,
+            ))
             .child(div().w(px(200.)).child(Input::new(&self.name).small()))
-            .child(
-                Button::new("mkdir").label("New folder").small().disabled(self.busy).on_click(cx.listener(|this, _, _, cx| this.mkdir(cx))),
-            )
+            .child(widgets::pill_with(
+                "mkdir",
+                "New folder",
+                widgets::Pill::Default,
+                true,
+                busy_tip.map_or(Ok(()), Err),
+                cx.listener(|this, _, _, cx| this.mkdir(cx)),
+                cx,
+            ))
             .child(div().flex_1())
             .child(widgets::muted(format!("/{}", self.dir), cx));
         let mut list = div().flex().flex_col();
         if self.entries.is_empty() {
-            list = list.child(widgets::muted("Empty folder.", cx));
+            list = list.child(widgets::empty_state(
+                IconName::FolderOpen,
+                "This folder is empty",
+                "Upload files, or type a name above and choose New folder.",
+                cx,
+            ));
         }
         for (i, e) in self.entries.clone().into_iter().enumerate() {
             let size = e.size.map(crate::presenters::history::format_size).unwrap_or_default();
@@ -287,7 +379,8 @@ impl Render for RemoteWindow {
                 .child(accounts)
                 .child(bar)
                 .child(div().flex_1().overflow_y_scrollbar().child(list))
-                .child(widgets::muted(self.message.clone().unwrap_or_default(), cx)),
+                .children(self.busy.map(|label| widgets::muted(format!("{label}…"), cx)))
+                .children(self.flash.render(cx.listener(|this, _, _, cx| Flash::dismiss(this, cx)), cx)),
         )
     }
 }

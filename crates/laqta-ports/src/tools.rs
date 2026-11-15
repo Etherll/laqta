@@ -141,6 +141,12 @@ pub trait FileWatcher: Send + Sync {
 pub trait Autostart: Send + Sync {
     fn is_enabled(&self) -> Result<bool, PortError>;
     fn set_enabled(&self, enabled: bool, executable: &std::path::Path) -> Result<(), PortError>;
+    /// `set_enabled`, with the entry made to start Laqta with administrator rights (`elevated`) or
+    /// without. Only Windows tells the two apart, by the kind of entry it keeps; the rest ignore `elevated`.
+    fn set_enabled_elevated(&self, enabled: bool, elevated: bool, executable: &std::path::Path) -> Result<(), PortError> {
+        let _ = elevated;
+        self.set_enabled(enabled, executable)
+    }
     /// Moves a start-at-login entry an earlier version made to the current kind, keeping it on.
     /// Runs at each start of an installed copy; most platforms have nothing to move.
     fn migrate(&self, _executable: &std::path::Path) -> Result<(), PortError> {

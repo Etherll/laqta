@@ -62,6 +62,19 @@ pub fn row(item: &HistoryItem) -> HistoryRow {
     }
 }
 
+/// The title of the tag editor for one item.
+pub fn tags_title(title: &str) -> String {
+    format!("Tags for “{title}”")
+}
+
+/// Why the pager's Previous and Next are unavailable, as `(previous, next)`. `first` is whether this is
+/// the first page; `more` whether another page may follow.
+pub fn page_reason(first: bool, more: bool) -> (Result<(), &'static str>, Result<(), &'static str>) {
+    let previous = if first { Err("Already on the first page") } else { Ok(()) };
+    let next = if more { Ok(()) } else { Err("No more captures") };
+    (previous, next)
+}
+
 /// "1,204 items · 980 images · 1.2 GB".
 pub fn stats_line(stats: &HistoryStats) -> String {
     let images = stats.by_kind.iter().find(|(k, _)| *k == HistoryKind::Image).map(|(_, n)| *n).unwrap_or(0);
@@ -98,7 +111,8 @@ pub fn page_query(text: &str, images_only: bool, page: u32) -> HistoryQuery {
         tag,
         kind: images_only.then_some(HistoryKind::Image),
         offset: page * PAGE_SIZE,
-        limit: PAGE_SIZE,
+        // One past the page, so the window knows whether a next page has anything on it.
+        limit: PAGE_SIZE + 1,
         ..HistoryQuery::default()
     }
 }
@@ -122,11 +136,20 @@ mod tests {
     }
 
     #[test]
+    fn tags_title_and_page_reasons() {
+        assert_eq!(tags_title("a.png"), "Tags for “a.png”");
+        assert_eq!(page_reason(true, true), (Err("Already on the first page"), Ok(())));
+        assert_eq!(page_reason(false, false), (Ok(()), Err("No more captures")));
+        assert_eq!(page_reason(true, false), (Err("Already on the first page"), Err("No more captures")));
+        assert_eq!(page_reason(false, true), (Ok(()), Ok(())));
+    }
+
+    #[test]
     fn paging() {
         let q = page_query("  cat ", true, 2);
         assert_eq!(q.text.as_deref(), Some("cat"));
         assert_eq!(q.kind, Some(HistoryKind::Image));
-        assert_eq!((q.offset, q.limit), (100, PAGE_SIZE));
+        assert_eq!((q.offset, q.limit), (100, PAGE_SIZE + 1));
         assert_eq!(page_query("", false, 0).text, None);
     }
 }

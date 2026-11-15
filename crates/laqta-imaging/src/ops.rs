@@ -5,8 +5,6 @@ use fast_image_resize::images::{Image, ImageRef};
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use laqta_domain::{Bitmap, PhysRect, PixelFormat};
 
-/// The part of `img` inside `rect` (image pixel coordinates), clamped to the image. An empty
-/// intersection gives a 1x1 transparent bitmap.
 /// A copy of the pixels in BGRA order, the layout GPU textures (and GPUI's `RenderImage`) take.
 /// Here rather than in the UI so the per-pixel loop is optimized even in dev builds.
 pub fn bgra8_pixels(img: &Bitmap) -> Vec<u8> {
@@ -19,6 +17,30 @@ pub fn bgra8_pixels(img: &Bitmap) -> Vec<u8> {
     out
 }
 
+/// `img` composited over the opaque colour `background` (red, green, blue): every pixel ends fully opaque.
+/// An image with no transparent pixel is returned as it is. Formats with no alpha channel (JPEG) take this
+/// instead of dropping alpha, which would show the colour the transparent pixels happen to hold (often black).
+pub fn flatten_alpha(img: &Bitmap, background: [u8; 3]) -> Bitmap {
+    if img.pixels().as_chunks::<4>().0.iter().all(|p| p[3] == 255) {
+        return img.clone();
+    }
+    let bg = match img.format() {
+        PixelFormat::Rgba8 => background,
+        PixelFormat::Bgra8 => [background[2], background[1], background[0]],
+    };
+    let mut out = img.pixels().to_vec();
+    for p in out.as_chunks_mut::<4>().0 {
+        let alpha = u32::from(p[3]);
+        for (channel, back) in p[..3].iter_mut().zip(bg) {
+            *channel = ((u32::from(*channel) * alpha + u32::from(back) * (255 - alpha) + 127) / 255) as u8;
+        }
+        p[3] = 255;
+    }
+    Bitmap::new(img.width(), img.height(), img.format(), out.into()).unwrap_or_else(|_| img.clone())
+}
+
+/// The part of `img` inside `rect` (image pixel coordinates), clamped to the image. An empty
+/// intersection gives a 1x1 transparent bitmap.
 pub fn crop(img: &Bitmap, rect: PhysRect) -> Bitmap {
     let (iw, ih) = (i64::from(img.width()), i64::from(img.height()));
     let x0 = i64::from(rect.x).clamp(0, iw);
@@ -274,5 +296,16 @@ mod tests {
     #[should_panic(expected = "compute pool")]
     fn resize_panics_outside_pool() {
         let _ = resize(&grid(2, 2), 1, 1);
+    }
+
+    #[test]
+    fn flatten_alpha_puts_transparent_pixels_on_the_background() {
+        let rgba = Bitmap::new(3, 1, PixelFormat::Rgba8, vec![0, 0, 0, 0, 200, 100, 0, 255, 0, 0, 0, 128].into()).unwrap();
+        let out = flatten_alpha(&rgba, [255, 255, 255]);
+        assert_eq!(out.pixels(), [255, 255, 255, 255, 200, 100, 0, 255, 127, 127, 127, 255]);
+        let bgra = Bitmap::new(1, 1, PixelFormat::Bgra8, vec![0, 0, 0, 0].into()).unwrap();
+        assert_eq!(flatten_alpha(&bgra, [10, 20, 30]).pixels(), [30, 20, 10, 255]);
+        let opaque = Bitmap::new(1, 1, PixelFormat::Rgba8, vec![1, 2, 3, 255].into()).unwrap();
+        assert_eq!(flatten_alpha(&opaque, [255; 3]).pixels(), opaque.pixels());
     }
 }

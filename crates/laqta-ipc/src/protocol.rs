@@ -148,6 +148,39 @@ pub enum Request {
     },
 }
 
+impl Request {
+    /// The request for a log line: the action or workflow it names, and only the kind of the others,
+    /// whose file paths, text and URLs (tokens included) don't belong in a log.
+    pub fn describe(&self) -> String {
+        match self {
+            Request::Action(action) => format!("Action({action:?})"),
+            Request::Workflow(name) => format!("Workflow({name:?})"),
+            Request::Upload(_) => "Upload".to_owned(),
+            Request::UploadText(_) => "UploadText".to_owned(),
+            Request::UploadUrl(_) => "UploadUrl".to_owned(),
+            Request::ShortenUrl(_) => "ShortenUrl".to_owned(),
+            Request::ActionFile(action, _) => format!("ActionFile({action:?})"),
+            Request::UploadWith { workflow, .. } => format!("UploadWith({workflow:?})"),
+            Request::UploadUrlWith { workflow, .. } => format!("UploadUrlWith({workflow:?})"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod describe_tests {
+    use super::*;
+
+    #[test]
+    fn describe_names_the_kind_and_leaves_paths_text_and_urls_out() {
+        assert_eq!(Request::Upload("C:/secret.docx".into()).describe(), "Upload");
+        assert_eq!(Request::UploadUrl("https://h/x?token=SECRET".into()).describe(), "UploadUrl");
+        assert_eq!(Request::UploadText("private".into()).describe(), "UploadText");
+        let with = Request::UploadUrlWith { workflow: "Imgur".into(), url: "https://h/?t=SECRET".into() }.describe();
+        assert!(!with.contains("SECRET"), "{with}");
+        assert_eq!(Request::Workflow("Region".into()).describe(), "Workflow(\"Region\")");
+    }
+}
+
 /// Escapes a payload so it stays on one line: `\` → `\\`, line breaks → `\n` / `\r`.
 fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

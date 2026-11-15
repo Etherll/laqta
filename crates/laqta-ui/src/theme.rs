@@ -63,11 +63,44 @@ pub(crate) mod text {
     pub const HEADING_FONT: &str = "Space Grotesk Light";
 }
 
+/// Motion durations (ms). Feedback 150, routine 200, large or spatial 300. Callers skip motion when
+/// `cx.reduce_motion()` is set.
+#[allow(dead_code)] // the full scale; views adopt it window by window
+pub(crate) mod motion {
+    pub const FAST: u64 = 150;
+    pub const BASE: u64 = 200;
+    pub const SLOW: u64 = 300;
+}
+
+/// Icon sizes: inline with small text, the default, and toolbar glyphs.
+#[allow(dead_code)] // the full scale; views adopt it window by window
+pub(crate) mod icon {
+    use gpui::{Pixels, px};
+    pub const SM: Pixels = px(14.);
+    pub const MD: Pixels = px(16.);
+    pub const LG: Pixels = px(18.);
+}
+
+/// Row and card actions at rest: visible, so keyboard and touch users can find them, but quieter
+/// than on hover.
+pub(crate) const QUIET_OPACITY: f32 = 0.6;
+
+/// How far a disabled control fades. It keeps its tab stop and says why in its tooltip.
+pub(crate) const DISABLED_OPACITY: f32 = 0.45;
+
 /// One-line control height (buttons, inputs, nav rows are pills of this height).
 pub(crate) const CONTROL_H: Pixels = px(36.);
 /// Sidebar nav row height.
 pub(crate) const NAV_ROW_H: Pixels = px(33.);
 pub(crate) const SIDEBAR_W: Pixels = px(248.);
+
+/// The brand green, for the one key action in a region. Text on it is `INK`.
+pub(crate) const PRIMARY: u32 = 0x17B88B;
+/// Ink on the brand green and on dark-mode danger: 7.4:1 and 6.5:1.
+pub(crate) const INK: u32 = 0x0F1114;
+/// Selections and work in progress (`Extra::info`). Surfaces that always sit on a dark scrim (the
+/// capture overlay) read these as raw values.
+pub(crate) const INFO: u32 = 0x3B82F6;
 
 /// Colours the gpui-component palette has no slot for.
 pub(crate) struct Extra {
@@ -88,8 +121,10 @@ pub(crate) struct Extra {
     pub surface: Hsla,
     /// Work in progress and selections (busy badges, the editor's selection, pin borders).
     pub info: Hsla,
-    /// Paused or waiting.
+    /// Paused or waiting. A dot, border or fill only: under 3:1 on the light page as text.
     pub warning: Hsla,
+    /// Done or healthy. A dot or icon beside a word, never the only signal.
+    pub success: Hsla,
     /// The window Close button's hover.
     pub close_hover: Hsla,
 }
@@ -106,10 +141,16 @@ pub(crate) fn extra(cx: &App) -> Extra {
         chip: t.primary.opacity(0.12),
         stage: if dark { hex(0x131313) } else { hex(0xEAEAE8) },
         surface: if dark { hex(0x232323) } else { hex(0xFFFFFF) },
-        info: hex(0x3B82F6),
+        info: hex(INFO),
         warning: hex(0xEAB308),
+        success: hex(0x16A34A),
         close_hover: hex(0xC42B1C),
     }
+}
+
+/// The keyboard focus ring: foreground at 60%, at least 4.5:1 on every surface in both modes.
+pub(crate) fn focus_ring(cx: &App) -> Hsla {
+    KitTheme::global(cx).foreground.opacity(0.6)
 }
 
 pub fn apply(theme: Theme, cx: &mut App) {
@@ -126,6 +167,9 @@ pub fn apply(theme: Theme, cx: &mut App) {
         t.radius_lg = radius::DIALOG;
         t.shadow = false;
     });
+    // Open windows repaint now; otherwise one drawn before the switch keeps the old colours
+    // until something else redraws it.
+    cx.refresh_windows();
 }
 
 /// Re-applies `Theme::System` when the OS switches between light and dark. Every window reports
@@ -183,6 +227,8 @@ struct Palette {
     muted_fg: u32,
     accent: u32,
     border: u32,
+    /// Text field edges: at least 3:1 against the page (WCAG 1.4.11), unlike the hairline `border`.
+    input: u32,
     ring: u32,
     danger: u32,
 }
@@ -196,10 +242,11 @@ impl Palette {
         secondary: 0xF2F2F2,
         secondary_fg: 0x262626,
         muted: 0xF5F5F5,
-        muted_fg: 0x717171,
+        muted_fg: 0x6A6A6A,
         accent: 0xECECEC,
         border: 0xE5E5E5,
-        ring: 0xB6B6B7,
+        input: 0x8F8F8F,
+        ring: 0x8A8A8B,
         danger: 0xCE4035,
     };
     const DARK: Palette = Palette {
@@ -213,20 +260,24 @@ impl Palette {
         muted_fg: 0xB0B0B0,
         accent: 0x3A3A3A,
         border: 0x303030,
-        ring: 0x656565,
+        input: 0x707070,
+        ring: 0x7A7A7A,
         danger: 0xED716A,
     };
 
     fn write(&self, t: &mut KitTheme) {
         let fg = hex(self.foreground);
         let bg = hex(self.background);
-        let primary = hex(0x17B88B);
+        let primary = hex(PRIMARY);
         let white = hex(0xFFFFFF);
+        // Text on the green and on the dark-mode danger: white reads at 2.5:1 and 2.9:1 there,
+        // this ink at 7.4:1 and 6.5:1 (WCAG 1.4.3).
+        let ink = hex(INK);
         let c = &mut t.colors;
         c.background = bg;
         c.foreground = fg;
         c.border = hex(self.border);
-        c.input = hex(self.border);
+        c.input = hex(self.input);
         c.ring = hex(self.ring);
         c.caret = fg;
         c.selection = fg.opacity(0.15);
@@ -244,11 +295,11 @@ impl Palette {
         c.sidebar_accent_foreground = fg;
         c.sidebar_border = hex(self.border);
         c.sidebar_primary = primary;
-        c.sidebar_primary_foreground = white;
+        c.sidebar_primary_foreground = ink;
         c.primary = primary;
         c.primary_hover = mix(primary, bg, 0.12);
         c.primary_active = mix(primary, fg, 0.12);
-        c.primary_foreground = white;
+        c.primary_foreground = ink;
         c.secondary = hex(self.secondary);
         c.secondary_hover = hex(self.accent);
         c.secondary_active = mix(hex(self.accent), fg, 0.06);
@@ -260,7 +311,7 @@ impl Palette {
         c.button_primary = primary;
         c.button_primary_hover = mix(primary, bg, 0.12);
         c.button_primary_active = mix(primary, fg, 0.12);
-        c.button_primary_foreground = white;
+        c.button_primary_foreground = ink;
         c.button_secondary = hex(self.secondary);
         c.button_secondary_hover = hex(self.accent);
         c.button_secondary_active = mix(hex(self.accent), fg, 0.06);
@@ -268,7 +319,7 @@ impl Palette {
         c.danger = hex(self.danger);
         c.danger_hover = mix(hex(self.danger), bg, 0.12);
         c.danger_active = mix(hex(self.danger), fg, 0.12);
-        c.danger_foreground = white;
+        c.danger_foreground = if self.background == Palette::DARK.background { ink } else { white };
         c.list_hover = fg.opacity(0.05);
         c.list_active = fg.opacity(0.08);
         c.list_active_border = hex(self.border);

@@ -13,6 +13,7 @@ fn hooks(screen_granted: bool, asked: Arc<Mutex<Vec<Permission>>>) -> Permission
     PermissionHooks {
         granted: Arc::new(move |p| p == Permission::ScreenRecording && screen_granted),
         request: Arc::new(move |p| asked.lock().unwrap().push(p)),
+        relaunch: Arc::new(|| {}),
     }
 }
 

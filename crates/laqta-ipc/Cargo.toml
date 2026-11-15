@@ -14,5 +14,9 @@ laqta-domain.workspace = true
 interprocess.workspace = true
 tracing.workspace = true
 
+# The pipe's security descriptor is built from an SDDL string, which interprocess takes as UTF-16.
+[target.'cfg(windows)'.dependencies]
+widestring = "1.0.2"
+
 [dev-dependencies]
 tempfile.workspace = true

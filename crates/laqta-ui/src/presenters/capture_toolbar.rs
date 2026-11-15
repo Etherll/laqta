@@ -3,6 +3,7 @@
 //!
 //! The drawing tools are the editor engine's, so the overlay and the editor share one tool set.
 
+use super::ink;
 use laqta_domain::capture::MarkStyle;
 use laqta_domain::color::Rgba;
 use laqta_domain::geometry::PhysRect;
@@ -245,42 +246,18 @@ impl Size {
     }
 }
 
-/// Ink colours for the pen and shapes.
-const INK: [Rgba; 8] = [
-    Rgba::rgb(0xef, 0x44, 0x44),
-    Rgba::rgb(0xf9, 0x73, 0x16),
-    Rgba::rgb(0xfa, 0xcc, 0x15),
-    Rgba::rgb(0x22, 0xc5, 0x5e),
-    Rgba::rgb(0x3b, 0x82, 0xf6),
-    Rgba::rgb(0xa8, 0x55, 0xf7),
-    Rgba::rgb(0x11, 0x11, 0x11),
-    Rgba::rgb(0xff, 0xff, 0xff),
-];
-
-/// Marker colours: bright ones, which read through the see-through marker on light and dark
-/// pictures (black would hide the text).
-const MARKER: [Rgba; 5] = [
-    Rgba::rgb(0xff, 0xee, 0x00),
-    Rgba::rgb(0x9b, 0xf0, 0x6e),
-    Rgba::rgb(0x7f, 0xd3, 0xff),
-    Rgba::rgb(0xff, 0x9e, 0xcb),
-    Rgba::rgb(0xff, 0xb8, 0x6b),
-];
-
 /// The colours the style strip offers for `tool`; empty when colour means nothing to it.
-pub fn palette(tool: Tool) -> &'static [Rgba] {
+pub fn palette(tool: Tool) -> &'static [ink::Ink] {
     match tool {
-        Tool::Highlight => &MARKER,
-        Tool::Rectangle | Tool::Ellipse | Tool::Arrow | Tool::Line | Tool::Freehand | Tool::Text | Tool::Step => &INK,
+        Tool::Highlight => &ink::MARKER,
+        Tool::Rectangle | Tool::Ellipse | Tool::Arrow | Tool::Line | Tool::Freehand | Tool::Text | Tool::Step => &ink::INK,
         _ => &[],
     }
 }
 
 /// The name a swatch's tooltip shows.
 pub fn color_name(c: Rgba) -> &'static str {
-    const NAMES: [&str; 8] = ["Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Black", "White"];
-    const MARKER_NAMES: [&str; 5] = ["Yellow", "Green", "Blue", "Pink", "Orange"];
-    INK.iter().zip(NAMES).chain(MARKER.iter().zip(MARKER_NAMES)).find(|(k, _)| **k == c).map_or("Colour", |(_, n)| n)
+    ink::INK.iter().chain(&ink::MARKER).find(|i| i.rgba == c).map_or("Color", |i| i.name)
 }
 
 /// Whether the style strip has anything for `tool`.
@@ -317,7 +294,7 @@ pub fn with_color(style: &Style, tool: Tool, color: Rgba) -> Style {
 /// A numeral colour that reads on `fill`.
 fn numeral_on(fill: Rgba) -> Rgba {
     let luma = 0.299 * f32::from(fill.r) + 0.587 * f32::from(fill.g) + 0.114 * f32::from(fill.b);
-    if luma > 160.0 { INK[6] } else { Rgba::rgb(0xff, 0xff, 0xff) }
+    if luma > 160.0 { ink::INK[8].rgba } else { Rgba::rgb(0xff, 0xff, 0xff) }
 }
 
 /// The small, medium and large values of the style field a size sets for `tool`.
@@ -374,7 +351,7 @@ pub fn base_style(tool: Tool) -> Style {
     let mut s = Style::default();
     if tool == Tool::Text {
         s.border_size = 0.0;
-        s.font.color = INK[0];
+        s.font.color = ink::INK[0].rgba;
         s.font.bold = true;
         s.font.size = Size::Medium.pick([16.0, 24.0, 36.0]);
     }
@@ -406,7 +383,9 @@ pub fn remember(marks: &mut Vec<MarkStyle>, tool: Tool, style: &Style) {
 /// The colour a number key picks for `tool`: 1 is the first swatch.
 pub fn color_key(key: &str, tool: Tool) -> Option<Rgba> {
     let n: usize = key.parse().ok()?;
-    palette(tool).get(n.checked_sub(1)?).copied()
+    // 1–9 pick the first nine swatches; 0 picks the tenth, the way a number row reads.
+    let slot = if n == 0 { 9 } else { n - 1 };
+    palette(tool).get(slot).map(|i| i.rgba)
 }
 
 /// Where the style strip goes: on the side of the toolbar away from the selection (the other side
@@ -445,11 +424,11 @@ mod tests {
     fn the_strip_sets_each_tools_own_colour_and_size() {
         let base = Style::default();
         let red = Rgba::rgb(0xef, 0x44, 0x44);
-        let yellow = MARKER[0];
+        let yellow = ink::MARKER[0].rgba;
         assert_eq!(with_color(&base, Tool::Highlight, yellow).highlight_color, yellow);
         assert_eq!(with_color(&base, Tool::Text, red).font.color, red);
         assert_eq!(with_color(&base, Tool::Text, red).border_color, base.border_color, "text keeps its box");
-        assert_eq!(color_of(&with_color(&base, Tool::Arrow, INK[4]), Tool::Arrow), INK[4]);
+        assert_eq!(color_of(&with_color(&base, Tool::Arrow, ink::INK[5].rgba), Tool::Arrow), ink::INK[5].rgba);
 
         assert_eq!(size_of(&base, Tool::Rectangle), Some(Size::Medium), "the default border is medium");
         assert_eq!(size_of(&base, Tool::Highlight), Some(Size::Medium));
@@ -458,8 +437,8 @@ mod tests {
         assert_eq!(size_of(&big, Tool::Freehand), Some(Size::Large));
         assert_eq!(with_size(&base, Tool::Pixelate, Size::Small).pixel_size, 6);
         assert_eq!(size_of(&with_size(&base, Tool::Blur, Size::Large), Tool::Blur), Some(Size::Large));
-        assert_eq!(color_name(INK[4]), "Blue");
-        assert_eq!(color_name(MARKER[3]), "Pink");
+        assert_eq!(color_name(ink::INK[5].rgba), "Blue");
+        assert_eq!(color_name(ink::MARKER[3].rgba), "Pink");
         assert_eq!(Size::Large.label(Tool::Blur), "Strong");
         assert_eq!(Size::Large.label(Tool::Freehand), "Large");
         assert!(!has_style(Tool::Select) && has_style(Tool::Blur) && palette(Tool::Blur).is_empty());
@@ -468,21 +447,21 @@ mod tests {
     #[test]
     fn picks_are_remembered_per_tool_and_text_starts_readable() {
         let text = base_style(Tool::Text);
-        assert_eq!((text.border_size, text.font.color), (0.0, INK[0]), "no box, red letters");
+        assert_eq!((text.border_size, text.font.color), (0.0, ink::INK[0].rgba), "no box, red letters");
         assert_eq!(size_of(&text, Tool::Text), Some(Size::Medium));
 
         let mut marks = Vec::new();
         remember(
             &mut marks,
             Tool::Freehand,
-            &with_size(&with_color(&base_style(Tool::Freehand), Tool::Freehand, INK[4]), Tool::Freehand, Size::Large),
+            &with_size(&with_color(&base_style(Tool::Freehand), Tool::Freehand, ink::INK[5].rgba), Tool::Freehand, Size::Large),
         );
-        remember(&mut marks, Tool::Highlight, &with_color(&base_style(Tool::Highlight), Tool::Highlight, MARKER[2]));
-        remember(&mut marks, Tool::Freehand, &with_color(&base_style(Tool::Freehand), Tool::Freehand, INK[3]));
+        remember(&mut marks, Tool::Highlight, &with_color(&base_style(Tool::Highlight), Tool::Highlight, ink::MARKER[2].rgba));
+        remember(&mut marks, Tool::Freehand, &with_color(&base_style(Tool::Freehand), Tool::Freehand, ink::INK[3].rgba));
         assert_eq!(marks.len(), 2, "one entry per tool");
         let pen = style_for(Tool::Freehand, &marks);
-        assert_eq!((pen.border_color, size_of(&pen, Tool::Freehand)), (INK[3], Some(Size::Medium)));
-        assert_eq!(style_for(Tool::Highlight, &marks).highlight_color, MARKER[2]);
+        assert_eq!((pen.border_color, size_of(&pen, Tool::Freehand)), (ink::INK[3].rgba, Some(Size::Medium)));
+        assert_eq!(style_for(Tool::Highlight, &marks).highlight_color, ink::MARKER[2].rgba);
         assert_eq!(style_for(Tool::Rectangle, &marks), base_style(Tool::Rectangle), "an unpicked tool keeps its start");
     }
 
@@ -491,26 +470,28 @@ mod tests {
         let step = base_style(Tool::Step);
         assert_eq!(size_of(&step, Tool::Step), Some(Size::Medium));
         let mut marks = Vec::new();
-        remember(&mut marks, Tool::Step, &with_color(&step, Tool::Step, INK[4]));
+        remember(&mut marks, Tool::Step, &with_color(&step, Tool::Step, ink::INK[5].rgba));
         assert_eq!(style_for(Tool::Step, &marks).font.size, step.font.size, "a colour pick leaves the size alone");
     }
 
     #[test]
     fn a_step_s_numeral_reads_on_every_swatch() {
-        for &c in palette(Tool::Step) {
+        for &i in palette(Tool::Step) {
+            let c = i.rgba;
             let s = with_color(&base_style(Tool::Step), Tool::Step, c);
             assert_ne!(s.font.color, s.border_color, "{c:?}");
         }
-        assert_eq!(with_color(&Style::default(), Tool::Step, INK[7]).font.color, INK[6], "dark on white");
-        assert_eq!(with_color(&Style::default(), Tool::Step, INK[0]).font.color, Rgba::rgb(0xff, 0xff, 0xff), "white on red");
+        assert_eq!(with_color(&Style::default(), Tool::Step, ink::INK[9].rgba).font.color, ink::INK[8].rgba, "dark on white");
+        assert_eq!(with_color(&Style::default(), Tool::Step, ink::INK[0].rgba).font.color, Rgba::rgb(0xff, 0xff, 0xff), "white on red");
     }
 
     #[test]
     fn number_keys_pick_swatches() {
-        assert_eq!(color_key("1", Tool::Arrow), Some(INK[0]));
-        assert_eq!(color_key("8", Tool::Arrow), Some(INK[7]));
+        assert_eq!(color_key("1", Tool::Arrow), Some(ink::INK[0].rgba));
+        assert_eq!(color_key("8", Tool::Arrow), Some(ink::INK[7].rgba));
         assert_eq!(color_key("6", Tool::Highlight), None, "the marker has five");
-        assert_eq!(color_key("0", Tool::Arrow), None);
+        assert_eq!(color_key("0", Tool::Arrow), Some(ink::INK[9].rgba), "0 is the tenth swatch");
+        assert_eq!(color_key("0", Tool::Highlight), None, "the marker has no tenth");
         assert_eq!(color_key("2", Tool::Blur), None);
     }
 

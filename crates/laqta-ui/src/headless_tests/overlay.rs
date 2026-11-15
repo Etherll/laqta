@@ -721,7 +721,7 @@ fn capture_marks_keep_their_colour_per_tool_and_are_saved_on_close(cx: &mut Test
     let style = |cx: &mut TestAppContext| cx.update(|cx| model.read(cx).annot.as_ref().unwrap().chrome.clone());
 
     cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Freehand), cx)));
-    let blue = bar::palette(Tool::Freehand)[4];
+    let blue = bar::palette(Tool::Freehand)[5].rgba;
     cx.update(|cx| model.update(cx, |m, cx| m.restyle(|st, t| bar::with_color(st, t, blue), cx)));
     let (left, plain) = (PointerButton::Left, Mods::default());
     cx.update(|cx| {
@@ -741,7 +741,7 @@ fn capture_marks_keep_their_colour_per_tool_and_are_saved_on_close(cx: &mut Test
     cx.update(|cx| model.update(cx, |m, cx| m.pick(Item::Tool(Tool::Highlight), cx)));
     let window = cx.update(|cx| cx.windows()[0]);
     cx.simulate_keystrokes(window, "3");
-    assert_eq!(style(cx).style.highlight_color, bar::palette(Tool::Highlight)[2], "3 picks the third marker colour");
+    assert_eq!(style(cx).style.highlight_color, bar::palette(Tool::Highlight)[2].rgba, "3 picks the third marker colour");
     assert_eq!(style(cx).tool, Tool::Highlight, "the digit didn't switch the engine's tool");
 
     cx.update(crate::overlay::close);
@@ -909,7 +909,7 @@ fn focus_loss_ends_the_space_lend_and_an_export_freezes_the_strip(cx: &mut TestA
     draw(cx, &model, (10.0, 10.0), (50.0, 40.0));
     cx.update(|cx| model.update(cx, |m, cx| m.finish(SelectionAction::Copy, cx)));
     let before = cx.update(|cx| model.read(cx).annot.as_ref().unwrap().chrome.style.clone());
-    let blue = bar::palette(Tool::Arrow)[4];
+    let blue = bar::palette(Tool::Arrow)[5].rgba;
     cx.update(|cx| model.update(cx, |m, cx| m.restyle(|st, t| bar::with_color(st, t, blue), cx)));
     assert_eq!(cx.update(|cx| model.read(cx).annot.as_ref().unwrap().chrome.style.clone()), before, "no restyle mid-export");
 }
@@ -988,4 +988,83 @@ fn leaving_the_capture_warns_before_dropping_the_marks(cx: &mut TestAppContext) 
         !sent.lock().unwrap().iter().any(|i| matches!(i, RegionInput::Command(RegionCommand::ActiveMonitor))),
         "nothing leaves while the marks export"
     );
+}
+
+/// A multi-region selection finishes with the mouse: the strip's Capture confirms and Cancel
+/// cancels, so a Windows overlay that never got the keyboard can still be left.
+#[gpui::test]
+fn the_multi_region_strip_confirms_and_cancels_with_the_mouse(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, VisualTestContext};
+    use laqta_domain::region::{MultiStrip, RegionCommand, RegionInput};
+    use std::sync::Mutex;
+
+    // SAFETY: tests in this binary don't read this variable concurrently with writing it.
+    unsafe { std::env::set_var("LAQTA_NO_LAYER_SHELL", "1") };
+    let dir = tempfile::tempdir().unwrap();
+    install(cx, services(QueuedSpawner::default(), dir.path()));
+    let (w, h) = (800u32, 600u32);
+    let frame = Frame {
+        monitor: Monitor {
+            id: MonitorId("m0".into()),
+            name: "m0".into(),
+            rect: PhysRect { x: 0, y: 0, width: w, height: h },
+            scale: 1.0,
+            primary: true,
+        },
+        image: Bitmap::new(w, h, PixelFormat::Bgra8, vec![0u8; (w * h * 4) as usize].into()).unwrap(),
+    };
+    let sent: Arc<Mutex<Vec<RegionInput>>> = Arc::default();
+    let log = sent.clone();
+    let images = crate::overlay::render_images(std::slice::from_ref(&frame));
+    cx.update(|cx| crate::overlay::show(vec![frame], images, RegionView::default(), Arc::new(move |i| log.lock().unwrap().push(i)), cx));
+    let regions = vec![PhysRect { x: 50, y: 300, width: 100, height: 80 }, PhysRect { x: 400, y: 300, width: 100, height: 80 }];
+    let view = RegionView { regions, multi_strip: Some(MultiStrip { count: 2, enabled: true }), ..RegionView::default() };
+    cx.update(|cx| crate::overlay::update(view, cx));
+    let window = *cx.windows().last().expect("the overlay window");
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    vcx.run_until_parked();
+
+    for (selector, command) in [("multi-capture", RegionCommand::Confirm), ("multi-cancel", RegionCommand::Cancel)] {
+        let bounds = vcx.debug_bounds(selector).unwrap_or_else(|| panic!("{selector} is drawn"));
+        vcx.simulate_click(bounds.center(), Modifiers::default());
+        let last = sent.lock().unwrap().last().cloned();
+        assert!(matches!(last, Some(RegionInput::Command(c)) if c == command), "{selector} sends {command:?}, got {last:?}");
+    }
+    assert!(
+        !sent.lock().unwrap().iter().any(|i| matches!(i, RegionInput::PointerDown { button: laqta_domain::region::Button::Left, .. })),
+        "a press on the strip never starts a new region"
+    );
+}
+
+/// Alt+F4 (an OS close request) on the overlay ends the selection too, and keeps the window until
+/// the session closes it: removing it alone would leave the session, and its one-session guard, held.
+#[gpui::test]
+fn an_os_close_request_on_the_overlay_cancels_the_selection(cx: &mut TestAppContext) {
+    // SAFETY: tests in this binary don't read this variable concurrently with writing it.
+    unsafe { std::env::set_var("LAQTA_NO_LAYER_SHELL", "1") };
+    let dir = tempfile::tempdir().unwrap();
+    install(cx, services(QueuedSpawner::default(), dir.path()));
+    let frame = Frame {
+        monitor: Monitor {
+            id: MonitorId("m0".into()),
+            name: "m0".into(),
+            rect: PhysRect { x: 0, y: 0, width: 80, height: 60 },
+            scale: 1.0,
+            primary: true,
+        },
+        image: Bitmap::new(80, 60, PixelFormat::Bgra8, vec![0u8; 80 * 60 * 4].into()).unwrap(),
+    };
+    let sent: Arc<std::sync::Mutex<Vec<laqta_domain::region::RegionInput>>> = Arc::default();
+    let log = sent.clone();
+    let images = crate::overlay::render_images(std::slice::from_ref(&frame));
+    cx.update(|cx| crate::overlay::show(vec![frame], images, RegionView::default(), Arc::new(move |i| log.lock().unwrap().push(i)), cx));
+    let window = cx
+        .update(|cx| cx.windows().into_iter().find(|w| cx.global::<crate::runtime::UiState>().overlay.holds(*w)))
+        .expect("an overlay window");
+    let mut vcx = gpui::VisualTestContext::from_window(window, cx);
+    assert!(!vcx.simulate_close(), "the overlay stays until the session closes it");
+    let escaped = |i: &laqta_domain::region::RegionInput| {
+        matches!(i, laqta_domain::region::RegionInput::Key { key: laqta_domain::region::RegionKey::Escape, .. })
+    };
+    assert!(sent.lock().unwrap().iter().any(escaped), "the session is told to cancel");
 }

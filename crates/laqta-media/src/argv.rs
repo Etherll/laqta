@@ -19,6 +19,18 @@ const VAAPI_DEVICE: &str = "/dev/dri/renderD128";
 /// VP8 and VP9 without a set quality use constant-quality CRF with `-b:v 0`.
 const VPX_DEFAULT_CRF: u8 = 30;
 const AUDIO_BITRATE: &str = "192k";
+/// Colour tags written on the video stream of the encoders `bt709` names. Screen frames are Rec. 709
+/// (sRGB primaries), but FFmpeg leaves them unset, so players guess from the frame size and some
+/// pick BT.601, which shifts colours.
+const BT709_TAGS: [&str; 6] = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
+/// Converts RGB frames to YUV with the BT.709 matrix and limited range, which is what `BT709_TAGS`
+/// say. Without it FFmpeg's own RGB to YUV conversion before the encoder uses BT.601, so a file
+/// tagged BT.709 would decode with shifted colours. It is always followed by the pixel format.
+const BT709_SCALE: &str = "scale=out_color_matrix=bt709:out_range=tv";
+/// Stamps the converted frames as BT.709 limited range. The FFmpeg command line writes the colour
+/// primaries and transfer of a stream from the frames, not from `BT709_TAGS`, so without this only
+/// the matrix tag reaches the file (checked with ffmpeg 9.0.2). It follows the pixel format.
+const BT709_STAMP: &str = "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv";
 
 /// The OS whose audio devices the argument lists address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,7 +119,7 @@ pub fn record_args_on(
     if let Some(cam) = camera {
         camera_input(&mut a, host, cam);
         let index = 1 + audio.len();
-        a.flag(&["-filter_complex"]).push(camera_graph(spec, cam, index, &input_filters(video, capture), &codec_filters(codec)));
+        a.flag(&["-filter_complex"]).push(camera_graph(spec, cam, index, &input_filters(video, capture), codec));
         a.flag(&["-map", "[vout]"]);
     } else {
         let filters: Vec<&str> = input_filters(video, capture).into_iter().chain(codec_filters(codec)).collect();
@@ -161,11 +173,13 @@ pub fn transcode_args(spec: &TranscodeSpec, input: &Path, output: &Path) -> Vec<
     } else if codec.is_animation() {
         animation_transcode(&mut a, codec, spec);
     } else {
-        let filters: Vec<String> = spec.width.map(scale).into_iter().chain(codec_filters(codec).into_iter().map(String::from)).collect();
+        // A file from elsewhere keeps its own colour description: no BT.709 conversion or tags, which
+        // are for Laqta's own RGB screen frames.
+        let filters: Vec<String> = spec.width.map(scale).into_iter().chain(pixel_filters(codec).into_iter().map(String::from)).collect();
         if !filters.is_empty() {
             a.opt("-vf", filters.join(","));
         }
-        encoder(&mut a, codec, spec.quality);
+        video_encoder(&mut a, codec, spec.quality);
         audio_encoder(&mut a, codec);
         if let Some(fps) = spec.fps {
             a.opt("-r", fps);
@@ -261,12 +275,33 @@ pub fn animation_args(codec: VideoCodec, input: &Path, output: &Path) -> Vec<Str
     a.finish()
 }
 
+/// The width a GIF recording of `spec` is scaled down to: `gif_max_width` when the area is wider than it, and
+/// `None` when it fits or the limit is 0 (no limit). Pass it to `palette_args` and `paletteuse_args`.
+pub fn gif_scale_width(spec: &RecordSpec) -> Option<u32> {
+    (spec.gif_max_width > 0 && spec.area.width > spec.gif_max_width).then_some(spec.gif_max_width)
+}
+
+/// The scale step of a GIF recording's two runs. Lanczos keeps text sharp when a wide area shrinks; the height
+/// follows the aspect ratio and stays even.
+fn gif_scale(width: u32) -> String {
+    format!("scale={width}:-2:flags=lanczos")
+}
+
+/// The filters both GIF runs share: the frame rate, then the scale when the clip is wider than `scale_to`.
+fn gif_filters(fps: u32, scale_to: Option<u32>) -> String {
+    match scale_to {
+        Some(width) => format!("fps={fps},{}", gif_scale(width)),
+        None => format!("fps={fps}"),
+    }
+}
+
 /// The first GIF run: one palette for the whole clip, written as a single-frame PNG. `palettegen`
-/// keeps only a histogram, so the clip is not held in memory.
-pub fn palette_args(input: &Path, fps: u32, output: &Path) -> Vec<String> {
+/// keeps only a histogram, so the clip is not held in memory. `scale_to` is `gif_scale_width`; the second run
+/// (`paletteuse_args`) must get the same value.
+pub fn palette_args(input: &Path, fps: u32, scale_to: Option<u32>, output: &Path) -> Vec<String> {
     let mut a = Argv::default();
     a.flag(&COMMON).flag(&["-i"]).push(input.to_string_lossy().into_owned());
-    a.opt("-vf", format!("fps={fps},palettegen=stats_mode=diff"));
+    a.opt("-vf", format!("{},palettegen=stats_mode=diff", gif_filters(fps, scale_to)));
     a.flag(&["-update", "1"]).push(output.to_string_lossy().into_owned());
     a.finish()
 }
@@ -274,12 +309,16 @@ pub fn palette_args(input: &Path, fps: u32, output: &Path) -> Vec<String> {
 /// The second GIF run: maps `input` through the palette in `palette`. One graph with `split`
 /// feeding both `palettegen` and `paletteuse` would buffer every frame (about 9 MB each at
 /// 1920x1188); two runs keep the memory flat. The container is named, so `output` may carry any
-/// extension.
-pub fn paletteuse_args(input: &Path, palette: &Path, fps: u32, output: &Path) -> Vec<String> {
+/// extension. `scale_to` is the same value the palette run got.
+pub fn paletteuse_args(input: &Path, palette: &Path, fps: u32, scale_to: Option<u32>, output: &Path) -> Vec<String> {
     let mut a = Argv::default();
     a.flag(&COMMON).flag(&["-i"]).push(input.to_string_lossy().into_owned());
     a.flag(&["-i"]).push(palette.to_string_lossy().into_owned());
-    a.opt("-filter_complex", format!("[0:v]fps={fps}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5"));
+    // `diff_mode=rectangle` redraws only the changed rectangle of each frame, which keeps a mostly still screen small.
+    a.opt(
+        "-filter_complex",
+        format!("[0:v]{}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle", gif_filters(fps, scale_to)),
+    );
     a.flag(&["-f", "gif"]).push(output.to_string_lossy().into_owned());
     a.finish()
 }
@@ -492,8 +531,29 @@ fn input_filters(video: &VideoInputDesc, capture: WindowsCapture) -> Vec<&'stati
     }
 }
 
-/// Filters that the encoder needs. VAAPI takes NV12 uploaded to the device.
+/// Whether the encoder gets `BT709_TAGS`, and so `BT709_SCALE` ahead of it: the software encoders,
+/// which take `yuv420p`, and VAAPI, which takes NV12 uploaded to the device. NVENC, AMF and QSV are
+/// left untagged. They take the frame as it is and convert RGB to YUV inside the driver, with a
+/// matrix FFmpeg cannot choose, so a tag there could say something the pixels do not.
+fn bt709(codec: VideoCodec) -> bool {
+    use VideoCodec::{Av1, Vaapi, Vp8, Vp9, X264, X265, Xvid};
+    matches!(codec, X264 | X265 | Vp8 | Vp9 | Av1 | Xvid | Vaapi)
+}
+
+/// Filters that the encoder needs, at the end of the video chain. The BT.709 conversion comes first,
+/// then the encoder's pixel format (`yuv420p`, or for VAAPI NV12 uploaded to the device), then the
+/// frame stamp.
 fn codec_filters(codec: VideoCodec) -> Vec<&'static str> {
+    match codec {
+        VideoCodec::Vaapi => vec![BT709_SCALE, "format=nv12", BT709_STAMP, "hwupload"],
+        codec if bt709(codec) => vec![BT709_SCALE, "format=yuv420p", BT709_STAMP],
+        _ => Vec::new(),
+    }
+}
+
+/// The encoder's pixel format without any colour conversion, for transcodes: VAAPI needs NV12
+/// uploaded to the device; the other encoders convert on their own.
+fn pixel_filters(codec: VideoCodec) -> Vec<&'static str> {
     if codec == VideoCodec::Vaapi { vec!["format=nv12", "hwupload"] } else { Vec::new() }
 }
 
@@ -529,10 +589,14 @@ fn camera_input(a: &mut Argv, host: Host, cam: &laqta_domain::record::CameraOver
 /// The video graph with the camera: the screen through its input filters, the camera scaled to
 /// `size_percent` of the recording's width and masked to its shape, overlaid at the corner, then the
 /// codec's filters. The result is `[vout]`.
-fn camera_graph(spec: &RecordSpec, cam: &laqta_domain::record::CameraOverlay, index: usize, input: &[&str], codec: &[&str]) -> String {
+fn camera_graph(spec: &RecordSpec, cam: &laqta_domain::record::CameraOverlay, index: usize, input: &[&str], codec: VideoCodec) -> String {
     use laqta_domain::record::{CameraShape, Corner};
     let width = (spec.area.width * u32::from(cam.size_percent.clamp(5, 100)) / 100).max(16) & !1;
-    let base = if input.is_empty() { "null".to_owned() } else { input.join(",") };
+    // `overlay` works in YUV, and the conversion FFmpeg would insert in front of it is BT.601, so the
+    // screen is converted with the BT.709 matrix first. The overlaid frame is already `yuv420p`.
+    let colour: &[&str] = if bt709(codec) { &[BT709_SCALE, "format=yuv420p", BT709_STAMP] } else { &[] };
+    let base: Vec<&str> = input.iter().chain(colour).copied().collect();
+    let base = if base.is_empty() { "null".to_owned() } else { base.join(",") };
     let shape = match cam.shape {
         CameraShape::Circle => format!(
             "crop='min(iw,ih)':'min(iw,ih)',scale={width}:{width},format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(hypot(X-W/2,Y-H/2),W/2),255,0)'"
@@ -549,7 +613,7 @@ fn camera_graph(spec: &RecordSpec, cam: &laqta_domain::record::CameraOverlay, in
         Corner::BottomLeft => (format!("{m}"), format!("main_h-overlay_h-{m}")),
         Corner::BottomRight => (format!("main_w-overlay_w-{m}"), format!("main_h-overlay_h-{m}")),
     };
-    let tail = if codec.is_empty() { String::new() } else { format!(",{}", codec.join(",")) };
+    let tail = if codec == VideoCodec::Vaapi { ",format=nv12,hwupload" } else { "" };
     format!("[0:v]{base}[base];[{index}:v]{shape}[cam];[base][cam]overlay={x}:{y}:shortest=1{tail}[vout]")
 }
 
@@ -570,8 +634,17 @@ fn map_audio(a: &mut Argv, count: usize, stdin_fed: bool) {
 }
 
 /// The encoder and its quality. Software encoders also set `yuv420p`. Hardware encoders take the
-/// frame format they are given. GIF, WebP and APNG record a lossless H.264 intermediate.
+/// frame format they are given. The encoders `bt709` names also tag the stream as BT.709
+/// (`BT709_TAGS`), and `codec_filters` converts the pixels to match. The GIF, WebP and APNG
+/// intermediate is a lossless RGB H.264 with no colour matrix, so it has neither.
 fn encoder(a: &mut Argv, codec: VideoCodec, quality: Quality) {
+    video_encoder(a, codec, quality);
+    if bt709(codec) {
+        a.flag(&BT709_TAGS);
+    }
+}
+
+fn video_encoder(a: &mut Argv, codec: VideoCodec, quality: Quality) {
     match codec {
         VideoCodec::X264 => {
             a.flag(&["-c:v", "libx264", "-preset", "veryfast"]);
@@ -743,6 +816,8 @@ mod tests {
             audio: Vec::new(),
             custom_args: String::new(),
             camera: None,
+            gif_max_width: 1280,
+            backend: laqta_domain::record::RecorderBackend::Ffmpeg,
         }
     }
 
@@ -809,7 +884,7 @@ mod tests {
         let args = record_args_on(Host::Linux, WindowsCapture::Ddagrab, &s, &video, &[], Path::new("/o.mkv"));
         assert!(seq(&args, &["-thread_queue_size", "512", "-f", "v4l2", "-i", "/dev/video0"]));
         let graph = args.iter().skip_while(|a| *a != "-filter_complex").nth(1).expect("a filter graph");
-        assert!(graph.starts_with("[0:v]null[base];[1:v]crop="), "{graph}");
+        assert!(graph.starts_with("[0:v]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv[base];[1:v]crop="), "{graph}");
         assert!(graph.ends_with("[base][cam]overlay=main_w-overlay_w-16:main_h-overlay_h-16:shortest=1[vout]"), "{graph}");
         assert!(seq(&args, &["-map", "[vout]"]));
         assert!(!args.iter().any(|a| a == "-vf"));
@@ -834,7 +909,13 @@ mod tests {
             &args,
             &["-f", "lavfi", "-i", "ddagrab=output_idx=2:framerate=30:offset_x=10:offset_y=20:video_size=640x480:draw_mouse=1"]
         ));
-        assert!(seq(&args, &["-vf", "hwdownload,format=bgra"]));
+        assert!(seq(
+            &args,
+            &[
+                "-vf",
+                "hwdownload,format=bgra,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv"
+            ]
+        ));
         // The device setup comes before the first input.
         let first_input = args.iter().position(|arg| arg == "-i").unwrap_or(usize::MAX);
         let device = args.iter().position(|arg| arg == "-init_hw_device").unwrap_or(usize::MAX);
@@ -872,14 +953,32 @@ mod tests {
             ]
         ));
         assert!(!args.iter().any(|arg| arg == "-init_hw_device"));
-        assert!(!args.iter().any(|arg| arg == "-vf"));
+        assert!(
+            seq(
+                &args,
+                &[
+                    "-vf",
+                    "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv"
+                ]
+            ),
+            "only the colour conversion, no hwdownload"
+        );
     }
 
     #[test]
     fn x11grab_target_takes_display_and_offset() {
         let args = record(Host::Linux, WindowsCapture::Ddagrab, &spec(VideoCodec::X264, Quality::Default), &x11_target(), &[]);
         assert!(seq(&args, &["-f", "x11grab", "-framerate", "30", "-video_size", "1920x1080", "-draw_mouse", "1", "-i", ":0+100,200"]));
-        assert!(!args.iter().any(|arg| arg == "-vf"));
+        assert!(
+            seq(
+                &args,
+                &[
+                    "-vf",
+                    "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv"
+                ]
+            ),
+            "only the colour conversion"
+        );
     }
 
     #[test]
@@ -991,6 +1090,105 @@ mod tests {
         assert!(seq(&x265, &["-c:v", "libx265", "-preset", "veryfast", "-b:v", "4000k", "-pix_fmt", "yuv420p"]));
     }
 
+    /// The value of the `-vf` option, if there is one.
+    fn video_filters(args: &[String]) -> Option<&str> {
+        args.iter().skip_while(|arg| *arg != "-vf").nth(1).map(String::as_str)
+    }
+
+    fn has_tags(args: &[String]) -> bool {
+        args.iter().any(|arg| arg == "-colorspace" || arg == "-color_primaries" || arg == "-color_trc")
+    }
+
+    fn transcode_to(codec: VideoCodec) -> Vec<String> {
+        let spec = TranscodeSpec { codec: Some(codec), ..TranscodeSpec::default() };
+        transcode_args(&spec, Path::new("/in.mp4"), Path::new("/out.mp4"))
+    }
+
+    #[test]
+    fn bt709_tags_and_the_bt709_conversion_come_together() {
+        let tagged =
+            [VideoCodec::X264, VideoCodec::X265, VideoCodec::Vp8, VideoCodec::Vp9, VideoCodec::Av1, VideoCodec::Xvid, VideoCodec::Vaapi];
+        for codec in VideoCodec::ALL {
+            let expected = tagged.contains(&codec);
+            let args = quality_of(codec, Quality::Default);
+            assert_eq!(seq(&args, &BT709_TAGS), expected, "{codec:?} tags: {args:?}");
+            let converts = video_filters(&args).is_some_and(|vf| vf.contains(BT709_SCALE));
+            assert_eq!(converts, expected, "{codec:?} conversion: {args:?}");
+            assert_eq!(has_tags(&args), expected, "{codec:?}: all three tags or none");
+        }
+    }
+
+    /// A transcoded file may be HDR10 or BT.601: it keeps its colours and its own tags.
+    #[test]
+    fn a_transcode_neither_converts_nor_retags_the_colours() {
+        for codec in VideoCodec::ALL.into_iter().filter(|codec| !codec.is_animation()) {
+            let args = transcode_to(codec);
+            assert!(!has_tags(&args), "{codec:?}: {args:?}");
+            assert!(!video_filters(&args).is_some_and(|vf| vf.contains("bt709")), "{codec:?}: {args:?}");
+        }
+        assert_eq!(video_filters(&transcode_to(VideoCodec::Vaapi)), Some("format=nv12,hwupload"));
+        assert!(seq(&transcode_to(VideoCodec::X264), &["-pix_fmt", "yuv420p"]));
+    }
+
+    #[test]
+    fn the_bt709_conversion_ends_the_chain_in_the_encoders_pixel_format() {
+        let x264 = quality_of(VideoCodec::X264, Quality::Crf(20));
+        assert_eq!(
+            video_filters(&x264),
+            Some(
+                "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv"
+            )
+        );
+        assert!(seq(&x264, &["-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]));
+        let vaapi = quality_of(VideoCodec::Vaapi, Quality::Crf(25));
+        assert_eq!(
+            video_filters(&vaapi),
+            Some(
+                "scale=out_color_matrix=bt709:out_range=tv,format=nv12,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv,hwupload"
+            )
+        );
+        // GPU encoders that convert RGB themselves are left alone.
+        for codec in [VideoCodec::Nvenc, VideoCodec::NvencHevc, VideoCodec::Amf, VideoCodec::Qsv] {
+            assert_eq!(video_filters(&quality_of(codec, Quality::Default)), None, "{codec:?}");
+        }
+    }
+
+    #[test]
+    fn camera_graph_converts_the_screen_with_bt709_before_the_overlay_exactly_when_tagged() {
+        use laqta_domain::record::{CameraOverlay, CameraShape, Corner};
+        let camera = CameraOverlay {
+            enabled: true,
+            device: String::new(),
+            shape: CameraShape::Rectangle,
+            corner: Corner::TopLeft,
+            size_percent: 25,
+            margin: 8,
+        };
+        let graph_for = |codec: VideoCodec| {
+            let mut s = spec(codec, Quality::Default);
+            s.camera = Some(camera.clone());
+            let args = record(Host::Linux, WindowsCapture::Ddagrab, &s, &raw(), &[]);
+            args.iter().skip_while(|arg| *arg != "-filter_complex").nth(1).cloned().unwrap_or_default()
+        };
+        let x264 = graph_for(VideoCodec::X264);
+        assert!(x264.starts_with("[0:v]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv[base];"), "{x264}");
+        assert!(x264.ends_with("overlay=8:8:shortest=1[vout]"), "{x264}");
+        let nvenc = graph_for(VideoCodec::Nvenc);
+        assert!(nvenc.starts_with("[0:v]null[base];") && !nvenc.contains(BT709_SCALE), "{nvenc}");
+        let vaapi = graph_for(VideoCodec::Vaapi);
+        assert!(vaapi.starts_with("[0:v]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv[base];"), "{vaapi}");
+        assert!(vaapi.ends_with("overlay=8:8:shortest=1,format=nv12,hwupload[vout]"), "{vaapi}");
+    }
+
+    #[test]
+    fn animation_intermediates_carry_no_colour_tags_or_conversion() {
+        for codec in [VideoCodec::Gif, VideoCodec::WebP, VideoCodec::Apng] {
+            let args = quality_of(codec, Quality::Default);
+            assert!(!has_tags(&args), "{codec:?}");
+            assert!(!args.iter().any(|arg| arg.contains("out_color_matrix")), "{codec:?}");
+        }
+    }
+
     #[test]
     fn vp8_and_vp9_use_libvpx_with_realtime_deadline() {
         let vp8 = quality_of(VideoCodec::Vp8, Quality::Crf(10));
@@ -1040,7 +1238,13 @@ mod tests {
         let s = spec(VideoCodec::Vaapi, Quality::Crf(25));
         let args = record(Host::Linux, WindowsCapture::Ddagrab, &s, &x11_target(), &[]);
         assert!(seq(&args, &["-vaapi_device", "/dev/dri/renderD128"]));
-        assert!(seq(&args, &["-vf", "format=nv12,hwupload"]));
+        assert!(seq(
+            &args,
+            &[
+                "-vf",
+                "scale=out_color_matrix=bt709:out_range=tv,format=nv12,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv,hwupload"
+            ]
+        ));
         assert!(seq(&args, &["-c:v", "h264_vaapi", "-qp", "25"]));
         let device = args.iter().position(|arg| arg == "-vaapi_device").unwrap_or(usize::MAX);
         let first_input = args.iter().position(|arg| arg == "-i").unwrap_or(usize::MAX);
@@ -1109,7 +1313,7 @@ mod tests {
 
     #[test]
     fn gif_palette_run_reads_the_clip_once_and_writes_one_png() {
-        let args = palette_args(Path::new("/work/merged.mkv"), 15, Path::new("/work/palette.png"));
+        let args = palette_args(Path::new("/work/merged.mkv"), 15, None, Path::new("/work/palette.png"));
         assert_eq!(
             args,
             [
@@ -1131,7 +1335,8 @@ mod tests {
 
     #[test]
     fn gif_paletteuse_run_maps_the_clip_through_the_palette() {
-        let args = paletteuse_args(Path::new("/work/merged.mkv"), Path::new("/work/palette.png"), 15, Path::new("/out/clip.gif.part"));
+        let args =
+            paletteuse_args(Path::new("/work/merged.mkv"), Path::new("/work/palette.png"), 15, None, Path::new("/out/clip.gif.part"));
         assert_eq!(
             args,
             [
@@ -1145,7 +1350,7 @@ mod tests {
                 "-i",
                 "/work/palette.png",
                 "-filter_complex",
-                "[0:v]fps=15[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5",
+                "[0:v]fps=15[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle",
                 "-f",
                 "gif",
                 "/out/clip.gif.part"
@@ -1153,6 +1358,49 @@ mod tests {
         );
         // No `split`: it would buffer the whole clip.
         assert!(!args.iter().any(|arg| arg.contains("split")));
+    }
+
+    /// A GIF spec of `width` pixels across, with the limit `max`.
+    fn gif_spec(width: u32, max: u32) -> RecordSpec {
+        RecordSpec {
+            area: PhysRect { x: 0, y: 0, width, height: width / 2 },
+            gif_max_width: max,
+            ..spec(VideoCodec::Gif, Quality::Default)
+        }
+    }
+
+    #[test]
+    fn a_gif_scales_only_when_the_area_is_wider_than_the_limit() {
+        assert_eq!(gif_scale_width(&gif_spec(1920, 1280)), Some(1280), "wider than the limit");
+        assert_eq!(gif_scale_width(&gif_spec(1281, 1280)), Some(1280), "one pixel wider");
+        assert_eq!(gif_scale_width(&gif_spec(1280, 1280)), None, "exactly the limit");
+        assert_eq!(gif_scale_width(&gif_spec(640, 1280)), None, "narrower than the limit");
+        assert_eq!(gif_scale_width(&gif_spec(3840, 0)), None, "0 means no limit");
+    }
+
+    #[test]
+    fn a_scaled_gif_scales_in_both_runs_and_an_unscaled_one_in_neither() {
+        let (merged, pal, out) = (Path::new("/work/merged.mkv"), Path::new("/work/palette.png"), Path::new("/out/clip.gif.part"));
+        let scale_to = gif_scale_width(&gif_spec(1920, 1280));
+        let palette = palette_args(merged, 15, scale_to, pal);
+        assert!(seq(&palette, &["-vf", "fps=15,scale=1280:-2:flags=lanczos,palettegen=stats_mode=diff"]), "{palette:?}");
+        let paletteuse = paletteuse_args(merged, pal, 15, scale_to, out);
+        assert!(
+            seq(
+                &paletteuse,
+                &[
+                    "-filter_complex",
+                    "[0:v]fps=15,scale=1280:-2:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
+                ]
+            ),
+            "{paletteuse:?}"
+        );
+
+        let scale_to = gif_scale_width(&gif_spec(1920, 0));
+        assert_eq!(scale_to, None);
+        for args in [palette_args(merged, 15, scale_to, pal), paletteuse_args(merged, pal, 15, scale_to, out)] {
+            assert!(!args.iter().any(|arg| arg.contains("lanczos")), "no limit, no scale filter: {args:?}");
+        }
     }
 
     #[test]

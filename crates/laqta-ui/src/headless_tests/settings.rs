@@ -138,3 +138,29 @@ fn a_chord_from_the_key_hook_ends_the_recording(cx: &mut TestAppContext) {
     draw(&mut vcx);
     assert!(stopped.load(Ordering::SeqCst), "the recorded chord ended the recording and its hook");
 }
+
+/// A shortcut with its own copy of a page's settings is named under that page's header, since
+/// changes on the page don't reach it (ADR 008).
+#[gpui::test]
+fn a_page_names_the_shortcuts_that_override_it(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let ui = services(QueuedSpawner::default(), dir.path());
+    let mut settings = ui.app.settings();
+    let mut general = settings.defaults.general.clone();
+    general.toast.duration_ms += 1000;
+    settings.workflows[1].patch.general = Some(general);
+    ui.app.set_settings(settings);
+    install(cx, ui);
+    cx.update(crate::settings_window::open);
+    let window = *cx.windows().last().expect("the settings window");
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    draw(&mut vcx);
+    assert!(vcx.debug_bounds("override-note").is_some(), "General names the overriding shortcut");
+}
+
+#[gpui::test]
+fn a_page_with_no_overrides_has_no_note(cx: &mut TestAppContext) {
+    let (mut vcx, _dir) = open_with_defaults(cx, |_| {});
+    draw(&mut vcx);
+    assert!(vcx.debug_bounds("override-note").is_none());
+}

@@ -7,7 +7,6 @@ use gpui::{
     App, AppContext as _, ClipboardItem, Context, IntoElement, ParentElement as _, Render, RenderImage, Styled as _, Window, WindowOptions,
     div, img, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::{ActiveTheme as _, Root};
 
 use crate::runtime::UiState;
@@ -30,7 +29,8 @@ pub(crate) fn open(url: String, qr: bool, cx: &mut App) {
         ..Default::default()
     };
     let result = cx.open_window(options, |window, cx| {
-        let view = cx.new(|_| UrlWindow { qr: if qr { qr_image(&url) } else { None }, url });
+        crate::runtime::dismiss_on_escape(window, cx);
+        let view = cx.new(|_| UrlWindow { qr: if qr { qr_image(&url) } else { None }, wants_qr: qr, url, open_failed: false });
         cx.new(|cx| Root::new(view, window, cx))
     });
     if let Err(e) = result {
@@ -40,13 +40,19 @@ pub(crate) fn open(url: String, qr: bool, cx: &mut App) {
 
 struct UrlWindow {
     url: String,
+    /// The QR code, when one was asked for and could be made.
     qr: Option<Arc<RenderImage>>,
+    /// Whether this is the QR code view, even when the code could not be made.
+    wants_qr: bool,
+    /// The last Open link failed: the body says so.
+    open_failed: bool,
 }
 
 impl Render for UrlWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let shell = cx.global::<UiState>().services.shell.clone();
         let (u1, u2) = (self.url.clone(), self.url.clone());
+        let this = cx.entity().downgrade();
         let mut body = div().flex_1().flex().flex_col().gap(px(10.)).p(px(14.)).items_center();
         if let Some(q) = &self.qr {
             body = body.child(img(q.clone()).w(px(360.)).h(px(360.)).rounded(crate::theme::radius::LG));
@@ -63,20 +69,33 @@ impl Render for UrlWindow {
                 .w_full()
                 .child(div().truncate().text_size(crate::theme::text::LABEL).child(self.url.clone())),
         );
-        let footer = div()
-            .flex()
-            .flex_row()
-            .gap(px(8.))
-            .p(px(12.))
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(widgets::muted("", cx).flex_1())
-            .child(Button::new("copy").label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(u1.clone()))))
-            .child(Button::new("open").label("Open").primary().on_click(move |_, _, _| {
-                let _ = shell.open_url(&u2);
-            }))
-            .child(Button::new("close").label("Close").ghost().on_click(|_, window, _| window.remove_window()));
-        let title = if self.qr.is_some() { "QR code" } else { "Upload finished" };
+        if self.open_failed {
+            body = body.child(
+                div()
+                    .text_size(crate::theme::text::LABEL)
+                    .text_color(cx.theme().danger)
+                    .child("Couldn't open the link. Copy it and open it in a browser."),
+            );
+        }
+        use widgets::{FooterAction, Pill};
+        let footer = widgets::footer(
+            None,
+            vec![
+                FooterAction::new("copy", "Copy link", Pill::Default, move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(u1.clone()))
+                }),
+                FooterAction::new("close", "Close", Pill::Ghost, |_, window, _| window.remove_window()),
+                FooterAction::new("open", "Open link", Pill::Primary, move |_, _, cx| {
+                    let failed = shell.open_url(&u2).inspect_err(|e| tracing::warn!("open link: {e}")).is_err();
+                    let _ = this.update(cx, |view, cx| {
+                        view.open_failed = failed;
+                        cx.notify();
+                    });
+                }),
+            ],
+            cx,
+        );
+        let title = if self.wants_qr { "QR code" } else { "Upload finished" };
         crate::chrome::rounded(widgets::page(cx), window)
             .child(crate::chrome::TitleBar::new().title(title).flat())
             .child(body)

@@ -36,9 +36,7 @@ fn named<'a>(settings: &'a Settings, workflow: &str) -> Result<&'a laqta_domain:
 /// What a request does. An action runs the first enabled workflow bound to it, as a hotkey does.
 pub fn route(request: Request, settings: &Settings) -> Result<Route, String> {
     Ok(match request {
-        Request::Action(action) => {
-            Route::Dispatch(action, settings.workflows.iter().find(|w| w.enabled && w.action == action).map(|w| w.id))
-        }
+        Request::Action(action) => Route::Dispatch(action, settings.workflow_for_action(action).map(|w| w.id)),
         Request::Workflow(name) => {
             let w = settings
                 .workflows
@@ -58,7 +56,7 @@ pub fn route(request: Request, settings: &Settings) -> Result<Route, String> {
         Request::UploadUrl(url) => Route::Upload(UploadSource::Url(url), None),
         Request::ShortenUrl(url) => Route::Upload(UploadSource::ShortenUrl(url), None),
         Request::ActionFile(action, path) => {
-            let workflow = settings.workflows.iter().find(|w| w.enabled && w.action == action).map(|w| w.id);
+            let workflow = settings.workflow_for_action(action).map(|w| w.id);
             Route::DispatchFile(action, std::path::absolute(&path).unwrap_or(path), workflow)
         }
         Request::UploadWith { workflow, path } => {
@@ -69,9 +67,70 @@ pub fn route(request: Request, settings: &Settings) -> Result<Route, String> {
     })
 }
 
+/// Whether a request from another program may run while Laqta has administrator rights. Any program
+/// running as the user can send one, so one that names a file or a URL to fetch is refused: it would
+/// let that program read through Laqta what only an administrator can. Actions, workflows, text and
+/// short links only do what the user could do from the tray.
+pub fn allowed_when_elevated(request: &Request) -> bool {
+    match request {
+        Request::Action(_) | Request::Workflow(_) | Request::UploadText(_) | Request::ShortenUrl(_) => true,
+        Request::Upload(_)
+        | Request::ActionFile(..)
+        | Request::UploadWith { .. }
+        | Request::UploadUrl(_)
+        | Request::UploadUrlWith { .. } => false,
+    }
+}
+
+/// Whether a request `allowed_when_elevated` lets through would start one of the user's external
+/// programs: its workflow runs Perform actions and a program is enabled. Sent by another program
+/// while Laqta has administrator rights, that would start the program as administrator without a
+/// prompt, so it is refused too.
+pub fn starts_programs(request: &Request, settings: &Settings) -> bool {
+    let workflow = match request {
+        Request::Action(action) => settings.workflow_for_action(*action).map(|w| w.id),
+        Request::Workflow(name) => match named(settings, name) {
+            Ok(w) => Some(w.id),
+            Err(_) => return false,
+        },
+        _ => return false,
+    };
+    settings.actions.iter().any(|a| a.enabled)
+        && settings.task_settings(workflow).after_capture.contains(laqta_domain::workflow::AfterCaptureTasks::PERFORM_ACTIONS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_whose_workflow_runs_an_enabled_program_starts_programs() {
+        use laqta_domain::workflow::{AfterCaptureTasks, ExternalAction};
+        let mut s = settings();
+        let request = Request::Workflow("Region to Imgur".into());
+        assert!(!starts_programs(&request, &s), "no program configured");
+        s.actions.push(ExternalAction { name: "x".into(), program: "x.exe".into(), enabled: true, ..Default::default() });
+        assert!(!starts_programs(&request, &s), "Perform actions is off");
+        s.workflows[0].patch.after_capture = Some(AfterCaptureTasks::PERFORM_ACTIONS);
+        assert!(starts_programs(&request, &s));
+        assert!(starts_programs(&Request::Action(Action::RectangleRegion), &s), "the action runs the same workflow");
+        assert!(!starts_programs(&Request::UploadText("hi".into()), &s));
+        s.actions[0].enabled = false;
+        assert!(!starts_programs(&request, &s), "the only program is off");
+    }
+
+    #[test]
+    fn an_elevated_copy_refuses_requests_that_name_files_or_urls_to_fetch() {
+        assert!(allowed_when_elevated(&Request::Action(Action::RectangleRegion)));
+        assert!(allowed_when_elevated(&Request::Workflow("Region".into())));
+        assert!(allowed_when_elevated(&Request::UploadText("hi".into())));
+        assert!(allowed_when_elevated(&Request::ShortenUrl("https://example.com".into())));
+        assert!(!allowed_when_elevated(&Request::Upload("C:/Windows/System32/config/SAM".into())));
+        assert!(!allowed_when_elevated(&Request::ActionFile(Action::ImageEditor, "a.png".into())));
+        assert!(!allowed_when_elevated(&Request::UploadWith { workflow: "x".into(), path: "a.png".into() }));
+        assert!(!allowed_when_elevated(&Request::UploadUrl("file:///C:/secret".into())));
+        assert!(!allowed_when_elevated(&Request::UploadUrlWith { workflow: "x".into(), url: "file:///C:/secret".into() }));
+    }
     use laqta_domain::workflow::{TaskSettingsPatch, Workflow};
 
     fn settings() -> Settings {

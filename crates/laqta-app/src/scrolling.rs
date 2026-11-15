@@ -31,7 +31,12 @@ impl App {
         let sel = region::pick(&self.ports, frames, &ts.capture.region).await?;
         let rect = sel.rects.iter().copied().reduce(PhysRect::union).ok_or_else(|| AppError::Io("no region selected".to_owned()))?;
         let scrolling = ts.capture.scrolling.clone();
-        let request = CaptureRequest { show_cursor: ts.capture.show_cursor, hdr_tonemap: ts.capture.hdr_tonemap };
+        let request = CaptureRequest {
+            show_cursor: ts.capture.show_cursor,
+            hdr_tonemap: ts.capture.hdr_tonemap,
+            include_own_windows: ts.capture.include_own_windows,
+            in_series: true,
+        };
         // The wheel and keys go to the window under the middle of the region.
         let (x, y) = (rect.x.saturating_add_unsigned(rect.width / 2), rect.y.saturating_add_unsigned(rect.height / 2));
 

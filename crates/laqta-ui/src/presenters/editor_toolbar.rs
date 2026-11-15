@@ -67,7 +67,7 @@ pub fn hint(tool: Tool) -> &'static str {
         Tool::Emoji => "Pick an emoji, then click to place it.",
         Tool::Cursor => "Click to place a mouse cursor.",
         Tool::Highlight => "Draw over text to highlight it, like a marker.",
-        Tool::SmartEraser => "Drag to paint over with the colour around the area.",
+        Tool::SmartEraser => "Drag to paint over with the color around the area.",
         Tool::ObjectEraser => "Drag a box around an object to remove it and fill in the background.",
         Tool::Blur => "Drag over an area to blur it.",
         Tool::Pixelate => "Drag over an area to pixelate it.",
@@ -112,6 +112,16 @@ pub fn style_controls(tool: Tool) -> StyleControls {
         Tool::Highlight => StyleControls { color: true, stroke: true, ..StyleControls::default() },
         _ => StyleControls::default(),
     }
+}
+
+/// Whether Undo can run; the reason it can't, for its disabled button.
+pub fn undo_reason(can: bool) -> Result<(), &'static str> {
+    if can { Ok(()) } else { Err("Nothing to undo") }
+}
+
+/// Whether Redo can run; the reason it can't, for its disabled button.
+pub fn redo_reason(can: bool) -> Result<(), &'static str> {
+    if can { Ok(()) } else { Err("Nothing to redo") }
 }
 
 #[cfg(test)]
@@ -179,6 +189,14 @@ mod tests {
         assert_eq!(tool_for_key('p'), Some(Tool::Pixelate));
         assert_eq!(tool_for_key('s'), Some(Tool::SpeechBalloon));
         assert_eq!(shortcut(Tool::ObjectEraser), None);
+    }
+
+    #[test]
+    fn undo_and_redo_say_why_they_are_off() {
+        assert_eq!(undo_reason(true), Ok(()));
+        assert_eq!(undo_reason(false), Err("Nothing to undo"));
+        assert_eq!(redo_reason(true), Ok(()));
+        assert_eq!(redo_reason(false), Err("Nothing to redo"));
     }
 
     #[test]

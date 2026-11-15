@@ -4828,6 +4828,7 @@ dependencies = [
  "async-broadcast",
  "async-executor",
  "async-io",
+ "async-lock",
  "blocking",
  "cosmic-text",
  "dirs 7.0.0",
@@ -4991,6 +4992,7 @@ dependencies = [
  "laqta-domain",
  "tempfile",
  "tracing",
+ "widestring",
 ]
 
 [[package]]

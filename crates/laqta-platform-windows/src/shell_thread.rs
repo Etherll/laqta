@@ -1,6 +1,7 @@
 //! The shell thread: one dedicated thread that owns a hidden window and runs its message loop.
-//! It receives `WM_HOTKEY` (from `RegisterHotKey`) and the notification-area callbacks
-//! (`Shell_NotifyIconW`), and shows the tray menu with `TrackPopupMenu`.
+//! It receives `WM_HOTKEY` (from `RegisterHotKey`, or posted by the keyboard hook when the
+//! `hotkeys_via_hook` setting is on) and the notification-area callbacks (`Shell_NotifyIconW`),
+//! and shows the tray menu with `TrackPopupMenu`.
 //!
 //! Other threads talk to it through a command queue: they push a [`Command`], post
 //! `WM_LAQTA_COMMAND`, and wait for the reply on a channel.
@@ -14,11 +15,12 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 use std::mem::size_of;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
 use laqta_domain::{Action, Key, KeyChord, Modifiers};
-use laqta_ports::{ActionCallback, HotkeyCallback, HotkeyRegistrar, PortError, Tray, TrayMenu};
+use laqta_ports::{ActionCallback, HotkeyCallback, HotkeyRegistrar, PortError, RejectedCallback, Rejection, Tray, TrayMenu};
 use windows::Win32::Foundation::{ERROR_HOTKEY_ALREADY_REGISTERED, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -33,7 +35,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HSTRING, w};
 
-use crate::{keys, print_screen};
+use crate::{key_hook, keys, print_screen};
 
 const WM_LAQTA_COMMAND: u32 = WM_APP + 1;
 const WM_LAQTA_TRAY: u32 = WM_APP + 2;
@@ -43,20 +45,43 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 type HotkeyResults = Vec<(KeyChord, Result<(), PortError>)>;
 
 enum Command {
-    Hotkeys { bindings: Vec<(KeyChord, Action)>, on_fire: HotkeyCallback, reply: mpsc::Sender<HotkeyResults> },
-    Tray { menu: TrayMenu, on_select: ActionCallback, reply: mpsc::Sender<Result<(), PortError>> },
-    UnregisterAll { reply: mpsc::Sender<()> },
-    Shutdown { reply: mpsc::Sender<()> },
+    Hotkeys {
+        bindings: Vec<(KeyChord, Action)>,
+        on_fire: HotkeyCallback,
+        reply: mpsc::Sender<HotkeyResults>,
+    },
+    Tray {
+        menu: TrayMenu,
+        on_select: ActionCallback,
+        reply: mpsc::Sender<Result<(), PortError>>,
+    },
+    UnregisterAll {
+        reply: mpsc::Sender<()>,
+    },
+    /// Registers the last bindings again, after the way hotkeys are caught changed.
+    Reapply,
+    /// The keyboard hook for hotkeys was lost for good: the last bindings go to `RegisterHotKey`.
+    HookLost,
+    Shutdown {
+        reply: mpsc::Sender<()>,
+    },
 }
 
 static QUEUE: Mutex<VecDeque<Command>> = Mutex::new(VecDeque::new());
 /// The shell window's handle (as an integer, since `HWND` isn't `Send`), or why it failed.
 static WINDOW: OnceLock<Result<isize, String>> = OnceLock::new();
+/// Told about chords that a later registration on the shell thread's own initiative (`Reapply`,
+/// `HookLost`) could not register again, so the app stops showing them as active.
+static REJECTED: Mutex<Option<RejectedCallback>> = Mutex::new(None);
+/// Counts registrations, so a rejection can tell whether the one it is about is still the live one.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// State owned by the shell thread, touched only from its window procedure.
 #[derive(Default)]
 struct State {
     hotkeys: HashMap<i32, KeyChord>,
+    /// The bindings the last registration was asked for, to register them again.
+    bindings: Vec<(KeyChord, Action)>,
     on_hotkey: Option<HotkeyCallback>,
     tray: Option<(TrayMenu, ActionCallback)>,
     icon_added: bool,
@@ -93,6 +118,10 @@ impl HotkeyRegistrar for WindowsHotkeys {
         }
     }
 
+    fn on_rejected(&self, rejected: RejectedCallback) {
+        *REJECTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(rejected);
+    }
+
     fn record_keys(&self, on_chord: laqta_ports::ChordCallback) -> Result<laqta_ports::KeyRecording, PortError> {
         crate::key_hook::start(on_chord)
     }
@@ -104,6 +133,18 @@ pub(crate) struct WindowsTray;
 impl Tray for WindowsTray {
     fn show(&self, menu: TrayMenu, on_select: ActionCallback) -> Result<(), PortError> {
         send(|reply| Command::Tray { menu, on_select, reply })?
+    }
+}
+
+/// Chooses between `RegisterHotKey` and the keyboard hook for the hotkeys. When that changes what is
+/// registered, the shell thread registers its bindings again the way the new choice says; this does
+/// not wait for it. A refusal in that second registration is logged, as nobody is waiting for it.
+pub(crate) fn set_via_hook(on: bool) {
+    if key_hook::hotkey_hook::set_enabled(on)
+        && let Some(Ok(_)) = WINDOW.get()
+        && let Err(e) = post(Command::Reapply)
+    {
+        tracing::warn!("could not switch how hotkeys are caught: {e}");
     }
 }
 
@@ -125,13 +166,17 @@ fn start() -> Result<isize, String> {
     rx.recv().map_err(|_| "shell thread exited during start-up".to_string())?
 }
 
-fn send<T>(make: impl FnOnce(mpsc::Sender<T>) -> Command) -> Result<T, PortError> {
+/// Queues `command` for the shell thread without waiting for it.
+fn post(command: Command) -> Result<(), PortError> {
     let hwnd = window()?;
-    let (reply, rx) = mpsc::channel();
-    QUEUE.lock().unwrap_or_else(|p| p.into_inner()).push_back(make(reply));
+    QUEUE.lock().unwrap_or_else(|p| p.into_inner()).push_back(command);
     // SAFETY: posting to a window owned by the shell thread; no pointers are passed.
-    unsafe { PostMessageW(Some(hwnd), WM_LAQTA_COMMAND, WPARAM(0), LPARAM(0)) }
-        .map_err(|e| PortError::Failed(format!("shell thread: {e}")))?;
+    unsafe { PostMessageW(Some(hwnd), WM_LAQTA_COMMAND, WPARAM(0), LPARAM(0)) }.map_err(|e| PortError::Failed(format!("shell thread: {e}")))
+}
+
+fn send<T>(make: impl FnOnce(mpsc::Sender<T>) -> Command) -> Result<T, PortError> {
+    let (reply, rx) = mpsc::channel();
+    post(make(reply))?;
     rx.recv_timeout(REPLY_TIMEOUT).map_err(|_| PortError::Failed("shell thread did not answer".into()))
 }
 
@@ -241,6 +286,34 @@ fn handle(hwnd: HWND, command: Command) {
             unregister_hotkeys(hwnd);
             let _ = reply.send(());
         }
+        Command::HookLost => {
+            // A report that arrives after the hook was stopped or started again is not about this hook.
+            if !key_hook::hotkey_hook::take_lost() {
+                return;
+            }
+            let again = STATE.with(|s| {
+                let s = s.borrow();
+                s.on_hotkey.clone().map(|on_fire| (s.bindings.clone(), on_fire))
+            });
+            if let Some((bindings, on_fire)) = again {
+                tracing::warn!("the keyboard hook for hotkeys was lost; using RegisterHotKey for them instead");
+                unregister_hotkeys(hwnd);
+                STATE.with(|s| s.borrow_mut().bindings = bindings.clone());
+                GENERATION.fetch_add(1, Ordering::SeqCst);
+                report_refused(register_plain(hwnd, &bindings, on_fire), "after the keyboard hook was lost");
+            }
+        }
+        Command::Reapply => {
+            // `unregister_all` forgets the callback, so hotkeys that were released (for a shortcut being
+            // recorded) stay released.
+            let again = STATE.with(|s| {
+                let s = s.borrow();
+                s.on_hotkey.clone().map(|on_fire| (s.bindings.clone(), on_fire))
+            });
+            if let Some((bindings, on_fire)) = again {
+                report_refused(register_hotkeys(hwnd, &bindings, on_fire), "when registered again");
+            }
+        }
         Command::Shutdown { reply } => {
             unregister_hotkeys(hwnd);
             let icon = STATE.with(|s| std::mem::take(&mut s.borrow_mut().icon_added));
@@ -258,8 +331,31 @@ fn handle(hwnd: HWND, command: Command) {
     }
 }
 
-/// Unregisters every hotkey this window holds and forgets the callback.
+/// Unregisters every hotkey this window holds, stops the keyboard hook, and forgets the callback.
+/// Logs the chords a registration the app did not ask for refused, and tells the app about them. The
+/// app's callback takes the lock its own registrations hold while they wait on this thread, so it
+/// runs on a thread of its own.
+fn report_refused(results: HotkeyResults, when: &'static str) {
+    let refused: Vec<(KeyChord, String)> =
+        results.into_iter().filter_map(|(chord, result)| result.err().map(|e| (chord, e.to_string()))).collect();
+    for (chord, why) in &refused {
+        tracing::warn!(%chord, "hotkey not registered {when}: {why}");
+    }
+    let Some(on_rejected) = REJECTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() else { return };
+    if refused.is_empty() {
+        return;
+    }
+    let generation = GENERATION.load(Ordering::SeqCst);
+    let reason = refused.iter().map(|(_, why)| why.as_str()).collect::<Vec<_>>().join("; ");
+    let chords = refused.into_iter().map(|(chord, _)| chord).collect();
+    let _ = std::thread::Builder::new().name("laqta-hotkey-refused".into()).spawn(move || {
+        on_rejected(Rejection::new(chords, reason, move || GENERATION.load(Ordering::SeqCst) == generation));
+    });
+}
+
 fn unregister_hotkeys(hwnd: HWND) {
+    GENERATION.fetch_add(1, Ordering::SeqCst);
+    key_hook::hotkey_hook::stop();
     let ids: Vec<i32> = STATE.with(|s| {
         let mut s = s.borrow_mut();
         s.on_hotkey = None;
@@ -273,6 +369,17 @@ fn unregister_hotkeys(hwnd: HWND) {
 
 fn register_hotkeys(hwnd: HWND, bindings: &[(KeyChord, Action)], on_fire: HotkeyCallback) -> HotkeyResults {
     unregister_hotkeys(hwnd);
+    STATE.with(|s| s.borrow_mut().bindings = bindings.to_vec());
+    if key_hook::hotkey_hook::enabled()
+        && let Some(results) = register_via_hook(hwnd, bindings, on_fire.clone())
+    {
+        return results;
+    }
+    register_plain(hwnd, bindings, on_fire)
+}
+
+/// Registers `bindings` with `RegisterHotKey`, which expects no registration to be held yet.
+fn register_plain(hwnd: HWND, bindings: &[(KeyChord, Action)], on_fire: HotkeyCallback) -> HotkeyResults {
     let mut registered = HashMap::new();
     let mut results = Vec::with_capacity(bindings.len());
     for (index, (chord, _)) in bindings.iter().enumerate() {
@@ -297,6 +404,42 @@ fn register_hotkeys(hwnd: HWND, bindings: &[(KeyChord, Action)], on_fire: Hotkey
         s.on_hotkey = Some(on_fire);
     });
     results
+}
+
+/// Catches `bindings` with the keyboard hook instead of `RegisterHotKey`. The ids are the ones
+/// `RegisterHotKey` would use, so the hook's `WM_HOTKEY` takes the same path. The hook sees a key
+/// before Windows does, so no other program can have the chord, and Print Screen needs no
+/// Snipping Tool check. `None` when the hook could not start, so the caller registers the plain way.
+fn register_via_hook(hwnd: HWND, bindings: &[(KeyChord, Action)], on_fire: HotkeyCallback) -> Option<HotkeyResults> {
+    let mut watched = Vec::new();
+    let mut registered = HashMap::new();
+    let mut results = Vec::with_capacity(bindings.len());
+    for (index, (chord, _)) in bindings.iter().enumerate() {
+        let id = index as i32 + 1;
+        if keys::hotkey_vk(*chord).is_some() {
+            watched.push((id, *chord));
+            registered.insert(id, *chord);
+            results.push((*chord, Ok(())));
+        } else {
+            results.push((*chord, Err(PortError::Failed(format!("{chord} uses a key Windows cannot register")))));
+        }
+    }
+    // The hook thread calls this when the hook is lost for good; the shell thread does the registering.
+    let on_lost = std::sync::Arc::new(|| {
+        let _ = post(Command::HookLost);
+    });
+    if !watched.is_empty()
+        && let Err(e) = key_hook::hotkey_hook::watch(hwnd.0 as isize, watched, on_lost)
+    {
+        tracing::warn!("the keyboard hook for hotkeys could not start ({e}); using RegisterHotKey");
+        return None;
+    }
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        s.hotkeys = registered;
+        s.on_hotkey = Some(on_fire);
+    });
+    Some(results)
 }
 
 /// The Win32 error code inside an `HRESULT`. Win32 errors arrive as `0x8007xxxx`; anything else

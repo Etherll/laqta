@@ -46,20 +46,10 @@ const FOOTER_H: f32 = 60.0;
 const GUTTER: f32 = 10.0;
 /// Space around the image inside the stage. The bottom keeps the zoom controls off the image.
 const PAD: f32 = 28.0;
+/// The view's zoom limits (10% to 800%).
+const MIN_ZOOM: f32 = 0.1;
+const MAX_ZOOM: f32 = 8.0;
 const PAD_BOTTOM: f32 = 76.0;
-
-const PALETTE: [Rgba; 10] = [
-    Rgba::rgb(0xef, 0x44, 0x44),
-    Rgba::rgb(0xf9, 0x73, 0x16),
-    Rgba::rgb(0xea, 0xb3, 0x08),
-    Rgba::rgb(0x22, 0xc5, 0x5e),
-    Rgba::rgb(0x06, 0xb6, 0xd4),
-    Rgba::rgb(0x3b, 0x82, 0xf6),
-    Rgba::rgb(0xa8, 0x55, 0xf7),
-    Rgba::rgb(0xec, 0x48, 0x99),
-    Rgba::WHITE,
-    Rgba::BLACK,
-];
 
 const EMOJI: [&str; 12] = ["😀", "😂", "😍", "👍", "👎", "🔥", "✅", "❌", "⚠️", "❤️", "👉", "💡"];
 
@@ -625,7 +615,10 @@ impl EditorWindow {
             // Submitted here, not in the view update: the upload goes ahead even if the editor was
             // closed while the image was being written.
             let message = match written.await {
-                Ok(path) => Notice::info(format!("Uploading ({} task).", services.app.upload_files(vec![path], None).len())),
+                Ok(path) => Notice::info(format!(
+                    "Uploading {}.",
+                    crate::presenters::copy::count(services.app.upload_files(vec![path], None).len(), "file", "files")
+                )),
                 Err(e) => Notice::failure_text("Couldn't upload the image", &e),
             };
             let _ = this.update(cx, |this, cx| {
@@ -878,8 +871,9 @@ impl EditorWindow {
         self.toast_for = self.message.clone();
         // A failure stays until dismissed, so its reason can be read and its detail copied.
         let Some(shown) = self.message.clone().filter(|m| !m.error) else { return };
+        let life = crate::presenters::notice::lifetime(&shown).unwrap_or_default();
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(std::time::Duration::from_millis(3200)).await;
+            cx.background_executor().timer(life).await;
             let _ = this.update(cx, |this, cx| {
                 if this.message.as_ref() == Some(&shown) {
                     this.message = None;
@@ -1039,32 +1033,32 @@ impl EditorWindow {
     fn topbar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let chrome = &self.chrome;
         let controls = editor_toolbar::style_controls(chrome.tool);
-        let undo = widgets::icon_button(
+        let undo = widgets::icon_button_with(
             "undo",
             IconName::Undo2,
             format!("Undo  ·  {}", crate::presenters::hotkeys::shortcut_text("Ctrl+Z", crate::host_os())),
             false,
+            crate::presenters::editor_toolbar::undo_reason(chrome.can_undo).map_err(SharedString::from),
             cx.listener(|this, _, w, cx| {
                 if this.chrome.can_undo {
                     this.command(Command::Undo, w, cx)
                 }
             }),
             cx,
-        )
-        .when(!chrome.can_undo, |d| d.opacity(0.35));
-        let redo = widgets::icon_button(
+        );
+        let redo = widgets::icon_button_with(
             "redo",
             IconName::Redo2,
             format!("Redo  ·  {}", crate::presenters::hotkeys::shortcut_text("Ctrl+Y", crate::host_os())),
             false,
+            crate::presenters::editor_toolbar::redo_reason(chrome.can_redo).map_err(SharedString::from),
             cx.listener(|this, _, w, cx| {
                 if this.chrome.can_redo {
                     this.command(Command::Redo, w, cx)
                 }
             }),
             cx,
-        )
-        .when(!chrome.can_redo, |d| d.opacity(0.35));
+        );
 
         let mut props = div().flex_1().min_w_0().h_full().flex().items_center().gap(space::S2).overflow_hidden().child(
             div()
@@ -1080,16 +1074,24 @@ impl EditorWindow {
             let mut track =
                 div().flex().flex_none().items_center().gap(px(1.)).p(px(3.)).rounded(radius::PILL).bg(cx.theme().foreground.opacity(0.06));
             let current = if marker { chrome.style.highlight_color } else { chrome.style.border_color };
-            for (i, c) in PALETTE.into_iter().enumerate() {
-                track = track.child(widgets::swatch(
-                    ("col", i),
-                    rgba(c),
-                    current == c,
-                    cx.listener(move |this, _, window, cx| {
-                        this.set_style(|s| if marker { s.highlight_color = c } else { s.border_color = c }, window, cx)
-                    }),
-                    cx,
-                ));
+            // The same named inks as the capture toolbar: bright ones for the marker.
+            let inks: &'static [crate::presenters::ink::Ink] =
+                if marker { &crate::presenters::ink::MARKER } else { &crate::presenters::ink::INK };
+            for (i, ink) in inks.iter().enumerate() {
+                let (c, name) = (ink.rgba, ink.name);
+                track = track.child(
+                    widgets::swatch(
+                        ("col", i),
+                        rgba(c),
+                        current == c,
+                        cx.listener(move |this, _, window, cx| {
+                            this.set_style(|s| if marker { s.highlight_color = c } else { s.border_color = c }, window, cx)
+                        }),
+                        cx,
+                    )
+                    .aria_label(name)
+                    .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(name).build(window, cx)),
+                );
             }
             props = props.child(track).child(widgets::divider_v(cx));
         }
@@ -1207,6 +1209,7 @@ impl EditorWindow {
             .ghost()
             .dropdown_caret(true)
             .disabled(busy)
+            .when_some(self.busy, |b, task| b.tooltip(format!("Wait for this to finish: {task}")))
             .dropdown_menu(move |menu, _, _| {
                 let run = |op: Smart| {
                     let entity = entity.clone();
@@ -1329,7 +1332,8 @@ impl EditorWindow {
                 ))
                 .child(widgets::pill(
                     "continue",
-                    "Done",
+                    // The same words as the close guard: an edit that a capture waits for is handed back.
+                    if self.reply.is_some() { "Use edits" } else { "Done" },
                     widgets::Pill::Primary,
                     false,
                     cx.listener(|this, _, w, cx| this.finish(w, cx)),
@@ -1480,13 +1484,14 @@ impl EditorWindow {
             .absolute()
             .right(space::S4)
             .bottom(space::S4)
-            .child(widgets::icon_button(
+            .child(widgets::icon_button_with(
                 "zoom-out",
                 IconName::ZoomOut,
                 "Zoom the view out",
                 false,
+                if z > MIN_ZOOM { Ok(()) } else { Err("Already at the smallest zoom".into()) },
                 cx.listener(|this, _, _, cx| {
-                    this.zoom = (this.zoom / 1.25).max(0.1);
+                    this.zoom = (this.zoom / 1.25).max(MIN_ZOOM);
                     cx.notify();
                 }),
                 cx,
@@ -1499,13 +1504,14 @@ impl EditorWindow {
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(format!("{:.0}%", z * 100.0)),
             )
-            .child(widgets::icon_button(
+            .child(widgets::icon_button_with(
                 "zoom-in",
                 IconName::ZoomIn,
                 "Zoom the view in",
                 false,
+                if z < MAX_ZOOM { Ok(()) } else { Err("Already at the largest zoom".into()) },
                 cx.listener(|this, _, _, cx| {
-                    this.zoom = (this.zoom * 1.25).min(8.0);
+                    this.zoom = (this.zoom * 1.25).min(MAX_ZOOM);
                     cx.notify();
                 }),
                 cx,

@@ -7,6 +7,9 @@ use laqta_ports::{AppError, TaskEvent, TaskId, TaskStatus};
 /// Rows kept in the main window's task list.
 pub const MAX_ROWS: usize = 100;
 
+/// The title of a row before its task names it (a file name, or "Recording").
+const NEW_ROW_TITLE: &str = "Capture";
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct TaskRow {
     pub id: TaskId,
@@ -23,7 +26,13 @@ pub struct TaskList {
     rows: Vec<TaskRow>,
     /// Counts the events that can change the history library, so a view reloads it only then.
     library_generation: u64,
+    /// Tasks whose settled row the user dismissed: a late event for one (a delete, say) must not bring
+    /// it back as a new row. The newest few are kept.
+    dismissed: Vec<TaskId>,
 }
+
+/// How many dismissed tasks are remembered.
+const MAX_DISMISSED: usize = 64;
 
 /// Whether `event` can change what the history library holds: a save (the history writer records
 /// it), a delete, or a task settling. Progress, recording ticks and the rest only repaint.
@@ -82,6 +91,21 @@ impl TaskList {
             .any(|r| matches!(r.status, TaskStatus::InQueue | TaskStatus::Preparing | TaskStatus::Working | TaskStatus::Stopping))
     }
 
+    /// Removes a settled row. A running one stays, since its task still reports to it.
+    pub fn dismiss(&mut self, id: TaskId) {
+        if let Some(pos) = self
+            .rows
+            .iter()
+            .position(|r| r.id == id && matches!(r.status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Stopped))
+        {
+            self.rows.remove(pos);
+            if self.dismissed.len() == MAX_DISMISSED {
+                self.dismissed.remove(0);
+            }
+            self.dismissed.push(id);
+        }
+    }
+
     fn row(&mut self, id: TaskId) -> &mut TaskRow {
         let pos = match self.rows.iter().position(|r| r.id == id) {
             Some(p) => p,
@@ -91,7 +115,7 @@ impl TaskList {
                     TaskRow {
                         id,
                         status: TaskStatus::InQueue,
-                        title: format!("Task {}", id.0),
+                        title: NEW_ROW_TITLE.into(),
                         detail: String::new(),
                         path: None,
                         url: None,
@@ -108,6 +132,9 @@ impl TaskList {
     pub fn apply(&mut self, event: &TaskEvent) {
         if changes_library(event) {
             self.library_generation += 1;
+        }
+        if self.dismissed.contains(&event.id()) {
+            return;
         }
         let row = self.row(event.id());
         match event {
@@ -127,7 +154,7 @@ impl TaskList {
             TaskEvent::CopyFailed { reason, .. } => row.detail = format!("Copy failed: {reason}"),
             TaskEvent::Failed { error, .. } => {
                 row.error = Some(error.to_string());
-                row.detail = format!("Failed: {error}");
+                row.detail = error.to_string();
             }
             TaskEvent::UploadStarted { destination, .. } => row.detail = format!("Uploading to {destination}"),
             TaskEvent::Progress { sent, total, .. } => {
@@ -157,6 +184,8 @@ impl TaskList {
                 row.detail = format!("Recording {}:{:02}", elapsed_secs / 60, elapsed_secs % 60);
             }
             TaskEvent::RecordingPaused { .. } => row.detail = "Paused".into(),
+            // The row keeps its "Recording" state until the file is done; the recording bar shows the wait.
+            TaskEvent::RecordingFinishing { .. } => {}
             TaskEvent::RecordingStopped { path, .. } => {
                 row.title = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 row.path = Some(path.clone());
@@ -164,7 +193,7 @@ impl TaskList {
                 row.detail = "Recorded".into();
             }
             TaskEvent::RecordingFailed { error, partial, .. } => {
-                if row.title.starts_with("Task ") {
+                if row.title == NEW_ROW_TITLE {
                     row.title = "Recording".into();
                 }
                 if matches!(error, AppError::Cancelled) {
@@ -173,11 +202,18 @@ impl TaskList {
                 } else {
                     row.status = TaskStatus::Failed;
                     row.error = Some(error.to_string());
-                    row.detail = format!("Failed: {error}");
+                    row.detail = error.to_string();
                     row.path = partial.clone().or(row.path.take());
                 }
             }
-            TaskEvent::SaveSkipped { path, .. } => row.detail = format!("Skipped: {} exists", path.display()),
+            // Name and folder, as the toasts say it, not the full path.
+            TaskEvent::SaveSkipped { path, .. } => {
+                let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                row.detail = match path.parent().and_then(|p| p.file_name()) {
+                    Some(dir) => format!("Skipped: “{name}” already exists in {}", dir.to_string_lossy()),
+                    None => format!("Skipped: a file named “{name}” already exists"),
+                };
+            }
             TaskEvent::StepFailed { step, reason, .. } => row.detail = format!("{step} failed: {reason}"),
             _ => {}
         }
@@ -187,6 +223,17 @@ impl TaskList {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dismissed_row_stays_gone_when_a_late_event_arrives() {
+        let mut list = TaskList::default();
+        let id = TaskId(7);
+        list.apply(&TaskEvent::StatusChanged { id, status: TaskStatus::Completed });
+        list.dismiss(id);
+        list.apply(&TaskEvent::Deleted { id, path: PathBuf::from("a.png") });
+        assert!(list.rows.is_empty());
+        assert!(!list.is_running());
+    }
 
     #[test]
     fn tones_cover_every_status() {
@@ -231,7 +278,38 @@ mod tests {
         let id = TaskId(3);
         list.apply(&TaskEvent::Failed { id, error: laqta_ports::AppError::Io("disk full".into()) });
         list.apply(&TaskEvent::StatusChanged { id, status: TaskStatus::Failed });
-        assert_eq!(list.rows()[0].detail, "Failed: i/o: disk full");
+        assert_eq!(list.rows()[0].detail, "i/o: disk full");
+    }
+
+    #[test]
+    fn new_rows_are_titled_capture_until_named() {
+        let mut list = TaskList::default();
+        list.apply(&TaskEvent::StatusChanged { id: TaskId(4), status: TaskStatus::InQueue });
+        assert_eq!(list.rows()[0].title, "Capture");
+        list.apply(&TaskEvent::RecordingFailed { id: TaskId(4), error: AppError::Io("no mic".into()), partial: None });
+        assert_eq!(list.rows()[0].title, "Recording");
+        assert_eq!(list.rows()[0].detail, "i/o: no mic");
+    }
+
+    #[test]
+    fn a_skipped_save_names_the_file() {
+        let mut list = TaskList::default();
+        list.apply(&TaskEvent::SaveSkipped { id: TaskId(5), path: "/s/a.png".into() });
+        assert_eq!(list.rows()[0].detail, "Skipped: “a.png” already exists in s");
+    }
+
+    #[test]
+    fn dismiss_removes_a_settled_row_only() {
+        let mut list = TaskList::default();
+        list.apply(&TaskEvent::Failed { id: TaskId(1), error: AppError::Io("disk full".into()) });
+        list.apply(&TaskEvent::StatusChanged { id: TaskId(1), status: TaskStatus::Failed });
+        list.apply(&TaskEvent::StatusChanged { id: TaskId(2), status: TaskStatus::Working });
+        list.dismiss(TaskId(2));
+        assert_eq!(list.rows().len(), 2, "a running row stays");
+        list.dismiss(TaskId(1));
+        assert_eq!(list.rows().iter().map(|r| r.id).collect::<Vec<_>>(), vec![TaskId(2)]);
+        list.dismiss(TaskId(99));
+        assert_eq!(list.rows().len(), 1);
     }
 
     #[test]
@@ -257,12 +335,22 @@ mod tests {
     fn a_recording_row_follows_its_events_and_settles() {
         let mut list = TaskList::default();
         let id = TaskId(7);
-        list.apply(&TaskEvent::RecordingCountdown { id, seconds_left: 2 });
+        list.apply(&TaskEvent::RecordingCountdown {
+            id,
+            seconds_left: 2,
+            area: laqta_domain::geometry::PhysRect { x: 0, y: 0, width: 10, height: 10 },
+        });
         assert_eq!(list.rows()[0].status, TaskStatus::Preparing);
-        list.apply(&TaskEvent::RecordingStarted { id, area: laqta_domain::geometry::PhysRect::default() });
+        list.apply(&TaskEvent::RecordingStarted { id, area: laqta_domain::geometry::PhysRect::default(), show_border: true });
         list.apply(&TaskEvent::RecordingTick { id, elapsed_secs: 65 });
         assert_eq!((list.rows()[0].status, list.rows()[0].detail.as_str()), (TaskStatus::Working, "Recording 1:05"));
         assert!(list.is_running());
+        list.apply(&TaskEvent::RecordingFinishing { id });
+        assert_eq!(
+            (list.rows()[0].status, list.rows()[0].detail.as_str()),
+            (TaskStatus::Working, "Recording 1:05"),
+            "finishing leaves the row as it is"
+        );
         list.apply(&TaskEvent::RecordingStopped { id, path: "/v/a.gif".into() });
         assert_eq!((list.rows()[0].status, list.rows()[0].title.as_str()), (TaskStatus::Completed, "a.gif"));
         assert!(!list.is_running());

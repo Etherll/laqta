@@ -22,14 +22,26 @@ pub struct FakeScreen {
     pub result: Mutex<Result<Vec<Frame>, PortError>>,
     pub calls: Mutex<u32>,
     pub window_image: Mutex<Option<Bitmap>>,
+    /// The request of each `capture` call, in order.
+    pub requests: Mutex<Vec<CaptureRequest>>,
 }
 
 impl FakeScreen {
     pub fn new(frames: Vec<Frame>) -> Self {
-        FakeScreen { result: Mutex::new(Ok(frames)), calls: Mutex::new(0), window_image: Mutex::new(None) }
+        FakeScreen {
+            result: Mutex::new(Ok(frames)),
+            calls: Mutex::new(0),
+            window_image: Mutex::new(None),
+            requests: Mutex::new(Vec::new()),
+        }
     }
     pub fn failing(error: PortError) -> Self {
-        FakeScreen { result: Mutex::new(Err(error)), calls: Mutex::new(0), window_image: Mutex::new(None) }
+        FakeScreen {
+            result: Mutex::new(Err(error)),
+            calls: Mutex::new(0),
+            window_image: Mutex::new(None),
+            requests: Mutex::new(Vec::new()),
+        }
     }
 }
 
@@ -38,6 +50,11 @@ impl ScreenSource for FakeScreen {
         *self.calls.lock().unwrap() += 1;
         let r = self.result.lock().unwrap().clone();
         Box::pin(async move { r })
+    }
+
+    fn capture(&self, request: CaptureRequest) -> BoxFuture<'_, Result<Vec<Frame>, PortError>> {
+        self.requests.lock().unwrap().push(request);
+        self.capture_all()
     }
 
     fn capture_window(&self, _target: &HoverTarget, _request: CaptureRequest) -> BoxFuture<'_, Result<Bitmap, PortError>> {
@@ -329,17 +346,25 @@ pub struct FakeHoverSource {
     pub active: Mutex<Option<HoverTarget>>,
     /// When set, `active_window` fails with this error.
     pub active_error: Mutex<Option<PortError>>,
+    /// Every value `set_include_own_windows` was called with, in order.
+    pub own_windows: Mutex<Vec<bool>>,
 }
 
 impl FakeHoverSource {
     pub fn new(targets: Vec<HoverTarget>) -> Self {
-        FakeHoverSource { targets: Mutex::new(Ok(targets)), active: Mutex::new(None), active_error: Mutex::new(None) }
+        FakeHoverSource {
+            targets: Mutex::new(Ok(targets)),
+            active: Mutex::new(None),
+            active_error: Mutex::new(None),
+            own_windows: Mutex::new(Vec::new()),
+        }
     }
     pub fn unsupported() -> Self {
         FakeHoverSource {
             targets: Mutex::new(Err(PortError::Unsupported("hover targets".into()))),
             active: Mutex::new(None),
             active_error: Mutex::new(None),
+            own_windows: Mutex::new(Vec::new()),
         }
     }
 }
@@ -355,6 +380,9 @@ impl HoverSource for FakeHoverSource {
             None => Ok(self.active.lock().unwrap().clone()),
         };
         Box::pin(async move { r })
+    }
+    fn set_include_own_windows(&self, include: bool) {
+        self.own_windows.lock().unwrap().push(include);
     }
 }
 

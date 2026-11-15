@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use laqta_domain::geometry::PhysRect;
-use laqta_domain::region::{Handle, HoverTarget, RegionInput};
+use laqta_domain::region::{Handle, HoverTarget, MultiStrip, RegionInput};
 use laqta_domain::{Bitmap, Frame};
 
 use crate::PortError;
@@ -65,6 +65,9 @@ pub struct RegionView {
     pub tools_visible: bool,
     /// Show the mode bar at the top of the screen (`RegionCaptureOptions::show_mode_bar`).
     pub mode_bar: bool,
+    /// The multi-region Capture and Cancel strip: how many regions are drawn and whether Capture can act.
+    /// `None` outside a multi-region session. Capture sends `RegionCommand::Confirm`, Cancel `RegionCommand::Cancel`.
+    pub multi_strip: Option<MultiStrip>,
     /// The session picks one pixel (the screen colour picker): a click picks, nothing is drawn.
     pub pick_point: bool,
     /// The text read from `selected`, while the session reads text in place. Every view carries it
@@ -100,6 +103,7 @@ impl PartialEq for RegionView {
             selection_image,
             tools_visible,
             mode_bar,
+            multi_strip,
             pick_point,
             text,
             text_only,
@@ -128,6 +132,7 @@ impl PartialEq for RegionView {
             && *selected == other.selected
             && *tools_visible == other.tools_visible
             && *mode_bar == other.mode_bar
+            && *multi_strip == other.multi_strip
             && *pick_point == other.pick_point
             && *text == other.text
             && *text_only == other.text_only
@@ -162,6 +167,11 @@ pub trait HoverSource: Send + Sync {
     fn targets(&self) -> crate::BoxFuture<'_, Result<Vec<HoverTarget>, PortError>>;
     /// The focused top-level window, if the platform can tell.
     fn active_window(&self) -> crate::BoxFuture<'_, Result<Option<HoverTarget>, PortError>>;
+    /// Whether Laqta's own windows are targets. Off by default; the dispatcher sets it before each
+    /// capture. A source that never lists its own windows ignores it.
+    fn set_include_own_windows(&self, include: bool) {
+        let _ = include;
+    }
 }
 
 /// A window the dispatcher can open (ARCHITECTURE §2.2), including the windowed tools.
@@ -238,7 +248,7 @@ pub trait ToolHost: Send + Sync {
     /// Shows a colour picked from the screen in the colour picker.
     fn show_color(&self, color: laqta_domain::color::Rgba) -> Result<(), PortError> {
         let _ = color;
-        Err(PortError::Unsupported("the colour picker".into()))
+        Err(PortError::Unsupported("the color picker".into()))
     }
 
     /// Shows a tool's text result (OCR, QR decode, ruler, inspector) with a copy button.
