@@ -194,7 +194,15 @@ jobs:
       - name: Disk image
         run: |
           mkdir dmg && cp -R build/Laqta.app dmg/ && ln -s /Applications dmg/Applications
-          hdiutil create -volname Laqta -srcfolder dmg -ov -format UDZO dist/laqta-macos-universal.dmg
+          # hdiutil sizes the image from the folder and can come up short ("No space left on
+          # device", v0.2.0 run 43298176354), so the size is given with room to spare. The
+          # compressed image is no larger for it. A busy disk also fails now and then: three tries.
+          size=$(( $(du -sm dmg | cut -f1) + 64 ))
+          for try in 1 2 3; do
+            hdiutil create -volname Laqta -srcfolder dmg -ov -format UDZO -size "${size}m" dist/laqta-macos-universal.dmg && break
+            [ "$try" = 3 ] && exit 1
+            sleep 10
+          done
       - name: Notarize
         if: env.MACOS_CERTIFICATE_P12 != '' && env.APPLE_ID != ''
         run: |
