@@ -57,10 +57,10 @@ Every file has a `.sha256` next to it on the [Releases](../../releases) page.
 
 - **Windows:** the installer adds shortcuts and updates itself. The portable `.exe` runs from
   anywhere (a USB stick too) and keeps its settings in a `LaqtaData` folder next to it.
-- **Linux:** `chmod +x laqta-linux-x86_64.AppImage` and run it, or on Debian/Ubuntu
+- **Linux:** `chmod +x laqta-linux-x86_64.AppImage` and run it (it updates itself), or on Debian/Ubuntu
   `sudo apt install ./laqta-linux-amd64.deb`. The archive has the plain binaries, or you can
   [build from source](#%EF%B8%8F-build-from-source).
-- **macOS (preview):** drag Laqta from the `.dmg` into Applications. It isn't notarized yet, so
+- **macOS (preview):** drag Laqta from the `.dmg` into Applications, where it updates itself. It isn't notarized yet, so
   the first launch gets blocked: click **Open Anyway** in **System Settings → Privacy & Security**,
   then grant Screen Recording and Accessibility. Recording needs `brew install ffmpeg`. It passes
   CI but nobody has tried it on a real Mac yet, so please [report](../../issues) what breaks.

@@ -1,10 +1,17 @@
-//! Update check and install: the latest GitHub release of the Laqta repository. On Windows
-//! the Velopack package is fetched through `laqta-http`'s verified fetch, with the hash taken from the
-//! release's `SHA256SUMS`, and applied with Velopack's `Update.exe`. On Linux the caller shows a
-//! notice instead. Nothing here runs the install: `velopack_apply_command` only builds the command.
+//! Update check and install: the latest GitHub release of the Laqta repository. Every download goes
+//! through `laqta-http`'s verified fetch, with the hash taken from the release's `SHA256SUMS`.
+//! - Windows (installed copy): the Velopack package, applied with Velopack's `Update.exe`.
+//! - Linux AppImage: the new AppImage replaces the running one.
+//! - macOS: the zipped `Laqta.app` replaces the installed bundle.
+//!
+//! [`install::Installer::detect`] says which applies. Other copies (the `.deb`, the archive, Nix, a
+//! portable `.exe`) get a notice instead. Nothing here starts a process: the caller runs the commands
+//! `velopack_apply_command` and [`install`] build.
 #![forbid(unsafe_code)]
 
+pub mod install;
 mod release;
+mod swap;
 mod version;
 
 use std::future::Future;
@@ -25,6 +32,12 @@ pub const REPOSITORY: &str = "Etherll/laqta";
 /// The release asset that lists the SHA-256 of every other file in the release.
 const SUMS_ASSET: &str = "SHA256SUMS";
 
+/// The Linux AppImage, which replaces a running AppImage.
+pub const APPIMAGE_ASSET: &str = "laqta-linux-x86_64.AppImage";
+
+/// The macOS app bundle, zipped with `ditto -c -k --keepParent`, which replaces the installed bundle.
+pub const MAC_APP_ASSET: &str = "laqta-macos-universal.app.zip";
+
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -41,10 +54,14 @@ pub enum UpdateError {
     NotStable(String),
     #[error("the release has no Windows package")]
     NoPackage,
+    #[error("the release has no {0}")]
+    MissingAsset(String),
     #[error("the release publishes no SHA-256 for the update package")]
     Unverified,
     #[error("the release names a file that is not a plain file name: {0:?}")]
     UnsafeName(String),
+    #[error("{0}")]
+    Io(String),
 }
 
 /// The network the update check uses. The app passes an `HttpFetcher`; tests pass canned responses.
@@ -126,15 +143,26 @@ fn is_full_package(name: &str) -> bool {
 /// anything is downloaded.
 pub async fn download_windows_update(fetcher: &dyn Fetcher, release: &Release, dir: &Path) -> Result<PathBuf, UpdateError> {
     let package = windows_package(release).ok_or(UpdateError::NoPackage)?;
-    if !is_plain_name(&package.name) {
-        return Err(UpdateError::UnsafeName(package.name.clone()));
+    download_verified(fetcher, release, package, dir).await
+}
+
+/// Downloads the release asset named `name` into `dir`, checked against `SHA256SUMS` as
+/// [`download_windows_update`] does, and returns its path.
+pub async fn download_asset(fetcher: &dyn Fetcher, release: &Release, name: &str, dir: &Path) -> Result<PathBuf, UpdateError> {
+    let asset = release.assets.iter().find(|asset| asset.name == name).ok_or_else(|| UpdateError::MissingAsset(name.to_owned()))?;
+    download_verified(fetcher, release, asset, dir).await
+}
+
+async fn download_verified(fetcher: &dyn Fetcher, release: &Release, asset: &Asset, dir: &Path) -> Result<PathBuf, UpdateError> {
+    if !is_plain_name(&asset.name) {
+        return Err(UpdateError::UnsafeName(asset.name.clone()));
     }
     let sums_asset = release.assets.iter().find(|asset| asset.name == SUMS_ASSET).ok_or(UpdateError::Unverified)?;
     let sums = fetcher.get_text(&sums_asset.url).await?;
     let sha256 =
-        parse_sha256sums(&sums).into_iter().find(|(file, _)| *file == package.name).map(|(_, hash)| hash).ok_or(UpdateError::Unverified)?;
-    let dest = dir.join(&package.name);
-    fetcher.download(&package.url, &dest, &sha256).await?;
+        parse_sha256sums(&sums).into_iter().find(|(file, _)| *file == asset.name).map(|(_, hash)| hash).ok_or(UpdateError::Unverified)?;
+    let dest = dir.join(&asset.name);
+    fetcher.download(&asset.url, &dest, &sha256).await?;
     Ok(dest)
 }
 
@@ -337,6 +365,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = block_on(download_windows_update(&fetcher, &release, dir.path())).unwrap_err();
         assert!(matches!(err, UpdateError::UnsafeName(_)));
+        assert!(fetcher.downloads.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_asset_downloads_with_its_hash_from_sha256sums() {
+        let mut release = latest_release();
+        release.assets.push(asset(APPIMAGE_ASSET));
+        let sums = format!("{SUMS}\n{}  {APPIMAGE_ASSET}\n", "ab".repeat(32));
+        let fetcher = FakeFetcher::serving(&[(SUMS_URL, sums.as_str())]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = block_on(download_asset(&fetcher, &release, APPIMAGE_ASSET, dir.path())).unwrap();
+        assert_eq!(path, dir.path().join(APPIMAGE_ASSET));
+        assert_eq!(fetcher.downloads.lock().unwrap()[0].2, "ab".repeat(32));
+    }
+
+    #[test]
+    fn an_asset_the_release_lacks_or_does_not_list_is_refused() {
+        let fetcher = FakeFetcher::serving(&[(SUMS_URL, SUMS)]);
+        let dir = tempfile::tempdir().unwrap();
+        let missing = block_on(download_asset(&fetcher, &latest_release(), MAC_APP_ASSET, dir.path()));
+        assert_eq!(missing, Err(UpdateError::MissingAsset(MAC_APP_ASSET.to_owned())));
+        let mut release = latest_release();
+        release.assets.push(asset(MAC_APP_ASSET));
+        assert_eq!(block_on(download_asset(&fetcher, &release, MAC_APP_ASSET, dir.path())), Err(UpdateError::Unverified));
         assert!(fetcher.downloads.lock().unwrap().is_empty());
     }
 

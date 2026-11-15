@@ -1,9 +1,10 @@
-//! OCR on first use (ADR 023): asks once, then downloads onnxruntime and the default PP-OCRv5
-//! models through verified fetch and runs them with `laqta-ml`.
+//! OCR (ADR 023, ADR 031): Laqta's PP-OCRv5 models through `laqta-ml` once they are on disk, the OS
+//! engine while they are not (or when chosen). With no OS engine, the first read asks, then downloads
+//! onnxruntime and the models through verified fetch.
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use laqta_domain::Bitmap;
 use laqta_domain::settings::OcrEngine;
@@ -26,15 +27,10 @@ pub struct LazyOcr {
     options: crate::models::SharedModelOptions,
     /// Where the first-use download progress is reported, as toasts.
     notifier: Arc<dyn Notifier>,
-    /// The OS engine (Windows.Media.Ocr) used when the models are declined.
+    /// The OS engine (Windows.Media.Ocr), used when chosen or while the models are missing.
     fallback: Option<Arc<dyn Ocr>>,
-    /// The OS engine's name, as the download question names it.
-    system_name: &'static str,
     /// The engine and the (det, rec, provider) it was built for.
     ready: ModelSlot<EngineKey, ModelOcr>,
-    /// The user turned the download down and the OS engine reads instead. Not asked again until
-    /// Laqta restarts; the models can still be installed from the settings.
-    declined: AtomicBool,
 }
 
 /// What `LazyOcr` runs with the current settings, and what of it is not on disk yet.
@@ -66,9 +62,11 @@ fn ml(e: laqta_ml::error::MlError) -> PortError {
     PortError::Failed(e.to_string())
 }
 
-/// The OS engine reads when the OS has one and the user chose it or turned the models down.
-fn reads_with_system(engine: OcrEngine, declined: bool, has_system: bool) -> bool {
-    has_system && (engine == OcrEngine::System || declined)
+/// The OS engine reads when the OS has one and the user chose it, or Laqta's models are not on disk:
+/// text capture then reads in place from the first use, and the models download from Settings →
+/// AI features, never with a question in the middle of a capture.
+fn reads_with_system(engine: OcrEngine, models_missing: bool, has_system: bool) -> bool {
+    has_system && (engine == OcrEngine::System || models_missing)
 }
 
 impl LazyOcr {
@@ -78,27 +76,19 @@ impl LazyOcr {
         ui: Arc<U>,
         options: crate::models::SharedModelOptions,
         fallback: Option<Arc<dyn Ocr>>,
-        system_name: &'static str,
         releaser: Arc<ModelReleaser>,
     ) -> Self {
-        LazyOcr {
-            data,
-            prompt: ui.clone(),
-            options,
-            notifier: ui,
-            fallback,
-            system_name,
-            ready: ModelSlot::new(releaser),
-            declined: AtomicBool::new(false),
-        }
+        LazyOcr { data, prompt: ui.clone(), options, notifier: ui, fallback, ready: ModelSlot::new(releaser) }
     }
 
-    /// The OS engine reads instead of the models: chosen in settings, or the models were turned down
-    /// and are still missing (once they are on disk, say from the settings page, they read again).
-    fn uses_fallback(&self) -> bool {
-        let engine = self.options.read().map(|o| o.ocr_engine).unwrap_or_default();
-        let declined = self.declined.load(Ordering::Relaxed) && !self.plan().is_ok_and(|plan| plan.complete());
-        reads_with_system(engine, declined, self.fallback.is_some())
+    /// The chosen models are missing and Settings can download them: a catalog model or onnxruntime is
+    /// missing, not a custom model's file (nothing can fetch that).
+    fn models_downloadable(&self) -> bool {
+        self.plan().is_ok_and(|plan| !plan.complete() && !plan.custom_missing)
+    }
+
+    fn engine(&self) -> OcrEngine {
+        self.options.read().map(|o| o.ocr_engine).unwrap_or_default()
     }
 
     fn plan(&self) -> Result<Plan, PortError> {
@@ -122,12 +112,15 @@ impl LazyOcr {
         Ok(Plan { key, dir, lib, ort, runtime, wanted, custom_missing })
     }
 
+    /// The models, or `Cancelled` when the OS engine reads instead: chosen in settings, or the models
+    /// are missing (once they are on disk, say from the settings page, they read again).
     async fn get(&self) -> Result<Arc<ModelOcr>, PortError> {
-        // Asked and answered already: the caller reads with the OS engine.
-        if self.uses_fallback() {
+        let plan = self.plan();
+        let complete = plan.as_ref().is_ok_and(Plan::complete);
+        if reads_with_system(self.engine(), !complete, self.fallback.is_some()) {
             return Err(PortError::Cancelled);
         }
-        let Plan { key, dir, lib, ort: ort_entry, runtime, wanted, .. } = self.plan()?;
+        let Plan { key, dir, lib, ort: ort_entry, runtime, wanted, .. } = plan?;
         if let Some(o) = self.ready.get(&key) {
             return Ok(o);
         }
@@ -138,15 +131,12 @@ impl LazyOcr {
                 .prompt
                 .confirm(
                     TITLE,
-                    &if self.fallback.is_some() {
-                        format!("Download ONNX Runtime and the text models (about {mb} MB) for better accuracy? Choose No to use {} instead. You can change this in Settings → AI features.", self.system_name)
-                    } else {
-                        format!("Text recognition needs ONNX Runtime and its models (about {mb} MB). Download them now?")
-                    },
+                    // Only a system with no OS engine gets here: the others read with it until the models
+                    // are downloaded from the settings page.
+                    &format!("Text recognition needs ONNX Runtime and its models (about {mb} MB). Download them now?"),
                 )
                 .await?;
             if !ok {
-                self.declined.store(true, Ordering::Relaxed);
                 return Err(PortError::Cancelled);
             }
             let notifier = &self.notifier;
@@ -174,7 +164,16 @@ impl Ocr for LazyOcr {
                     self.ready.ran();
                     result
                 }
-                Err(PortError::Cancelled) if let Some(f) = &self.fallback => f.recognize(image, language).await,
+                Err(PortError::Cancelled) if let Some(f) = &self.fallback => match f.recognize(image, language).await {
+                    // Standing in for missing models, the OS engine may not read every language the
+                    // models do: say where they come from instead of asking in the middle of a capture.
+                    Err(PortError::Unsupported(why)) if self.engine() == OcrEngine::Models && self.models_downloadable() => {
+                        Err(PortError::Unsupported(format!(
+                            "{why}. Laqta's own text models may read it: download them in Settings → AI features."
+                        )))
+                    }
+                    result => result,
+                },
                 Err(e) => Err(e),
             }
         })
@@ -186,10 +185,11 @@ impl Ocr for LazyOcr {
         }
         l
     }
-    /// True once nothing stands between a call and its answer: the models are on disk, or the user
-    /// chose the OS engine. Until then `recognize` opens the download question first.
+    /// True once nothing stands between a call and its answer: the models are on disk, or the OS engine
+    /// reads (chosen, or standing in for missing models). Otherwise `recognize` asks to download first.
     fn ready(&self) -> bool {
-        self.uses_fallback() || self.plan().is_ok_and(|plan| plan.complete())
+        // With the models missing, an OS engine always stands in (`reads_with_system`).
+        self.fallback.is_some() || self.plan().is_ok_and(|plan| plan.complete())
     }
 }
 
@@ -198,8 +198,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_os_engine_reads_only_when_present_and_chosen_or_declined() {
-        // (engine, declined, has_system, reads)
+    fn the_os_engine_reads_when_present_and_chosen_or_the_models_are_missing() {
+        // (engine, models missing, has_system, reads)
         let cases = [
             (OcrEngine::Models, false, false, false),
             (OcrEngine::Models, true, false, false),
@@ -210,8 +210,8 @@ mod tests {
             (OcrEngine::System, false, true, true),
             (OcrEngine::System, true, true, true),
         ];
-        for (engine, declined, has_system, reads) in cases {
-            assert_eq!(reads_with_system(engine, declined, has_system), reads, "{engine:?}, declined {declined}, system {has_system}");
+        for (engine, missing, has_system, reads) in cases {
+            assert_eq!(reads_with_system(engine, missing, has_system), reads, "{engine:?}, missing {missing}, system {has_system}");
         }
     }
 }

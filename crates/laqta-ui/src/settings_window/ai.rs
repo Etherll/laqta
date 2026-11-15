@@ -438,7 +438,7 @@ impl SettingsWindow {
                 .collect();
             section = section.child(widgets::row_with(
                 "Engine",
-                Some(format!("{os_name} needs no download. Laqta's models read small and mixed text better.")),
+                Some(format!("{os_name} needs no download, and also reads while Laqta's models are not downloaded. Laqta's models read small and mixed text better.")),
                 Slot::Hug,
                 widgets::choice("ocr-engine", engines, cx),
                 cx,
